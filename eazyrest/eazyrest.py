@@ -1,4 +1,5 @@
 import datetime
+import dateutil.parser
 from functools import cached_property
 import json
 import typing
@@ -140,7 +141,10 @@ class JSONProperty:
             elif self.ty_origin == list and len(self.ty_args) == 1 and lenient_issubclass(self.ty_args[0], JSONObject):
                 return [self.create_related(obj, arg) for arg in value]
             elif self.ty == datetime.datetime:
-                return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+                if obj._api.datetime_string:
+                    return dateutil.parser.parse(value)
+                else:
+                    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
             else:
                 return value
 
@@ -151,7 +155,10 @@ class JSONProperty:
             if lenient_issubclass(self.ty, JSONObject):
                 new_value = value.pk
             elif self.ty == datetime.datetime:
-                new_value = value.timestamp()
+                if obj._api.datetime_string:
+                    new_value = str(value)
+                else:
+                    new_value = value.timestamp()
             else:
                 new_value = value
 

@@ -11,6 +11,9 @@ class API:
     trailing_slash: bool=True
     """True if API URL requires a trailing slash"""
 
+    datetime_string: bool=False
+    """True if datetimes are serialized as strings"""
+
     session: requests.Session
     """Session object for API requests"""
 
