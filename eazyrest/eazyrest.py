@@ -3,7 +3,7 @@ import dateutil.parser
 from functools import cached_property
 import json
 import typing
-from typing import Any, Dict, Optional, Sequence, Type
+from typing import Any, Dict, Optional, Sequence, Type, Union
 import urllib.parse
 
 from .api import API
@@ -55,6 +55,9 @@ def json_object(cls: Optional[Type]=None, pk: str='id', field_map: Dict[str, str
 
 class JSONProperty:
     """A JSON property"""
+    cls: Type['JSONObject']
+    """Class to which this JSONProperty belongs"""
+
     field: str
     """Name of Python field corresponding to this property."""
 
@@ -73,6 +76,7 @@ class JSONProperty:
                  field: Optional[str]=None,
                  ty: Optional[Any]=None,
                  is_primary_key: bool=False):
+        self.cls = cls
         self.field = json_field if field is None else field
         self._ty = ty
         self.json_field = json_field
@@ -88,11 +92,8 @@ class JSONProperty:
     @cached_property
     def ty(self) -> Optional[Any]:
         """Type of this property (resolved)"""
-        # If _ty is a string, then resolve it using typing.get_type_hints
-        if isinstance(self._ty, str):
-            return typing.get_type_hints(self)[self.field]
-        else:
-            return self._ty
+        # Resolve type using typing.get_type_hints
+        return typing.get_type_hints(self.cls)[self.field]
 
     @cached_property
     def ty_origin(self) -> Optional[Any]:
@@ -134,12 +135,11 @@ class JSONProperty:
             if value is None:
                 return value
             elif lenient_issubclass(self.ty, JSONObject):
-                if isinstance(value, list):
-                    return [self.create_related(obj, arg) for arg in value]
-                else:
-                    return self.create_related(obj, value)
+                return self.create_related(obj, value)
             elif self.ty_origin == list and len(self.ty_args) == 1 and lenient_issubclass(self.ty_args[0], JSONObject):
                 return [self.create_related(obj, arg) for arg in value]
+            elif self.ty_origin == Union and len(self.ty_args) == 2 and lenient_issubclass(self.ty_args[0], JSONObject):
+                return self.create_related(obj, value)
             elif self.ty == datetime.datetime:
                 if obj._api.datetime_string:
                     return dateutil.parser.parse(value)
@@ -153,7 +153,10 @@ class JSONProperty:
             obj._pk_value = value
         else:
             if lenient_issubclass(self.ty, JSONObject):
-                new_value = value.pk
+                if isinstance(value, int):
+                    new_value = value
+                else:
+                    new_value = value.pk
             elif self.ty == datetime.datetime:
                 if obj._api.datetime_string:
                     new_value = str(value)
