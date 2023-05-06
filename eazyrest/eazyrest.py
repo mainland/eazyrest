@@ -3,7 +3,7 @@ import dateutil.parser
 from functools import cached_property
 import json
 import typing
-from typing import Any, Dict, Optional, Sequence, Type, Union
+from typing import Any, Dict, Optional, Type, Union
 import urllib.parse
 
 from .api import API
@@ -95,75 +95,74 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    @cached_property
-    def ty_origin(self) -> Optional[Any]:
-        return typing.get_origin(self.ty)
-
-    @cached_property
-    def ty_args(self) -> Sequence[Any]:
-        return typing.get_args(self.ty)
-
-    def create_related(self, obj: 'JSONObject', arg):
+    def create_related(self, obj: 'JSONObject', arg: Any, ty: Type):
         """Create a related object"""
-        # If arg is an integer, then it is a primary key.
-        # If it is a list, it is a list of related objects.
-        # Otherwise, it is JSON.
-        assert self.ty is not None
-
-        # If our type annotation is a generic type, e.g., List, the related type
-        # is the index of this type.
-        if len(self.ty_args) == 0:
-            ty = self.ty
-        else:
-            ty = self.ty_args[0]
-
         # If the argument is an int, we treat it as a primary key
         if isinstance(arg, int):
             kwargs = {ty._pk_json_field: arg}
             return ty(obj._api, **kwargs)
-        elif isinstance(arg, list):
-            return [ty(obj._api, json=json) for json in arg]
         else:
             return ty(obj._api, json=arg)
+
+    def from_json(self, obj: 'JSONObject', value: Any, ty: Type):
+        """Convert a JSON value to a property value"""
+        ty_origin = typing.get_origin(ty)
+        ty_args =  typing.get_args(ty)
+
+        if value is None:
+            return value
+        elif ty == datetime.datetime:
+            if obj._api.datetime_string:
+                return dateutil.parser.parse(value)
+            else:
+                return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        elif lenient_issubclass(ty, JSONObject):
+            return self.create_related(obj, value, ty)
+        # List[T]
+        elif ty_origin == list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+            return [self.create_related(obj, arg, ty_args[0]) for arg in value]
+        # Optional[T]
+        elif ty_origin == Union and len(ty_args) == 2 and ty_args[1] == type(None):
+            return self.from_json(obj, value, ty_args[0])
+        else:
+            return value
+
+    def to_json(self, obj: 'JSONObject', value: Any, ty: Type):
+        """Convert a property value to JSON"""
+        ty_origin = typing.get_origin(ty)
+        ty_args =  typing.get_args(ty)
+
+        if lenient_issubclass(ty, JSONObject):
+            # If value is an int, assume it is a primary key already
+            if isinstance(value, int):
+                return value
+            else:
+                return value.pk
+        elif ty == datetime.datetime:
+            if obj._api.datetime_string:
+                return str(value)
+            else:
+                return value.timestamp()
+        # List[T]
+        elif ty_origin == list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+            return [arg.pk for arg in value]
+        # Optional[T]
+        elif ty_origin == Union and len(ty_args) == 2 and ty_args[1] == type(None):
+            return self.to_json(obj, value, ty_args[0])
+        else:
+            return value
 
     def __get__(self, obj, objtype):
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
         else:
-            value = obj.json[self.json_field]
-
-            if value is None:
-                return value
-            elif lenient_issubclass(self.ty, JSONObject):
-                return self.create_related(obj, value)
-            elif self.ty_origin == list and len(self.ty_args) == 1 and lenient_issubclass(self.ty_args[0], JSONObject):
-                return [self.create_related(obj, arg) for arg in value]
-            elif self.ty_origin == Union and len(self.ty_args) == 2 and lenient_issubclass(self.ty_args[0], JSONObject):
-                return self.create_related(obj, value)
-            elif self.ty == datetime.datetime:
-                if obj._api.datetime_string:
-                    return dateutil.parser.parse(value)
-                else:
-                    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
-            else:
-                return value
+            return self.from_json(obj, obj.json[self.json_field], self.ty)
 
     def __set__(self, obj, value):
         if self.is_primary_key and obj._json is None:
             obj._pk_value = value
         else:
-            if lenient_issubclass(self.ty, JSONObject):
-                if isinstance(value, int):
-                    new_value = value
-                else:
-                    new_value = value.pk
-            elif self.ty == datetime.datetime:
-                if obj._api.datetime_string:
-                    new_value = str(value)
-                else:
-                    new_value = value.timestamp()
-            else:
-                new_value = value
+            new_value = self.to_json(obj, value, self.ty)
 
             # Access obj.json instead of obj._json to force object to be loaded.
             if obj.json[self.json_field] != new_value:
