@@ -1,0 +1,16 @@
+[project]
+name = "eazyrest"
+description = "Building blocks for easy REST API consumption"
+authors = [
+    {name = "Geoffrey Mainland", email = "mainland@apeiron.net"},
+]
+version = "0.1"
+requires-python = ">=3.8"
+dependencies = [
+    "certifi",
+    "python-dateutil",
+    "requests[socks]"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
