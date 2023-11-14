@@ -155,12 +155,16 @@ class JSONProperty:
     def __get__(self, obj, objtype):
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
+        elif self.json_field not in obj.json:
+            raise AttributeError
         else:
             return self.from_json(obj, obj.json[self.json_field], self.ty)
 
     def __set__(self, obj, value):
         if self.is_primary_key and obj._json is None:
             obj._pk_value = value
+        elif self.json_field not in obj.json:
+            raise AttributeError
         else:
             new_value = self.to_json(obj, value, self.ty)
 
