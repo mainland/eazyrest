@@ -39,7 +39,7 @@ def get_annotations(obj: Any) -> Dict[str, type]:
 
 T = TypeVar('T', bound='JSONObject')
 
-def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, str]={}) -> type[T]:
+def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, str]={}, exclude: Set[str]=set()) -> type[T]:
     """Define a JSON object."""
     def wrap(cls: type[T]) -> type[T]:
         fields: Set[str] = set()
@@ -49,18 +49,19 @@ def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, 
         # to delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
         for field, ty in get_annotations(cls).items():
-            json_field = field_map.get(field, field)
+            if field not in exclude:
+                json_field = field_map.get(field, field)
 
-            if field == pk:
-                is_primary_key = True
-            else:
-                is_primary_key = False
+                if field == pk:
+                    is_primary_key = True
+                else:
+                    is_primary_key = False
 
-            prop = JSONProperty(cls, json_field, field, ty, is_primary_key=is_primary_key)
+                prop = JSONProperty(cls, json_field, field, ty, is_primary_key=is_primary_key)
 
-            setattr(cls, field, prop)
+                setattr(cls, field, prop)
 
-            fields.add(field)
+                fields.add(field)
 
         cls._json_fields = fields
 
