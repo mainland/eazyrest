@@ -193,7 +193,7 @@ class JSONObject:
     _pk_json_field: str
     """The field of the object's JSON representation that holds the primary key"""
 
-    _json: Any
+    _json: Optional[Any]
     """Object's JSON representation"""
 
     def __init__(self, api, json: Any=None, **kwargs):
@@ -236,7 +236,7 @@ class JSONObject:
     @property
     def json(self):
         """JSON representation of this object"""
-        if not self._json:
+        if self._json is None:
             data = self._api.get(self.url).json()
             # If results are returned as a list, get first result
             if isinstance(data, list):
