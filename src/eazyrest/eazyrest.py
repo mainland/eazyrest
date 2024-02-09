@@ -97,12 +97,12 @@ class JSONProperty:
 
     def create_related(self, obj: 'JSONObject', arg: Any, ty: Type):
         """Create a related object"""
-        # If the argument is an int, we treat it as a primary key
-        if isinstance(arg, int):
+        # If the argument is a dict, we treat it as JSON
+        if isinstance(arg, dict):
+            return ty(obj._api, json=arg)
+        else:
             kwargs = {ty._pk_json_field: arg}
             return ty(obj._api, **kwargs)
-        else:
-            return ty(obj._api, json=arg)
 
     def from_json(self, obj: 'JSONObject', value: Any, ty: Type):
         """Convert a JSON value to a property value"""
