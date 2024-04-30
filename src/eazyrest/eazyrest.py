@@ -3,7 +3,7 @@ import dateutil.parser
 from functools import cached_property
 import json
 import typing
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, Optional, TypeVar, Union
 import urllib.parse
 
 from .api import API
@@ -21,12 +21,14 @@ class MultipleObjectsReturned(Exception):
 def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
-def get_annotations(obj: Any) -> Dict[str, Any]:
+def get_annotations(obj: Any) -> Dict[str, type]:
     return obj.__dict__.get('__annotations__', {})
 
-def json_object(cls: Optional[Type]=None, pk: str='id', field_map: Dict[str, str]={}):
+T = TypeVar('T', bound='JSONObject')
+
+def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, str]={}) -> type[T]:
     """Define a JSON object."""
-    def wrap(cls):
+    def wrap(cls: type[T]) -> type[T]:
         # We only process annotations for this class *without* any annotations
         # for superclasses, so we don't use typing.get_type_hints. We also want
         # to delay resolving references, whereas typing.get_type_hints *does*
@@ -34,12 +36,12 @@ def json_object(cls: Optional[Type]=None, pk: str='id', field_map: Dict[str, str
         for field, ty in get_annotations(cls).items():
             json_field = field_map.get(field, field)
 
-            kwargs = {'field': field, 'ty': ty}
-
             if field == pk:
-                kwargs['is_primary_key'] = True
+                is_primary_key = True
+            else:
+                is_primary_key = False
 
-            prop = JSONProperty(cls, json_field, **kwargs)
+            prop = JSONProperty(cls, json_field, field, ty, is_primary_key=is_primary_key)
 
             setattr(cls, field, prop)
 
@@ -55,13 +57,13 @@ def json_object(cls: Optional[Type]=None, pk: str='id', field_map: Dict[str, str
 
 class JSONProperty:
     """A JSON property"""
-    cls: Type['JSONObject']
+    cls: type['JSONObject']
     """Class to which this JSONProperty belongs"""
 
     field: str
     """Name of Python field corresponding to this property."""
 
-    _ty: Optional[Any]
+    _ty: type
     """Field type"""
 
     json_field: str
@@ -71,10 +73,10 @@ class JSONProperty:
     """Is this a primary key?"""
 
     def __init__(self,
-                 cls: Type['JSONObject'],
+                 cls: type['JSONObject'],
                  json_field: str,
-                 field: Optional[str]=None,
-                 ty: Optional[Any]=None,
+                 field:str,
+                 ty: type,
                  is_primary_key: bool=False):
         self.cls = cls
         self.field = json_field if field is None else field
@@ -90,12 +92,12 @@ class JSONProperty:
             cls._pk_json_field = json_field
 
     @cached_property
-    def ty(self) -> Optional[Any]:
+    def ty(self) -> type:
         """Type of this property (resolved)"""
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    def create_related(self, obj: 'JSONObject', arg: Any, ty: Type):
+    def create_related(self, obj: 'JSONObject', arg: Any, ty: type[T]):
         """Create a related object"""
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
@@ -104,7 +106,7 @@ class JSONProperty:
             kwargs = {ty._pk_json_field: arg}
             return ty(obj._api, **kwargs)
 
-    def from_json(self, obj: 'JSONObject', value: Any, ty: Type):
+    def from_json(self, obj: 'JSONObject', value: Any, ty: type):
         """Convert a JSON value to a property value"""
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
@@ -117,6 +119,7 @@ class JSONProperty:
             else:
                 return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
         elif lenient_issubclass(ty, JSONObject):
+            assert issubclass(ty, JSONObject)
             return self.create_related(obj, value, ty)
         # List[T]
         elif ty_origin == list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
@@ -127,12 +130,12 @@ class JSONProperty:
         else:
             return value
 
-    def to_json(self, obj: 'JSONObject', value: Any, ty: Type):
+    def to_json(self, obj: 'JSONObject', value: Any, ty: type):
         """Convert a property value to JSON"""
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
 
-        if lenient_issubclass(ty, JSONObject):
+        if issubclass(ty, JSONObject):
             # If value is an int, assume it is a primary key already
             if isinstance(value, int):
                 return value
@@ -158,6 +161,7 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            assert self.ty is not None
             return self.from_json(obj, obj.json[self.json_field], self.ty)
 
     def __set__(self, obj, value):
@@ -166,6 +170,7 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            assert self.ty is not None
             new_value = self.to_json(obj, value, self.ty)
 
             # Access obj.json instead of obj._json to force object to be loaded.
