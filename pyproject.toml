@@ -12,5 +12,12 @@ dependencies = [
     "requests[socks]"
 ]
 
+[project.optional-dependencies]
+dev = [
+  "types-requests",
+  "types-python-dateutil",
+  "types-urllib3"
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
