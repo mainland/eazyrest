@@ -2,6 +2,7 @@ import datetime
 import dateutil.parser
 from functools import cached_property
 import json
+import pytimeparse2
 import typing
 from typing import Any, Dict, Optional, TypeVar, Union
 import urllib.parse
@@ -13,6 +14,18 @@ class DoesNotExist(Exception):
 
 class MultipleObjectsReturned(Exception):
     pass
+
+def parse_timedelta(delta: str) -> datetime.timedelta:
+    """Parse a duration.
+
+    Args:
+        date (str): A date to parse
+
+    Returns:
+        datetime.timedelta: Parsed timedelta object
+    """
+    pytimeparse2.disable_dateutil()
+    return pytimeparse2.parse(delta, as_timedelta=True)
 
 #
 # Taken from:
@@ -113,11 +126,13 @@ class JSONProperty:
 
         if value is None:
             return value
-        elif ty == datetime.datetime:
+        elif ty is datetime.datetime:
             if obj._api.datetime_string:
                 return dateutil.parser.parse(value)
             else:
                 return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        elif ty is datetime.timedelta:
+            return parse_timedelta(value)
         elif lenient_issubclass(ty, JSONObject):
             assert issubclass(ty, JSONObject)
             return self.create_related(obj, value, ty)
@@ -141,11 +156,13 @@ class JSONProperty:
                 return value
             else:
                 return value.pk
-        elif ty == datetime.datetime:
+        elif ty is datetime.datetime:
             if obj._api.datetime_string:
                 return str(value)
             else:
                 return value.timestamp()
+        elif ty is datetime.timedelta:
+            return str(value)
         # List[T]
         elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
             return [arg.pk for arg in value]

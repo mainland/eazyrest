@@ -9,6 +9,7 @@ requires-python = ">=3.8"
 dependencies = [
     "certifi",
     "python-dateutil",
+    "pytimeparse2",
     "requests[socks]"
 ]
 
