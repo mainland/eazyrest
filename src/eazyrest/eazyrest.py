@@ -122,10 +122,10 @@ class JSONProperty:
             assert issubclass(ty, JSONObject)
             return self.create_related(obj, value, ty)
         # List[T]
-        elif ty_origin == list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
             return [self.create_related(obj, arg, ty_args[0]) for arg in value]
         # Optional[T]
-        elif ty_origin == Union and len(ty_args) == 2 and ty_args[1] == type(None):
+        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
             return self.from_json(obj, value, ty_args[0])
         else:
             return value
@@ -147,10 +147,10 @@ class JSONProperty:
             else:
                 return value.timestamp()
         # List[T]
-        elif ty_origin == list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
             return [arg.pk for arg in value]
         # Optional[T]
-        elif ty_origin == Union and len(ty_args) == 2 and ty_args[1] == type(None):
+        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
             return self.to_json(obj, value, ty_args[0])
         else:
             return value
