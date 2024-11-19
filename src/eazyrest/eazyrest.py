@@ -4,7 +4,7 @@ from functools import cached_property
 import json
 import pytimeparse2
 import typing
-from typing import Any, Dict, Optional, TypeVar, Union
+from typing import Any, Dict, Optional, Set, TypeVar, Union
 import urllib.parse
 
 from .api import API
@@ -42,6 +42,8 @@ T = TypeVar('T', bound='JSONObject')
 def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, str]={}) -> type[T]:
     """Define a JSON object."""
     def wrap(cls: type[T]) -> type[T]:
+        fields: Set[str] = set()
+
         # We only process annotations for this class *without* any annotations
         # for superclasses, so we don't use typing.get_type_hints. We also want
         # to delay resolving references, whereas typing.get_type_hints *does*
@@ -57,6 +59,18 @@ def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, 
             prop = JSONProperty(cls, json_field, field, ty, is_primary_key=is_primary_key)
 
             setattr(cls, field, prop)
+
+            fields.add(field)
+
+        cls._json_fields = fields
+
+        def _setattr(self, name, value):
+            if name[0] != '_' and name not in cls._json_fields:
+                raise AttributeError(f"'{cls.__name__:}' object has no attribute '{name:}'")
+
+            super(cls, self).__setattr__(name, value)
+
+        cls.__setattr__ = _setattr
 
         return cls
 
@@ -214,6 +228,9 @@ class JSONObject:
 
     _pk_json_field: str
     """The field of the object's JSON representation that holds the primary key"""
+
+    _json_fields: Set[str]
+    """All JSON fields"""
 
     _json: Optional[Any]
     """Object's JSON representation"""
