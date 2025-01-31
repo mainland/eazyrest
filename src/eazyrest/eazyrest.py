@@ -128,10 +128,10 @@ class JSONProperty:
         """Create a related object"""
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
-            return ty(obj._api, json=arg)
+            return ty(obj.api, json=arg)
         else:
             kwargs = {ty._pk_json_field: arg}
-            return ty(obj._api, **kwargs)
+            return ty(obj.api, **kwargs)
 
     def from_json(self, obj: 'JSONObject', value: Any, ty: type):
         """Convert a JSON value to a property value"""
@@ -141,7 +141,7 @@ class JSONProperty:
         if value is None:
             return value
         elif ty is datetime.datetime:
-            if obj._api.datetime_string:
+            if obj.api.datetime_string:
                 return dateutil.parser.parse(value)
             else:
                 return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
@@ -171,7 +171,7 @@ class JSONProperty:
             else:
                 return value.pk
         elif ty is datetime.datetime:
-            if obj._api.datetime_string:
+            if obj.api.datetime_string:
                 return str(value)
             else:
                 return value.timestamp()
@@ -208,9 +208,9 @@ class JSONProperty:
             if obj.json[self.json_field] != new_value:
                 data = json.dumps({self.json_field: new_value})
 
-                resp = obj._api.patch(obj.url,
-                                      data=data,
-                                      headers={'Content-Type': 'application/json'})
+                resp = obj.api.patch(obj.url,
+                                     data=data,
+                                     headers={'Content-Type': 'application/json'})
                 obj._json = resp.json()
 
 class JSONObject:
@@ -235,7 +235,7 @@ class JSONObject:
     _json: Optional[Any]
     """Object's JSON representation"""
 
-    def __init__(self, api, json: Any=None, **kwargs):
+    def __init__(self, api: API, json: Any=None, **kwargs):
         self._api = api
         self._json = json
 
@@ -243,9 +243,14 @@ class JSONObject:
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    @property
+    def api(self) -> API:
+        """The API object associated with this object"""
+        return self._api
+
     def delete(self, *args, **kwargs):
         """Delete object"""
-        self._api.delete(self.url, *args, **kwargs)
+        self.api.delete(self.url, *args, **kwargs)
 
     def refresh(self):
         """Refresh object from API"""
@@ -267,7 +272,7 @@ class JSONObject:
     def url(self):
         """Relative URL for this object."""
         url = urllib.parse.urljoin(self.class_url, str(self._pk))
-        if self._api.trailing_slash:
+        if self.api.trailing_slash:
             return url + '/'
         else:
             return url
@@ -276,7 +281,7 @@ class JSONObject:
     def json(self):
         """JSON representation of this object"""
         if self._json is None:
-            data = self._api.get(self.url).json()
+            data = self.api.get(self.url).json()
             # If results are returned as a list, get first result
             if isinstance(data, list):
                 self._json = data[0]
