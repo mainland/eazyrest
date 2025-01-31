@@ -1,7 +1,7 @@
 import certifi
 import requests
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import urllib3
 
 class API:
@@ -20,10 +20,10 @@ class API:
     timeout: Optional[float] = 10.0
     """Default request timeout"""
 
-    def __init__(self, url: str, proxy: Optional[str]=None):
+    def __init__(self, url: str, pool_connections: Optional[int]=None, proxy: Optional[str]=None):
         self.base_url = url
 
-        self.reset_session()
+        self.reset_session(pool_connections=pool_connections)
 
         if proxy is not None:
             self.set_proxy(proxy)
@@ -35,7 +35,7 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool=False):
+    def reset_session(self, verify: bool=False, pool_connections: Optional[int]=None):
         self.session = requests.Session()
 
         if verify:
@@ -43,6 +43,14 @@ class API:
         else:
             self.session.verify = False
             urllib3.disable_warnings()
+
+        # Adapt session for multiple connections
+        if pool_connections is not None:
+            url = urlparse(self.base_url)
+
+            adapter = requests.adapters.HTTPAdapter(pool_connections=pool_connections,
+                                                    pool_maxsize=pool_connections)
+            self.session.mount(url.scheme + '://', adapter)
 
     def close(self):
         self.session.close()
