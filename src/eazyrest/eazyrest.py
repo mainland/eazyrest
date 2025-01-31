@@ -262,7 +262,12 @@ class JSONObject:
     @property
     def pk(self):
         """Object's primary key"""
-        return self._pk
+        # If the object's primary key is another JSON object, then that object's
+        # primary key is this object's primary key.
+        if isinstance(self._pk, JSONObject):
+            return self._pk.pk
+        else:
+            return self._pk
 
     @pk.setter
     def pk(self, value):
@@ -271,7 +276,8 @@ class JSONObject:
     @property
     def url(self):
         """Relative URL for this object."""
-        url = urllib.parse.urljoin(self.class_url, str(self._pk))
+        url = urllib.parse.urljoin(self.class_url, str(self.pk))
+
         if self.api.trailing_slash:
             return url + '/'
         else:
