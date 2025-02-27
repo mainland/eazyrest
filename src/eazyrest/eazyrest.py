@@ -164,7 +164,7 @@ class JSONProperty:
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
 
-        if issubclass(ty, JSONObject):
+        if lenient_issubclass(ty, JSONObject):
             # If value is an int, assume it is a primary key already
             if isinstance(value, int):
                 return value
