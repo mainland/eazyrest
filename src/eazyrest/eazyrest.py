@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 import json
 import typing
@@ -92,7 +94,7 @@ def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, 
 
 class JSONProperty:
     """A JSON property"""
-    cls: type['JSONObject']
+    cls: type[JSONObject]
     """Class to which this JSONProperty belongs"""
 
     field: str
@@ -108,7 +110,7 @@ class JSONProperty:
     """Is this a primary key?"""
 
     def __init__(self,
-                 cls: type['JSONObject'],
+                 cls: type[JSONObject],
                  json_field: str,
                  field:str,
                  ty: type,
@@ -132,7 +134,7 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    def create_related(self, obj: 'JSONObject', arg: Any, ty: type[T]):
+    def create_related(self, obj: JSONObject, arg: Any, ty: type[T]):
         """Create a related object"""
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
@@ -141,7 +143,7 @@ class JSONProperty:
             kwargs = {ty._pk_json_field: arg}
             return ty(obj.api, **kwargs)
 
-    def from_json(self, obj: 'JSONObject', value: Any, ty: type):
+    def from_json(self, obj: JSONObject, value: Any, ty: type):
         """Convert a JSON value to a property value"""
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
@@ -167,7 +169,7 @@ class JSONProperty:
         else:
             return value
 
-    def to_json(self, obj: 'JSONObject', value: Any, ty: type):
+    def to_json(self, obj: JSONObject, value: Any, ty: type):
         """Convert a property value to JSON"""
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
