@@ -5,7 +5,7 @@ import json
 import typing
 import urllib.parse
 from functools import cached_property
-from typing import Any, Dict, Optional, Set, TypeVar, Union
+from typing import Any, ClassVar, Dict, Optional, Set, TypeVar, Union
 
 import dateutil.parser
 import isodate
@@ -224,7 +224,7 @@ class JSONProperty:
                 obj._json = resp.json()
 
 class JSONObject:
-    class_url: str
+    class_url: ClassVar[str]
     """Relative URL for this class."""
 
     _api: API
