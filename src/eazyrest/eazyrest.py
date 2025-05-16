@@ -6,6 +6,7 @@ from functools import cached_property
 from typing import Any, Dict, Optional, Set, TypeVar, Union
 
 import dateutil.parser
+import isodate
 import pytimeparse2
 
 from .api import API
@@ -26,7 +27,12 @@ def parse_timedelta(delta: str) -> datetime.timedelta:
         datetime.timedelta: Parsed timedelta object
     """
     pytimeparse2.disable_dateutil()
-    return pytimeparse2.parse(delta, as_timedelta=True)
+
+    td = pytimeparse2.parse(delta, as_timedelta=True)
+    if td is not None:
+        return td
+
+    return isodate.parse_duration(delta)
 
 #
 # Taken from:
