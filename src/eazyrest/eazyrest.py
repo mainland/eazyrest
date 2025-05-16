@@ -1,11 +1,12 @@
 import datetime
-import dateutil.parser
-from functools import cached_property
 import json
-import pytimeparse2
 import typing
-from typing import Any, Dict, Optional, Set, TypeVar, Union
 import urllib.parse
+from functools import cached_property
+from typing import Any, Dict, Optional, Set, TypeVar, Union
+
+import dateutil.parser
+import pytimeparse2
 
 from .api import API
 
