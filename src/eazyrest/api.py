@@ -1,7 +1,8 @@
-import certifi
-import requests
 from typing import Optional
 from urllib.parse import urljoin, urlparse
+
+import certifi
+import requests
 import urllib3
 
 class API:
