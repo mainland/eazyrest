@@ -4,8 +4,20 @@ import datetime
 import json
 import typing
 import urllib.parse
+from collections.abc import Mapping, MutableSet, Set
 from functools import cached_property
-from typing import Any, ClassVar, Dict, Optional, Set, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    overload,
+)
 
 import dateutil.parser
 import isodate
@@ -48,10 +60,21 @@ def get_annotations(obj: Any) -> Dict[str, type]:
 
 T = TypeVar('T', bound='JSONObject')
 
-def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, str]={}, exclude: Set[str]=set()) -> type[T]:
+@overload
+def json_object(cls: type[T], pk: str='id', field_map: Optional[Mapping[str, str]]=None, exclude: Set[str]=frozenset()) -> type[T]:
+    ...
+
+@overload
+def json_object(cls: None=None, pk: str='id', field_map: Optional[Mapping[str, str]]=None, exclude: Set[str]=frozenset()) -> Callable[[type[T]], type[T]]:
+    ...
+
+def json_object(cls=None, pk: str='id', field_map: Optional[Mapping[str, str]]=None, exclude: Set[str]=frozenset()):
     """Define a JSON object."""
+    if field_map is None:
+        field_map = {}
+
     def wrap(cls: type[T]) -> type[T]:
-        fields: Set[str] = set()
+        fields: MutableSet[str] = set()
 
         # We only process annotations for this class *without* any annotations
         # for superclasses, so we don't use typing.get_type_hints. We also want
@@ -72,6 +95,7 @@ def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, 
 
                 fields.add(field)
 
+        # pylint: disable=protected-access
         cls._json_fields = fields
 
         def _setattr(self, name, value):
@@ -80,7 +104,7 @@ def json_object(cls: Optional[type[T]]=None, pk: str='id', field_map: Dict[str, 
 
             super(cls, self).__setattr__(name, value)
 
-        cls.__setattr__ = _setattr
+        cls.__setattr__ = _setattr # type: ignore[method-assign]
 
         return cls
 
@@ -245,7 +269,8 @@ class JSONObject:
     _json: Optional[Any]
     """Object's JSON representation"""
 
-    def __init__(self, api: API, json: Any=None, **kwargs):
+    # pylint: disable=redefined-outer-name
+    def __init__(self, api: API, json: Optional[Any]=None, **kwargs):
         self._api = api
         self._json = json
 
@@ -270,7 +295,7 @@ class JSONObject:
         self._json = None
 
     @property
-    def pk(self):
+    def pk(self) -> JSONProperty:
         """Object's primary key"""
         # If the object's primary key is another JSON object, then that object's
         # primary key is this object's primary key.
@@ -284,7 +309,7 @@ class JSONObject:
         self._pk = value
 
     @property
-    def url(self):
+    def url(self) -> str:
         """Relative URL for this object."""
         url = urllib.parse.urljoin(self.class_url, str(self.pk))
 
@@ -294,7 +319,7 @@ class JSONObject:
             return url
 
     @property
-    def json(self):
+    def json(self) -> Any:
         """JSON representation of this object"""
         if self._json is None:
             data = self.api.get(self.url).json()
@@ -310,29 +335,29 @@ class JSONObject:
         return self._json
 
     @property
-    def json_pretty(self):
+    def json_pretty(self) -> str:
         """Pretty-printed JSON representation of this object"""
         return json.dumps(self.json, indent=4, sort_keys=True)
 
     @classmethod
-    def create(cls, api, **kwargs):
+    def create(cls, api: API, **kwargs) -> JSONObject:
         """Create a single object."""
         resp = api.post(cls.class_url, json=kwargs)
         return cls(api, json=resp.json())
 
     @classmethod
-    def filter(cls, api, **kwargs):
+    def filter(cls, api: API, **kwargs) -> Sequence[JSONObject]:
         """Filter objects."""
         resp = api.get(cls.class_url, params=kwargs)
         return [cls(api, json=json) for json in resp.json()]
 
     @classmethod
-    def all(cls, api):
+    def all(cls, api: API) -> Sequence[JSONObject]:
         """Return all objects."""
         return cls.filter(api)
 
     @classmethod
-    def get(cls, api, **kwargs):
+    def get(cls, api: API, **kwargs) -> JSONObject:
         """Get a single object or None."""
         results = cls.filter(api, **kwargs)
         if len(results) == 0:
@@ -343,7 +368,7 @@ class JSONObject:
             return results[0]
 
     @classmethod
-    def get_or_create(cls, api, **kwargs):
+    def get_or_create(cls, api: API, **kwargs) -> Tuple[JSONObject, bool]:
         """Get or create an object."""
         results = cls.filter(api, **kwargs)
         if len(results) == 1:
