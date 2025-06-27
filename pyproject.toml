@@ -8,16 +8,19 @@ version = "0.1"
 requires-python = ">=3.8"
 dependencies = [
     "certifi",
+    "dateparser",
     "isodate",
     "python-dateutil",
     "pytimeparse2",
-    "requests[socks]"
+    "requests[socks]",
+    "tzlocal"
 ]
 
 [project.optional-dependencies]
 dev = [
-  "types-requests",
+  "types-dateparser",
   "types-python-dateutil",
+  "types-requests",
   "types-urllib3"
 ]
 

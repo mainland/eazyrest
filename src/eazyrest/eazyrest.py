@@ -22,7 +22,7 @@ from typing import (
 import dateutil.parser
 
 from .api import API
-from .dateparse import parse_timedelta
+from .dateparse import parse_duration
 
 class DoesNotExist(Exception):
     pass
@@ -162,7 +162,7 @@ class JSONProperty:
             else:
                 return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
         elif ty is datetime.timedelta:
-            return parse_timedelta(value)
+            return parse_duration(value)
         elif lenient_issubclass(ty, JSONObject):
             assert issubclass(ty, JSONObject)
             return self.create_related(obj, value, ty)
