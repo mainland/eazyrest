@@ -295,10 +295,11 @@ class JSONObject:
         """Relative URL for this object."""
         url = urllib.parse.urljoin(self.class_url, str(self.pk))
 
-        if self.api.trailing_slash:
-            return url + '/'
-        else:
-            return url
+        # Ensure url has a trailing slash
+        if url[-1] != '/':
+            url += '/'
+
+        return url
 
     @property
     def json(self) -> Any:

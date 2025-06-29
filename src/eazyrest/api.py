@@ -9,9 +9,6 @@ class API:
     base_url: str
     """Base API URL"""
 
-    trailing_slash: bool=True
-    """True if API URL requires a trailing slash"""
-
     datetime_string: bool=False
     """True if datetimes are serialized as strings"""
 
