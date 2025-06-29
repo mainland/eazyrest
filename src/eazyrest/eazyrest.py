@@ -140,68 +140,6 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    def create_related(self, obj: JSONObject, arg: Any, ty: type[T]):
-        """Create a related object"""
-        # If the argument is a dict, we treat it as JSON
-        if isinstance(arg, dict):
-            return ty(json=arg)
-        else:
-            kwargs = {ty._pk_json_field: arg}
-            return ty(**kwargs)
-
-    def from_json(self, obj: JSONObject, value: Any, ty: type):
-        """Convert a JSON value to a property value"""
-        ty_origin = typing.get_origin(ty)
-        ty_args =  typing.get_args(ty)
-
-        if value is None:
-            return value
-        elif ty is datetime.datetime:
-            if obj.api.datetime_string:
-                return dateutil.parser.parse(value)
-            else:
-                return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
-        elif ty is datetime.timedelta:
-            return parse_duration(value)
-        elif lenient_issubclass(ty, JSONObject):
-            assert issubclass(ty, JSONObject)
-            return self.create_related(obj, value, ty)
-        # List[T]
-        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
-            return [self.create_related(obj, arg, ty_args[0]) for arg in value]
-        # Optional[T]
-        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
-            return self.from_json(obj, value, ty_args[0])
-        else:
-            return value
-
-    def to_json(self, obj: JSONObject, value: Any, ty: type):
-        """Convert a property value to JSON"""
-        ty_origin = typing.get_origin(ty)
-        ty_args =  typing.get_args(ty)
-
-        if lenient_issubclass(ty, JSONObject):
-            # If value is an int, assume it is a primary key already
-            if isinstance(value, int):
-                return value
-            else:
-                return value.pk
-        elif ty is datetime.datetime:
-            if obj.api.datetime_string:
-                return str(value)
-            else:
-                return value.timestamp()
-        elif ty is datetime.timedelta:
-            return str(value)
-        # List[T]
-        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
-            return [arg.pk for arg in value]
-        # Optional[T]
-        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
-            return self.to_json(obj, value, ty_args[0])
-        else:
-            return value
-
     def __get__(self, obj, objtype):
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
@@ -209,7 +147,7 @@ class JSONProperty:
             raise AttributeError
         else:
             assert self.ty is not None
-            return self.from_json(obj, obj.json[self.json_field], self.ty)
+            return obj.from_json(obj.json[self.json_field], self.ty)
 
     def __set__(self, obj, value):
         if self.is_primary_key and obj._json is None:
@@ -218,7 +156,7 @@ class JSONProperty:
             raise AttributeError
         else:
             assert self.ty is not None
-            new_value = self.to_json(obj, value, self.ty)
+            new_value = obj.to_json(value, self.ty)
 
             # Access obj.json instead of obj._json to force object to be loaded.
             if obj.json[self.json_field] != new_value:
@@ -263,6 +201,69 @@ class JSONObject:
         # Set all attributes passed in as keyword arguments
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+    def create_related(self, arg: Any, ty: type[T]):
+        """Create a related object"""
+        # If the argument is a dict, we treat it as JSON
+        if isinstance(arg, dict):
+            return ty(json=arg)
+        else:
+            assert(issubclass(ty, JSONObject))
+            kwargs = {ty._pk_json_field: arg} # pylint: disable=protected-access
+            return ty(**kwargs)
+
+    def from_json(self, value: Any, ty: type):
+        """Convert a JSON value to a property value"""
+        ty_origin = typing.get_origin(ty)
+        ty_args =  typing.get_args(ty)
+
+        if value is None:
+            return value
+        elif ty is datetime.datetime:
+            if self.api.datetime_string:
+                return dateutil.parser.parse(value)
+            else:
+                return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        elif ty is datetime.timedelta:
+            return parse_duration(value)
+        elif lenient_issubclass(ty, JSONObject):
+            assert issubclass(ty, JSONObject)
+            return self.create_related(value, ty)
+        # List[T]
+        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+            return [self.create_related(arg, ty_args[0]) for arg in value]
+        # Optional[T]
+        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
+            return self.from_json(value, ty_args[0])
+        else:
+            return value
+
+    def to_json(self, value: Any, ty: type):
+        """Convert a property value to JSON"""
+        ty_origin = typing.get_origin(ty)
+        ty_args =  typing.get_args(ty)
+
+        if lenient_issubclass(ty, JSONObject):
+            # If value is an int, assume it is a primary key already
+            if isinstance(value, int):
+                return value
+            else:
+                return value.pk
+        elif ty is datetime.datetime:
+            if self.api.datetime_string:
+                return str(value)
+            else:
+                return value.timestamp()
+        elif ty is datetime.timedelta:
+            return str(value)
+        # List[T]
+        elif ty_origin is list and len(ty_args) == 1 and lenient_issubclass(ty_args[0], JSONObject):
+            return [arg.pk for arg in value]
+        # Optional[T]
+        elif ty_origin is Union and len(ty_args) == 2 and ty_args[1] is type(None):
+            return self.to_json(value, ty_args[0])
+        else:
+            return value
 
     def delete(self, *args, **kwargs):
         """Delete object"""
