@@ -19,8 +19,6 @@ from typing import (
     overload,
 )
 
-import dateutil.parser
-
 from .api import API
 from .dateparse import parse_duration
 
@@ -220,10 +218,7 @@ class JSONObject:
         if value is None:
             return value
         elif ty is datetime.datetime:
-            if self.api.datetime_string:
-                return dateutil.parser.parse(value)
-            else:
-                return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+            return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
         elif ty is datetime.timedelta:
             return parse_duration(value)
         elif lenient_issubclass(ty, JSONObject):
@@ -250,10 +245,7 @@ class JSONObject:
             else:
                 return value.pk
         elif ty is datetime.datetime:
-            if self.api.datetime_string:
-                return str(value)
-            else:
-                return value.timestamp()
+            return value.timestamp()
         elif ty is datetime.timedelta:
             return str(value)
         # List[T]

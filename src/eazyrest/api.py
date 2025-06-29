@@ -9,9 +9,6 @@ class API:
     base_url: str
     """Base API URL"""
 
-    datetime_string: bool=False
-    """True if datetimes are serialized as strings"""
-
     session: requests.Session
     """Session object for API requests"""
 
