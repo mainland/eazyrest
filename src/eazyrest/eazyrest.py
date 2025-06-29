@@ -79,7 +79,7 @@ def json_object(cls=None, pk: str='id', field_map: Optional[Mapping[str, str]]=N
         cls._json_fields = fields
 
         def _setattr(self, name, value):
-            if name[0] != '_' and name not in cls._json_fields:
+            if name != 'pk' and name[0] != '_' and name not in cls._json_fields:
                 raise AttributeError(f"'{cls.__name__:}' object has no attribute '{name:}'")
 
             super(cls, self).__setattr__(name, value)
