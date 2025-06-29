@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import typing
 import urllib.parse
 from collections.abc import Mapping, MutableSet, Set
@@ -304,11 +303,6 @@ class JSONObject:
             del self._pk_value
 
         return self._json
-
-    @property
-    def json_pretty(self) -> str:
-        """Pretty-printed JSON representation of this object"""
-        return json.dumps(self.json, indent=4, sort_keys=True)
 
     @classmethod
     def create(cls, **kwargs) -> JSONObject:
