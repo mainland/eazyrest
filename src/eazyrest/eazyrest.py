@@ -158,11 +158,7 @@ class JSONProperty:
 
             # Access obj.json instead of obj._json to force object to be loaded.
             if obj.json[self.json_field] != new_value:
-                data = json.dumps({self.json_field: new_value})
-
-                resp = obj.api.patch(obj.url,
-                                     data=data,
-                                     headers={'Content-Type': 'application/json'})
+                resp = obj.api.patch(obj.url, json={self.json_field: new_value})
                 obj._json = resp.json()
 
 class JSONObject:
