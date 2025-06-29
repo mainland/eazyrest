@@ -144,10 +144,10 @@ class JSONProperty:
         """Create a related object"""
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
-            return ty(obj.api, json=arg)
+            return ty(json=arg)
         else:
             kwargs = {ty._pk_json_field: arg}
-            return ty(obj.api, **kwargs)
+            return ty(**kwargs)
 
     def from_json(self, obj: JSONObject, value: Any, ty: type):
         """Convert a JSON value to a property value"""
@@ -233,7 +233,7 @@ class JSONObject:
     class_url: ClassVar[str]
     """Relative URL for this class."""
 
-    _api: API
+    api: ClassVar[API]
     """The API associated with this object"""
 
     _pk: JSONProperty
@@ -252,18 +252,17 @@ class JSONObject:
     """Object's JSON representation"""
 
     # pylint: disable=redefined-outer-name
-    def __init__(self, api: API, json: Optional[Any]=None, **kwargs):
-        self._api = api
+    def __init__(self, json: Optional[Any]=None, api: Optional[API]=None, **kwargs):
+        if api is not None:
+            # We override the class variable for this instance if an api is
+            # provided.
+            self.api = api # type: ignore[misc]
+
         self._json = json
 
         # Set all attributes passed in as keyword arguments
         for k, v in kwargs.items():
             setattr(self, k, v)
-
-    @property
-    def api(self) -> API:
-        """The API object associated with this object"""
-        return self._api
 
     def delete(self, *args, **kwargs):
         """Delete object"""
@@ -322,26 +321,29 @@ class JSONObject:
         return json.dumps(self.json, indent=4, sort_keys=True)
 
     @classmethod
-    def create(cls, api: API, **kwargs) -> JSONObject:
+    def create(cls, **kwargs) -> JSONObject:
         """Create a single object."""
-        resp = api.post(cls.class_url, json=kwargs)
-        return cls(api, json=resp.json())
+        resp = cls.api.post(cls.class_url, json=kwargs)
+        return cls(json=resp.json())
 
     @classmethod
-    def filter(cls, api: API, **kwargs) -> Sequence[JSONObject]:
+    def filter(cls, url: Optional[str]=None, **kwargs) -> Sequence[JSONObject]:
         """Filter objects."""
-        resp = api.get(cls.class_url, params=kwargs)
-        return [cls(api, json=json) for json in resp.json()]
+        if url is None:
+            url = cls.class_url
+
+        resp = cls.api.get(url, params=kwargs)
+        return [cls(json=json) for json in resp.json()]
 
     @classmethod
-    def all(cls, api: API) -> Sequence[JSONObject]:
+    def all(cls) -> Sequence[JSONObject]:
         """Return all objects."""
-        return cls.filter(api)
+        return cls.filter()
 
     @classmethod
-    def get(cls, api: API, **kwargs) -> JSONObject:
+    def get(cls, **kwargs) -> JSONObject:
         """Get a single object or None."""
-        results = cls.filter(api, **kwargs)
+        results = cls.filter(**kwargs)
         if len(results) == 0:
             raise DoesNotExist
         elif len(results) != 1:
@@ -350,9 +352,9 @@ class JSONObject:
             return results[0]
 
     @classmethod
-    def get_or_create(cls, api: API, **kwargs) -> Tuple[JSONObject, bool]:
+    def get_or_create(cls, **kwargs) -> Tuple[JSONObject, bool]:
         """Get or create an object."""
-        results = cls.filter(api, **kwargs)
+        results = cls.filter(**kwargs)
         if len(results) == 1:
             obj = results[0]
 
@@ -364,5 +366,5 @@ class JSONObject:
         elif len(results) > 1:
             raise MultipleObjectsReturned
 
-        obj = cls.create(api, **kwargs)
+        obj = cls.create(**kwargs)
         return obj, True
