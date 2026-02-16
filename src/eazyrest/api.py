@@ -1,3 +1,4 @@
+from http.cookiejar import CookieJar
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -22,6 +23,15 @@ class API:
 
         if proxy is not None:
             self.set_proxy(proxy)
+
+    @property
+    def cookies(self) -> CookieJar:
+        """Cookies used for API requests"""
+        return self.session.cookies
+
+    @cookies.setter
+    def cookies(self, cookies: CookieJar):
+        self.session.cookies.update(cookies)
 
     def set_proxy(self, proxy: str):
         proxies = { 'http': proxy
