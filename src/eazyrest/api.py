@@ -40,7 +40,7 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool=False, pool_connections: Optional[int]=None):
+    def reset_session(self, verify: bool=True, pool_connections: Optional[int]=None):
         self.session = requests.Session()
 
         if verify:
