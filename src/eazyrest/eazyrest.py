@@ -1,3 +1,5 @@
+"""Typed JSON object mapping for REST resources."""
+
 from __future__ import annotations
 
 import datetime
@@ -22,9 +24,13 @@ from .api import API
 from .dateparse import parse_duration
 
 class DoesNotExist(Exception):
+    """Raised when no object matches a query that expects one result."""
+
     pass
 
 class MultipleObjectsReturned(Exception):
+    """Raised when a query expected one object but got multiple results."""
+
     pass
 
 #
@@ -32,9 +38,28 @@ class MultipleObjectsReturned(Exception):
 #   https://github.com/pydantic/pydantic/blob/main/pydantic/_internal/_utils.py
 #
 def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
+    """Return ``issubclass`` result without raising for non-types.
+
+    Args:
+        cls: Candidate class object.
+        class_or_tuple: Allowed parent class or tuple of parent classes.
+
+    Returns:
+        ``True`` when ``cls`` is a subclass of ``class_or_tuple``, otherwise
+        ``False``.
+    """
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 def get_annotations(obj: Any) -> Dict[str, type]:
+    """Get direct annotations from an object without resolving inheritance.
+
+    Args:
+        obj: Object whose ``__annotations__`` dictionary should be read.
+
+    Returns:
+        The object's direct annotations dictionary, or an empty mapping when no
+        annotations are defined.
+    """
     return obj.__dict__.get('__annotations__', {})
 
 T = TypeVar('T', bound='JSONObject')
@@ -48,11 +73,33 @@ def json_object(cls: None=None, pk: str='id', field_map: Optional[Mapping[str, s
     ...
 
 def json_object(cls=None, pk: str='id', field_map: Optional[Mapping[str, str]]=None, exclude: Set[str]=frozenset()):
-    """Define a JSON object."""
+    """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
+
+    The decorator transforms annotated attributes into ``JSONProperty``
+    descriptors, enabling lazy conversion between JSON payload values and typed
+    Python values.
+
+    Args:
+        cls: Class being decorated when used as ``@json_object``.
+        pk: Name of the primary-key field in the class.
+        field_map: Optional mapping from Python attribute name to JSON key.
+        exclude: Set of annotated attribute names to ignore.
+
+    Returns:
+        The decorated class, or a decorator function when used with arguments.
+    """
     if field_map is None:
         field_map = {}
 
     def wrap(cls: type[T]) -> type[T]:
+        """Install JSON descriptors on a ``JSONObject`` subclass.
+
+        Args:
+            cls: Class to modify.
+
+        Returns:
+            The same class after descriptor installation.
+        """
         fields: MutableSet[str] = set()
 
         # We only process annotations for this class *without* any annotations
@@ -78,6 +125,15 @@ def json_object(cls=None, pk: str='id', field_map: Optional[Mapping[str, str]]=N
         cls._json_fields = fields
 
         def _setattr(self, name, value):
+            """Restrict arbitrary attribute assignment on JSON-backed models.
+
+            Args:
+                name: Attribute name being assigned.
+                value: Attribute value being assigned.
+
+            Raises:
+                AttributeError: If assignment targets an undeclared field.
+            """
             if name != 'pk' and name[0] != '_' and name not in cls._json_fields:
                 raise AttributeError(f"'{cls.__name__:}' object has no attribute '{name:}'")
 
@@ -96,7 +152,8 @@ def json_object(cls=None, pk: str='id', field_map: Optional[Mapping[str, str]]=N
     return wrap(cls)
 
 class JSONProperty:
-    """A JSON property"""
+    """Descriptor that maps a typed class attribute to a JSON field."""
+
     cls: type[JSONObject]
     """Class to which this JSONProperty belongs"""
 
@@ -118,6 +175,15 @@ class JSONProperty:
                  field:str,
                  ty: type,
                  is_primary_key: bool=False):
+        """Initialize a property descriptor.
+
+        Args:
+            cls: Model class that owns this descriptor.
+            json_field: JSON key backing this attribute.
+            field: Python attribute name.
+            ty: Declared annotation type.
+            is_primary_key: Whether this property stores the primary key.
+        """
         self.cls = cls
         self.field = json_field if field is None else field
         self._ty = ty
@@ -133,11 +199,27 @@ class JSONProperty:
 
     @cached_property
     def ty(self) -> type:
-        """Type of this property (resolved)"""
+        """Resolve and return the field type for this property.
+
+        Returns:
+            Resolved Python type for the owning class attribute.
+        """
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
     def __get__(self, obj, objtype):
+        """Read a value from the backing JSON and convert it to Python.
+
+        Args:
+            obj: ``JSONObject`` instance being accessed.
+            objtype: Owner class.
+
+        Returns:
+            Converted Python value for the field.
+
+        Raises:
+            AttributeError: If the backing JSON does not contain this field.
+        """
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
         elif self.json_field not in obj.json:
@@ -147,6 +229,15 @@ class JSONProperty:
             return obj.from_json(obj.json[self.json_field], self.ty)
 
     def __set__(self, obj, value):
+        """Set a field value and persist it with ``PATCH`` when necessary.
+
+        Args:
+            obj: ``JSONObject`` instance being modified.
+            value: New Python value to assign.
+
+        Raises:
+            AttributeError: If the backing JSON does not contain this field.
+        """
         if self.is_primary_key and obj._json is None:
             obj._pk_value = value
         elif self.json_field not in obj.json:
@@ -161,6 +252,12 @@ class JSONProperty:
                 obj._json = resp.json()
 
 class JSONObject:
+    """Base class for typed REST resources backed by JSON payloads.
+
+    Subclasses usually define annotated attributes and are decorated with
+    ``@json_object`` so each field is backed by a ``JSONProperty`` descriptor.
+    """
+
     class_url: ClassVar[str]
     """Relative URL for this class."""
 
@@ -184,6 +281,13 @@ class JSONObject:
 
     # pylint: disable=redefined-outer-name
     def __init__(self, json: Optional[Any]=None, api: Optional[API]=None, **kwargs):
+        """Create a JSON-backed object.
+
+        Args:
+            json: Optional JSON payload for eager initialization.
+            api: Optional API instance overriding the class-level API.
+            **kwargs: Field values, typically including the primary key.
+        """
         if api is not None:
             # We override the class variable for this instance if an api is
             # provided.
@@ -196,7 +300,16 @@ class JSONObject:
             setattr(self, k, v)
 
     def create_related(self, arg: Any, ty: type[T]):
-        """Create a related object"""
+        """Create a related object from embedded JSON or a foreign key.
+
+        Args:
+            arg: Either a JSON mapping for eager object creation or a primary
+                key value for lazy lookup.
+            ty: Related ``JSONObject`` subclass type.
+
+        Returns:
+            Instance of ``ty``.
+        """
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
             return ty(json=arg)
@@ -206,7 +319,15 @@ class JSONObject:
             return ty(**kwargs)
 
     def from_json(self, value: Any, ty: type):
-        """Convert a JSON value to a property value"""
+        """Convert a raw JSON value to a typed Python value.
+
+        Args:
+            value: Value read from JSON payload.
+            ty: Target Python type.
+
+        Returns:
+            Converted Python value.
+        """
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
 
@@ -229,7 +350,15 @@ class JSONObject:
             return value
 
     def to_json(self, value: Any, ty: type):
-        """Convert a property value to JSON"""
+        """Convert a typed Python value to a JSON-serializable value.
+
+        Args:
+            value: Python value to serialize.
+            ty: Declared field type.
+
+        Returns:
+            JSON-serializable representation of ``value``.
+        """
         ty_origin = typing.get_origin(ty)
         ty_args =  typing.get_args(ty)
 
@@ -253,11 +382,16 @@ class JSONObject:
             return value
 
     def delete(self, *args, **kwargs):
-        """Delete object"""
+        """Delete this object from the remote API.
+
+        Args:
+            *args: Positional arguments forwarded to ``API.delete``.
+            **kwargs: Keyword arguments forwarded to ``API.delete``.
+        """
         self.api.delete(self.url, *args, **kwargs)
 
     def refresh(self):
-        """Refresh object from API"""
+        """Mark this object stale so it reloads from the API on next access."""
         # Store value of primary key
         self._pk_value = self.pk
         # Clear JSON
@@ -265,7 +399,7 @@ class JSONObject:
 
     @property
     def pk(self) -> JSONProperty:
-        """Object's primary key"""
+        """Return this object's primary key value."""
         # If the object's primary key is another JSON object, then that object's
         # primary key is this object's primary key.
         if isinstance(self._pk, JSONObject):
@@ -275,11 +409,20 @@ class JSONObject:
 
     @pk.setter
     def pk(self, value):
+        """Set this object's primary key value.
+
+        Args:
+            value: Primary-key value or nested ``JSONObject`` used as key.
+        """
         self._pk = value
 
     @property
     def url(self) -> str:
-        """Relative URL for this object."""
+        """Return the resource URL for this object.
+
+        Returns:
+            Relative URL for this object, always ending with ``/``.
+        """
         url = urllib.parse.urljoin(self.class_url, str(self.pk))
 
         # Ensure url has a trailing slash
@@ -290,7 +433,11 @@ class JSONObject:
 
     @property
     def json(self) -> Any:
-        """JSON representation of this object"""
+        """Return and cache this object's JSON representation.
+
+        Returns:
+            JSON payload representing this object.
+        """
         if self._json is None:
             data = self.api.get(self.url).json()
             # If results are returned as a list, get first result
@@ -306,13 +453,28 @@ class JSONObject:
 
     @classmethod
     def create(cls, **kwargs) -> JSONObject:
-        """Create a single object."""
+        """Create and return a new remote object.
+
+        Args:
+            **kwargs: Fields submitted as JSON in the ``POST`` request.
+
+        Returns:
+            Newly created object instance.
+        """
         resp = cls.api.post(cls.class_url, json=kwargs)
         return cls(json=resp.json())
 
     @classmethod
     def filter(cls, url: Optional[str]=None, **kwargs) -> Sequence[JSONObject]:
-        """Filter objects."""
+        """Query objects matching request parameters.
+
+        Args:
+            url: Optional endpoint override; defaults to ``class_url``.
+            **kwargs: Query string parameters.
+
+        Returns:
+            Sequence of objects built from the response payload.
+        """
         if url is None:
             url = cls.class_url
 
@@ -321,12 +483,27 @@ class JSONObject:
 
     @classmethod
     def all(cls) -> Sequence[JSONObject]:
-        """Return all objects."""
+        """Return all objects for this resource type.
+
+        Returns:
+            Sequence of all objects.
+        """
         return cls.filter()
 
     @classmethod
     def get(cls, **kwargs) -> JSONObject:
-        """Get a single object or None."""
+        """Fetch exactly one object matching query parameters.
+
+        Args:
+            **kwargs: Query string parameters.
+
+        Returns:
+            Single matching object.
+
+        Raises:
+            DoesNotExist: If no objects matched.
+            MultipleObjectsReturned: If more than one object matched.
+        """
         results = cls.filter(**kwargs)
         if len(results) == 0:
             raise DoesNotExist
@@ -337,7 +514,18 @@ class JSONObject:
 
     @classmethod
     def get_or_create(cls, **kwargs) -> Tuple[JSONObject, bool]:
-        """Get or create an object."""
+        """Get one object by fields or create it if absent.
+
+        Args:
+            **kwargs: Fields used both for lookup and creation.
+
+        Returns:
+            Tuple ``(obj, created)`` where ``created`` indicates whether a new
+            object was created.
+
+        Raises:
+            MultipleObjectsReturned: If lookup matches multiple objects.
+        """
         results = cls.filter(**kwargs)
         if len(results) == 1:
             obj = results[0]

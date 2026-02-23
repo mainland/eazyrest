@@ -1,3 +1,5 @@
+"""HTTP API client primitives for eazyrest."""
+
 from http.cookiejar import CookieJar
 from typing import Optional
 from urllib.parse import urljoin, urlparse
@@ -6,7 +8,14 @@ import certifi
 import requests
 import urllib3
 
+
 class API:
+    """HTTP client wrapper for REST APIs.
+
+    The class wraps a ``requests.Session`` and automatically joins request
+    paths against ``base_url`` while applying a default timeout.
+    """
+
     base_url: str
     """Base API URL"""
 
@@ -16,7 +25,14 @@ class API:
     timeout: Optional[float] = 10.0
     """Default request timeout"""
 
-    def __init__(self, url: str, pool_connections: Optional[int]=None, proxy: Optional[str]=None):
+    def __init__(self, url: str, pool_connections: Optional[int] = None, proxy: Optional[str] = None):
+        """Initialize an API client.
+
+        Args:
+            url: Base URL for the API.
+            pool_connections: Optional size for the session's connection pool.
+            proxy: Optional proxy URL for both HTTP and HTTPS traffic.
+        """
         self.base_url = url
 
         self.reset_session(pool_connections=pool_connections)
@@ -26,21 +42,35 @@ class API:
 
     @property
     def cookies(self) -> CookieJar:
-        """Cookies used for API requests"""
+        """Return cookies currently used by the session."""
         return self.session.cookies
 
     @cookies.setter
-    def cookies(self, cookies: CookieJar):
+    def cookies(self, cookies: CookieJar) -> None:
+        """Merge cookies into the active session.
+
+        Args:
+            cookies: Cookie jar to merge into the session cookie store.
+        """
         self.session.cookies.update(cookies)
 
-    def set_proxy(self, proxy: str):
-        proxies = { 'http': proxy
-                  , 'https': proxy
-                  }
+    def set_proxy(self, proxy: str) -> None:
+        """Configure an HTTP/HTTPS proxy for subsequent requests.
+
+        Args:
+            proxy: Proxy URL to apply to both ``http`` and ``https`` schemes.
+        """
+        proxies = {'http': proxy, 'https': proxy}
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool=True, pool_connections: Optional[int]=None):
+    def reset_session(self, verify: bool = True, pool_connections: Optional[int] = None) -> None:
+        """Create and configure a fresh underlying ``requests.Session``.
+
+        Args:
+            verify: Whether TLS certificates should be verified.
+            pool_connections: Optional maximum number of pooled connections.
+        """
         self.session = requests.Session()
 
         if verify:
@@ -57,29 +87,81 @@ class API:
                                                     pool_maxsize=pool_connections)
             self.session.mount(url.scheme + '://', adapter)
 
-    def close(self):
+    def close(self) -> None:
+        """Close the underlying HTTP session."""
         self.session.close()
 
     def _check_response(self, resp: requests.Response) -> requests.Response:
+        """Validate an HTTP response.
+
+        Args:
+            resp: Response object to validate.
+
+        Returns:
+            The same response when status code indicates success.
+
+        Raises:
+            requests.HTTPError: If the response status indicates failure.
+        """
         resp.raise_for_status()
         return resp
 
-    def get(self, uri: str, *args, **kwargs):
+    def get(self, uri: str, *args, **kwargs) -> requests.Response:
+        """Issue a ``GET`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``requests.Session.get``.
+            **kwargs: Keyword arguments forwarded to ``requests.Session.get``.
+
+        Returns:
+            Validated HTTP response.
+        """
         kwargs.setdefault('timeout', self.timeout)
         req = self.session.get(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def post(self, uri: str, *args, **kwargs):
+    def post(self, uri: str, *args, **kwargs) -> requests.Response:
+        """Issue a ``POST`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``requests.Session.post``.
+            **kwargs: Keyword arguments forwarded to ``requests.Session.post``.
+
+        Returns:
+            Validated HTTP response.
+        """
         kwargs.setdefault('timeout', self.timeout)
         req = self.session.post(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def patch(self, uri: str, *args, **kwargs):
+    def patch(self, uri: str, *args, **kwargs) -> requests.Response:
+        """Issue a ``PATCH`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``requests.Session.patch``.
+            **kwargs: Keyword arguments forwarded to ``requests.Session.patch``.
+
+        Returns:
+            Validated HTTP response.
+        """
         kwargs.setdefault('timeout', self.timeout)
-        req= self.session.patch(urljoin(self.base_url, uri), *args, **kwargs)
+        req = self.session.patch(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def delete(self, uri: str, *args, **kwargs):
+    def delete(self, uri: str, *args, **kwargs) -> requests.Response:
+        """Issue a ``DELETE`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``requests.Session.delete``.
+            **kwargs: Keyword arguments forwarded to ``requests.Session.delete``.
+
+        Returns:
+            Validated HTTP response.
+        """
         kwargs.setdefault('timeout', self.timeout)
         req = self.session.delete(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
