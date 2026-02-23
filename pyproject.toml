@@ -1,11 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "eazyrest"
 description = "Building blocks for easy REST API consumption"
+readme = "README.md"
 authors = [
     {name = "Geoffrey Mainland", email = "mainland@apeiron.net"},
 ]
-version = "0.1"
-requires-python = ">=3.8"
+dynamic = ["version"]
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+keywords = ["rest", "http", "api", "json"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
 dependencies = [
     "certifi",
     "dateparser",
@@ -24,5 +42,14 @@ dev = [
   "types-urllib3"
 ]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+eazyrest = ["py.typed"]
+
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
