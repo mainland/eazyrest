@@ -274,19 +274,29 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    def __get__(self, obj: JSONObject, objtype: type[JSONObject]) -> Any:
-        """Read a value from the backing JSON and convert it to Python.
+    def __get__(
+        self,
+        obj: JSONObject | None,
+        objtype: type[JSONObject] | None = None,
+    ) -> Any:
+        """Read a value from the backing JSON or return the descriptor.
 
         Args:
-            obj: ``JSONObject`` instance being accessed.
+            obj: ``JSONObject`` instance being accessed, or ``None`` for class
+                access.
             objtype: Owner class.
 
         Returns:
-            Converted Python value for the field.
+            Converted Python value for the field, or the descriptor itself when
+            accessed on the class.
 
         Raises:
-            AttributeError: If the backing JSON does not contain this field.
+            AttributeError: If instance access targets a field missing from the
+                backing JSON.
         """
+        if obj is None:
+            return self
+
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
         elif self.json_field not in obj.json:
