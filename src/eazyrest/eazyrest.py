@@ -623,12 +623,15 @@ class JSONObject:
 
     @classmethod
     def get_or_create(
-        cls: type[Self], **kwargs: Any
+        cls: type[Self],
+        defaults: Mapping[str, Any] | None = None,
+        **kwargs: Any,
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
         Args:
-            **kwargs: Fields used both for lookup and creation.
+            defaults: Optional fields applied only when creating a new object.
+            **kwargs: Fields used for lookup and included in creation.
 
         Returns:
             Tuple ``(obj, created)`` where ``created`` indicates whether a new
@@ -639,15 +642,13 @@ class JSONObject:
         """
         results = cls.filter(**kwargs)
         if len(results) == 1:
-            obj = results[0]
-
-            # Update fields
-            for key, val in kwargs.items():
-                setattr(obj, key, val)
-
-            return obj, False
+            return results[0], False
         elif len(results) > 1:
             raise MultipleObjectsReturned
 
-        obj = cls.create(**kwargs)
+        create_kwargs = dict(kwargs)
+        if defaults is not None:
+            create_kwargs.update(defaults)
+
+        obj = cls.create(**create_kwargs)
         return obj, True
