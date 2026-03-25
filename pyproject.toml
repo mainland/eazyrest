@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "docformatter",
+  "pre-commit",
   "ruff",
   "types-dateparser",
   "types-python-dateutil",
