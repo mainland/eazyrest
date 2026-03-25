@@ -363,7 +363,7 @@ class JSONObject:
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
             return ty(**kwargs)
 
-    def from_json(self, value: Any, ty: type) -> Any:
+    def from_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a raw JSON value to a typed Python value.
 
         Args:
@@ -404,7 +404,7 @@ class JSONObject:
         else:
             return value
 
-    def to_json(self, value: Any, ty: type) -> Any:
+    def to_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
         Args:
