@@ -1,6 +1,7 @@
 """Public package exports for eazyrest."""
 
 from .api import API
+from .dateparse import parse_datetime, parse_duration
 from .eazyrest import (
     DoesNotExist,
     JSONObject,
@@ -14,4 +15,6 @@ __all__ = [
     "MultipleObjectsReturned",
     "JSONObject",
     "json_object",
+    "parse_datetime",
+    "parse_duration",
 ]
