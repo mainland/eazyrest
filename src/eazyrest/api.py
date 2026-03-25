@@ -191,6 +191,23 @@ class API:
         req = self.session.patch(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
 
+    def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``PUT`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to
+                ``requests.Session.put``.
+            **kwargs: Keyword arguments forwarded to
+                ``requests.Session.put``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        kwargs.setdefault("timeout", self.timeout)
+        req = self.session.put(self._resolve_url(uri), *args, **kwargs)
+        return self._check_response(req)
+
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``DELETE`` request.
 
