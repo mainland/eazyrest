@@ -36,6 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "docformatter",
+  "ruff",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
@@ -53,3 +55,29 @@ eazyrest = ["py.typed"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = [
+  "UP",   # pyupgrade
+  "D",    # pydocstyle
+  "E501", # line too long
+  "E",    # pycodestyle
+  "F",    # Pyflakes
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "I",    # isort
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.docformatter]
+in-place = true
+recursive = true
+wrap-summaries = 79
+wrap-descriptions = 72
+close-quotes-on-newline = true
