@@ -83,7 +83,7 @@ python3 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-Install the Git pre-commit hook so `ruff check` and `docformatter --check` run automatically on every commit:
+Install the Git pre-commit hook so `ruff check`, `docformatter --check`, and `mypy` run automatically on every commit:
 
 ```bash
 pre-commit install
