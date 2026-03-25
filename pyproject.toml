@@ -37,6 +37,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "mypy==2.4.0",
+  "pre-commit==4.6.0",
   "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
@@ -95,3 +96,8 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["isodate", "pytimeparse2"]
 ignore_missing_imports = true
+
+[tool.rumdl]
+flavor = "myst"
+# The Markdown files keep each paragraph on one line.
+disable = ["MD013"]
