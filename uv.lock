@@ -286,6 +286,7 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "pytimeparse2" },
     { name = "requests", extra = ["socks"] },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
 ]
 
@@ -308,6 +309,7 @@ requires-dist = [
     { name = "python-dateutil" },
     { name = "pytimeparse2" },
     { name = "requests", extras = ["socks"] },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
 ]
 
