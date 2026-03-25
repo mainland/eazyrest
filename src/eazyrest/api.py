@@ -8,6 +8,8 @@ import certifi
 import requests
 import urllib3
 
+from .write_mode import WriteMode, validate_write_mode
+
 
 class API:
     """HTTP client wrapper for REST APIs.
@@ -25,10 +27,14 @@ class API:
     timeout: float | None = 10.0
     """Default request timeout."""
 
+    default_write_mode: WriteMode
+    """Default write mode inherited by newly created model instances."""
+
     def __init__(
         self,
         url: str,
         proxy: str | None = None,
+        default_write_mode: WriteMode = "lazy",
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -36,12 +42,15 @@ class API:
         Args:
             url: Base URL for the API.
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
+            default_write_mode: Default model write mode used when a
+                ``JSONObject`` instance does not override it explicitly.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
               This allows for configuring connection pooling parameters, e.g.,
               ``pool_connections`` and ``pool_maxsize``.
         """
         self.base_url = url
+        self.default_write_mode = validate_write_mode(default_write_mode)
 
         self.reset_session(**kwargs)
 

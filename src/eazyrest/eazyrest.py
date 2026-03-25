@@ -25,6 +25,7 @@ from typing_extensions import Self
 
 from .api import API
 from .dateparse import parse_duration
+from .write_mode import WriteMode, validate_write_mode
 
 
 class DoesNotExist(Exception):
@@ -312,7 +313,7 @@ class JSONProperty:
             return obj.from_json(obj.json[self.json_field], self.ty)
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
-        """Set a field value and persist it with ``PATCH`` when necessary.
+        """Set a field value using the object's configured write mode.
 
         Args:
             obj: ``JSONObject`` instance being modified.
@@ -331,10 +332,7 @@ class JSONProperty:
 
             # Access obj.json instead of obj._json to force a load first.
             if obj.json[self.json_field] != new_value:
-                resp = obj.api.patch(
-                    obj.url, json={self.json_field: new_value}
-                )
-                obj._json = resp.json()
+                obj._update_json_field(self.json_field, new_value)
 
 
 class JSONObject:
@@ -370,6 +368,12 @@ class JSONObject:
     _api_override: API | None
     """Instance-scoped API override."""
 
+    _write_mode: WriteMode
+    """Whether field assignment is saved eagerly or lazily."""
+
+    _pending_updates: dict[str, Any]
+    """JSON field updates queued for the next ``save()``."""
+
     _json: Any
     """Object's JSON representation."""
 
@@ -378,6 +382,7 @@ class JSONObject:
         self,
         json: Any = None,
         api: API | None = None,
+        write_mode: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Create a JSON-backed object.
@@ -385,9 +390,21 @@ class JSONObject:
         Args:
             json: Optional JSON payload for eager initialization.
             api: Optional API instance overriding the class-level API.
+            write_mode: Optional write mode override. When omitted, the
+                instance inherits ``api.default_write_mode`` and otherwise
+                falls back to ``"lazy"`` when no API is bound. ``"lazy"``
+                batches assignments until ``save()``. ``"eager"`` persists
+                each assignment immediately.
             **kwargs: Field values, typically including the primary key.
         """
         self._api_override = api
+        if write_mode is None:
+            try:
+                write_mode = self.api.default_write_mode
+            except RuntimeError:
+                write_mode = "lazy"
+        self._write_mode = validate_write_mode(write_mode)
+        self._pending_updates = {}
         self._json = json
 
         # Set all attributes passed in as keyword arguments
@@ -407,11 +424,11 @@ class JSONObject:
         """
         # If the argument is a dict, we treat it as JSON
         if isinstance(arg, dict):
-            return ty(json=arg)
+            return ty(json=arg, api=self.api, write_mode=self.write_mode)
         else:
             assert issubclass(ty, JSONObject)
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
-            return ty(**kwargs)
+            return ty(api=self.api, write_mode=self.write_mode, **kwargs)
 
     def from_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a raw JSON value to a typed Python value.
@@ -503,10 +520,59 @@ class JSONObject:
         """
         self.api.delete(self.url, *args, **kwargs)
 
+    @property
+    def write_mode(self) -> WriteMode:
+        """Return this object's write mode."""
+        return self._write_mode
+
+    def set_write_mode(self, mode: str) -> None:
+        """Set how field assignments are persisted for this object.
+
+        Args:
+            mode: ``"lazy"`` to defer writes until ``save()``, or
+                ``"eager"`` to persist each assignment immediately.
+        """
+        self._write_mode = validate_write_mode(mode)
+
+    def _update_json_field(self, json_field: str, value: Any) -> None:
+        """Apply a JSON field update using the configured write mode.
+
+        Args:
+            json_field: Name of the backing JSON field.
+            value: JSON-serializable field value.
+        """
+        if self.write_mode == "eager":
+            payload = dict(self._pending_updates)
+            payload[json_field] = value
+            resp = self.api.patch(self.url, json=payload)
+            self._json = self.object_json(resp.json())
+            self._pending_updates.clear()
+            return
+
+        self.json[json_field] = value
+        self._pending_updates[json_field] = value
+
+    def save(self) -> None:
+        """Persist all pending lazy field updates.
+
+        In ``"lazy"`` mode, field assignments are accumulated locally and sent
+        in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
+        mode, assignments are patched immediately and ``save()`` is a no-op
+        unless pending updates remain from an earlier lazy mode.
+        """
+        if len(self._pending_updates) == 0:
+            return
+
+        resp = self.api.patch(self.url, json=self._pending_updates)
+        self._json = self.object_json(resp.json())
+        self._pending_updates.clear()
+
     def refresh(self) -> None:
-        """Mark this object stale so it reloads from the API on next access."""
+        """Mark this object stale and discard pending local updates."""
         # Store value of primary key
         self._pk_value = self.pk
+        # Discard unsaved local changes
+        self._pending_updates.clear()
         # Clear JSON
         self._json = None
 
