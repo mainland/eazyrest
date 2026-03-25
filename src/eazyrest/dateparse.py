@@ -18,7 +18,7 @@ def parse_datetime(
 
     Args:
         date: Date/time string to parse.
-        use_dateparser: If ``True``, parse with ``dateparser``; otherwise use
+        use_dateparser: If ``True``, parse with ``dateparser``. Otherwise, use
             ``dateutil.parser.parse``.
         tzinfo: Time zone to apply when the parsed datetime is naive. If
             omitted, the local time zone is used.
@@ -34,7 +34,9 @@ def parse_datetime(
         if dt is None:
             raise dateutil.parser.ParserError(f"Could not parse '{date}'")
     else:
-        dt = dateutil.parser.parse(date, default=datetime.datetime.now())
+        # The default supplies the fields that the string omits. It is naive,
+        # because the time zone is applied below.
+        dt = dateutil.parser.parse(date, default=datetime.datetime.now())  # noqa: DTZ005
 
     if dt.tzinfo is None:
         if tzinfo is None:
