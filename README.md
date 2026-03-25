@@ -23,8 +23,8 @@ class JSONPlaceholderObject(JSONObject):
   """A JSON object from the JSONPlaceholder API"""
   pass
 
-# Set class variable to point to JSONPlaceholder API instance
-JSONPlaceholderObject.api = demo_api
+# Register the API instance for this model hierarchy
+JSONPlaceholderObject.register_api(demo_api)
 
 @json_object
 class User(JSONPlaceholderObject):
