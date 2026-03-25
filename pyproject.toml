@@ -36,7 +36,13 @@ dependencies = [
 ]
 
 [dependency-groups]
+test = [
+  # pytest 9 is the first release that reads [tool.pytest].
+  "pytest>=9",
+  "requests-mock",
+]
 dev = [
+  {include-group = "test"},
   "mypy==2.4.1",
   "pre-commit==4.6.0",
   "ruff==0.16.10",
@@ -79,11 +85,16 @@ extend-select = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.per-file-ignores]
+# Test docstrings do not document pytest fixtures, so D417, which wants every
+# parameter, does not apply.
+"tests/**" = ["D417"]
+
 [tool.ruff.format]
 docstring-code-format = true
 
 [tool.mypy]
-files = ["src"]
+files = ["src", "tests"]
 strict = true
 warn_unreachable = true
 enable_error_code = [
@@ -97,6 +108,14 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["isodate", "pytimeparse2"]
 ignore_missing_imports = true
+
+[tool.pytest]
+minversion = "9.0"
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+xfail_strict = true
+filterwarnings = ["error"]
+log_level = "INFO"
+testpaths = ["tests"]
 
 [tool.rumdl]
 flavor = "myst"
