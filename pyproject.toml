@@ -44,6 +44,7 @@ dev = [
   "pytest",
   "requests-mock",
   "ruff",
+  "tox",
   "twine",
   "types-dateparser",
   "types-python-dateutil",
