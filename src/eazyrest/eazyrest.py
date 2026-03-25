@@ -16,6 +16,8 @@ from typing import (
     overload,
 )
 
+from typing_extensions import Self
+
 from .api import API
 from .dateparse import parse_duration
 
@@ -516,7 +518,7 @@ class JSONObject:
         return self._json
 
     @classmethod
-    def create(cls: type[T], **kwargs: Any) -> T:
+    def create(cls: type[Self], **kwargs: Any) -> Self:
         """Create and return a new remote object.
 
         Args:
@@ -530,8 +532,8 @@ class JSONObject:
 
     @classmethod
     def filter(
-        cls: type[T], url: str | None = None, **kwargs: Any
-    ) -> Sequence[T]:
+        cls: type[Self], url: str | None = None, **kwargs: Any
+    ) -> Sequence[Self]:
         """Query objects matching request parameters.
 
         Args:
@@ -548,7 +550,7 @@ class JSONObject:
         return [cls(json=json) for json in resp.json()]
 
     @classmethod
-    def all(cls: type[T]) -> Sequence[T]:
+    def all(cls: type[Self]) -> Sequence[Self]:
         """Return all objects for this resource type.
 
         Returns:
@@ -557,7 +559,7 @@ class JSONObject:
         return cls.filter()
 
     @classmethod
-    def get(cls: type[T], **kwargs: Any) -> T:
+    def get(cls: type[Self], **kwargs: Any) -> Self:
         """Fetch exactly one object matching query parameters.
 
         Args:
@@ -579,7 +581,7 @@ class JSONObject:
             return results[0]
 
     @classmethod
-    def get_or_create(cls: type[T], **kwargs: Any) -> tuple[T, bool]:
+    def get_or_create(cls: type[Self], **kwargs: Any) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
         Args:
