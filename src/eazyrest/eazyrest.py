@@ -404,6 +404,7 @@ class JSONObject:
     # pylint: disable=redefined-outer-name
     def __init__(
         self,
+        *,
         json: Any = None,
         api: API | None = None,
         write_mode: str | None = None,
