@@ -1,7 +1,6 @@
 """HTTP API client primitives for eazyrest."""
 
 from http.cookiejar import CookieJar
-from typing import Optional
 from urllib.parse import urljoin, urlparse
 
 import certifi
@@ -22,14 +21,14 @@ class API:
     session: requests.Session
     """Session object for API requests."""
 
-    timeout: Optional[float] = 10.0
+    timeout: float | None = 10.0
     """Default request timeout."""
 
     def __init__(
         self,
         url: str,
-        pool_connections: Optional[int] = None,
-        proxy: Optional[str] = None,
+        pool_connections: int | None = None,
+        proxy: str | None = None,
     ):
         """Initialize an API client.
 
@@ -70,7 +69,7 @@ class API:
         self.session.proxies.update(proxies)
 
     def reset_session(
-        self, verify: bool = True, pool_connections: Optional[int] = None
+        self, verify: bool = True, pool_connections: int | None = None
     ) -> None:
         """Create and configure a fresh underlying ``requests.Session``.
 

@@ -5,16 +5,11 @@ from __future__ import annotations
 import datetime
 import typing
 import urllib.parse
-from collections.abc import Mapping, MutableSet, Set
+from collections.abc import Callable, Mapping, MutableSet, Sequence, Set
 from functools import cached_property
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
-    Optional,
-    Sequence,
-    Tuple,
     TypeVar,
     Union,
     overload,
@@ -27,13 +22,9 @@ from .dateparse import parse_duration
 class DoesNotExist(Exception):
     """Raised when no object matches a query that expects one result."""
 
-    pass
-
 
 class MultipleObjectsReturned(Exception):
     """Raised when a query expected one object but got multiple results."""
-
-    pass
 
 
 #
@@ -54,7 +45,7 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 
-def get_annotations(obj: Any) -> Dict[str, type]:
+def get_annotations(obj: Any) -> dict[str, type]:
     """Get direct annotations from an object without resolving inheritance.
 
     Args:
@@ -74,7 +65,7 @@ T = TypeVar("T", bound="JSONObject")
 def json_object(
     cls: type[T],
     pk: str = "id",
-    field_map: Optional[Mapping[str, str]] = None,
+    field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
 ) -> type[T]: ...
 
@@ -83,7 +74,7 @@ def json_object(
 def json_object(
     cls: None = None,
     pk: str = "id",
-    field_map: Optional[Mapping[str, str]] = None,
+    field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
 
@@ -91,7 +82,7 @@ def json_object(
 def json_object(
     cls=None,
     pk: str = "id",
-    field_map: Optional[Mapping[str, str]] = None,
+    field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
 ):
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
@@ -302,7 +293,7 @@ class JSONObject:
     _pk: JSONProperty
     """The JSONProperty that is the primary key."""
 
-    _pk_value: Optional[Any]
+    _pk_value: Any | None
     """Value of the primary key.
 
     If None, look in JSON
@@ -316,12 +307,12 @@ class JSONObject:
     _json_fields: Set[str]
     """All JSON fields."""
 
-    _json: Optional[Any]
+    _json: Any | None
     """Object's JSON representation."""
 
     # pylint: disable=redefined-outer-name
     def __init__(
-        self, json: Optional[Any] = None, api: Optional[API] = None, **kwargs
+        self, json: Any | None = None, api: API | None = None, **kwargs
     ):
         """Create a JSON-backed object.
 
@@ -525,9 +516,7 @@ class JSONObject:
         return cls(json=resp.json())
 
     @classmethod
-    def filter(
-        cls, url: Optional[str] = None, **kwargs
-    ) -> Sequence[JSONObject]:
+    def filter(cls, url: str | None = None, **kwargs) -> Sequence[JSONObject]:
         """Query objects matching request parameters.
 
         Args:
@@ -575,7 +564,7 @@ class JSONObject:
             return results[0]
 
     @classmethod
-    def get_or_create(cls, **kwargs) -> Tuple[JSONObject, bool]:
+    def get_or_create(cls, **kwargs) -> tuple[JSONObject, bool]:
         """Get one object by fields or create it if absent.
 
         Args:
