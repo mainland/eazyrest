@@ -37,6 +37,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "mypy==2.4.1",
+  "pre-commit==4.6.0",
   "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
@@ -95,3 +96,16 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["isodate", "pytimeparse2"]
 ignore_missing_imports = true
+
+[tool.rumdl]
+flavor = "myst"
+
+# Markdown prose is filled to 79 columns, the Python source's line length,
+# and `rumdl fmt` refills it. Code blocks are not checked, and a line may run
+# long only by a code span, which is never broken.
+[tool.rumdl.MD013]
+line-length = 79
+code-blocks = false
+code-spans = false
+reflow = true
+reflow-mode = "normalize"
