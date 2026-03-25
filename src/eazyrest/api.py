@@ -28,19 +28,22 @@ class API:
     def __init__(
         self,
         url: str,
-        pool_connections: int | None = None,
         proxy: str | None = None,
+        **kwargs: Any,
     ):
         """Initialize an API client.
 
         Args:
             url: Base URL for the API.
-            pool_connections: Optional size for the session's connection pool.
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
+            kwargs: If present, these are forwarded to a new
+              ``requests.adapters.HTTPAdapter`` and mounted on the session.
+              This allows for configuring connection pooling parameters, e.g.,
+              ``pool_connections`` and ``pool_maxsize``.
         """
         self.base_url = url
 
-        self.reset_session(pool_connections=pool_connections)
+        self.reset_session(**kwargs)
 
         if proxy is not None:
             self.set_proxy(proxy)
@@ -69,14 +72,15 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(
-        self, verify: bool = True, pool_connections: int | None = None
-    ) -> None:
+    def reset_session(self, verify: bool = True, **kwargs: Any) -> None:
         """Create and configure a fresh underlying ``requests.Session``.
 
         Args:
             verify: Whether TLS certificates should be verified.
-            pool_connections: Optional maximum number of pooled connections.
+            kwargs: If present, these are forwarded to a new
+              ``requests.adapters.HTTPAdapter`` and mounted on the session.
+              This allows for configuring connection pooling parameters, e.g.,
+              ``pool_connections`` and ``pool_maxsize``.
         """
         self.session = requests.Session()
 
@@ -87,13 +91,10 @@ class API:
             urllib3.disable_warnings()
 
         # Adapt session for multiple connections
-        if pool_connections is not None:
+        if len(kwargs) != 0:
             url = urlparse(self.base_url)
 
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=pool_connections,
-                pool_maxsize=pool_connections,
-            )
+            adapter = requests.adapters.HTTPAdapter(**kwargs)
             self.session.mount(url.scheme + "://", adapter)
 
     def close(self) -> None:
