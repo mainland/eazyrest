@@ -31,6 +31,16 @@ def test_api_allows_absolute_request_urls(requests_mock: Any) -> None:
     assert response.json() == {"id": 1}
 
 
+def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
+    """PUT requests should use the same URL resolution as other methods."""
+    api = API("https://example.com/v1/")
+    requests_mock.put("https://example.com/v1/users/1", json={"id": 1})
+
+    response = api.put("/users/1", json={"name": "Ada"})
+
+    assert response.json() == {"id": 1}
+
+
 def test_api_closes_session_as_context_manager() -> None:
     """The API client should close its session on context exit."""
     api = API("https://example.com/")
