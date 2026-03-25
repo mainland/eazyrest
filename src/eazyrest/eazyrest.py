@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import inspect
 import typing
 import urllib.parse
-from collections.abc import Callable, Mapping, MutableSet, Sequence, Set
+from collections.abc import Callable, Mapping, MutableSet, Sequence
+from collections.abc import Set as AbstractSet
 from functools import cached_property
 from typing import (
     Any,
@@ -55,7 +57,7 @@ def get_annotations(obj: Any) -> dict[str, type]:
         The object's direct annotations dictionary, or an empty mapping when no
         annotations are defined.
     """
-    return obj.__dict__.get("__annotations__", {})
+    return inspect.get_annotations(obj)
 
 
 T = TypeVar("T", bound="JSONObject")
@@ -66,7 +68,7 @@ def json_object(
     cls: type[T],
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
 
 
@@ -75,7 +77,7 @@ def json_object(
     cls: None = None,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -83,7 +85,7 @@ def json_object(
     cls=None,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ):
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -122,10 +124,7 @@ def json_object(
             if field not in exclude:
                 json_field = field_map.get(field, field)
 
-                if field == pk:
-                    is_primary_key = True
-                else:
-                    is_primary_key = False
+                is_primary_key = field == pk
 
                 prop = JSONProperty(
                     cls, json_field, field, ty, is_primary_key=is_primary_key
@@ -142,6 +141,7 @@ def json_object(
             """Restrict arbitrary attribute assignment on JSON-backed models.
 
             Args:
+                self: Instance being modified.
                 name: Attribute name being assigned.
                 value: Attribute value being assigned.
 
@@ -176,13 +176,13 @@ class JSONProperty:
     """Descriptor that maps a typed class attribute to a JSON field."""
 
     cls: type[JSONObject]
-    """Class to which this JSONProperty belongs"""
+    """Class to which this JSONProperty belongs."""
 
     field: str
     """Name of Python field corresponding to this property."""
 
     _ty: type
-    """Field type"""
+    """Field type."""
 
     json_field: str
     """Name of JSON field corresponding to this property."""
@@ -269,7 +269,8 @@ class JSONProperty:
             assert self.ty is not None
             new_value = obj.to_json(value, self.ty)
 
-            # Access obj.json instead of obj._json to force object to be loaded.
+            # Access obj.json instead of obj._json to force object to be
+            # loaded.
             if obj.json[self.json_field] != new_value:
                 resp = obj.api.patch(
                     obj.url, json={self.json_field: new_value}
@@ -288,22 +289,27 @@ class JSONObject:
     """Relative URL for this class."""
 
     api: ClassVar[API]
-    """The API associated with this object"""
+    """The API associated with this object."""
 
     _pk: JSONProperty
-    """The JSONProperty that is the primary key"""
+    """The JSONProperty that is the primary key."""
 
     _pk_value: Any | None
-    """Value of the primary key. If None, look in JSON"""
+    """Value of the primary key.
+
+    If None, look in JSON
+    """
 
     _pk_json_field: str
-    """The field of the object's JSON representation that holds the primary key"""
+    """The field of the object's JSON representation that holds the primary
+    key.
+    """
 
-    _json_fields: Set[str]
-    """All JSON fields"""
+    _json_fields: AbstractSet[str]
+    """All JSON fields."""
 
     _json: Any | None
-    """Object's JSON representation"""
+    """Object's JSON representation."""
 
     # pylint: disable=redefined-outer-name
     def __init__(
@@ -446,8 +452,8 @@ class JSONObject:
     @property
     def pk(self) -> JSONProperty:
         """Return this object's primary key value."""
-        # If the object's primary key is another JSON object, then that object's
-        # primary key is this object's primary key.
+        # If the object's primary key is another JSON object, then that
+        # object's primary key is this object's primary key.
         if isinstance(self._pk, JSONObject):
             return self._pk.pk
         else:
@@ -483,6 +489,9 @@ class JSONObject:
 
         Returns:
             JSON payload representing this object.
+
+        Raises:
+            DoesNotExist: If the API returns an empty list for this object.
         """
         if self._json is None:
             data = self.api.get(self.url).json()
@@ -515,7 +524,7 @@ class JSONObject:
         """Query objects matching request parameters.
 
         Args:
-            url: Optional endpoint override; defaults to ``class_url``.
+            url: Optional endpoint override. Defaults to ``class_url``.
             **kwargs: Query string parameters.
 
         Returns:
