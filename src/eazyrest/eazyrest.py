@@ -546,6 +546,9 @@ class JSONObject:
             data = self.api.get(self.url).json()
             # If results are returned as a list, get first result
             if isinstance(data, list):
+                if len(data) == 0:
+                    raise DoesNotExist
+
                 self._json = data[0]
             else:
                 self._json = data
