@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import typing
-import urllib.parse
 from collections.abc import Callable, Mapping, MutableSet, Sequence, Set
 from functools import cached_property
 from typing import (
@@ -527,7 +526,7 @@ class JSONObject:
         Returns:
             Relative URL for this object, always ending with ``/``.
         """
-        url = urllib.parse.urljoin(self.class_url, str(self.pk))
+        url = f"{self.class_url.rstrip('/')}/{self.pk}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
