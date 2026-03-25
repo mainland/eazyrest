@@ -17,56 +17,62 @@ The example uses the public REST demo API available at [https://jsonplaceholder.
 ```python
 from eazyrest import API, JSONObject, json_object
 
-demo_api = API("https://jsonplaceholder.typicode.com/")
 
-class JSONPlaceholderObject(JSONObject):
-  """A JSON object from the JSONPlaceholder API"""
-  pass
+with API("https://jsonplaceholder.typicode.com/") as demo_api:
+    class JSONPlaceholderObject(JSONObject):
+        """A JSON object from the JSONPlaceholder API."""
 
-# Register the API instance for this model hierarchy
-JSONPlaceholderObject.register_api(demo_api)
 
-@json_object
-class User(JSONPlaceholderObject):
-  """Represents one user object from JSONPlaceholder API."""
-  class_url = "/users/"
+    # Register the API instance for this model hierarchy
+    JSONPlaceholderObject.register_api(demo_api)
 
-  id: int
-  name: str
-  username: str
-  email: str
-  address: dict
-  phone: str
-  website: str
-  company: dict
+    @json_object
+    class User(JSONPlaceholderObject):
+        """Represents one user object from JSONPlaceholder."""
 
-  def __str__(self):
-      return self.name
+        class_url = "/users/"
 
-@json_object(field_map={'user': 'userId'})
-class Todo(JSONPlaceholderObject):
-  """Represents one Todo object from JSONPlaceholder API."""
-  class_url = "/todos/"
+        id: int
+        name: str
+        username: str
+        email: str
+        address: dict
+        phone: str
+        website: str
+        company: dict
 
-  id: int
-  user: User
-  title: str
-  completed: bool
+        def __str__(self) -> str:
+            return self.name
 
-# Load one object by primary key (GET /todos/1/)
-todo = Todo(id=1)
-print(todo.title, todo.completed)
+    @json_object(field_map={"user": "userId"})
+    class Todo(JSONPlaceholderObject):
+        """Represents one todo object from JSONPlaceholder."""
 
-# Demonstrate loading of related object
-print(todo.user)
+        class_url = "/todos/"
 
-# Query a collection (GET /todos/?userId=1)
-todos_for_user_1 = Todo.filter(userId=1)
-print(len(todos_for_user_1))
+        id: int
+        user: User
+        title: str
+        completed: bool
 
-# Access typed fields
-first = todos_for_user_1[0]
-print(first.id, first.user.id, first.user, first.title)
+    # Load one object by primary key (GET /todos/1/)
+    todo = Todo(id=1)
+    print(todo.title, todo.completed)
+
+    # Demonstrate loading of a related object
+    print(todo.user)
+
+    # Query a collection (GET /todos/?userId=1)
+    todos_for_user_1 = list(Todo.filter(userId=1))
+    print(len(todos_for_user_1))
+
+    # Access typed fields
+    first = todos_for_user_1[0]
+    print(first.id, first.user.id, first.user, first.title)
+
+    # Lazy writes are the default; call save() to persist batched changes
+    first.completed = True
+    first.save()
 ```
 
 ## License
@@ -96,6 +102,14 @@ You can run the hooks manually across the whole tree with:
 ```bash
 pre-commit run --all-files
 ```
+
+Run the test suite with:
+
+```bash
+pytest
+```
+
+GitHub Actions runs `ruff`, `mypy`, and `pytest` for Python 3.10, 3.11, and 3.12 on every push and pull request.
 
 To build and validate a distribution:
 
