@@ -1,6 +1,7 @@
 """HTTP API client primitives for eazyrest."""
 
 from http.cookiejar import CookieJar
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import certifi
@@ -114,7 +115,7 @@ class API:
         resp.raise_for_status()
         return resp
 
-    def get(self, uri: str, *args, **kwargs) -> requests.Response:
+    def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.
 
         Args:
@@ -129,7 +130,7 @@ class API:
         req = self.session.get(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def post(self, uri: str, *args, **kwargs) -> requests.Response:
+    def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``POST`` request.
 
         Args:
@@ -144,7 +145,7 @@ class API:
         req = self.session.post(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def patch(self, uri: str, *args, **kwargs) -> requests.Response:
+    def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PATCH`` request.
 
         Args:
@@ -161,7 +162,7 @@ class API:
         req = self.session.patch(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
-    def delete(self, uri: str, *args, **kwargs) -> requests.Response:
+    def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``DELETE`` request.
 
         Args:
