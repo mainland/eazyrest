@@ -36,6 +36,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
@@ -53,3 +54,28 @@ eazyrest = ["py.typed"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+extend-select = [
+  "UP",   # pyupgrade
+  "D",    # pydocstyle
+  "E501", # line too long
+  "E",    # pycodestyle
+  "F",    # Pyflakes
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "I",    # isort
+  "C4",   # flake8-comprehensions
+  "PT",   # flake8-pytest-style
+  "RUF",  # Ruff-specific rules
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
