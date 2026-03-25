@@ -54,6 +54,8 @@ def parse_duration(delta: str) -> datetime.timedelta:
     Returns:
         Parsed ``timedelta``.
     """
+    # Disable dateutil fallback to ensure we always return
+    # ``datetime.timedelta``
     pytimeparse2.disable_dateutil()
 
     timedelta = pytimeparse2.parse(delta, as_timedelta=True)
