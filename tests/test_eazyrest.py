@@ -6,7 +6,13 @@ from typing import Any
 
 import pytest
 
-from eazyrest import API, DoesNotExist, JSONObject, json_object
+from eazyrest import (
+    API,
+    DoesNotExist,
+    JSONObject,
+    MultipleObjectsReturned,
+    json_object,
+)
 
 
 class ModelBase(JSONObject):
@@ -112,6 +118,19 @@ def test_filter_returns_iterable_and_preserves_base_path_prefix(
     assert [todo.id for todo in todos] == [1, 2]
 
 
+def test_default_collection_items_rejects_non_list_payload(
+    requests_mock: Any,
+) -> None:
+    """Default collection extraction should reject envelope payloads."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json={"results": [{"id": 1, "userId": 2, "title": "a"}]},
+    )
+
+    with pytest.raises(TypeError):
+        list(Todo.filter())
+
+
 def test_collection_and_object_hooks_support_envelope_responses(
     requests_mock: Any,
 ) -> None:
@@ -172,6 +191,20 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert requests_mock.call_count == 1
 
 
+def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
+    """``get()`` should raise when more than one object matches."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "userId": 2, "title": "a", "completed": False},
+            {"id": 2, "userId": 2, "title": "b", "completed": False},
+        ],
+    )
+
+    with pytest.raises(MultipleObjectsReturned):
+        Todo.get(userId=2)
+
+
 def test_lazy_write_mode_batches_updates_until_save(
     requests_mock: Any,
 ) -> None:
@@ -197,6 +230,41 @@ def test_lazy_write_mode_batches_updates_until_save(
 
     assert patch.called
     assert patch.last_request.json() == {"title": "new", "userId": 3}
+
+
+def test_refresh_discards_pending_updates_and_reloads(
+    requests_mock: Any,
+) -> None:
+    """``refresh()`` should drop unsaved changes and reload server state."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        [
+            {
+                "json": {
+                    "id": 1,
+                    "userId": 2,
+                    "title": "old",
+                    "completed": False,
+                }
+            },
+            {
+                "json": {
+                    "id": 1,
+                    "userId": 2,
+                    "title": "server",
+                    "completed": False,
+                }
+            },
+        ],
+    )
+
+    todo = Todo(id=1)
+    assert todo.title == "old"
+
+    todo.title = "local"
+    todo.refresh()
+
+    assert todo.title == "server"
 
 
 def test_eager_write_mode_patches_immediately(requests_mock: Any) -> None:
