@@ -76,11 +76,8 @@ MIT. See `LICENSE`.
 ## Development
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -U build twine
-python -m build
-python -m twine check dist/*
+uv build
+uvx twine check dist/eazyrest-*
 ```
 
 ### Publishing
@@ -88,11 +85,11 @@ python -m twine check dist/*
 To publish to PyPI:
 
 ```bash
-python -m twine upload dist/*
+uvx twine upload dist/*
 ```
 
 To publish to Test PyPI:
 
 ```bash
-python -m twine upload --repository testpypi dist/*
+uvx twine upload --repository testpypi dist/*
 ```

@@ -34,12 +34,12 @@ dependencies = [
     "tzlocal"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
-  "types-urllib3"
+  "types-urllib3",
 ]
 
 [tool.setuptools]
