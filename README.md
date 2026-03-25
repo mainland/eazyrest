@@ -75,9 +75,29 @@ MIT. See `LICENSE`.
 
 ## Development
 
+Set up a local virtual environment and install the project with development dependencies:
+
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Install the Git pre-commit hook so `ruff check` and `docformatter --check` run automatically on every commit:
+
+```bash
+pre-commit install
+```
+
+You can run the hooks manually across the whole tree with:
+
+```bash
+pre-commit run --all-files
+```
+
+To build and validate a distribution:
+
+```bash
 python -m pip install -U build twine
 python -m build
 python -m twine check dist/*
