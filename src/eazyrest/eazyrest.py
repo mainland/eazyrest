@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import inspect
 import typing
 from collections.abc import (
     Callable,
@@ -91,20 +92,6 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     """
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
-
-def get_annotations(obj: Any) -> dict[str, type]:
-    """Get direct annotations from an object without resolving inheritance.
-
-    Args:
-        obj: Object whose ``__annotations__`` dictionary should be read.
-
-    Returns:
-        The object's direct annotations dictionary, or an empty mapping when no
-        annotations are defined.
-    """
-    return obj.__dict__.get("__annotations__", {})
-
-
 T = TypeVar("T", bound="JSONObject")
 WriteMode = Literal["lazy", "eager"]
 
@@ -192,7 +179,9 @@ def json_object(
         # for superclasses, so we don't use typing.get_type_hints. We also want
         # to delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
-        for field, ty in get_annotations(cls).items():
+        for field, ty in inspect.get_annotations(
+            cls, eval_str=False
+        ).items():
             if field not in exclude:
                 json_field = field_map.get(field, field)
 
