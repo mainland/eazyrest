@@ -20,12 +20,17 @@ class API:
     """Base API URL"""
 
     session: requests.Session
-    """Session object for API requests"""
+    """Session object for API requests."""
 
     timeout: Optional[float] = 10.0
-    """Default request timeout"""
+    """Default request timeout."""
 
-    def __init__(self, url: str, pool_connections: Optional[int] = None, proxy: Optional[str] = None):
+    def __init__(
+        self,
+        url: str,
+        pool_connections: Optional[int] = None,
+        proxy: Optional[str] = None,
+    ):
         """Initialize an API client.
 
         Args:
@@ -60,11 +65,13 @@ class API:
         Args:
             proxy: Proxy URL to apply to both ``http`` and ``https`` schemes.
         """
-        proxies = {'http': proxy, 'https': proxy}
+        proxies = {"http": proxy, "https": proxy}
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool = True, pool_connections: Optional[int] = None) -> None:
+    def reset_session(
+        self, verify: bool = True, pool_connections: Optional[int] = None
+    ) -> None:
         """Create and configure a fresh underlying ``requests.Session``.
 
         Args:
@@ -83,9 +90,11 @@ class API:
         if pool_connections is not None:
             url = urlparse(self.base_url)
 
-            adapter = requests.adapters.HTTPAdapter(pool_connections=pool_connections,
-                                                    pool_maxsize=pool_connections)
-            self.session.mount(url.scheme + '://', adapter)
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=pool_connections,
+                pool_maxsize=pool_connections,
+            )
+            self.session.mount(url.scheme + "://", adapter)
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -117,7 +126,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault('timeout', self.timeout)
+        kwargs.setdefault("timeout", self.timeout)
         req = self.session.get(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
@@ -132,7 +141,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault('timeout', self.timeout)
+        kwargs.setdefault("timeout", self.timeout)
         req = self.session.post(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
@@ -147,7 +156,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault('timeout', self.timeout)
+        kwargs.setdefault("timeout", self.timeout)
         req = self.session.patch(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
 
@@ -162,6 +171,6 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault('timeout', self.timeout)
+        kwargs.setdefault("timeout", self.timeout)
         req = self.session.delete(urljoin(self.base_url, uri), *args, **kwargs)
         return self._check_response(req)
