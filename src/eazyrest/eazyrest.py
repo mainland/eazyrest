@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import datetime
 import typing
-from collections.abc import Callable, Mapping, MutableSet, Sequence, Set
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableSet,
+    Set,
+)
 from functools import cached_property
 from typing import (
     Any,
@@ -581,9 +587,33 @@ class JSONObject:
         return cls(json=resp.json())
 
     @classmethod
+    def collection_items(cls, payload: Any) -> Iterable[Any]:
+        """Return the JSON objects contained in a collection response.
+
+        Subclasses can override this hook when an API wraps collection
+        responses in an envelope such as ``{"results": [...]}``.
+
+        Args:
+            payload: Decoded JSON payload returned by the collection endpoint.
+
+        Returns:
+            Iterable of JSON objects used to construct model instances.
+
+        Raises:
+            TypeError: If the payload is not a supported collection response.
+        """
+        if isinstance(payload, list):
+            return payload
+
+        raise TypeError(
+            f"{cls.__name__}.collection_items() expected a list response, "
+            f"got {type(payload).__name__}"
+        )
+
+    @classmethod
     def filter(
         cls: type[Self], url: str | None = None, **kwargs: Any
-    ) -> Sequence[Self]:
+    ) -> Iterable[Self]:
         """Query objects matching request parameters.
 
         Args:
@@ -591,20 +621,20 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Sequence of objects built from the response payload.
+            Iterable of objects built from the response payload.
         """
         if url is None:
             url = cls.class_url
 
         resp = cls.api.get(url, params=kwargs)
-        return [cls(json=json) for json in resp.json()]
+        return (cls(json=item) for item in cls.collection_items(resp.json()))
 
     @classmethod
-    def all(cls: type[Self]) -> Sequence[Self]:
+    def all(cls: type[Self]) -> Iterable[Self]:
         """Return all objects for this resource type.
 
         Returns:
-            Sequence of all objects.
+            Iterable of all objects.
         """
         return cls.filter()
 
@@ -622,13 +652,16 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
         """
-        results = cls.filter(**kwargs)
-        if len(results) == 0:
+        results = iter(cls.filter(**kwargs))
+        first = next(results, None)
+        if first is None:
             raise DoesNotExist
-        elif len(results) != 1:
+
+        second = next(results, None)
+        if second is not None:
             raise MultipleObjectsReturned
-        else:
-            return results[0]
+
+        return first
 
     @classmethod
     def get_or_create(
@@ -649,11 +682,14 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
         """
-        results = cls.filter(**kwargs)
-        if len(results) == 1:
-            return results[0], False
-        elif len(results) > 1:
-            raise MultipleObjectsReturned
+        results = iter(cls.filter(**kwargs))
+        first = next(results, None)
+        if first is not None:
+            second = next(results, None)
+            if second is not None:
+                raise MultipleObjectsReturned
+
+            return first, False
 
         create_kwargs = dict(kwargs)
         if defaults is not None:
