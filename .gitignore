@@ -1,0 +1,48 @@
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+
+# Packaging and build artifacts
+build/
+dist/
+site/
+downloads/
+eggs/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Test and notebook artifacts
+.ipynb_checkpoints/
+
+# Logs and local databases
+*.log
+*.sqlite
+*.sqlite3
+
+# OS-specific files
+.DS_Store
+Thumbs.db
