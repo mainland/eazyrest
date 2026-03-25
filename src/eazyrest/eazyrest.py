@@ -34,6 +34,44 @@ class MultipleObjectsReturned(Exception):
     pass
 
 
+_api_registry: dict[type[JSONObject], API] = {}
+
+
+class APIDescriptor:
+    """Descriptor that resolves APIs from instance overrides or a registry."""
+
+    @overload
+    def __get__(
+        self, obj: None, objtype: type[JSONObject] | None = None
+    ) -> API: ...
+
+    @overload
+    def __get__(
+        self, obj: JSONObject, objtype: type[JSONObject] | None = None
+    ) -> API: ...
+
+    def __get__(
+        self,
+        obj: JSONObject | None,
+        objtype: type[JSONObject] | None = None,
+    ) -> API:
+        """Resolve and return the API for a model instance or class."""
+        if obj is not None and obj._api_override is not None:
+            return obj._api_override
+
+        if objtype is None:
+            if obj is None:
+                raise RuntimeError("Could not resolve API owner class")
+
+            objtype = type(obj)
+
+        for cls in objtype.__mro__:
+            if cls in _api_registry:
+                return _api_registry[cls]
+
+        raise RuntimeError(f"No API registered for {objtype.__name__}")
+
+
 #
 # Taken from:
 #   https://github.com/pydantic/pydantic/blob/main/pydantic/_internal/_utils.py
@@ -298,7 +336,7 @@ class JSONObject:
     class_url: ClassVar[str]
     """Relative URL for this class."""
 
-    api: ClassVar[API]
+    api: ClassVar[API] = cast(Any, APIDescriptor())
     """The API associated with this object."""
 
     _pk: ClassVar[JSONProperty]
@@ -318,6 +356,9 @@ class JSONObject:
     If None, look in JSON
     """
 
+    _api_override: API | None
+    """Instance-scoped API override."""
+
     _json: Any
     """Object's JSON representation."""
 
@@ -335,11 +376,7 @@ class JSONObject:
             api: Optional API instance overriding the class-level API.
             **kwargs: Field values, typically including the primary key.
         """
-        if api is not None:
-            # We override the class variable for this instance if an api is
-            # provided.
-            self.api = api  # type: ignore[misc]
-
+        self._api_override = api
         self._json = json
 
         # Set all attributes passed in as keyword arguments
@@ -461,6 +498,11 @@ class JSONObject:
         self._pk_value = self.pk
         # Clear JSON
         self._json = None
+
+    @classmethod
+    def register_api(cls, api: API) -> None:
+        """Register a default API instance for this model class."""
+        _api_registry[cls] = api
 
     @property
     def pk(self) -> Any:
