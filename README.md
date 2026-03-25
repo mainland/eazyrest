@@ -113,6 +113,18 @@ Run the test suite with:
 .venv/bin/python -m pytest
 ```
 
+Run the multi-environment test matrix locally with:
+
+```bash
+.venv/bin/python -m tox
+```
+
+Run the pre-commit hooks across the whole tree, as CI does, with:
+
+```bash
+.venv/bin/python -m tox -e lint
+```
+
 On every push and pull request, GitHub Actions runs the test suite on Python 3.10, 3.11, and 3.12, runs the pre-commit hooks, checks that `uv.lock` is current, and audits the locked dependencies for known vulnerabilities.
 
 To build and validate a distribution:
