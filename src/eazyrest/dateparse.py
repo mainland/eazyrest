@@ -1,7 +1,6 @@
 """Date and duration parsing helpers used by eazyrest."""
 
 import datetime
-from typing import Optional
 
 import dateparser
 import dateutil.parser
@@ -13,7 +12,7 @@ import tzlocal
 def parse_datetime(
     date: str,
     use_dateparser: bool = True,
-    tzinfo: Optional[datetime.tzinfo] = None,
+    tzinfo: datetime.tzinfo | None = None,
 ) -> datetime.datetime:
     """Parse a date/time string.
 
