@@ -68,6 +68,8 @@ T = TypeVar("T", bound="JSONObject")
 @overload
 def json_object(
     cls: type[T],
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
@@ -77,6 +79,8 @@ def json_object(
 @overload
 def json_object(
     cls: None = None,
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
@@ -85,6 +89,8 @@ def json_object(
 
 def json_object(
     cls: type[T] | None = None,
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
