@@ -40,7 +40,7 @@ def parse_datetime(
         if tzinfo is None:
             tzinfo = tzlocal.get_localzone()
 
-        dt = dt.replace(tzinfo=tzlocal.get_localzone())
+        dt = dt.replace(tzinfo=tzinfo)
 
     return dt
 
