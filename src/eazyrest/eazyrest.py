@@ -12,6 +12,7 @@ from typing import (
     ClassVar,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
@@ -298,30 +299,30 @@ class JSONObject:
     api: ClassVar[API]
     """The API associated with this object."""
 
-    _pk: JSONProperty
+    _pk: ClassVar[JSONProperty]
     """The JSONProperty that is the primary key."""
 
-    _pk_value: Any | None
+    _pk_json_field: ClassVar[str]
+    """The field of the object's JSON representation that holds the primary
+    key.
+    """
+
+    _json_fields: ClassVar[Set[str]]
+    """All JSON fields."""
+
+    _pk_value: Any
     """Value of the primary key.
 
     If None, look in JSON
     """
 
-    _pk_json_field: str
-    """The field of the object's JSON representation that holds the primary
-    key.
-    """
-
-    _json_fields: Set[str]
-    """All JSON fields."""
-
-    _json: Any | None
+    _json: Any
     """Object's JSON representation."""
 
     # pylint: disable=redefined-outer-name
     def __init__(
         self,
-        json: Any | None = None,
+        json: Any = None,
         api: API | None = None,
         **kwargs: Any,
     ) -> None:
@@ -475,7 +476,9 @@ class JSONObject:
         Args:
             value: Primary-key value or nested ``JSONObject`` used as key.
         """
-        self._pk = value
+        # Delegate to the class-installed descriptor instead of shadowing the
+        # class variable on this instance.
+        cast(JSONProperty, vars(type(self))["_pk"]).__set__(self, value)
 
     @property
     def url(self) -> str:
