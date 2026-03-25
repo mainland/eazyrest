@@ -36,7 +36,12 @@ dependencies = [
 ]
 
 [dependency-groups]
+test = [
+  "pytest",
+  "requests-mock",
+]
 dev = [
+  {include-group = "test"},
   "docformatter[tomli]==1.7.8",
   "mypy==2.4.0",
   "pre-commit==4.6.0",
@@ -80,6 +85,11 @@ extend-select = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.per-file-ignores]
+# Test docstrings do not document pytest fixtures, so D417, which wants every
+# parameter, does not apply.
+"tests/**" = ["D417"]
+
 [tool.docformatter]
 in-place = true
 recursive = true
@@ -88,7 +98,7 @@ wrap-descriptions = 79
 close-quotes-on-newline = true
 
 [tool.mypy]
-files = ["src"]
+files = ["src", "tests"]
 strict = true
 warn_unreachable = true
 enable_error_code = [
@@ -102,6 +112,14 @@ pretty = true
 [[tool.mypy.overrides]]
 module = ["isodate", "pytimeparse2"]
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+xfail_strict = true
+filterwarnings = ["error"]
+log_level = "INFO"
+testpaths = ["tests"]
 
 [tool.rumdl]
 flavor = "myst"
