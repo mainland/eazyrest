@@ -25,13 +25,9 @@ from .dateparse import parse_duration
 class DoesNotExist(Exception):
     """Raised when no object matches a query that expects one result."""
 
-    pass
-
 
 class MultipleObjectsReturned(Exception):
     """Raised when a query expected one object but got multiple results."""
-
-    pass
 
 
 _api_registry: dict[type[JSONObject], API] = {}
