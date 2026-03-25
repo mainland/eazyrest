@@ -42,10 +42,12 @@ test = [
 ]
 dev = [
   {include-group = "test"},
+  "build",
   "docformatter[tomli]==1.7.8",
   "mypy==2.4.0",
   "pre-commit==4.6.0",
   "ruff==0.16.10",
+  "twine",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
