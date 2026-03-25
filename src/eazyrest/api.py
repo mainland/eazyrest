@@ -149,8 +149,10 @@ class API:
 
         Args:
             uri: Relative or absolute request URI.
-            *args: Positional arguments forwarded to ``requests.Session.patch``.
-            **kwargs: Keyword arguments forwarded to ``requests.Session.patch``.
+            *args: Positional arguments forwarded to
+                ``requests.Session.patch``.
+            **kwargs: Keyword arguments forwarded to
+                ``requests.Session.patch``.
 
         Returns:
             Validated HTTP response.
@@ -164,8 +166,10 @@ class API:
 
         Args:
             uri: Relative or absolute request URI.
-            *args: Positional arguments forwarded to ``requests.Session.delete``.
-            **kwargs: Keyword arguments forwarded to ``requests.Session.delete``.
+            *args: Positional arguments forwarded to
+                ``requests.Session.delete``.
+            **kwargs: Keyword arguments forwarded to
+                ``requests.Session.delete``.
 
         Returns:
             Validated HTTP response.
