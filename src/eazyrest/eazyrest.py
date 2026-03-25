@@ -558,15 +558,7 @@ class JSONObject:
             JSON payload representing this object.
         """
         if self._json is None:
-            data = self.api.get(self.url).json()
-            # If results are returned as a list, get first result
-            if isinstance(data, list):
-                if len(data) == 0:
-                    raise DoesNotExist
-
-                self._json = data[0]
-            else:
-                self._json = data
+            self._json = self.object_json(self.api.get(self.url).json())
 
             # Have have JSON now, so delete _pk_value
             del self._pk_value
@@ -609,6 +601,30 @@ class JSONObject:
             f"{cls.__name__}.collection_items() expected a list response, "
             f"got {type(payload).__name__}"
         )
+
+    @classmethod
+    def object_json(cls, payload: Any) -> Any:
+        """Return the JSON object contained in a single-object response.
+
+        Subclasses can override this hook when an API wraps single-object
+        responses in an envelope or returns singleton lists.
+
+        Args:
+            payload: Decoded JSON payload returned by the object endpoint.
+
+        Returns:
+            JSON object used to populate a model instance.
+
+        Raises:
+            DoesNotExist: If the payload is an empty list.
+        """
+        if isinstance(payload, list):
+            if len(payload) == 0:
+                raise DoesNotExist
+
+            return payload[0]
+
+        return payload
 
     @classmethod
     def filter(
