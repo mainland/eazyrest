@@ -37,6 +37,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "docformatter[tomli]==1.7.8",
+  "mypy==2.4.0",
   "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
@@ -83,3 +84,19 @@ recursive = true
 wrap-summaries = 79
 wrap-descriptions = 79
 close-quotes-on-newline = true
+
+[tool.mypy]
+files = ["src"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+  "ignore-without-code",
+  "redundant-expr",
+  "truthy-bool",
+]
+pretty = true
+
+# isodate and pytimeparse2 ship no type information.
+[[tool.mypy.overrides]]
+module = ["isodate", "pytimeparse2"]
+ignore_missing_imports = true
