@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch or pull request cancels its running checks.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run Pytest
+        run: uv run --locked python -m pytest
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Check That uv.lock Is Current
+        run: uv lock --check
+
+      - name: Run pre-commit Hooks
+        run: uv run --locked python -m pre_commit run --all-files
+
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Audit Locked Dependencies
+        run: |
+          uv export --locked --all-groups --no-emit-project \
+            --output-file "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit==2.10.1 --disable-pip --require-hashes \
+            --requirement "$RUNNER_TEMP/requirements.txt"
