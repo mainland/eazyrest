@@ -109,6 +109,18 @@ Run the test suite with:
 pytest
 ```
 
+Run the multi-environment test matrix locally with:
+
+```bash
+tox
+```
+
+Run the lint and type-check environment with:
+
+```bash
+tox -e lint
+```
+
 GitHub Actions runs `ruff`, `mypy`, and `pytest` for Python 3.10, 3.11, and 3.12 on every push and pull request.
 
 To build and validate a distribution:
