@@ -1,5 +1,7 @@
 """HTTP API client primitives for eazyrest."""
 
+from __future__ import annotations
+
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.parse import urlparse
@@ -109,6 +111,14 @@ class API:
     def close(self) -> None:
         """Close the underlying HTTP session."""
         self.session.close()
+
+    def __enter__(self) -> API:
+        """Return this API client for use as a context manager."""
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """Close the session when leaving a context-manager block."""
+        self.close()
 
     def _check_response(self, resp: requests.Response) -> requests.Response:
         """Validate an HTTP response.
