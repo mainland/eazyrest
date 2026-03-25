@@ -37,12 +37,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "build",
   "docformatter",
   "mypy",
   "pre-commit",
   "pytest",
   "requests-mock",
   "ruff",
+  "twine",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
