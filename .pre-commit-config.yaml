@@ -45,3 +45,9 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: sp-repo-review
+        name: sp-repo-review
+        entry: .venv/bin/sp-repo-review .
+        language: system
+        files: ^(pyproject\.toml|\.pre-commit-config\.yaml)$
+        pass_filenames: false

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -54,6 +54,7 @@ dev = [
   "mypy==2.4.0",
   "pre-commit==4.6.0",
   "ruff==0.16.10",
+  "sp-repo-review[cli]==2026.8.14",
   "tox",
   "tox-uv",
   "twine",
@@ -216,3 +217,14 @@ commands = [
 flavor = "myst"
 # The Markdown files keep each paragraph on one line.
 disable = ["MD013"]
+
+# Deliberate departures from the Scientific Python Development Guide.
+[tool.repo-review.ignore]
+PC110 = "ruff format runs as a local hook from .venv."
+PC140 = "mypy runs as a local hook from .venv."
+PC190 = "ruff check runs as a local hook from .venv."
+PC170 = "The repository has no reStructuredText files."
+PC901 = "CI runs the hooks through tox, not pre-commit.ci."
+PC902 = "CI runs the hooks through tox, not pre-commit.ci."
+PC903 = "CI runs the hooks through tox, not pre-commit.ci."
+SEC001 = "Actions are pinned by major version, and Dependabot updates them."
