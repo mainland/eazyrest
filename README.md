@@ -10,6 +10,19 @@ pip install eazyrest
 
 Requires Python 3.10+.
 
+## Documentation
+
+Sphinx documentation is configured under `docs/` using MyST Markdown and the `furo` theme.
+
+Build the docs locally with:
+
+```bash
+python -m pip install -e ".[docs]"
+sphinx-build -b html docs docs/_build/html
+```
+
+Read the Docs configuration is provided in `.readthedocs.yaml`.
+
 ## Example
 
 The example uses the public REST demo API available at [https://jsonplaceholder.typicode.com/](https://jsonplaceholder.typicode.com/).
