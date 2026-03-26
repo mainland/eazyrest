@@ -20,6 +20,7 @@ __pycache__/
 
 # Packaging and build artifacts
 build/
+_build/
 dist/
 site/
 downloads/
