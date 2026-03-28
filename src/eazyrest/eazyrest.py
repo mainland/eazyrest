@@ -9,6 +9,7 @@ import typing
 from collections.abc import (
     Callable,
     Iterable,
+    Iterator,
     Mapping,
     MutableSet,
     Set,
@@ -96,6 +97,16 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 
+def _is_collection_type(ty: Any) -> bool:
+    """Return whether a type represents a collection."""
+    return ty in (Iterable, list, tuple, set, frozenset)
+
+
+def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
+    """Return whether a related collection should stay lazy."""
+    return collection_type is Iterable
+
+
 @dataclass(frozen=True)
 class TypeClassification:
     """Classify a declared field type for JSON conversion.
@@ -111,6 +122,13 @@ class TypeClassification:
 
     kind: Literal["plain", "related_object", "related_collection"] = "plain"
     """High-level conversion category for the declared field type."""
+
+    collection_type: type[Any] | None = None
+    """Declared collection class for related collections.
+
+    ``Iterable`` preserves lazy loading. Concrete collection types such as
+    ``list`` or ``tuple`` are materialized during JSON conversion.
+    """
 
     is_optional: bool = False
     """Whether the declared field type allows ``None`` values."""
@@ -141,6 +159,7 @@ def classify_type(ty: type[Any]) -> TypeClassification:
             return TypeClassification(
                 kind=classification.kind,
                 is_optional=True,
+                collection_type=classification.collection_type,
                 related_type=classification.related_type,
                 value_type=classification.value_type,
             )
@@ -160,13 +179,14 @@ def classify_type(ty: type[Any]) -> TypeClassification:
         )
 
     if (
-        ty_origin is list
+        _is_collection_type(ty_origin)
         and len(ty_args) == 1
         and lenient_issubclass(ty_args[0], JSONObject)
     ):
         related_type = cast(type[JSONObject], ty_args[0])
         return TypeClassification(
             kind="related_collection",
+            collection_type=cast(type[Any], ty_origin),
             related_type=related_type,
             value_type=related_type,
         )
@@ -175,6 +195,35 @@ def classify_type(ty: type[Any]) -> TypeClassification:
 
 
 T = TypeVar("T", bound="JSONObject")
+
+
+class RelatedCollection(Iterable[T]):
+    """Lazy iterable view over related objects backed by JSON values."""
+
+    _owner: JSONObject
+    """Object that owns the related field."""
+
+    _values: tuple[Any, ...]
+    """Raw JSON values for the related objects."""
+
+    _related_type: type[T]
+    """Model type for each related object."""
+
+    def __init__(
+        self,
+        owner: JSONObject,
+        values: Iterable[Any],
+        related_type: type[T],
+    ) -> None:
+        """Initialize a lazy related-object collection."""
+        self._owner = owner
+        self._values = tuple(values)
+        self._related_type = related_type
+
+    def __iter__(self) -> Iterator[T]:
+        """Yield related objects lazily as iteration advances."""
+        for value in self._values:
+            yield self._owner.create_related(value, self._related_type)
 
 
 @overload
@@ -500,6 +549,50 @@ class JSONObject:
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
             return ty(api=self.api, write_mode=self.write_mode, **kwargs)
 
+    @classmethod
+    def related_from_json(
+        _cls,
+        owner: JSONObject,
+        value: Any,
+        classification: TypeClassification,
+    ) -> Any:
+        """Convert a related JSON value using overridable default rules.
+
+        Args:
+            owner: Object that owns the related field being converted.
+            value: Raw JSON value for the related field.
+            classification: Classified declared field type.
+
+        Returns:
+            Converted related object or collection of related objects.
+
+        Raises:
+            TypeError: If a related collection value is not iterable.
+        """
+        assert classification.related_type is not None
+
+        if classification.kind == "related_object":
+            return owner.create_related(value, classification.related_type)
+
+        if classification.kind != "related_collection":
+            raise TypeError("related_from_json() requires a related field")
+
+        if not isinstance(value, Iterable):
+            raise TypeError(
+                "Related collection values must be iterable, "
+                f"got {type(value).__name__}"
+            )
+
+        related_values = RelatedCollection(
+            owner, value, classification.related_type
+        )
+
+        if _is_lazy_collection_type(classification.collection_type):
+            return related_values
+
+        assert classification.collection_type is not None
+        return classification.collection_type(related_values)
+
     def from_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a raw JSON value to a typed Python value.
 
@@ -520,15 +613,8 @@ class JSONObject:
             )
         elif classification.value_type is datetime.timedelta:
             return parse_duration(value)
-        elif classification.kind == "related_object":
-            assert classification.related_type is not None
-            return self.create_related(value, classification.related_type)
-        elif classification.kind == "related_collection":
-            assert classification.related_type is not None
-            return [
-                self.create_related(arg, classification.related_type)
-                for arg in value
-            ]
+        elif classification.kind in ("related_object", "related_collection"):
+            return self.related_from_json(self, value, classification)
         else:
             return value
 
@@ -555,7 +641,7 @@ class JSONObject:
         elif classification.value_type is datetime.timedelta:
             return str(value)
         elif classification.kind == "related_collection":
-            return [arg.pk for arg in value]
+            return [arg if isinstance(arg, int) else arg.pk for arg in value]
         else:
             return value
 
