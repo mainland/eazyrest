@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import inspect
+import types
 import typing
 from collections.abc import (
     Callable,
@@ -12,10 +13,12 @@ from collections.abc import (
     MutableSet,
     Set,
 )
+from dataclasses import dataclass
 from functools import cached_property
 from typing import (
     Any,
     ClassVar,
+    Literal,
     TypeVar,
     Union,
     cast,
@@ -91,6 +94,84 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
         ``False``.
     """
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
+
+
+@dataclass(frozen=True)
+class TypeClassification:
+    """Classify a declared field type for JSON conversion.
+
+    ``value_type`` captures the Python type used for general conversion logic,
+    including plain scalar fields such as ``datetime`` and ``timedelta``.
+
+    ``related_type`` is narrower: it is only populated for relationship fields
+    and identifies the ``JSONObject`` subclass to instantiate. For related
+    fields the two currently match, but for non-related fields only
+    ``value_type`` is set.
+    """
+
+    kind: Literal["plain", "related_object", "related_collection"] = "plain"
+    """High-level conversion category for the declared field type."""
+
+    is_optional: bool = False
+    """Whether the declared field type allows ``None`` values."""
+
+    related_type: type[JSONObject] | None = None
+    """Related ``JSONObject`` subclass for relationship fields only."""
+
+    value_type: type[Any] | None = None
+    """Python type used by the JSON conversion rules for this field."""
+
+
+def classify_type(ty: type[Any]) -> TypeClassification:
+    """Classify a declared field type.
+
+    Args:
+        ty: Declared field type.
+
+    Returns:
+        Structured classification of ``ty``.
+    """
+    ty_origin = typing.get_origin(ty)
+    ty_args = typing.get_args(ty)
+
+    if ty_origin in (Union, types.UnionType):
+        non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
+        if len(non_none_args) == 1 and len(non_none_args) != len(ty_args):
+            classification = classify_type(non_none_args[0])
+            return TypeClassification(
+                kind=classification.kind,
+                is_optional=True,
+                related_type=classification.related_type,
+                value_type=classification.value_type,
+            )
+
+    if ty is datetime.datetime:
+        return TypeClassification(value_type=ty)
+
+    if ty is datetime.timedelta:
+        return TypeClassification(value_type=ty)
+
+    if lenient_issubclass(ty, JSONObject):
+        assert issubclass(ty, JSONObject)
+        return TypeClassification(
+            kind="related_object",
+            related_type=ty,
+            value_type=ty,
+        )
+
+    if (
+        ty_origin is list
+        and len(ty_args) == 1
+        and lenient_issubclass(ty_args[0], JSONObject)
+    ):
+        related_type = cast(type[JSONObject], ty_args[0])
+        return TypeClassification(
+            kind="related_collection",
+            related_type=related_type,
+            value_type=related_type,
+        )
+
+    return TypeClassification(value_type=ty)
 
 
 T = TypeVar("T", bound="JSONObject")
@@ -429,34 +510,25 @@ class JSONObject:
         Returns:
             Converted Python value.
         """
-        ty_origin = typing.get_origin(ty)
-        ty_args = typing.get_args(ty)
+        classification = classify_type(ty)
 
         if value is None:
             return value
-        elif ty is datetime.datetime:
+        elif classification.value_type is datetime.datetime:
             return datetime.datetime.fromtimestamp(
                 value, datetime.timezone.utc
             )
-        elif ty is datetime.timedelta:
+        elif classification.value_type is datetime.timedelta:
             return parse_duration(value)
-        elif lenient_issubclass(ty, JSONObject):
-            assert issubclass(ty, JSONObject)
-            return self.create_related(value, ty)
-        # List[T]
-        elif (
-            ty_origin is list
-            and len(ty_args) == 1
-            and lenient_issubclass(ty_args[0], JSONObject)
-        ):
-            return [self.create_related(arg, ty_args[0]) for arg in value]
-        # Optional[T]
-        elif (
-            ty_origin is Union
-            and len(ty_args) == 2
-            and ty_args[1] is type(None)
-        ):
-            return self.from_json(value, ty_args[0])
+        elif classification.kind == "related_object":
+            assert classification.related_type is not None
+            return self.create_related(value, classification.related_type)
+        elif classification.kind == "related_collection":
+            assert classification.related_type is not None
+            return [
+                self.create_related(arg, classification.related_type)
+                for arg in value
+            ]
         else:
             return value
 
@@ -470,33 +542,20 @@ class JSONObject:
         Returns:
             JSON-serializable representation of ``value``.
         """
-        ty_origin = typing.get_origin(ty)
-        ty_args = typing.get_args(ty)
+        classification = classify_type(ty)
 
-        if lenient_issubclass(ty, JSONObject):
+        if classification.kind == "related_object":
             # If value is an int, assume it is a primary key already
             if isinstance(value, int):
                 return value
             else:
                 return value.pk
-        elif ty is datetime.datetime:
+        elif classification.value_type is datetime.datetime:
             return value.timestamp()
-        elif ty is datetime.timedelta:
+        elif classification.value_type is datetime.timedelta:
             return str(value)
-        # List[T]
-        elif (
-            ty_origin is list
-            and len(ty_args) == 1
-            and lenient_issubclass(ty_args[0], JSONObject)
-        ):
+        elif classification.kind == "related_collection":
             return [arg.pk for arg in value]
-        # Optional[T]
-        elif (
-            ty_origin is Union
-            and len(ty_args) == 2
-            and ty_args[1] is type(None)
-        ):
-            return self.to_json(value, ty_args[0])
         else:
             return value
 

@@ -85,6 +85,16 @@ class PaginatedSearchResult(ModelBase):
             payload = cls.api.get(next_url).json()
 
 
+@json_object
+class MaybeTodo(ModelBase):
+    """Model with an optional related user field."""
+
+    class_url = "/maybe-todos/"
+
+    id: int
+    user: User | None
+
+
 def test_object_json_raises_for_empty_list_response(
     requests_mock: Any,
 ) -> None:
@@ -189,6 +199,31 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert not created
     assert obj.id == 1
     assert requests_mock.call_count == 1
+
+
+def test_optional_pep604_related_object_is_converted(
+    requests_mock: Any,
+) -> None:
+    """``User | None`` fields should still use related-object conversion."""
+    requests_mock.get(
+        "https://example.com/v1/maybe-todos/1/",
+        json={"id": 1, "user": 2},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/maybe-todos/2/",
+        json={"id": 2, "user": None},
+    )
+
+    with_user = MaybeTodo(id=1)
+    without_user = MaybeTodo(id=2)
+
+    assert with_user.user is not None
+    assert with_user.user.name == "Ada"
+    assert without_user.user is None
 
 
 def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
