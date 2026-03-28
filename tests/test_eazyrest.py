@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import pytest
@@ -93,6 +94,36 @@ class MaybeTodo(ModelBase):
 
     id: int
     user: User | None
+
+
+@json_object
+class Team(ModelBase):
+    """Model with a lazy collection of related users."""
+
+    class_url = "/teams/"
+
+    id: int
+    members: Iterable[User]
+
+
+@json_object
+class TupleTeam(ModelBase):
+    """Model with a tuple of related users."""
+
+    class_url = "/tuple-teams/"
+
+    id: int
+    members: tuple[User]
+
+
+@json_object
+class SetTeam(ModelBase):
+    """Model with a set of related users."""
+
+    class_url = "/set-teams/"
+
+    id: int
+    members: set[User]
 
 
 def test_object_json_raises_for_empty_list_response(
@@ -199,6 +230,85 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert not created
     assert obj.id == 1
     assert requests_mock.call_count == 1
+
+
+def test_related_collection_is_loaded_lazily(
+    requests_mock: Any,
+) -> None:
+    """Iterable relations should not fetch nested objects until iterated."""
+    requests_mock.get(
+        "https://example.com/v1/teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"}
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = Team(id=1)
+    members = team.members
+
+    assert requests_mock.call_count == 1
+    assert isinstance(members, Iterable)
+
+    loaded = list(members)
+
+    assert [member.name for member in loaded] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 3
+
+
+def test_related_tuple_is_materialized(
+    requests_mock: Any,
+) -> None:
+    """Concrete tuple annotations should materialize related collections."""
+    requests_mock.get(
+        "https://example.com/v1/tuple-teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = TupleTeam(id=1)
+    members = team.members
+
+    assert isinstance(members, tuple)
+    assert [member.name for member in members] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 3
+
+
+def test_related_set_is_materialized(
+    requests_mock: Any,
+) -> None:
+    """Concrete set annotations should materialize related collections."""
+    requests_mock.get(
+        "https://example.com/v1/set-teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = SetTeam(id=1)
+    members = team.members
+
+    assert isinstance(members, set)
+    assert {member.name for member in members} == {"Ada", "Grace"}
+    assert requests_mock.call_count == 3
 
 
 def test_optional_pep604_related_object_is_converted(
