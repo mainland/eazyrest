@@ -25,6 +25,8 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+`filter()` and `get()` also accept `prefetch=[...]` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
+
 ## Response-shape hooks
 
 Override these hooks if an API wraps responses in envelopes:

@@ -13,6 +13,7 @@ from eazyrest import (
     DoesNotExist,
     JSONObject,
     MultipleObjectsReturned,
+    PrefetchNotSupported,
     json_object,
 )
 
@@ -33,6 +34,18 @@ class User(ModelBase):
 
     id: int
     name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls,
+        pks: set[Any],
+        *,
+        api: API | None = None,
+    ) -> dict[Any, User]:
+        """Load users in one request for explicit prefetch support."""
+        del api
+        users = list(cls.filter(id=sorted(pks)))
+        return {user.pk: user for user in users}
 
 
 @json_object(field_map={"user": "userId"})
@@ -135,6 +148,26 @@ class Event(ModelBase):
 
     id: int
     starts_at: datetime.datetime
+
+
+class NoBulkUser(ModelBase):
+    """Related model without bulk prefetch support."""
+
+    class_url = "/nobulk-users/"
+
+    id: int
+    name: str
+
+
+@json_object(field_map={"user": "userId"})
+class NoBulkTodo(ModelBase):
+    """Todo model whose relation does not opt into bulk prefetch."""
+
+    class_url = "/nobulk-todos/"
+
+    id: int
+    user: NoBulkUser
+    title: str
 
 
 def test_object_json_raises_for_empty_list_response(
@@ -402,6 +435,149 @@ def test_assigning_field_invalidates_cached_related_value(
     assert original.pk == 2
     assert updated.pk == 3
     assert updated is not original
+
+
+def test_filter_prefetches_related_objects_via_bulk_get(
+    requests_mock: Any,
+) -> None:
+    """Explicit prefetch should bulk-load related objects once."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "userId": 2, "title": "a", "completed": False},
+            {"id": 2, "userId": 3, "title": "b", "completed": True},
+        ],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[
+            {"id": 2, "name": "Ada"},
+            {"id": 3, "name": "Grace"},
+        ],
+    )
+
+    todos_iter = Todo.filter(prefetch=["user"])
+
+    assert requests_mock.call_count == 1
+
+    todos = list(todos_iter)
+
+    assert [todo.user.name for todo in todos] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 2
+    assert users.last_request.qs == {"id": ["2", "3"]}
+
+
+def test_get_supports_prefetch_for_single_result(
+    requests_mock: Any,
+) -> None:
+    """Single-object lookups should accept the same prefetch option."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[{"id": 2, "name": "Ada"}],
+    )
+
+    todo = Todo.get(id=1, prefetch=["user"])
+
+    assert todo.user.name == "Ada"
+    assert requests_mock.call_count == 2
+
+
+def test_empty_prefetch_is_treated_like_no_prefetch(
+    requests_mock: Any,
+) -> None:
+    """An empty prefetch list should behave the same as no prefetch."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+
+    todos = list(Todo.filter(prefetch=[]))
+
+    assert [todo.id for todo in todos] == [1]
+    assert requests_mock.call_count == 1
+
+
+def test_prefetch_reuses_related_instances_within_a_batch(
+    requests_mock: Any,
+) -> None:
+    """Prefetch should share one related instance across matching parents."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "userId": 2, "title": "a", "completed": False},
+            {"id": 2, "userId": 2, "title": "b", "completed": True},
+        ],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[{"id": 2, "name": "Ada"}],
+    )
+
+    first, second = list(Todo.filter(prefetch=["user"]))
+
+    assert first.user is second.user
+
+
+def test_prefetches_related_collections_via_bulk_get(
+    requests_mock: Any,
+) -> None:
+    """Collection relations should also use bulk prefetch when requested."""
+    requests_mock.get(
+        "https://example.com/v1/teams/",
+        json=[{"id": 1, "members": [2, 3]}],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[
+            {"id": 2, "name": "Ada"},
+            {"id": 3, "name": "Grace"},
+        ],
+    )
+
+    team = next(iter(Team.filter(prefetch=["members"])))
+    members = team.members
+
+    assert isinstance(members, Iterable)
+    assert requests_mock.call_count == 2
+    assert [member.name for member in members] == ["Ada", "Grace"]
+    assert users.last_request.qs == {"id": ["2", "3"]}
+
+
+def test_prefetches_scalar_members_from_mixed_related_collection(
+    requests_mock: Any,
+) -> None:
+    """Mixed embedded/scalar collections should still prefetch scalars."""
+    requests_mock.get(
+        "https://example.com/v1/teams/",
+        json=[{"id": 1, "members": [{"id": 2, "name": "Ada"}, 3]}],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[{"id": 3, "name": "Grace"}],
+    )
+
+    team = next(iter(Team.filter(prefetch=["members"])))
+
+    assert [member.name for member in team.members] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 2
+    assert users.last_request.qs == {"id": ["3"]}
+
+
+def test_prefetch_requires_explicit_bulk_support(
+    requests_mock: Any,
+) -> None:
+    """Requested prefetch should fail for models without bulk support."""
+    requests_mock.get(
+        "https://example.com/v1/nobulk-todos/",
+        json=[{"id": 1, "userId": 2, "title": "a"}],
+    )
+
+    with pytest.raises(PrefetchNotSupported):
+        list(NoBulkTodo.filter(prefetch=["user"]))
 
 
 def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:

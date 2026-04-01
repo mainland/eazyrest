@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import inspect
+import itertools
 import types
 import typing
 from collections.abc import (
@@ -12,6 +13,7 @@ from collections.abc import (
     Iterator,
     Mapping,
     MutableSet,
+    Sequence,
     Set,
 )
 from dataclasses import dataclass
@@ -39,6 +41,14 @@ class DoesNotExist(Exception):
 
 class MultipleObjectsReturned(Exception):
     """Raised when a query expected one object but got multiple results."""
+
+
+class PrefetchNotSupported(Exception):
+    """Raised when explicit prefetch is requested for an unsupported model."""
+
+
+PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
+"""Prefetched related objects keyed by field name and then by primary key."""
 
 
 _api_registry: dict[type[JSONObject], API] = {}
@@ -209,21 +219,30 @@ class RelatedCollection(Iterable[T]):
     _related_type: type[T]
     """Model type for each related object."""
 
+    _field: str | None
+    """Owning field name used to resolve prefetched related objects."""
+
     def __init__(
         self,
         owner: JSONObject,
         values: Iterable[Any],
         related_type: type[T],
+        field: str | None = None,
     ) -> None:
         """Initialize a lazy related-object collection."""
         self._owner = owner
         self._values = tuple(values)
         self._related_type = related_type
+        self._field = field
 
     def __iter__(self) -> Iterator[T]:
         """Yield related objects lazily as iteration advances."""
         for value in self._values:
-            yield self._owner.create_related(value, self._related_type)
+            yield self._owner.create_related(
+                value,
+                self._related_type,
+                field=self._field,
+            )
 
 
 @overload
@@ -430,7 +449,11 @@ class JSONProperty:
             if self.field in obj._field_cache:
                 return obj._field_cache[self.field]
             assert self.ty is not None
-            value = obj.from_json(obj.json[self.json_field], self.ty)
+            value = obj.from_json(
+                obj.json[self.json_field],
+                self.ty,
+                field=self.field,
+            )
             obj._field_cache[self.field] = value
             return value
 
@@ -450,6 +473,7 @@ class JSONProperty:
             raise AttributeError
         else:
             obj._field_cache.pop(self.field, None)
+            obj._prefetched_related.pop(self.field, None)
             assert self.ty is not None
             new_value = obj.to_json(value, self.ty)
 
@@ -482,6 +506,9 @@ class JSONObject:
     _json_fields: ClassVar[Set[str]]
     """All JSON fields."""
 
+    prefetch_batch_size: ClassVar[int] = 100
+    """Maximum number of parent objects to prefetch in one batch."""
+
     _pk_value: Any
     """Value of the primary key.
 
@@ -499,6 +526,9 @@ class JSONObject:
 
     _field_cache: dict[str, Any]
     """Converted field values cached by Python attribute name."""
+
+    _prefetched_related: PrefetchMap
+    """Prefetched related objects keyed by field name and primary key."""
 
     _json: Any
     """Object's JSON representation."""
@@ -533,24 +563,51 @@ class JSONObject:
         self._write_mode = validate_write_mode(write_mode)
         self._pending_updates = {}
         self._field_cache = {}
+        self._prefetched_related = {}
         self._json = json
 
         # Set all attributes passed in as keyword arguments
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-    def create_related(self, arg: Any, ty: type[T]) -> T:
+    def _set_prefetched_related(
+        self,
+        prefetched_related: Mapping[str, Mapping[Any, JSONObject]],
+    ) -> None:
+        """Attach prefetched related-object mappings to this instance."""
+        # Copy the outer mapping so each parent can drop an entire prefetched
+        # field cache independently while still sharing the related objects.
+        self._prefetched_related = dict(prefetched_related)
+
+    def create_related(
+        self,
+        arg: Any,
+        ty: type[T],
+        *,
+        field: str | None = None,
+    ) -> T:
         """Create a related object from embedded JSON or a foreign key.
 
         Args:
             arg: Either a JSON mapping for eager object creation or a primary
                 key value for lazy lookup.
             ty: Related ``JSONObject`` subclass type.
+            field: Optional owning field name for prefetch lookup.
 
         Returns:
             Instance of ``ty``.
         """
-        # If the argument is a dict, we treat it as JSON
+        # If the argument is already an instance of ty, keep it as-is.
+        if isinstance(arg, ty):
+            return arg
+        if (
+            field is not None
+            and not isinstance(arg, dict)
+            and field in self._prefetched_related
+            and arg in self._prefetched_related[field]
+        ):
+            return cast(T, self._prefetched_related[field][arg])
+        # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
             return ty(json=arg, api=self.api, write_mode=self.write_mode)
         else:
@@ -564,6 +621,8 @@ class JSONObject:
         owner: JSONObject,
         value: Any,
         classification: TypeClassification,
+        *,
+        field: str | None = None,
     ) -> Any:
         """Convert a related JSON value using overridable default rules.
 
@@ -571,6 +630,7 @@ class JSONObject:
             owner: Object that owns the related field being converted.
             value: Raw JSON value for the related field.
             classification: Classified declared field type.
+            field: Optional owning field name for prefetch lookup.
 
         Returns:
             Converted related object or collection of related objects.
@@ -581,7 +641,11 @@ class JSONObject:
         assert classification.related_type is not None
 
         if classification.kind == "related_object":
-            return owner.create_related(value, classification.related_type)
+            return owner.create_related(
+                value,
+                classification.related_type,
+                field=field,
+            )
 
         if classification.kind != "related_collection":
             raise TypeError("related_from_json() requires a related field")
@@ -593,7 +657,10 @@ class JSONObject:
             )
 
         related_values = RelatedCollection(
-            owner, value, classification.related_type
+            owner,
+            value,
+            classification.related_type,
+            field=field,
         )
 
         if _is_lazy_collection_type(classification.collection_type):
@@ -602,12 +669,19 @@ class JSONObject:
         assert classification.collection_type is not None
         return classification.collection_type(related_values)
 
-    def from_json(self, value: Any, ty: type[Any]) -> Any:
+    def from_json(
+        self,
+        value: Any,
+        ty: type[Any],
+        *,
+        field: str | None = None,
+    ) -> Any:
         """Convert a raw JSON value to a typed Python value.
 
         Args:
             value: Value read from JSON payload.
             ty: Target Python type.
+            field: Optional owning field name for prefetch lookup.
 
         Returns:
             Converted Python value.
@@ -623,7 +697,12 @@ class JSONObject:
         elif classification.value_type is datetime.timedelta:
             return parse_duration(value)
         elif classification.kind in ("related_object", "related_collection"):
-            return self.related_from_json(self, value, classification)
+            return self.related_from_json(
+                self,
+                value,
+                classification,
+                field=field,
+            )
         else:
             return value
 
@@ -691,6 +770,7 @@ class JSONObject:
             self._json = self.object_json(resp.json())
             self._pending_updates.clear()
             self._field_cache.clear()
+            self._prefetched_related.clear()
             return
 
         self.json[json_field] = value
@@ -711,6 +791,7 @@ class JSONObject:
         self._json = self.object_json(resp.json())
         self._pending_updates.clear()
         self._field_cache.clear()
+        self._prefetched_related.clear()
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
@@ -719,6 +800,7 @@ class JSONObject:
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
+        self._prefetched_related.clear()
         # Clear JSON
         self._json = None
 
@@ -792,6 +874,30 @@ class JSONObject:
         return cls(json=resp.json())
 
     @classmethod
+    def bulk_get_by_pks(
+        cls: type[Self],
+        pks: set[Any],
+        *,
+        api: API | None = None,
+    ) -> dict[Any, Self]:
+        """Bulk-load objects by primary key for explicit prefetch support.
+
+        Args:
+            pks: Primary keys to load.
+            api: Optional API override for the bulk request.
+
+        Returns:
+            Mapping from primary key to loaded object.
+
+        Raises:
+            PrefetchNotSupported: Always, unless overridden by a subclass.
+        """
+        del pks, api
+        raise PrefetchNotSupported(
+            f"{cls.__name__} does not support bulk prefetch"
+        )
+
+    @classmethod
     def collection_items(cls, payload: Any) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
@@ -842,13 +948,116 @@ class JSONObject:
         return payload
 
     @classmethod
+    def _prefetch_info(
+        cls,
+        field: str,
+    ) -> tuple[JSONProperty, TypeClassification]:
+        """Return descriptor and type info for a prefetchable relation."""
+        descriptor = getattr(cls, field, None)
+        if not isinstance(descriptor, JSONProperty):
+            raise ValueError(
+                f"{cls.__name__}.{field} is not a JSON-backed field"
+            )
+
+        classification = classify_type(descriptor.ty)
+        if classification.kind not in (
+            "related_object",
+            "related_collection",
+        ):
+            raise ValueError(
+                f"{cls.__name__}.{field} is not a related-object field"
+            )
+
+        return descriptor, classification
+
+    @classmethod
+    def _apply_prefetch(
+        cls: type[Self],
+        items: Iterable[Any],
+        fields: Sequence[str],
+    ) -> PrefetchMap:
+        """Bulk-load related objects for a batch of parent JSON items."""
+        prefetched_related: PrefetchMap = {}
+
+        for field in fields:
+            descriptor, classification = cls._prefetch_info(field)
+            assert classification.related_type is not None
+
+            pks: set[Any] = set()
+
+            for item in items:
+                if descriptor.json_field not in item:
+                    continue
+
+                raw_value = item[descriptor.json_field]
+
+                if raw_value is None:
+                    continue
+
+                if classification.kind == "related_object":
+                    if not isinstance(raw_value, dict):
+                        pks.add(raw_value)
+                    continue
+
+                assert classification.kind == "related_collection"
+                if not isinstance(raw_value, Iterable) or isinstance(
+                    raw_value, (str, bytes, dict)
+                ):
+                    continue
+
+                raw_items = tuple(raw_value)
+                # Explicit prefetch only bulk-loads foreign-key style entries.
+                # Embedded related JSON objects do not need to be prefetched.
+                pks.update(
+                    item for item in raw_items if not isinstance(item, dict)
+                )
+
+            if len(pks) == 0:
+                continue
+
+            prefetched_related[field] = (
+                classification.related_type.bulk_get_by_pks(pks, api=cls.api)
+            )
+
+        return prefetched_related
+
+    @classmethod
+    def _prefetched_filter(
+        cls: type[Self],
+        items: Iterable[Any],
+        fields: Sequence[str],
+    ) -> Iterator[Self]:
+        """Yield prefetched objects lazily in batches."""
+        iterator = iter(items)
+
+        while True:
+            batch_items = list(
+                itertools.islice(iterator, cls.prefetch_batch_size)
+            )
+            if len(batch_items) == 0:
+                return
+
+            prefetched_related = cls._apply_prefetch(batch_items, fields)
+            for item in batch_items:
+                obj = cls(json=item)
+                obj._set_prefetched_related(prefetched_related)
+                yield obj
+
+    @classmethod
     def filter(
-        cls: type[Self], url: str | None = None, **kwargs: Any
+        cls: type[Self],
+        url: str | None = None,
+        *,
+        prefetch: Sequence[str] | None = None,
+        **kwargs: Any,
     ) -> Iterable[Self]:
         """Query objects matching request parameters.
 
         Args:
             url: Optional endpoint override; defaults to ``class_url``.
+            prefetch: Optional related field names to bulk-load explicitly.
+                Prefetched related objects may be shared by identity across
+                parent objects within the same batch.
             **kwargs: Query string parameters.
 
         Returns:
@@ -858,7 +1067,13 @@ class JSONObject:
             url = cls.class_url
 
         resp = cls.api.get(url, params=kwargs)
-        return (cls(json=item) for item in cls.collection_items(resp.json()))
+        items = cls.collection_items(resp.json())
+
+        # Treat an empty prefetch list the same as no prefetch at all.
+        if not prefetch:
+            return (cls(json=item) for item in items)
+
+        return cls._prefetched_filter(items, tuple(prefetch))
 
     @classmethod
     def all(cls: type[Self]) -> Iterable[Self]:
@@ -870,10 +1085,18 @@ class JSONObject:
         return cls.filter()
 
     @classmethod
-    def get(cls: type[Self], **kwargs: Any) -> Self:
+    def get(
+        cls: type[Self],
+        *,
+        prefetch: Sequence[str] | None = None,
+        **kwargs: Any,
+    ) -> Self:
         """Fetch exactly one object matching query parameters.
 
         Args:
+            prefetch: Optional related field names to bulk-load explicitly.
+                Prefetched related objects may be shared by identity across
+                parent objects within the same batch.
             **kwargs: Query string parameters.
 
         Returns:
@@ -883,7 +1106,7 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
         """
-        results = iter(cls.filter(**kwargs))
+        results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
         if first is None:
             raise DoesNotExist
