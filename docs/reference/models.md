@@ -9,6 +9,10 @@
 ```
 
 ```{eval-rst}
+.. autoexception:: eazyrest.PrefetchNotSupported
+```
+
+```{eval-rst}
 .. autofunction:: eazyrest.json_object
 ```
 
