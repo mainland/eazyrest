@@ -468,8 +468,12 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            if self.field in obj._field_cache:
+                return obj._field_cache[self.field]
             assert self.ty is not None
-            return obj.from_json(obj.json[self.json_field], self.ty)
+            value = obj.from_json(obj.json[self.json_field], self.ty)
+            obj._field_cache[self.field] = value
+            return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -486,6 +490,7 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            obj._field_cache.pop(self.field, None)
             assert self.ty is not None
             new_value = obj.to_json(value, self.ty)
 
@@ -533,6 +538,9 @@ class JSONObject:
     _pending_updates: dict[str, Any]
     """JSON field updates queued for the next ``save()``."""
 
+    _field_cache: dict[str, Any]
+    """Converted field values cached by Python attribute name."""
+
     _json: Any
     """Object's JSON representation."""
 
@@ -565,6 +573,7 @@ class JSONObject:
                 write_mode = "lazy"
         self._write_mode = validate_write_mode(write_mode)
         self._pending_updates = {}
+        self._field_cache = {}
         self._json = json
 
         # Set all attributes passed in as keyword arguments
@@ -723,6 +732,7 @@ class JSONObject:
             resp = self.api.patch(self.url, json=payload)
             self._json = self.object_json(resp.json())
             self._pending_updates.clear()
+            self._field_cache.clear()
             return
 
         self.json[json_field] = value
@@ -742,6 +752,7 @@ class JSONObject:
         resp = self.api.patch(self.url, json=self._pending_updates)
         self._json = self.object_json(resp.json())
         self._pending_updates.clear()
+        self._field_cache.clear()
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
@@ -749,6 +760,7 @@ class JSONObject:
         self._pk_value = self.pk
         # Discard unsaved local changes
         self._pending_updates.clear()
+        self._field_cache.clear()
         # Clear JSON
         self._json = None
 
@@ -809,6 +821,7 @@ class JSONObject:
         """
         if self._json is None:
             self._json = self.object_json(self.api.get(self.url).json())
+            self._field_cache.clear()
 
             # Have have JSON now, so delete _pk_value
             del self._pk_value
