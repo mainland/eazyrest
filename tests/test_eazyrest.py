@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Iterable
 from typing import Any
 
@@ -126,6 +127,16 @@ class SetTeam(ModelBase):
     members: set[User]
 
 
+@json_object
+class Event(ModelBase):
+    """Model with a datetime field used to verify caching."""
+
+    class_url = "/events/"
+
+    id: int
+    starts_at: datetime.datetime
+
+
 def test_object_json_raises_for_empty_list_response(
     requests_mock: Any,
 ) -> None:
@@ -241,8 +252,7 @@ def test_related_collection_is_loaded_lazily(
         json={"id": 1, "members": [2, 3]},
     )
     requests_mock.get(
-        "https://example.com/v1/users/2/",
-        json={"id": 2, "name": "Ada"}
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
     )
     requests_mock.get(
         "https://example.com/v1/users/3/",
@@ -334,6 +344,64 @@ def test_optional_pep604_related_object_is_converted(
     assert with_user.user is not None
     assert with_user.user.name == "Ada"
     assert without_user.user is None
+
+
+def test_repeated_related_field_access_returns_cached_instance(
+    requests_mock: Any,
+) -> None:
+    """Repeated reads of a related field should reuse one instance."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1)
+
+    first = todo.user
+    second = todo.user
+
+    assert first is second
+    assert requests_mock.call_count == 1
+
+
+def test_repeated_datetime_access_returns_cached_instance(
+    requests_mock: Any,
+) -> None:
+    """Parsed datetime fields should be cached after first access."""
+    requests_mock.get(
+        "https://example.com/v1/events/1/",
+        json={"id": 1, "starts_at": 1711972800.0},
+    )
+
+    event = Event(id=1)
+
+    first = event.starts_at
+    second = event.starts_at
+
+    assert first is second
+    assert first == datetime.datetime(
+        2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc
+    )
+
+
+def test_assigning_field_invalidates_cached_related_value(
+    requests_mock: Any,
+) -> None:
+    """Setting a related field should replace the cached converted value."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1)
+    original = todo.user
+
+    todo.user = User(id=3)
+    updated = todo.user
+
+    assert original.pk == 2
+    assert updated.pk == 3
+    assert updated is not original
 
 
 def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
