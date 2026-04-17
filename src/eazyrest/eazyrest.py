@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import enum
 import inspect
 import itertools
 import types
@@ -745,6 +746,10 @@ class JSONObject:
             )
         elif classification.value_type is datetime.timedelta:
             return parse_duration(value)
+        elif lenient_issubclass(classification.value_type, enum.Enum):
+            enum_type = classification.value_type
+            assert enum_type is not None
+            return enum_type(value)
         elif classification.kind in ("related_object", "related_collection"):
             return self.related_from_json(
                 self,
@@ -778,6 +783,13 @@ class JSONObject:
             return value.timestamp()
         elif classification.value_type is datetime.timedelta:
             return str(value)
+        elif lenient_issubclass(classification.value_type, enum.Enum):
+            enum_type = classification.value_type
+            assert enum_type is not None
+            if isinstance(value, enum_type):
+                return value.value
+
+            return value
         elif classification.kind == "related_collection":
             return [arg if isinstance(arg, int) else arg.pk for arg in value]
         else:
