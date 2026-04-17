@@ -706,7 +706,8 @@ class JSONObject:
         else:
             return value
 
-    def to_json(self, value: Any, ty: type[Any]) -> Any:
+    @classmethod
+    def to_json(cls, value: Any, ty: type[Any]) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
         Args:
