@@ -276,6 +276,50 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert requests_mock.call_count == 1
 
 
+def test_create_encodes_json_backed_fields(requests_mock: Any) -> None:
+    """``create()`` should map and encode declared JSON-backed fields."""
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo.create(
+        user=User(id=2),
+        title="a",
+        completed=False,
+        metadata={"source": "test"},
+    )
+
+    assert todo.id == 1
+    assert post.last_request.json() == {
+        "userId": 2,
+        "title": "a",
+        "completed": False,
+        "metadata": {"source": "test"},
+    }
+
+
+def test_create_encodes_datetime_fields(requests_mock: Any) -> None:
+    """``create()`` should use typed JSON encoding for scalar fields."""
+    starts_at = datetime.datetime(
+        2024,
+        4,
+        1,
+        12,
+        0,
+        tzinfo=datetime.timezone.utc,
+    )
+    post = requests_mock.post(
+        "https://example.com/v1/events/",
+        json={"id": 1, "starts_at": 1711972800.0},
+    )
+
+    event = Event.create(starts_at=starts_at)
+
+    assert event.id == 1
+    assert post.last_request.json() == {"starts_at": 1711972800.0}
+
+
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
