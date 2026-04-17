@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import enum
 from collections.abc import Iterable
 from typing import Any
 
@@ -148,6 +149,33 @@ class Event(ModelBase):
 
     id: int
     starts_at: datetime.datetime
+
+
+class IssueStatus(str, enum.Enum):
+    """Status values for enum conversion tests."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+@json_object
+class Issue(ModelBase):
+    """Model with an enum field."""
+
+    class_url = "/issues/"
+
+    id: int
+    status: IssueStatus
+
+
+@json_object
+class MaybeIssue(ModelBase):
+    """Model with an optional enum field."""
+
+    class_url = "/maybe-issues/"
+
+    id: int
+    status: IssueStatus | None
 
 
 class NoBulkUser(ModelBase):
@@ -320,6 +348,19 @@ def test_create_encodes_datetime_fields(requests_mock: Any) -> None:
     assert post.last_request.json() == {"starts_at": 1711972800.0}
 
 
+def test_create_encodes_enum_fields(requests_mock: Any) -> None:
+    """``create()`` should encode enum fields using their JSON values."""
+    post = requests_mock.post(
+        "https://example.com/v1/issues/",
+        json={"id": 1, "status": "open"},
+    )
+
+    issue = Issue.create(status=IssueStatus.OPEN)
+
+    assert issue.status is IssueStatus.OPEN
+    assert post.last_request.json() == {"status": "open"}
+
+
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
@@ -459,6 +500,40 @@ def test_repeated_datetime_access_returns_cached_instance(
     assert first == datetime.datetime(
         2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc
     )
+
+
+def test_enum_field_decodes_from_json() -> None:
+    """Enum fields should decode JSON values using the declared type."""
+    issue = Issue(json={"id": 1, "status": "open"})
+
+    assert issue.status is IssueStatus.OPEN
+
+
+def test_optional_enum_field_decodes_from_json() -> None:
+    """Optional enum fields should decode values and preserve ``None``."""
+    with_status = MaybeIssue(json={"id": 1, "status": "closed"})
+    without_status = MaybeIssue(json={"id": 2, "status": None})
+
+    assert with_status.status is IssueStatus.CLOSED
+    assert without_status.status is None
+
+
+def test_assigning_enum_field_encodes_value(requests_mock: Any) -> None:
+    """Enum assignment should write the enum value to JSON."""
+    requests_mock.get(
+        "https://example.com/v1/issues/1/",
+        json={"id": 1, "status": "open"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/issues/1/",
+        json={"id": 1, "status": "closed"},
+    )
+
+    issue = Issue(id=1, write_mode="eager")
+    issue.status = IssueStatus.CLOSED
+
+    assert patch.called
+    assert patch.last_request.json() == {"status": "closed"}
 
 
 def test_assigning_field_invalidates_cached_related_value(
