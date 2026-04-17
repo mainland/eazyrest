@@ -866,12 +866,25 @@ class JSONObject:
         """Create and return a new remote object.
 
         Args:
-            **kwargs: Fields submitted as JSON in the ``POST`` request.
+            **kwargs: Field values submitted in Python form for JSON-backed
+                fields, or already-JSON values for unknown extra keys.
 
         Returns:
             Newly created object instance.
         """
-        resp = cls.api.post(cls.class_url, json=kwargs)
+        payload: dict[str, Any] = {}
+
+        for field, value in kwargs.items():
+            descriptor = getattr(cls, field, None)
+            if isinstance(descriptor, JSONProperty):
+                payload[descriptor.json_field] = cls.to_json(
+                    value,
+                    descriptor.ty,
+                )
+            else:
+                payload[field] = value
+
+        resp = cls.api.post(cls.class_url, json=payload)
         return cls(json=resp.json())
 
     @classmethod
