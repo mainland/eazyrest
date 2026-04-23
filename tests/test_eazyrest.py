@@ -455,6 +455,33 @@ def test_related_set_is_materialized(
     assert requests_mock.call_count == 3
 
 
+@pytest.mark.parametrize(
+    ("payload", "value_type"),
+    [
+        ("23", "str"),
+        ({"id": 2}, "dict"),
+    ],
+)
+def test_invalid_related_collection_payload_raises_type_error(
+    requests_mock: Any,
+    payload: Any,
+    value_type: str,
+) -> None:
+    """Malformed related collections should fail fast."""
+    requests_mock.get(
+        "https://example.com/v1/teams/1/",
+        json={"id": 1, "members": payload},
+    )
+
+    team = Team(id=1)
+
+    with pytest.raises(
+        TypeError,
+        match=rf"Related collection values must be iterable, got {value_type}",
+    ):
+        _ = team.members
+
+
 def test_optional_pep604_related_object_is_converted(
     requests_mock: Any,
 ) -> None:
