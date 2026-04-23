@@ -897,7 +897,7 @@ class JSONObject:
                 payload[field] = value
 
         resp = cls.api.post(cls.class_url, json=payload)
-        return cls(json=resp.json())
+        return cls(json=cls.object_json(resp.json()))
 
     @classmethod
     def bulk_get_by_pks(
