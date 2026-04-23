@@ -71,6 +71,14 @@ todo.completed = True
 
 Call `refresh()` to discard unsaved local changes and force the next read to reload object state from the API.
 
+For out-of-band updates, such as a websocket message carrying a full or partial object payload, call `update_from_json()` to merge server state into an existing object without refetching it:
+
+```python
+todo.update_from_json({"id": 1, "completed": True})
+```
+
+Incoming fields are treated as authoritative server state, so queued lazy updates for those same JSON fields are discarded.
+
 ## API client
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to `base_url`, applies a default timeout, and raises for HTTP error responses. To customize error handling for a particular API, override `raise_for_response()` in an `API` subclass.

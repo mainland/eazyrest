@@ -903,3 +903,70 @@ def test_switching_to_eager_flushes_pending_lazy_changes(
 
     assert patch.called
     assert patch.last_request.json() == {"title": "new", "completed": True}
+
+
+def test_update_from_json_merges_partial_payload_and_invalidates_cache(
+    requests_mock: Any,
+) -> None:
+    """Incoming JSON should update cached values without a refetch."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+
+    todo = Todo(id=1)
+    original_user = todo.user
+
+    todo.update_from_json({"title": "new", "userId": 3})
+
+    assert todo.title == "new"
+    assert todo.user.pk == 3
+    assert todo.user is not original_user
+    assert requests_mock.call_count == 1
+
+
+def test_update_from_json_initializes_unloaded_object_from_partial_payload(
+    requests_mock: Any,
+) -> None:
+    """Partial incoming JSON should bootstrap an object without GET."""
+    todo = Todo(id=1)
+
+    todo.update_from_json({"title": "new", "completed": True})
+
+    assert todo.pk == 1
+    assert todo.title == "new"
+    assert todo.completed is True
+    assert requests_mock.call_count == 0
+
+
+def test_update_from_json_discards_pending_updates_for_incoming_fields(
+    requests_mock: Any,
+) -> None:
+    """Incoming server state should win over queued local values."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "server", "completed": True},
+    )
+
+    todo = Todo(id=1)
+    todo.title = "local"
+    todo.completed = True
+
+    todo.update_from_json({"title": "server"})
+    todo.save()
+
+    assert todo.title == "server"
+    assert patch.called
+    assert patch.last_request.json() == {"completed": True}
+
+
+def test_update_from_json_rejects_mismatched_primary_key() -> None:
+    """Incoming JSON must refer to the same object."""
+    todo = Todo(id=1)
+
+    with pytest.raises(ValueError):
+        todo.update_from_json({"id": 2, "title": "new"})

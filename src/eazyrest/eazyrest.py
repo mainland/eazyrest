@@ -806,6 +806,46 @@ class JSONObject:
         self._field_cache.clear()
         self._prefetched_related.clear()
 
+    def update_from_json(self, json: Mapping[str, Any]) -> None:
+        """Merge server-provided JSON into this object without a refetch.
+
+        This is useful for out-of-band updates such as websocket messages that
+        carry a full or partial object payload. Incoming fields are treated as
+        authoritative server state, so any pending local updates for the same
+        JSON fields are discarded.
+
+        Args:
+            json: Full or partial JSON object for this instance.
+
+        Raises:
+            ValueError: If the payload refers to a different primary key.
+        """
+        payload = dict(json)
+
+        existing_pk = self.pk
+        incoming_pk = payload.get(self._pk_json_field, existing_pk)
+        if incoming_pk != existing_pk:
+            raise ValueError(
+                "Incoming JSON primary key does not match this object"
+            )
+
+        if self._json is None:
+            self._json = {self._pk_json_field: existing_pk}
+
+        self._json.update(payload)
+
+        for field in self._json_fields:
+            descriptor = getattr(type(self), field, None)
+            if not isinstance(descriptor, JSONProperty):
+                continue
+
+            if descriptor.json_field not in payload:
+                continue
+
+            self._field_cache.pop(field, None)
+            self._prefetched_related.pop(field, None)
+            self._pending_updates.pop(descriptor.json_field, None)
+
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
         # Store value of primary key
