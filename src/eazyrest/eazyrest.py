@@ -651,7 +651,9 @@ class JSONObject:
         if classification.kind != "related_collection":
             raise TypeError("related_from_json() requires a related field")
 
-        if not isinstance(value, Iterable):
+        if not isinstance(value, Iterable) or isinstance(
+            value, (str, bytes, dict)
+        ):
             raise TypeError(
                 "Related collection values must be iterable, "
                 f"got {type(value).__name__}"
