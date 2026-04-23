@@ -361,6 +361,22 @@ def test_create_encodes_enum_fields(requests_mock: Any) -> None:
     assert post.last_request.json() == {"status": "open"}
 
 
+def test_create_uses_object_json_hook_for_response(
+    requests_mock: Any,
+) -> None:
+    """``create()`` should unwrap custom single-object response envelopes."""
+    post = requests_mock.post(
+        "https://example.com/v1/search/",
+        json={"result": {"id": 1, "name": "Ada"}},
+    )
+
+    result = SearchResult.create(name="Ada")
+
+    assert result.id == 1
+    assert result.name == "Ada"
+    assert post.last_request.json() == {"name": "Ada"}
+
+
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
