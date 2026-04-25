@@ -16,6 +16,96 @@ class User(JSONObject):
     name: str
 ```
 
+## Field conversion
+
+Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
+
+- `datetime.datetime` values decode from Unix timestamps and encode back to timestamps.
+- `datetime.timedelta` values decode from ISO 8601 durations and encode back to strings.
+- `enum.Enum` values decode from their JSON values and encode back to their enum values.
+- `JSONObject` subclasses decode from embedded objects or primary keys.
+
+Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+
+```python
+import datetime
+import enum
+
+from eazyrest import JSONObject, json_object
+
+
+class IssueStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+@json_object
+class Timeline(JSONObject):
+    class_url = "/timelines/"
+
+    id: int
+    starts_at: list[datetime.datetime]
+    statuses: tuple[IssueStatus]
+```
+
+In this example, JSON timestamp values in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
+
+Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
+
+## Custom field conversion
+
+Override `from_json()` and `to_json()` on a shared base model when an API needs conversion rules beyond the built-in `datetime`, `timedelta`, `Enum`, and related-object handling.
+
+Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metadata derived from the field annotation:
+
+- `BaseType` describes a non-related Python type such as `str`, `int`, or `decimal.Decimal`.
+- `RelatedType` describes a related `JSONObject` subclass.
+- `OptionalType` wraps the analyzed type for `T | None`.
+- `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T]`, `set[T]`, `frozenset[T]`, and `Iterable[T]`.
+
+Most custom conversions only need to handle one metadata case and delegate everything else to `super()`. Pattern matching works well for this because `AnalyzedType` is a union of small metadata classes. Because collection conversion is recursive, a custom scalar conversion also applies inside typed collections.
+
+```python
+from decimal import Decimal
+from typing import Any
+
+from eazyrest import AnalyzedType, BaseType, JSONObject, json_object
+
+
+class APIObject(JSONObject):
+    def from_json(
+        self,
+        value: Any,
+        conversion: AnalyzedType,
+        *,
+        field: str | None = None,
+    ) -> Any:
+        match conversion:
+            case BaseType(Decimal) if value is not None:
+                return Decimal(str(value))
+
+        return super().from_json(value, conversion, field=field)
+
+    @classmethod
+    def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
+        match conversion:
+            case BaseType(Decimal) if value is not None:
+                return str(value)
+
+        return super().to_json(value, conversion)
+
+
+@json_object
+class Invoice(APIObject):
+    class_url = "/invoices/"
+
+    id: int
+    total: Decimal
+    line_totals: list[Decimal]
+```
+
+The `Invoice.total` field converts through the `Decimal` branch directly. The `Invoice.line_totals` field is a `CollectionType`, so the default collection handling recurses into each item and calls the same `Decimal` branch for every value. When overriding `from_json()`, keep forwarding `field=field` to `super()` so related-object prefetch lookups continue to work.
+
 ## Collections
 
 `filter()` and `all()` return iterables of model instances:

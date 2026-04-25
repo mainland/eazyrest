@@ -151,6 +151,16 @@ class Event(ModelBase):
     starts_at: datetime.datetime
 
 
+@json_object
+class Timeline(ModelBase):
+    """Model with a list of datetimes."""
+
+    class_url = "/timelines/"
+
+    id: int
+    starts_at: list[datetime.datetime]
+
+
 class IssueStatus(str, enum.Enum):
     """Status values for enum conversion tests."""
 
@@ -176,6 +186,16 @@ class MaybeIssue(ModelBase):
 
     id: int
     status: IssueStatus | None
+
+
+@json_object
+class IssueSnapshot(ModelBase):
+    """Model with a tuple of enums."""
+
+    class_url = "/issue-snapshots/"
+
+    id: int
+    statuses: tuple[IssueStatus]
 
 
 class NoBulkUser(ModelBase):
@@ -545,6 +565,27 @@ def test_repeated_datetime_access_returns_cached_instance(
     )
 
 
+def test_datetime_list_field_decodes_nested_items() -> None:
+    """Collection items should use nested datetime conversion."""
+    timeline = Timeline(
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]}
+    )
+
+    assert timeline.starts_at == [
+        datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2024, 4, 1, 13, 0, tzinfo=datetime.timezone.utc),
+    ]
+
+
+def test_iterable_datetime_field_is_materialized_when_not_related() -> None:
+    """Non-related iterable collections should not stay lazy."""
+    timeline = Timeline(
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]}
+    )
+
+    assert isinstance(timeline.starts_at, list)
+
+
 def test_enum_field_decodes_from_json() -> None:
     """Enum fields should decode JSON values using the declared type."""
     issue = Issue(json={"id": 1, "status": "open"})
@@ -559,6 +600,13 @@ def test_optional_enum_field_decodes_from_json() -> None:
 
     assert with_status.status is IssueStatus.CLOSED
     assert without_status.status is None
+
+
+def test_enum_tuple_field_decodes_nested_items() -> None:
+    """Collection items should use nested enum conversion."""
+    snapshot = IssueSnapshot(json={"id": 1, "statuses": ["open", "closed"]})
+
+    assert snapshot.statuses == (IssueStatus.OPEN, IssueStatus.CLOSED)
 
 
 def test_assigning_enum_field_encodes_value(requests_mock: Any) -> None:
@@ -577,6 +625,55 @@ def test_assigning_enum_field_encodes_value(requests_mock: Any) -> None:
 
     assert patch.called
     assert patch.last_request.json() == {"status": "closed"}
+
+
+def test_create_encodes_nested_datetime_and_enum_collections(
+    requests_mock: Any,
+) -> None:
+    """``create()`` should recursively encode nested collection items."""
+    starts_at = [
+        datetime.datetime(
+            2024,
+            4,
+            1,
+            12,
+            0,
+            tzinfo=datetime.timezone.utc,
+        ),
+        datetime.datetime(
+            2024,
+            4,
+            1,
+            13,
+            0,
+            tzinfo=datetime.timezone.utc,
+        ),
+    ]
+    timeline_post = requests_mock.post(
+        "https://example.com/v1/timelines/",
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]},
+    )
+    snapshot_post = requests_mock.post(
+        "https://example.com/v1/issue-snapshots/",
+        json={"id": 1, "statuses": ["open", "closed"]},
+    )
+
+    timeline = Timeline.create(starts_at=starts_at)
+    snapshot = IssueSnapshot.create(
+        statuses=(IssueStatus.OPEN, IssueStatus.CLOSED)
+    )
+
+    assert timeline.starts_at == starts_at
+    assert timeline_post.last_request.json() == {
+        "starts_at": [1711972800.0, 1711976400.0]
+    }
+    assert snapshot.statuses == (
+        IssueStatus.OPEN,
+        IssueStatus.CLOSED,
+    )
+    assert snapshot_post.last_request.json() == {
+        "statuses": ["open", "closed"]
+    }
 
 
 def test_assigning_field_invalidates_cached_related_value(

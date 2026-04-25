@@ -2,6 +2,8 @@
 
 `eazyrest` is a small library for consuming REST APIs with less boilerplate. It combines a session-based API client with a lightweight, type-directed JSON object mapping layer that models REST resources as typed Python classes.
 
+Typed fields are converted as objects are read and written, including nested items in collection annotations such as `list[datetime.datetime]`, `tuple[Enum]`, and related-object collections.
+
 ## Installation
 
 ```bash

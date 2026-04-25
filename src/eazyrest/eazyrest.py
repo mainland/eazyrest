@@ -22,7 +22,7 @@ from functools import cached_property
 from typing import (
     Any,
     ClassVar,
-    Literal,
+    TypeAlias,
     TypeVar,
     Union,
     cast,
@@ -119,46 +119,47 @@ def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
 
 
 @dataclass(frozen=True)
-class TypeClassification:
-    """Classify a declared field type for JSON conversion.
+class BaseType:
+    """Leaf type metadata for a non-related Python type."""
 
-    ``value_type`` captures the Python type used for general conversion logic,
-    including plain scalar fields such as ``datetime`` and ``timedelta``.
-
-    ``related_type`` is narrower: it is only populated for relationship fields
-    and identifies the ``JSONObject`` subclass to instantiate. For related
-    fields the two currently match, but for non-related fields only
-    ``value_type`` is set.
-    """
-
-    kind: Literal["plain", "related_object", "related_collection"] = "plain"
-    """High-level conversion category for the declared field type."""
-
-    collection_type: type[Any] | None = None
-    """Declared collection class for related collections.
-
-    ``Iterable`` preserves lazy loading. Concrete collection types such as
-    ``list`` or ``tuple`` are materialized during JSON conversion.
-    """
-
-    is_optional: bool = False
-    """Whether the declared field type allows ``None`` values."""
-
-    related_type: type[JSONObject] | None = None
-    """Related ``JSONObject`` subclass for relationship fields only."""
-
-    value_type: type[Any] | None = None
-    """Python type used by the JSON conversion rules for this field."""
+    base_type: type[Any]
 
 
-def classify_type(ty: type[Any]) -> TypeClassification:
-    """Classify a declared field type.
+@dataclass(frozen=True)
+class RelatedType:
+    """Leaf type metadata for a related ``JSONObject`` type."""
+
+    model_type: type[JSONObject]
+
+
+@dataclass(frozen=True)
+class OptionalType:
+    """Wrapper type metadata for optional values."""
+
+    inner_type: AnalyzedType
+
+
+@dataclass(frozen=True)
+class CollectionType:
+    """Wrapper type metadata for homogeneous collections."""
+
+    collection_type: type[Any]
+    item_type: AnalyzedType
+
+
+AnalyzedType: TypeAlias = (
+    BaseType | RelatedType | OptionalType | CollectionType
+)
+
+
+def analyze_type(ty: type[Any]) -> AnalyzedType:
+    """Analyze a declared field type into recursive type metadata.
 
     Args:
         ty: Declared field type.
 
     Returns:
-        Structured classification of ``ty``.
+        Structured type metadata for ``ty``.
     """
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
@@ -166,43 +167,27 @@ def classify_type(ty: type[Any]) -> TypeClassification:
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
         if len(non_none_args) == 1 and len(non_none_args) != len(ty_args):
-            classification = classify_type(non_none_args[0])
-            return TypeClassification(
-                kind=classification.kind,
-                is_optional=True,
-                collection_type=classification.collection_type,
-                related_type=classification.related_type,
-                value_type=classification.value_type,
-            )
-
-    if ty is datetime.datetime:
-        return TypeClassification(value_type=ty)
-
-    if ty is datetime.timedelta:
-        return TypeClassification(value_type=ty)
+            return OptionalType(analyze_type(non_none_args[0]))
 
     if lenient_issubclass(ty, JSONObject):
         assert issubclass(ty, JSONObject)
-        return TypeClassification(
-            kind="related_object",
-            related_type=ty,
-            value_type=ty,
-        )
+        return RelatedType(ty)
 
-    if (
-        _is_collection_type(ty_origin)
-        and len(ty_args) == 1
-        and lenient_issubclass(ty_args[0], JSONObject)
-    ):
-        related_type = cast(type[JSONObject], ty_args[0])
-        return TypeClassification(
-            kind="related_collection",
+    if _is_collection_type(ty_origin) and len(ty_args) == 1:
+        return CollectionType(
             collection_type=cast(type[Any], ty_origin),
-            related_type=related_type,
-            value_type=related_type,
+            item_type=analyze_type(ty_args[0]),
         )
 
-    return TypeClassification(value_type=ty)
+    return BaseType(ty)
+
+
+def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
+    """Remove any optional wrappers from analyzed type metadata."""
+    while isinstance(analyzed_type, OptionalType):
+        analyzed_type = analyzed_type.inner_type
+
+    return analyzed_type
 
 
 T = TypeVar("T", bound="JSONObject")
@@ -419,6 +404,11 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
+    @cached_property
+    def analyzed_type(self) -> AnalyzedType:
+        """Resolve and cache recursive type metadata."""
+        return analyze_type(self.ty)
+
     def __get__(
         self,
         obj: JSONObject | None,
@@ -449,10 +439,9 @@ class JSONProperty:
         else:
             if self.field in obj._field_cache:
                 return obj._field_cache[self.field]
-            assert self.ty is not None
             value = obj.from_json(
                 obj.json[self.json_field],
-                self.ty,
+                self.analyzed_type,
                 field=self.field,
             )
             obj._field_cache[self.field] = value
@@ -475,8 +464,7 @@ class JSONProperty:
         else:
             obj._field_cache.pop(self.field, None)
             obj._prefetched_related.pop(self.field, None)
-            assert self.ty is not None
-            new_value = obj.to_json(value, self.ty)
+            new_value = obj.to_json(value, self.analyzed_type)
 
             # Access obj.json instead of obj._json to force a load first.
             if obj.json[self.json_field] != new_value:
@@ -616,66 +604,10 @@ class JSONObject:
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
             return ty(api=self.api, write_mode=self.write_mode, **kwargs)
 
-    @classmethod
-    def related_from_json(
-        _cls,
-        owner: JSONObject,
-        value: Any,
-        classification: TypeClassification,
-        *,
-        field: str | None = None,
-    ) -> Any:
-        """Convert a related JSON value using overridable default rules.
-
-        Args:
-            owner: Object that owns the related field being converted.
-            value: Raw JSON value for the related field.
-            classification: Classified declared field type.
-            field: Optional owning field name for prefetch lookup.
-
-        Returns:
-            Converted related object or collection of related objects.
-
-        Raises:
-            TypeError: If a related collection value is not iterable.
-        """
-        assert classification.related_type is not None
-
-        if classification.kind == "related_object":
-            return owner.create_related(
-                value,
-                classification.related_type,
-                field=field,
-            )
-
-        if classification.kind != "related_collection":
-            raise TypeError("related_from_json() requires a related field")
-
-        if not isinstance(value, Iterable) or isinstance(
-            value, (str, bytes, dict)
-        ):
-            raise TypeError(
-                "Related collection values must be iterable, "
-                f"got {type(value).__name__}"
-            )
-
-        related_values = RelatedCollection(
-            owner,
-            value,
-            classification.related_type,
-            field=field,
-        )
-
-        if _is_lazy_collection_type(classification.collection_type):
-            return related_values
-
-        assert classification.collection_type is not None
-        return classification.collection_type(related_values)
-
     def from_json(
         self,
         value: Any,
-        ty: type[Any],
+        conversion: AnalyzedType,
         *,
         field: str | None = None,
     ) -> Any:
@@ -683,70 +615,121 @@ class JSONObject:
 
         Args:
             value: Value read from JSON payload.
-            ty: Target Python type.
+            conversion: Analyzed type metadata that guides conversion.
             field: Optional owning field name for prefetch lookup.
 
         Returns:
             Converted Python value.
         """
-        classification = classify_type(ty)
-
         if value is None:
             return value
-        elif classification.value_type is datetime.datetime:
-            return datetime.datetime.fromtimestamp(
-                value, datetime.timezone.utc
-            )
-        elif classification.value_type is datetime.timedelta:
-            return parse_duration(value)
-        elif lenient_issubclass(classification.value_type, enum.Enum):
-            enum_type = classification.value_type
-            assert enum_type is not None
-            return enum_type(value)
-        elif classification.kind in ("related_object", "related_collection"):
-            return self.related_from_json(
-                self,
-                value,
-                classification,
-                field=field,
-            )
-        else:
-            return value
+
+        match conversion:
+            case OptionalType(inner_type):
+                return self.from_json(value, inner_type, field=field)
+
+            case BaseType(base_type):
+                if base_type is datetime.datetime:
+                    return datetime.datetime.fromtimestamp(
+                        value, datetime.timezone.utc
+                    )
+                if base_type is datetime.timedelta:
+                    return parse_duration(value)
+                if lenient_issubclass(base_type, enum.Enum):
+                    return base_type(value)
+
+                return value
+
+            case RelatedType(model_type):
+                return self.create_related(
+                    value,
+                    model_type,
+                    field=field,
+                )
+
+            case CollectionType(collection_type, item_type):
+                if not isinstance(value, Iterable) or isinstance(
+                    value, (str, bytes, dict)
+                ):
+                    unwrapped_item_type = _unwrap_optional_type(item_type)
+                    if isinstance(unwrapped_item_type, RelatedType):
+                        kind = "Related collection"
+                    else:
+                        kind = "Collection"
+
+                    raise TypeError(
+                        f"{kind} values must be iterable, "
+                        f"got {type(value).__name__}"
+                    )
+
+                if _is_lazy_collection_type(collection_type) and isinstance(
+                    item_type, RelatedType
+                ):
+                    return RelatedCollection(
+                        self,
+                        value,
+                        item_type.model_type,
+                        field=field,
+                    )
+
+                converted_items = (
+                    self.from_json(item, item_type, field=field)
+                    for item in value
+                )
+
+                if collection_type is Iterable:
+                    return tuple(converted_items)
+
+                return collection_type(converted_items)
+
+            case _:
+                raise TypeError(
+                    "Unsupported analyzed type "
+                    f"{type(conversion).__name__}"
+                )
 
     @classmethod
-    def to_json(cls, value: Any, ty: type[Any]) -> Any:
+    def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
         Args:
             value: Python value to serialize.
-            ty: Declared field type.
+            conversion: Analyzed type metadata that guides conversion.
 
         Returns:
             JSON-serializable representation of ``value``.
         """
-        classification = classify_type(ty)
+        match conversion:
+            case OptionalType(inner_type):
+                if value is None:
+                    return None
 
-        if classification.kind == "related_object":
-            # If value is an int, assume it is a primary key already
-            if isinstance(value, int):
-                return value
-            else:
+                return cls.to_json(value, inner_type)
+            case RelatedType():
+                # If value is an int, assume it is a primary key already
+                if isinstance(value, int):
+                    return value
+
                 return value.pk
-        elif classification.value_type is datetime.datetime:
-            return value.timestamp()
-        elif classification.value_type is datetime.timedelta:
-            return str(value)
-        elif lenient_issubclass(classification.value_type, enum.Enum):
-            enum_type = classification.value_type
-            assert enum_type is not None
-            if isinstance(value, enum_type):
-                return value.value
+            case BaseType(base_type):
+                if base_type is datetime.datetime:
+                    return value.timestamp()
+                if base_type is datetime.timedelta:
+                    return str(value)
+                if lenient_issubclass(base_type, enum.Enum):
+                    if isinstance(value, base_type):
+                        return value.value
 
-            return value
-        elif classification.kind == "related_collection":
-            return [arg if isinstance(arg, int) else arg.pk for arg in value]
-        else:
-            return value
+                    return value
+
+                return value
+            case CollectionType(_, item_type):
+                return [cls.to_json(item, item_type) for item in value]
+            case _:
+                raise TypeError(
+                    "Unsupported analyzed type "
+                    f"{type(conversion).__name__}"
+                )
 
     def delete(self, *args: Any, **kwargs: Any) -> None:
         """Delete this object from the remote API.
@@ -933,7 +916,7 @@ class JSONObject:
             if isinstance(descriptor, JSONProperty):
                 payload[descriptor.json_field] = cls.to_json(
                     value,
-                    descriptor.ty,
+                    descriptor.analyzed_type,
                 )
             else:
                 payload[field] = value
@@ -1019,24 +1002,43 @@ class JSONObject:
     def _prefetch_info(
         cls,
         field: str,
-    ) -> tuple[JSONProperty, TypeClassification]:
-        """Return descriptor and type info for a prefetchable relation."""
+    ) -> tuple[JSONProperty, RelatedType, type[Any] | None]:
+        """Return descriptor and type info for a prefetchable relation.
+
+        Args:
+            field: Model attribute name to inspect for prefetch support.
+
+        Returns:
+            Tuple containing the JSON field descriptor, related-object
+            type metadata, and the collection type for to-many relations. The
+            collection type is ``None`` for to-one relations.
+
+        Raises:
+            ValueError: If ``field`` is not a JSON-backed related-object
+                field.
+        """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
             raise ValueError(
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 
-        classification = classify_type(descriptor.ty)
-        if classification.kind not in (
-            "related_object",
-            "related_collection",
-        ):
-            raise ValueError(
-                f"{cls.__name__}.{field} is not a related-object field"
-            )
+        analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
+        if isinstance(analyzed_type, RelatedType):
+            return descriptor, analyzed_type, None
 
-        return descriptor, classification
+        if isinstance(analyzed_type, CollectionType):
+            item_type = _unwrap_optional_type(analyzed_type.item_type)
+            if isinstance(item_type, RelatedType):
+                return (
+                    descriptor,
+                    item_type,
+                    analyzed_type.collection_type,
+                )
+
+        raise ValueError(
+            f"{cls.__name__}.{field} is not a related-object field"
+        )
 
     @classmethod
     def _apply_prefetch(
@@ -1044,12 +1046,27 @@ class JSONObject:
         items: Iterable[Any],
         fields: Sequence[str],
     ) -> PrefetchMap:
-        """Bulk-load related objects for a batch of parent JSON items."""
+        """Bulk-load related objects for a batch of parent JSON items.
+
+        Args:
+            items: Parent JSON objects to scan for related-object primary
+                keys.
+            fields: Model attribute names to prefetch.
+
+        Returns:
+            Mapping of each prefetched field name to related objects keyed by
+            primary key. Fields with no primary keys to fetch are omitted.
+
+        Raises:
+            ValueError: If any field is not a JSON-backed related-object
+                field.
+        """
         prefetched_related: PrefetchMap = {}
 
         for field in fields:
-            descriptor, classification = cls._prefetch_info(field)
-            assert classification.related_type is not None
+            descriptor, related_type, collection_type = cls._prefetch_info(
+                field
+            )
 
             pks: set[Any] = set()
 
@@ -1062,12 +1079,11 @@ class JSONObject:
                 if raw_value is None:
                     continue
 
-                if classification.kind == "related_object":
+                if collection_type is None:
                     if not isinstance(raw_value, dict):
                         pks.add(raw_value)
                     continue
 
-                assert classification.kind == "related_collection"
                 if not isinstance(raw_value, Iterable) or isinstance(
                     raw_value, (str, bytes, dict)
                 ):
@@ -1084,7 +1100,7 @@ class JSONObject:
                 continue
 
             prefetched_related[field] = (
-                classification.related_type.bulk_get_by_pks(pks, api=cls.api)
+                related_type.model_type.bulk_get_by_pks(pks, api=cls.api)
             )
 
         return prefetched_related
@@ -1095,7 +1111,20 @@ class JSONObject:
         items: Iterable[Any],
         fields: Sequence[str],
     ) -> Iterator[Self]:
-        """Yield prefetched objects lazily in batches."""
+        """Yield prefetched objects lazily in batches.
+
+        Args:
+            items: Parent JSON objects returned by a collection query.
+            fields: Model attribute names to prefetch for each batch.
+
+        Yields:
+            Model instances populated from ``items`` with prefetched related
+            objects attached for the requested fields.
+
+        Raises:
+            ValueError: If any field is not a JSON-backed related-object
+                field.
+        """
         iterator = iter(items)
 
         while True:
