@@ -13,6 +13,30 @@
 ```
 
 ```{eval-rst}
+.. autodata:: eazyrest.AnalyzedType
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.BaseType
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.RelatedType
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.OptionalType
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.CollectionType
+   :members:
+```
+
+```{eval-rst}
 .. autoclass:: eazyrest.JSONObject
    :members:
    :show-inheritance:
