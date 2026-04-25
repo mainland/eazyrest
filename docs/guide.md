@@ -17,6 +17,53 @@ class User(JSONObject):
     name: str
 ```
 
+## Field conversion
+
+Field annotations drive JSON conversion when values are read from or written to
+model instances. Scalar fields preserve normal JSON values, while a few common
+Python types are converted automatically:
+
+- `datetime.datetime` values decode from Unix timestamps and encode back to
+  timestamps.
+- `datetime.timedelta` values decode from ISO 8601 durations and encode back to
+  strings.
+- `enum.Enum` values decode from their JSON values and encode back to their
+  enum values.
+- `JSONObject` subclasses decode from embedded objects or primary keys.
+
+Collection annotations are converted recursively, so item annotations are
+honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+
+```python
+import datetime
+import enum
+
+from eazyrest import JSONObject, json_object
+
+
+class IssueStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+@json_object
+class Timeline(JSONObject):
+    class_url = "/timelines/"
+
+    id: int
+    starts_at: list[datetime.datetime]
+    statuses: tuple[IssueStatus]
+```
+
+In this example, JSON timestamp values in `starts_at` become
+`datetime.datetime` objects, and JSON strings in `statuses` become
+`IssueStatus` values. Assigning or creating objects with those typed values
+encodes the nested items back to JSON.
+
+Collection payloads must be JSON arrays or another iterable collection shape.
+Strings, bytes, and dictionaries are rejected for collection fields so
+malformed payloads fail before they can be interpreted item by item.
+
 ## Collections
 
 `filter()` and `all()` return iterables of model instances:
