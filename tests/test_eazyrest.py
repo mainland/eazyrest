@@ -61,6 +61,31 @@ class Todo(ModelBase):
     completed: bool
 
 
+def test_absolute_url_resolves_against_api_base_url() -> None:
+    """absolute_url should include the API base URL and path prefix."""
+    todo = Todo(id=1)
+
+    assert todo.url == "/todos/1/"
+    assert todo.absolute_url == "https://example.com/v1/todos/1/"
+
+
+def test_absolute_url_keeps_absolute_class_url() -> None:
+    """absolute_url should not rewrite already absolute model URLs."""
+
+    @json_object
+    class ExternalTodo(ModelBase):
+        """Model with an absolute class URL."""
+
+        class_url = "https://other.example.com/todos/"
+
+        id: int
+
+    todo = ExternalTodo(id=1)
+
+    assert todo.url == "https://other.example.com/todos/1/"
+    assert todo.absolute_url == "https://other.example.com/todos/1/"
+
+
 @json_object
 class SearchResult(ModelBase):
     """Model that extracts results from envelope responses."""
