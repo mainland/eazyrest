@@ -16,6 +16,58 @@ class User(JSONObject):
     name: str
 ```
 
+The decorator also accepts options for common API naming differences:
+
+```python
+@json_object(
+    pk="uuid",
+    field_map={"created_at": "createdAt"},
+    exclude={"display_label"},
+)
+class User(JSONObject):
+    class_url = "/users/"
+
+    uuid: str
+    created_at: str
+    display_label: str
+```
+
+Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields.
+
+## Loading and caching
+
+You can construct an object from a primary key or from an already-loaded JSON payload:
+
+```python
+lazy_user = User(id=1)
+loaded_user = User(json={"id": 1, "name": "Ada"})
+```
+
+An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. An object constructed from `json=` starts with that payload already loaded.
+
+Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
+
+```python
+user.refresh()
+print(user.name)
+```
+
+## Resource URLs
+
+`url` returns the model resource path built from `class_url` and the primary key. `absolute_url` resolves that path against the registered API base URL using the same URL resolution as request methods:
+
+```python
+user = User(id=1)
+
+print(user.url)
+# /users/1/
+
+print(user.absolute_url)
+# https://api.example.com/users/1/
+```
+
+If `class_url` is already absolute, `absolute_url` leaves it absolute.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
