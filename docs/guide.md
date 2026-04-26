@@ -117,6 +117,51 @@ admins = list(User.filter(role="admin"))
 
 `filter()` and `get()` also accept `prefetch=[...]` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
 
+## Prefetching related objects
+
+Related fields are lazy by default. If a JSON payload stores a related object as a primary key, `eazyrest` creates a lazy related object and fetches it when you first read one of its fields. That keeps initial collection queries small, but it can produce one HTTP request per related object.
+
+Use `prefetch=[...]` when you know you will access a related field for many objects:
+
+```python
+todos = Todo.filter(userId=1, prefetch=["user"])
+
+for todo in todos:
+    print(todo.title, todo.user.name)
+```
+
+Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads and must return related objects keyed by primary key:
+
+```python
+@json_object
+class User(JSONObject):
+    class_url = "/users/"
+
+    id: int
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(cls, pks, *, api=None):
+        api = cls.api if api is None else api
+        resp = api.get(cls.class_url, params={"id": sorted(pks)})
+        return {
+            user.pk: user
+            for user in (cls(json=item, api=api) for item in resp.json())
+        }
+```
+
+The exact implementation depends on the API. Some APIs accept repeated parameters such as `?id=1&id=2`; others use a comma-separated parameter such as `?id__in=1,2` or a dedicated bulk endpoint. Put that API-specific shape in `bulk_get_by_pks()`.
+
+Prefetch works for single related-object fields and typed related collections. Embedded related objects do not need prefetching; `eazyrest` only bulk-loads primary-key-style values. When the same related primary key appears more than once in a prefetch batch, parent objects share the same related instance.
+
+Prefetching is batched so collection iteration can stay lazy. `prefetch_batch_size` controls how many parent JSON objects are scanned before each related bulk lookup:
+
+```python
+Todo.prefetch_batch_size = 250
+```
+
+If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing.
+
 ## Response-shape hooks
 
 Override these hooks if an API wraps responses in envelopes:
