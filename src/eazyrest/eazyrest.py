@@ -883,6 +883,15 @@ class JSONObject:
         return url
 
     @property
+    def absolute_url(self) -> str:
+        """Return the fully resolved resource URL for this object.
+
+        Returns:
+            Absolute URL resolved against the object's API base URL.
+        """
+        return self.api._resolve_url(self.url)  # pylint: disable=protected-access
+
+    @property
     def json(self) -> Any:
         """Return and cache this object's JSON representation.
 
