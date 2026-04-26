@@ -10,7 +10,7 @@ Requires Python 3.10+.
 
 ## Example
 
-The example below uses the public demo API at `https://jsonplaceholder.typicode.com/`.
+The example below uses the public demo API at `https://jsonplaceholder.typicode.com/`. JSONPlaceholder accepts write requests for demonstration, but it does not persist those changes.
 
 ```python
 from eazyrest import API, JSONObject, json_object
@@ -49,6 +49,7 @@ with API(
     print(len(todos))
 
     first = todos[0]
+    # JSONPlaceholder accepts this but does not persist it.
     first.completed = True
     first.save()
 ```
