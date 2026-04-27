@@ -1177,13 +1177,22 @@ class JSONObject:
         return cls._prefetched_filter(items, tuple(prefetch))
 
     @classmethod
-    def all(cls: type[Self]) -> Iterable[Self]:
+    def all(
+        cls: type[Self],
+        *,
+        prefetch: Sequence[str] | None = None,
+    ) -> Iterable[Self]:
         """Return all objects for this resource type.
+
+        Args:
+            prefetch: Optional related field names to bulk-load explicitly.
+                Prefetched related objects may be shared by identity across
+                parent objects within the same batch.
 
         Returns:
             Iterable of all objects.
         """
-        return cls.filter()
+        return cls.filter(prefetch=prefetch)
 
     @classmethod
     def get(

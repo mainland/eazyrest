@@ -770,6 +770,25 @@ def test_get_supports_prefetch_for_single_result(
     assert requests_mock.call_count == 2
 
 
+def test_all_supports_prefetch(
+    requests_mock: Any,
+) -> None:
+    """All-object lookups should accept the same prefetch option."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[{"id": 2, "name": "Ada"}],
+    )
+
+    todo = next(iter(Todo.all(prefetch=["user"])))
+
+    assert todo.user.name == "Ada"
+    assert requests_mock.call_count == 2
+
+
 def test_empty_prefetch_is_treated_like_no_prefetch(
     requests_mock: Any,
 ) -> None:
