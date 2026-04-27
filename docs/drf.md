@@ -391,7 +391,7 @@ Server-side, continue using Django ORM `select_related()` and `prefetch_related(
 When you call:
 
 ```python
-todos = Todo.filter(prefetch=["user"])
+todos = Todo.filter(prefetch="user")
 ```
 
 `eazyrest` can still yield parent objects lazily in batches. The related objects are bulk-loaded for the current batch, and relation access falls back to normal lazy loading when a related object was not prefetched.
