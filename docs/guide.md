@@ -167,16 +167,16 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
-`filter()` and `get()` also accept `prefetch=[...]` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
+`filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field names as a sequence. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
 
 ## Prefetching related objects
 
 Related fields are lazy by default. If a JSON payload stores a related object as a primary key, `eazyrest` creates a lazy related object and fetches it when you first read one of its fields. That keeps initial collection queries small, but it can produce one HTTP request per related object.
 
-Use `prefetch=[...]` when you know you will access a related field for many objects:
+Use `prefetch=...` when you know you will access a related field for many objects:
 
 ```python
-todos = Todo.filter(userId=1, prefetch=["user"])
+todos = Todo.filter(userId=1, prefetch="user")
 
 for todo in todos:
     print(todo.title, todo.user.name)

@@ -789,6 +789,25 @@ def test_all_supports_prefetch(
     assert requests_mock.call_count == 2
 
 
+def test_prefetch_accepts_single_field_name(
+    requests_mock: Any,
+) -> None:
+    """A single prefetch field string should not be split into characters."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/",
+        json=[{"id": 2, "name": "Ada"}],
+    )
+
+    todo = next(iter(Todo.all(prefetch="user")))
+
+    assert todo.user.name == "Ada"
+    assert requests_mock.call_count == 2
+
+
 def test_empty_prefetch_is_treated_like_no_prefetch(
     requests_mock: Any,
 ) -> None:
