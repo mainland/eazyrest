@@ -1144,7 +1144,6 @@ class JSONObject:
     @classmethod
     def filter(
         cls: type[Self],
-        url: str | None = None,
         *,
         prefetch: Sequence[str] | None = None,
         **kwargs: Any,
@@ -1152,7 +1151,6 @@ class JSONObject:
         """Query objects matching request parameters.
 
         Args:
-            url: Optional endpoint override. Defaults to ``class_url``.
             prefetch: Optional related field names to bulk-load explicitly.
                 Prefetched related objects may be shared by identity across
                 parent objects within the same batch.
@@ -1161,10 +1159,7 @@ class JSONObject:
         Returns:
             Iterable of objects built from the response payload.
         """
-        if url is None:
-            url = cls.class_url
-
-        resp = cls.api.get(url, params=kwargs)
+        resp = cls.api.get(cls.class_url, params=kwargs)
         items = cls.collection_items(resp.json())
 
         # Treat an empty prefetch list the same as no prefetch at all.
