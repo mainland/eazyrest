@@ -449,7 +449,7 @@ database N+1 queries.
 When you call:
 
 ```python
-todos = Todo.filter(prefetch=["user"])
+todos = Todo.filter(prefetch="user")
 ```
 
 `eazyrest` can still yield parent objects lazily in batches. The related
