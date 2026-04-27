@@ -51,6 +51,9 @@ class PrefetchNotSupported(Exception):
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
 """Prefetched related objects keyed by field name and then by primary key."""
 
+PrefetchFields: TypeAlias = str | Sequence[str] | None
+"""Related field names requested for explicit prefetch."""
+
 _api_registry: dict[type[JSONObject], API] = {}
 
 
@@ -225,6 +228,23 @@ def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
         analyzed_type = analyzed_type.inner_type
 
     return analyzed_type
+
+
+def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
+    """Return prefetch field names as a tuple.
+
+    Args:
+        prefetch: One field name, an iterable of field names, or ``None``.
+
+    Returns:
+        The field names, or an empty tuple if ``prefetch`` is ``None``.
+    """
+    if prefetch is None:
+        return ()
+    if isinstance(prefetch, str):
+        return (prefetch,)
+
+    return tuple(prefetch)
 
 
 T = TypeVar("T", bound="JSONObject")
@@ -1227,15 +1247,15 @@ class JSONObject:
     def filter(
         cls: type[Self],
         *,
-        prefetch: Sequence[str] | None = None,
+        prefetch: PrefetchFields = None,
         **kwargs: Any,
     ) -> Iterable[Self]:
         """Query objects matching request parameters.
 
         Args:
-            prefetch: Optional related field names to bulk-load explicitly.
-                Prefetched related objects may be shared by identity across
-                parent objects within the same batch.
+            prefetch: Optional related field name or field names to bulk-load
+                explicitly. Prefetched related objects may be shared by
+                identity across parent objects within the same batch.
             **kwargs: Query string parameters.
 
         Returns:
@@ -1243,25 +1263,26 @@ class JSONObject:
         """
         resp = cls.api.get(cls.class_url, params=kwargs)
         items = cls.collection_items(resp.json())
+        prefetch_fields = _normalize_prefetch(prefetch)
 
         # Treat an empty prefetch list the same as no prefetch at all.
-        if not prefetch:
+        if len(prefetch_fields) == 0:
             return (cls(json=item) for item in items)
 
-        return cls._prefetched_filter(items, tuple(prefetch))
+        return cls._prefetched_filter(items, prefetch_fields)
 
     @classmethod
     def all(
         cls: type[Self],
         *,
-        prefetch: Sequence[str] | None = None,
+        prefetch: PrefetchFields = None,
     ) -> Iterable[Self]:
         """Return all objects for this resource type.
 
         Args:
-            prefetch: Optional related field names to bulk-load explicitly.
-                Prefetched related objects may be shared by identity across
-                parent objects within the same batch.
+            prefetch: Optional related field name or field names to bulk-load
+                explicitly. Prefetched related objects may be shared by
+                identity across parent objects within the same batch.
 
         Returns:
             Iterable of all objects.
@@ -1272,15 +1293,15 @@ class JSONObject:
     def get(
         cls: type[Self],
         *,
-        prefetch: Sequence[str] | None = None,
+        prefetch: PrefetchFields = None,
         **kwargs: Any,
     ) -> Self:
         """Fetch exactly one object matching query parameters.
 
         Args:
-            prefetch: Optional related field names to bulk-load explicitly.
-                Prefetched related objects may be shared by identity across
-                parent objects within the same batch.
+            prefetch: Optional related field name or field names to bulk-load
+                explicitly. Prefetched related objects may be shared by
+                identity across parent objects within the same batch.
             **kwargs: Query string parameters.
 
         Returns:
