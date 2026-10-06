@@ -26,16 +26,16 @@ Many DRF list endpoints return an envelope such as:
 }
 ```
 
-If DRF pagination is not configured, list endpoints usually return a plain JSON list and `JSONObject.collection_items()` already handles that shape. If pagination is configured, your model can unwrap `results` directly:
+If DRF pagination is not configured, list endpoints usually return a plain JSON list, which `JSONObject.collection_items()` already handles. If pagination is configured, each response holds one page, so return `follow_next_links()` from `collection_items()` to read every page:
 
 ```python
-from eazyrest import JSONObject, json_object
+from eazyrest import JSONObject, follow_next_links, json_object
 
 
 class DRFModel(JSONObject):
     @classmethod
     def collection_items(cls, payload):
-        return payload["results"]
+        return follow_next_links(cls.api, payload)
 
 
 @json_object
@@ -46,25 +46,7 @@ class User(DRFModel):
     name: str
 ```
 
-That keeps `filter()` aligned with normal DRF list responses.
-
-For a shared DRF base model, one `collection_items()` implementation can handle both unpaginated list responses and paginated responses from `PageNumberPagination`, `LimitOffsetPagination`, and `CursorPagination`:
-
-```python
-class DRFPaginatedObject(JSONObject):
-    @classmethod
-    def collection_items(cls, payload):
-        if isinstance(payload, list):
-            yield from payload
-            return
-
-        while True:
-            yield from payload["results"]
-            next_url = payload["next"]
-            if next_url is None:
-                return
-            payload = cls.api.get(next_url).json()
-```
+`follow_next_links()` handles unpaginated list responses as well as paginated responses from `PageNumberPagination`, `LimitOffsetPagination`, and `CursorPagination`. It requests the next page only when iteration reaches it.
 
 With `PageNumberPagination`, a response usually looks like:
 
@@ -104,29 +86,20 @@ With `CursorPagination`, a response usually looks like:
 }
 ```
 
-The iterator logic is the same for all three pagination styles because DRF exposes the next page as a URL in each case. The only difference is how DRF encodes that URL.
+`follow_next_links()` works the same way for all three pagination styles because DRF exposes the next page as a URL in each case. The only difference is how DRF encodes that URL.
 
 ## Add a base model for DRF conventions
 
 It usually helps to centralize DRF-specific behavior on one base class. Start with pagination and response-shape handling there, then add serializer field conversions or API-specific helpers as needed:
 
 ```python
-from eazyrest import API, JSONObject
+from eazyrest import API, JSONObject, follow_next_links
 
 
 class DRFObject(JSONObject):
     @classmethod
     def collection_items(cls, payload):
-        if isinstance(payload, list):
-            yield from payload
-            return
-
-        while True:
-            yield from payload["results"]
-            next_url = payload["next"]
-            if next_url is None:
-                return
-            payload = cls.api.get(next_url).json()
+        return follow_next_links(cls.api, payload)
 
 
 api = API("https://api.example.com/")
@@ -391,7 +364,7 @@ For large DRF APIs, `CursorPagination` is usually the cleanest built-in choice:
 
 `LimitOffsetPagination` is a good fit when clients need explicit slices, such as `?limit=100&offset=300`, and the result set is not so large that high offsets become expensive. `PageNumberPagination` is a good fit when the API is intentionally page-oriented, such as `?page=4`, and clients benefit from stable page-number links.
 
-If you need to follow `next` links across pages, keep that logic at the model or API-wrapper level rather than pushing it into related-field conversion. Related fields should describe one object's payload. Page traversal should describe how to walk a collection endpoint.
+Follow `next` links in `collection_items()`, as `follow_next_links()` does, rather than in related-field conversion. Related fields should describe one object's payload. Page traversal should describe how to walk a collection endpoint.
 
 ## Recommended DRF server-side setup
 

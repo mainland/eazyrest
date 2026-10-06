@@ -280,6 +280,20 @@ def object_json(cls, payload):
     return payload["result"]
 ```
 
+When a collection endpoint splits its results into pages linked by a next-page URL, return `follow_next_links()` from `collection_items()`. It yields the items of each page and requests the next page only when iteration reaches it, so `filter()` and `all()` stay lazy:
+
+```python
+from eazyrest import JSONObject, follow_next_links
+
+
+class PagedObject(JSONObject):
+    @classmethod
+    def collection_items(cls, payload):
+        return follow_next_links(cls.api, payload)
+```
+
+By default, `follow_next_links()` reads a page's items from `results` and the next page's URL from `next`, as Django REST Framework does. Pass `results_key=` and `next_key=` for other names. A list payload is a single unpaginated page.
+
 ## Write modes
 
 APIs use lazy writes by default. Assignments update local state and queue a pending patch until `save()` is called.
