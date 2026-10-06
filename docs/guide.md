@@ -345,7 +345,9 @@ todo.update_from_json({"id": 1, "completed": True})
 ```
 
 Incoming fields are treated as authoritative server state, so queued lazy
-updates for those same JSON fields are discarded.
+updates for those same JSON fields are discarded. If the object has not been
+loaded, the payload becomes its JSON without a request. Reading a field that
+the payload lacks then loads the full object.
 
 ## API client
 
