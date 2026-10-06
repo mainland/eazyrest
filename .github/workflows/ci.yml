@@ -76,3 +76,44 @@ jobs:
             --output-file "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit==2.10.1 --disable-pip --require-hashes \
             --requirement "$RUNNER_TEMP/requirements.txt"
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build Documentation
+        run: uvx --with tox-uv tox -e docs
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          # setuptools-scm derives the version from tags.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build Distributions
+        run: |
+          uv build
+          uvx twine check --strict dist/eazyrest-*
+
+      - name: Import Wheel Without Extras
+        run: |
+          uv venv "$RUNNER_TEMP/wheel-env"
+          VIRTUAL_ENV="$RUNNER_TEMP/wheel-env" uv pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -c "import eazyrest"
