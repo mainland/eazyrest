@@ -171,7 +171,7 @@ class API:
         """
         resp.raise_for_status()
 
-    def _resolve_url(self, uri: str) -> str:
+    def resolve_url(self, uri: str) -> str:
         """Resolve a request URI against ``base_url``.
 
         Absolute URIs are returned unchanged. Relative paths are appended to
@@ -215,7 +215,7 @@ class API:
             # environment proxies to the dict it receives, so pass a copy.
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
-        resp = send(self._resolve_url(uri), *args, **kwargs)
+        resp = send(self.resolve_url(uri), *args, **kwargs)
         return self._check_response(resp)
 
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:

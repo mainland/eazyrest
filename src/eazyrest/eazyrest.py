@@ -997,7 +997,7 @@ class JSONObject:
         Returns:
             Absolute URL resolved against the object's API base URL.
         """
-        return self.api._resolve_url(self.url)  # pylint: disable=protected-access
+        return self.api.resolve_url(self.url)
 
     @property
     def json(self) -> Any:
