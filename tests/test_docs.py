@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any
+
+from eazyrest import json_object
 
 GUIDE = Path(__file__).resolve().parents[1] / "docs" / "guide.md"
 
@@ -51,3 +54,24 @@ def test_address_example_converts_only_address_fields() -> None:
     host.allowed = [IPv4Address("10.0.0.4")]
     assert host.json["address"] == "10.0.0.3"
     assert host.json["allowed"] == ["10.0.0.4"]
+
+
+def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
+    """The ``TimestampObject`` conversion writes datetimes as timestamps."""
+    base: Any = run_guide_example("class TimestampObject")["TimestampObject"]
+
+    @json_object
+    class Event(base):  # type: ignore[misc]
+        class_url = "/events/"
+
+        id: int
+        when: datetime.datetime
+        note: str
+
+    when = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+    event = Event(json={"id": 1, "when": when.timestamp(), "note": "a"})
+
+    assert event.when == when
+    event.when = when
+    assert event.json["when"] == when.timestamp()
+    assert event.note == "a"

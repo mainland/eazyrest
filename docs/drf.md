@@ -218,35 +218,10 @@ DRF serializer fields usually emit JSON-friendly primitives. Most of those can
 be represented directly with annotations, but a few common DRF fields benefit
 from explicit model conventions.
 
-DRF `DateTimeField` defaults to ISO 8601 strings. `eazyrest`'s built-in
-`datetime.datetime` conversion expects Unix timestamps, so replace it in your
-shared DRF base model's `conversions` if your serializers use the default ISO
-representation:
-
-```python
-import datetime
-
-from dateutil.parser import isoparse
-
-from eazyrest import Conversion, JSONObject
-
-
-class DRFObject(JSONObject):
-    conversions = {
-        datetime.datetime: Conversion(
-            decode=lambda value, cls: isoparse(value),
-            encode=lambda value, cls: value.isoformat(),
-        ),
-    }
-```
-
-This also applies inside typed collections such as `list[datetime.datetime]`,
-because a conversion applies wherever its type appears.
-
-`isoparse()` comes from `python-dateutil`, which `eazyrest` depends on. It
-accepts the `Z` suffix that DRF uses for UTC. It returns a naive `datetime` for
-a string without an offset, which DRF emits when Django's `USE_TZ` setting is
-`False`.
+DRF `DateTimeField` emits ISO 8601 strings by default, and `eazyrest` decodes
+and encodes them without an override, including the `Z` suffix that DRF uses
+for UTC. A string without an offset, which DRF emits when Django's `USE_TZ`
+setting is `False`, decodes to a naive `datetime`.
 
 DRF `DurationField` emits Django's duration format, such as `1 02:03:04`,
 unless it is configured to emit ISO 8601. `eazyrest` parses both formats into

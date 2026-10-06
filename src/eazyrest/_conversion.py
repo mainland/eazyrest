@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+import dateutil.parser
 import isodate
 
 from .dateparse import parse_duration
@@ -43,13 +44,52 @@ class Conversion:
     ``datetime`` field, is written as it is."""
 
 
+def _decode_datetime(value: Any) -> datetime.datetime:
+    """Decode a JSON datetime from ISO 8601 text or a Unix timestamp.
+
+    Args:
+        value: ISO 8601 string, or number of seconds since the Unix epoch.
+
+    Returns:
+        Decoded ``datetime``. A string without a UTC offset decodes to a naive
+        ``datetime``, and a timestamp decodes to an aware UTC ``datetime``.
+
+    Raises:
+        TypeError: If ``value`` is neither a string nor a number.
+        ValueError: If a string is not an ISO 8601 datetime, or a timestamp is
+            out of the range that ``datetime`` represents.
+    """
+    if isinstance(value, str):
+        dt = dateutil.parser.isoparse(value)
+        offset = dt.utcoffset()
+        if offset is not None:
+            # isoparse() returns dateutil time zones. Use the standard
+            # library's fixed-offset time zone, as timestamps do.
+            dt = dt.replace(tzinfo=datetime.timezone(offset))
+
+        return dt
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.datetime.fromtimestamp(
+                value, datetime.timezone.utc
+            )
+        except (OverflowError, OSError) as err:
+            # The platform's time_t limits the range, so report it as an
+            # invalid value like a malformed string.
+            raise ValueError(f"Timestamp {value!r} is out of range") from err
+
+    raise TypeError(
+        "Datetime values must be ISO 8601 strings or Unix timestamps, "
+        f"got {type(value).__name__}"
+    )
+
+
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
-            decode=lambda value, _: datetime.datetime.fromtimestamp(
-                value, datetime.timezone.utc
-            ),
-            encode=lambda value, _: value.timestamp(),
+            decode=lambda value, _: _decode_datetime(value),
+            encode=lambda value, _: value.isoformat(),
         ),
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
