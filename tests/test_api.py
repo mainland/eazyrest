@@ -134,6 +134,22 @@ def test_api_skips_raise_for_response_hook_for_successes(
     assert response.json() == {"ok": True}
 
 
+def test_api_proxy_takes_precedence_over_environment(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit proxy wins over proxy environment variables."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy.example.com:9999")
+    api = API("https://example.com/", proxy="http://proxy.example.com:3128")
+    requests_mock.get("https://example.com/users/1", json={"id": 1})
+
+    api.get("/users/1")
+
+    assert requests_mock.last_request.proxies["https"] == (
+        "http://proxy.example.com:3128"
+    )
+
+
 def test_api_reset_session_keeps_client_configuration() -> None:
     """Resetting the session keeps headers, auth, cookies, and proxies."""
     api = API("https://example.com/", proxy="http://proxy.example.com:3128")

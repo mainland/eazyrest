@@ -78,6 +78,9 @@ class API:
     def set_proxy(self, proxy: str) -> None:
         """Configure an HTTP/HTTPS proxy for subsequent requests.
 
+        The proxy takes precedence over proxy environment variables such as
+        ``HTTPS_PROXY``.
+
         Args:
             proxy: Proxy URL to apply to both ``http`` and ``https`` schemes.
         """
@@ -206,6 +209,12 @@ class API:
             Validated HTTP response.
         """
         kwargs.setdefault("timeout", self.timeout)
+        if self.session.proxies:
+            # requests lets proxy environment variables override session
+            # proxies, but not proxies passed with the request. requests adds
+            # environment proxies to the dict it receives, so pass a copy.
+            kwargs.setdefault("proxies", dict(self.session.proxies))
+
         resp = send(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(resp)
 
