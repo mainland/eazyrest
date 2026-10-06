@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, cast
 
 import pytest
 import requests
+import urllib3
 
 from eazyrest import API
 
@@ -143,3 +145,21 @@ def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
     api.get("/me")
 
     assert requests_mock.last_request.headers["Cookie"] == "session=abc"
+
+
+def test_api_without_verification_suppresses_only_insecure_warnings() -> None:
+    """``verify=False`` leaves other urllib3 warnings visible."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        api = API("https://example.com/", verify=False)
+        warnings.warn(
+            "insecure", urllib3.exceptions.InsecureRequestWarning, stacklevel=1
+        )
+        warnings.warn(
+            "clock", urllib3.exceptions.SystemTimeWarning, stacklevel=1
+        )
+
+    assert api.session.verify is False
+    assert [type(w.message) for w in caught] == [
+        urllib3.exceptions.SystemTimeWarning
+    ]
