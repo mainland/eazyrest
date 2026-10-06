@@ -310,6 +310,11 @@ def json_object(
 
     Returns:
         The decorated class, or a decorator function when used with arguments.
+
+    Raises:
+        ValueError: If a field would replace a ``JSONObject`` attribute, such
+            as ``url`` or ``json``. Map such a JSON key to a different
+            attribute name with ``field_map``.
     """
     if field_map is None:
         field_map = {}
@@ -322,7 +327,11 @@ def json_object(
 
         Returns:
             The same class after descriptor installation.
+
+        Raises:
+            ValueError: If a field would replace a ``JSONObject`` attribute.
         """
+        reserved = set(dir(JSONObject)).union(_annotation_names(JSONObject))
         fields: MutableSet[str] = set()
 
         # We only process annotations for this class *without* any annotations
@@ -330,18 +339,25 @@ def json_object(
         # to delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
         for field in _annotation_names(cls):
-            if field not in exclude:
-                json_field = field_map.get(field, field)
+            if field in exclude:
+                continue
 
-                is_primary_key = field == pk
-
-                prop = JSONProperty(
-                    cls, json_field, field, is_primary_key=is_primary_key
+            if field in reserved:
+                raise ValueError(
+                    f"Field {cls.__name__}.{field} would replace "
+                    f"JSONObject.{field}. Use another attribute name and map "
+                    f"it to the JSON key {field!r} with field_map."
                 )
 
-                setattr(cls, field, prop)
+            json_field = field_map.get(field, field)
 
-                fields.add(field)
+            prop = JSONProperty(
+                cls, json_field, field, is_primary_key=field == pk
+            )
+
+            setattr(cls, field, prop)
+
+            fields.add(field)
 
         # pylint: disable=protected-access
         cls._json_fields = fields

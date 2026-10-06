@@ -1157,3 +1157,37 @@ def test_update_from_json_rejects_mismatched_primary_key() -> None:
 
     with pytest.raises(ValueError):
         todo.update_from_json({"id": 2, "title": "new"})
+
+
+def test_reserved_field_name_is_rejected() -> None:
+    """A field must not replace a ``JSONObject`` attribute such as ``url``."""
+    with pytest.raises(ValueError, match="field_map"):
+
+        @json_object
+        class Hyperlinked(ModelBase):
+            """Model with a field that would replace ``JSONObject.url``."""
+
+            class_url = "/hyperlinked/"
+
+            id: int
+            url: str
+
+
+def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
+    """A reserved JSON key is usable through ``field_map``."""
+
+    @json_object(field_map={"resource_url": "url"})
+    class Hyperlinked(ModelBase):
+        """Model that maps the ``url`` JSON key to another attribute."""
+
+        class_url = "/hyperlinked/"
+
+        id: int
+        resource_url: str
+
+    obj = Hyperlinked(
+        json={"id": 1, "url": "https://example.com/v1/hyperlinked/1/"}
+    )
+
+    assert obj.resource_url == "https://example.com/v1/hyperlinked/1/"
+    assert obj.url == "/hyperlinked/1/"

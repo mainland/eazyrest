@@ -34,6 +34,16 @@ class User(JSONObject):
 
 Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields.
 
+A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`, or `save`, and `@json_object` raises `ValueError` for such a field. Use `field_map=` to give the JSON key another attribute name:
+
+```python
+@json_object(field_map={"resource_url": "url"})
+class User(JSONObject):
+    class_url = "/users/"
+
+    id: int
+    resource_url: str
+```
 ## Loading and caching
 
 You can construct an object from a primary key or from an already-loaded JSON payload:
