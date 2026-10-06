@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import enum
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1154,7 +1154,7 @@ def test_object_write_mode_overrides_api_default(
 def test_invalid_write_mode_raises_value_error() -> None:
     """Unsupported write modes should be rejected."""
     with pytest.raises(ValueError):
-        Todo(id=1, write_mode="later")
+        Todo(id=1, write_mode=cast(Any, "later"))
 
 
 def test_switching_to_eager_flushes_pending_lazy_changes(

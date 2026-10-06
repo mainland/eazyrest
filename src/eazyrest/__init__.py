@@ -14,6 +14,7 @@ from .eazyrest import (
     RelatedType,
     json_object,
 )
+from .write_mode import WriteMode
 
 __all__ = [
     "API",
@@ -21,11 +22,12 @@ __all__ = [
     "BaseType",
     "CollectionType",
     "DoesNotExist",
-    "MultipleObjectsReturned",
     "JSONObject",
+    "MultipleObjectsReturned",
     "OptionalType",
     "PrefetchNotSupported",
     "RelatedType",
+    "WriteMode",
     "json_object",
     "parse_datetime",
     "parse_duration",
