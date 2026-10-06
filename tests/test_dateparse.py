@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from typing import Any, cast
 
 import pytest
 
@@ -62,13 +63,32 @@ def test_parse_datetime_date_only_uses_midnight() -> None:
         ),
         ("-PT1H", datetime.timedelta(hours=-1)),
         ("1:30", datetime.timedelta(minutes=1, seconds=30)),
+        ("1:30:00", datetime.timedelta(hours=1, minutes=30)),
+        ("P2W", datetime.timedelta(days=14)),
+        ("1h 30m", datetime.timedelta(hours=1, minutes=30)),
+        ("1h30m0s", datetime.timedelta(hours=1, minutes=30)),
+        ("1H30M", datetime.timedelta(hours=1, minutes=30)),
+        ("1.5 hours", datetime.timedelta(hours=1, minutes=30)),
+        ("1 day, 2 hours", datetime.timedelta(days=1, hours=2)),
+        ("2 weeks", datetime.timedelta(days=14)),
+        ("10m", datetime.timedelta(minutes=10)),
+        ("500ms", datetime.timedelta(milliseconds=500)),
+        ("10us", datetime.timedelta(microseconds=10)),
+        ("3\u00b5s", datetime.timedelta(microseconds=3)),
+        ("3\u03bcs", datetime.timedelta(microseconds=3)),
+        ("-1h30m", datetime.timedelta(hours=-1, minutes=-30)),
+        ("- 1 hour", datetime.timedelta(hours=-1)),
+        (" 1h ", datetime.timedelta(hours=1)),
+        ("90", datetime.timedelta(seconds=90)),
+        ("-1.5", datetime.timedelta(seconds=-1.5)),
         (90, datetime.timedelta(seconds=90)),
+        (1.5, datetime.timedelta(seconds=1.5)),
     ],
 )
 def test_parse_duration_formats(
-    text: str | int, expected: datetime.timedelta
+    text: str | float, expected: datetime.timedelta
 ) -> None:
-    """Django, ``str(timedelta)``, ISO 8601, and numeric forms parse."""
+    """Supported duration forms parse to the expected ``timedelta``."""
     assert parse_duration(text) == expected
 
 
@@ -87,8 +107,43 @@ def test_parse_duration_inverts_str(delta: datetime.timedelta) -> None:
     assert parse_duration(str(delta)) == delta
 
 
-@pytest.mark.parametrize("text", ["P1M", "bogus"])
+@pytest.mark.parametrize(
+    "text", ["bogus", "", "-", "1h30", "1h -30m", "1 hour and 30 minutes"]
+)
 def test_parse_duration_rejects_unsupported_durations(text: str) -> None:
-    """Unparseable durations and calendar months raise ``ValueError``."""
+    """Strings in no supported form raise ``ValueError``."""
     with pytest.raises(ValueError):
+        parse_duration(text)
+
+
+def test_parse_duration_names_unknown_unit() -> None:
+    """An unknown unit is named in the error."""
+    with pytest.raises(ValueError, match="unknown unit 'fortnight'"):
+        parse_duration("1 fortnight")
+
+
+@pytest.mark.parametrize("delta", [None, True, ["1h"]])
+def test_parse_duration_rejects_other_types(delta: Any) -> None:
+    """Only strings and numbers are durations."""
+    with pytest.raises(TypeError):
+        parse_duration(cast(Any, delta))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "P1M",
+        "P1Y",
+        "P1Y2M3D",
+        "1 month",
+        "1mo",
+        "2 years",
+        "1.5y",
+        "-1 month",
+        "1 day 1 year",
+    ],
+)
+def test_parse_duration_rejects_calendar_units(text: str) -> None:
+    """Years and months have no fixed length, in any format."""
+    with pytest.raises(ValueError, match="years or months"):
         parse_duration(text)
