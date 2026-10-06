@@ -226,13 +226,15 @@ representation:
 ```python
 import datetime
 
-from eazyrest import Conversion, JSONObject, parse_datetime
+from dateutil.parser import isoparse
+
+from eazyrest import Conversion, JSONObject
 
 
 class DRFObject(JSONObject):
     conversions = {
         datetime.datetime: Conversion(
-            decode=lambda value, cls: parse_datetime(value),
+            decode=lambda value, cls: isoparse(value),
             encode=lambda value, cls: value.isoformat(),
         ),
     }
@@ -240,6 +242,11 @@ class DRFObject(JSONObject):
 
 This also applies inside typed collections such as `list[datetime.datetime]`,
 because a conversion applies wherever its type appears.
+
+`isoparse()` comes from `python-dateutil`, which `eazyrest` depends on. It
+accepts the `Z` suffix that DRF uses for UTC. It returns a naive `datetime` for
+a string without an offset, which DRF emits when Django's `USE_TZ` setting is
+`False`.
 
 DRF `DurationField` emits Django's duration format, such as `1 02:03:04`,
 unless it is configured to emit ISO 8601. `eazyrest` parses both formats into
