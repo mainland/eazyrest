@@ -22,8 +22,8 @@ else:
 class API:
     """HTTP client wrapper for REST APIs.
 
-    The class wraps a ``requests.Session`` and automatically joins request
-    paths against ``base_url`` while applying a default timeout.
+    The class wraps a ``requests.Session`` and automatically joins
+    request paths against ``base_url`` while applying a default timeout.
     """
 
     base_url: str

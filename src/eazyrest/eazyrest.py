@@ -65,7 +65,6 @@ PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
 PrefetchFields: TypeAlias = str | Sequence[str] | None
 """Related field names requested for explicit prefetch."""
 
-
 _api_registry: dict[type[JSONObject], API] = {}
 
 
@@ -125,8 +124,8 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
 def _annotation_names(cls: type) -> list[str]:
     """Return the names annotated directly on a class.
 
-    The annotations are not evaluated. A field type may refer to a class that
-    is not defined yet, including the class being decorated, so
+    The annotations are not evaluated. A field type may refer to a class
+    that is not defined yet, including the class being decorated, so
     ``JSONProperty`` resolves field types when they are first used.
     """
     if sys.version_info >= (3, 14):
@@ -872,14 +871,16 @@ class JSONObject:
     def save(self) -> None:
         """Persist all pending lazy field updates.
 
-        In ``"lazy"`` mode, field assignments are accumulated locally and sent
-        in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
-        mode, assignments are patched immediately and ``save()`` is a no-op
-        unless pending updates remain from an earlier lazy mode.
+        In ``"lazy"`` mode, field assignments are accumulated locally
+        and sent in one ``PATCH`` request when ``save()`` is called. In
+        ``"eager"`` mode, assignments are patched immediately and
+        ``save()`` is a no-op unless pending updates remain from an
+        earlier lazy mode.
 
-        When the ``PATCH`` response has a body, it replaces the object's JSON.
-        When it has no body, as with ``204 No Content``, the object keeps its
-        local JSON, which already includes the saved updates.
+        When the ``PATCH`` response has a body, it replaces the object's
+        JSON. When it has no body, as with ``204 No Content``, the
+        object keeps its local JSON, which already includes the saved
+        updates.
         """
         if len(self._pending_updates) == 0:
             return

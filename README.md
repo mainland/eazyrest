@@ -34,9 +34,9 @@ from eazyrest import API, JSONObject, json_object
 
 
 with API("https://jsonplaceholder.typicode.com/") as demo_api:
+
     class JSONPlaceholderObject(JSONObject):
         """A JSON object from the JSONPlaceholder API."""
-
 
     # Register the API instance for this model hierarchy
     JSONPlaceholderObject.register_api(demo_api)

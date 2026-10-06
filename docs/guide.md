@@ -251,6 +251,7 @@ For example, an API that returns singleton responses in a "result" field and col
 def collection_items(cls, payload):
     return payload["results"]
 
+
 @classmethod
 def object_json(cls, payload):
     return payload["result"]

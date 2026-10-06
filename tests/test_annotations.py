@@ -1,7 +1,8 @@
 """Tests for annotations evaluated by the running Python version.
 
-This module does not use ``from __future__ import annotations``, so field
-annotations follow the semantics of the Python version running the tests.
+This module does not use ``from __future__ import annotations``, so
+field annotations follow the semantics of the Python version running the
+tests.
 """
 
 import sys
