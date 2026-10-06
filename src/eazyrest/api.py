@@ -17,6 +17,23 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import Self
 
+# The configuration that reset_session() copies to a new session. These are the
+# attributes of requests.Session.__attrs__ other than adapters, which hold the
+# connection pools.
+_SESSION_SETTINGS = (
+    "headers",
+    "cookies",
+    "auth",
+    "proxies",
+    "hooks",
+    "params",
+    "verify",
+    "cert",
+    "stream",
+    "trust_env",
+    "max_redirects",
+)
+
 
 class API:
     """HTTP client wrapper for REST APIs.
@@ -92,30 +109,47 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool = True, **kwargs: Any) -> None:
-        """Create and configure a fresh underlying ``requests.Session``.
+    def reset_session(self, verify: bool | None = None, **kwargs: Any) -> None:
+        """Replace the underlying ``requests.Session``.
+
+        The new session keeps the configuration of the session it replaces,
+        including its headers, authentication, cookies, proxies, query
+        parameters, hooks, and TLS settings. It does not keep connection pools
+        or mounted adapters. The replaced session is closed.
 
         Args:
-            verify: Whether TLS certificates should be verified. When
-                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
-                for the whole process.
+            verify: Whether TLS certificates should be verified. If omitted,
+                the new session keeps the replaced session's setting, and a
+                first session verifies certificates. When ``False``, urllib3's
+                ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
                 e.g., ``pool_connections`` and ``pool_maxsize``.
         """
-        self.session = requests.Session()
+        session = requests.Session()
 
-        if not verify:
-            self.session.verify = False
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        old_session: requests.Session | None = getattr(self, "session", None)
+        if old_session is not None:
+            for name in _SESSION_SETTINGS:
+                setattr(session, name, getattr(old_session, name))
+            old_session.close()
+
+        if verify is not None:
+            session.verify = verify
+            if not verify:
+                urllib3.disable_warnings(
+                    urllib3.exceptions.InsecureRequestWarning
+                )
 
         # Adapt session for multiple connections
         if len(kwargs) != 0:
             url = urlparse(self.base_url)
 
             adapter = requests.adapters.HTTPAdapter(**kwargs)
-            self.session.mount(url.scheme + "://", adapter)
+            session.mount(url.scheme + "://", adapter)
+
+        self.session = session
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
