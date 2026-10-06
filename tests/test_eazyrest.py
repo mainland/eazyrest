@@ -231,6 +231,18 @@ class NoBulkUser(ModelBase):
 
     id: int
     name: str
+
+
+@json_object
+class IssueHistory(ModelBase):
+    """Model with a variable-length tuple of enums."""
+
+    class_url = "/issue-histories/"
+
+    id: int
+    statuses: tuple[IssueStatus, ...]
+
+
 @json_object
 class Admin(User):
     """Decorated subclass of a decorated model."""
@@ -1436,3 +1448,10 @@ def test_related_object_inherits_instance_api_override(
     todo = Todo(id=1, api=override)
 
     assert todo.user.api is override
+
+
+def test_tuple_ellipsis_annotation_converts_items() -> None:
+    """``tuple[T, ...]`` fields convert each item."""
+    history = IssueHistory(json={"id": 1, "statuses": ["open", "closed"]})
+
+    assert history.statuses == (IssueStatus.OPEN, IssueStatus.CLOSED)

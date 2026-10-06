@@ -90,7 +90,7 @@ Field annotations drive JSON conversion when values are read from or written to 
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
-Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields. Annotate a tuple of any length as `tuple[T, ...]`:
 
 ```python
 import datetime
@@ -110,12 +110,14 @@ class Timeline(JSONObject):
 
     id: int
     starts_at: list[datetime.datetime]
-    statuses: tuple[IssueStatus]
+    statuses: tuple[IssueStatus, ...]
 ```
 
 In this example, JSON timestamp values in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
+
+Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not converted. Reading such a field returns its JSON value unchanged.
 
 ## Custom field conversion
 
@@ -126,7 +128,7 @@ Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metada
 - `BaseType` describes a non-related Python type such as `str`, `int`, or `decimal.Decimal`.
 - `RelatedType` describes a related `JSONObject` subclass.
 - `OptionalType` wraps the analyzed type for `T | None`.
-- `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T]`, `set[T]`, `frozenset[T]`, and `Iterable[T]`.
+- `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T, ...]`, `set[T]`, `frozenset[T]`, and `Iterable[T]`.
 
 Most custom conversions only need to handle one metadata case and delegate everything else to `super()`. Pattern matching works well for this because `AnalyzedType` is a union of small metadata classes. Because collection conversion is recursive, a custom scalar conversion also applies inside typed collections.
 
