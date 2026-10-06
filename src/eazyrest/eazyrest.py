@@ -28,6 +28,7 @@ from typing import (
     cast,
     overload,
 )
+from urllib.parse import quote
 
 from ._conversion import (
     Conversion,
@@ -1062,10 +1063,13 @@ class JSONObject:
     def url(self) -> str:
         """Return the resource URL for this object.
 
+        The primary key is percent-encoded, so it always forms a single path
+        segment.
+
         Returns:
             Relative URL for this object, always ending with ``/``.
         """
-        url = f"{self.class_url.rstrip('/')}/{self.pk}"
+        url = f"{self.class_url.rstrip('/')}/{quote(str(self.pk), safe='')}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
