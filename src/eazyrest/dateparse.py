@@ -43,7 +43,7 @@ def parse_datetime(
         if dt is None:
             raise dateutil.parser.ParserError(f"Could not parse '{date}'")
     else:
-        dt = dateutil.parser.parse(date, default=datetime.datetime.now())
+        dt = dateutil.parser.parse(date)
 
     if dt.tzinfo is None:
         if tzinfo is None:

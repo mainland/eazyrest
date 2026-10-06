@@ -29,6 +29,19 @@ def test_parse_duration_returns_timedelta() -> None:
     assert parsed == datetime.timedelta(hours=1, minutes=30)
 
 
+def test_parse_datetime_date_only_uses_midnight() -> None:
+    """Missing time components should not come from the current time."""
+    parsed = parse_datetime(
+        "2024-01-02",
+        use_dateparser=False,
+        tzinfo=datetime.timezone.utc,
+    )
+
+    assert parsed == datetime.datetime(
+        2024, 1, 2, tzinfo=datetime.timezone.utc
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
