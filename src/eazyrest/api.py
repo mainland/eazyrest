@@ -42,6 +42,7 @@ class API:
         url: str,
         proxy: str | None = None,
         default_write_mode: WriteMode = "lazy",
+        verify: bool = True,
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -51,6 +52,9 @@ class API:
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
+            verify: Whether TLS certificates should be verified. When
+                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
+                for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -59,7 +63,7 @@ class API:
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
 
-        self.reset_session(**kwargs)
+        self.reset_session(verify=verify, **kwargs)
 
         if proxy is not None:
             self.set_proxy(proxy)
@@ -92,7 +96,9 @@ class API:
         """Create and configure a fresh underlying ``requests.Session``.
 
         Args:
-            verify: Whether TLS certificates should be verified.
+            verify: Whether TLS certificates should be verified. When
+                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
+                for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -102,7 +108,7 @@ class API:
 
         if not verify:
             self.session.verify = False
-            urllib3.disable_warnings()
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         # Adapt session for multiple connections
         if len(kwargs) != 0:
