@@ -31,6 +31,8 @@ from typing import (
 )
 from urllib.parse import quote
 
+import requests
+
 from .api import API
 from .dateparse import parse_duration
 from .write_mode import WriteMode, validate_write_mode
@@ -837,14 +839,34 @@ class JSONObject:
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self.api.patch(self.url, json=payload)
-            self._json = self.object_json(resp.json())
-            self._pending_updates.clear()
-            self._field_cache.clear()
-            self._prefetched_related.clear()
+            self._apply_patch_response(resp, payload)
             return
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
+
+    def _apply_patch_response(
+        self,
+        resp: requests.Response,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Update local state after a successful ``PATCH`` request.
+
+        Args:
+            resp: Response to the ``PATCH`` request.
+            payload: JSON fields sent in the request.
+        """
+        if resp.content:
+            self._json = self.object_json(resp.json())
+            self._json_is_partial = False
+            self._field_cache.clear()
+            self._prefetched_related.clear()
+        else:
+            # A response such as 204 No Content has no representation of the
+            # object, so apply the patch to the local JSON instead.
+            self.json.update(payload)
+
+        self._pending_updates.clear()
 
     def save(self) -> None:
         """Persist all pending lazy field updates.
@@ -853,15 +875,16 @@ class JSONObject:
         in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
         mode, assignments are patched immediately and ``save()`` is a no-op
         unless pending updates remain from an earlier lazy mode.
+
+        When the ``PATCH`` response has a body, it replaces the object's JSON.
+        When it has no body, as with ``204 No Content``, the object keeps its
+        local JSON, which already includes the saved updates.
         """
         if len(self._pending_updates) == 0:
             return
 
         resp = self.api.patch(self.url, json=self._pending_updates)
-        self._json = self.object_json(resp.json())
-        self._pending_updates.clear()
-        self._field_cache.clear()
-        self._prefetched_related.clear()
+        self._apply_patch_response(resp, self._pending_updates)
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
         """Merge server-provided JSON into this object without a refetch.
