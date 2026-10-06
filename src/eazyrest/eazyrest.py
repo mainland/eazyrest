@@ -762,8 +762,7 @@ class JSONObject:
 
             case _:
                 raise TypeError(
-                    "Unsupported analyzed type "
-                    f"{type(conversion).__name__}"
+                    f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
     @classmethod
@@ -808,8 +807,7 @@ class JSONObject:
                 return [cls.to_json(item, item_type) for item in value]
             case _:
                 raise TypeError(
-                    "Unsupported analyzed type "
-                    f"{type(conversion).__name__}"
+                    f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
     def delete(self, *args: Any, **kwargs: Any) -> None:
