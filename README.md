@@ -134,7 +134,13 @@ Run the pre-commit hooks across the whole tree, as CI does, with:
 tox -e lint
 ```
 
-GitHub Actions runs the test suite on Python 3.10 through 3.15 and the lint environment on every push and pull request.
+Build the documentation with warnings treated as errors:
+
+```bash
+tox -e docs
+```
+
+On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15, runs the lint and documentation environments, and checks that the built wheel imports without optional dependencies. The test environments install only the runtime dependencies and the `test` extra, so a runtime dependency missing from `pyproject.toml` fails the tests.
 
 To build and validate a distribution:
 

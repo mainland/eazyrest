@@ -55,3 +55,51 @@ jobs:
 
       - name: Run Tox Lint Environment
         run: tox -e lint
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install tox
+        run: python -m pip install --upgrade pip tox
+
+      - name: Build Documentation
+        run: tox -e docs
+
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          # setuptools-scm derives the version from tags.
+          fetch-depth: 0
+
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Build Distributions
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Import Wheel Without Extras
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-env"
+          "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/wheel-env/bin/python" -c "import eazyrest"
