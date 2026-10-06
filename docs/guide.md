@@ -284,6 +284,36 @@ def object_json(cls, payload):
     return payload["result"]
 ```
 
+When a collection endpoint splits its results into pages linked by a next-page URL, return `follow_next_links()` from `collection_items()`. It yields the items of each page and requests the next page only when iteration reaches it, so `filter()` and `all()` stay lazy:
+
+```python
+from eazyrest import JSONObject, follow_next_links
+
+
+class PagedObject(JSONObject):
+    @classmethod
+    def collection_items(cls, payload):
+        return follow_next_links(cls.api, payload)
+```
+
+With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size` objects ahead of iteration to fill each batch, so they can request later pages early.
+
+By default, `follow_next_links()` reads a page's items from `results` and the next page's URL from `next`, as Django REST Framework does. Pass `results_key=` and `next_key=` for other names. A list payload is a single unpaginated page. A page whose next link is null, empty, or absent is the last page. A next link to a page that was already read raises `ValueError`, rather than reading the same pages forever.
+
+A next-page URL is resolved against the URL of the page that holds it, as a browser resolves a link. An absolute URL, which is what Django REST Framework sends, is used as is. A path such as `/v1/items/?page=2` is resolved against the server's origin, and a query such as `?page=2` against the page's path. `collection_items()` does not receive the URL of the first page, so links in the first page are resolved against `base_url` unless you pass `url=`. For an API that sends query-only links, pass the collection's path:
+
+```python
+class PagedObject(JSONObject):
+    @classmethod
+    def collection_items(cls, payload):
+        return follow_next_links(cls.api, payload, url=cls.class_url)
+```
+
+`follow_next_links()` raises `ValueError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.
+
+The same origin check applies to every redirect from a next-page request,
+before the redirect is followed. Existing session response hooks still run.
+
 ## Write modes
 
 APIs use lazy writes by default. Assignments update local state and queue a pending patch until `save()` is called.
