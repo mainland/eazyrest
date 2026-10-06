@@ -112,7 +112,8 @@ Python types are converted automatically:
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
 Collection annotations are converted recursively, so item annotations are
-honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields.
+Annotate a tuple of any length as `tuple[T, ...]`:
 
 ```python
 import datetime
@@ -132,7 +133,7 @@ class Timeline(JSONObject):
 
     id: int
     starts_at: list[datetime.datetime]
-    statuses: tuple[IssueStatus]
+    statuses: tuple[IssueStatus, ...]
 ```
 
 In this example, JSON timestamp values in `starts_at` become
@@ -143,6 +144,9 @@ encodes the nested items back to JSON.
 Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item.
+
+Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not
+converted. Reading such a field returns its JSON value unchanged.
 
 ## Custom field conversion
 
