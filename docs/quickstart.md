@@ -19,12 +19,14 @@ from eazyrest import API, JSONObject, json_object
 class JSONPlaceholderObject(JSONObject):
     """Base model for JSONPlaceholder resources."""
 
+
 @json_object
 class User(JSONPlaceholderObject):
     class_url = "/users/"
 
     id: int
     name: str
+
 
 @json_object(field_map={"user": "userId"})
 class Todo(JSONPlaceholderObject):
@@ -34,6 +36,7 @@ class Todo(JSONPlaceholderObject):
     user: User
     title: str
     completed: bool
+
 
 with API(
     "https://jsonplaceholder.typicode.com/",
