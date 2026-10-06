@@ -116,7 +116,7 @@ Python types are converted automatically:
 - `datetime.datetime` values decode from ISO 8601 strings, such as
   `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
   strings. A string without a UTC offset decodes to a naive `datetime`, and a
-  naive `datetime` encodes without an offset.
+  naive `datetime` encodes without an offset. See `parse_datetime()`.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -228,13 +228,13 @@ replace the `datetime` conversion:
 ```python
 import datetime
 
-from eazyrest import DEFAULT_CONVERSIONS, Conversion, JSONObject
+from eazyrest import Conversion, JSONObject, parse_datetime
 
 
 class TimestampObject(JSONObject):
     conversions = {
         datetime.datetime: Conversion(
-            decode=DEFAULT_CONVERSIONS[datetime.datetime].decode,
+            decode=lambda value, cls: parse_datetime(value),
             encode=lambda value, cls: value.timestamp(),
         ),
     }

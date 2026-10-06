@@ -28,13 +28,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "dateparser",
     "isodate",
     # python-dateutil 2.7.0 is the first release with isoparse().
     "python-dateutil>=2.7",
     "requests[socks]",
     "typing_extensions; python_version < '3.11'",
-    "tzlocal",
     "urllib3",
 ]
 
@@ -61,7 +59,6 @@ dev = [
   "tox",
   "tox-uv",
   "twine",
-  "types-dateparser",
   "types-python-dateutil",
   "types-requests",
   "types-urllib3",
