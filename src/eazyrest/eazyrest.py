@@ -6,6 +6,7 @@ import datetime
 import enum
 import inspect
 import itertools
+import sys
 import types
 import typing
 from collections.abc import (
@@ -29,11 +30,14 @@ from typing import (
     overload,
 )
 
-from typing_extensions import Self
-
 from .api import API
 from .dateparse import parse_duration
 from .write_mode import WriteMode, validate_write_mode
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 
 class DoesNotExist(Exception):
