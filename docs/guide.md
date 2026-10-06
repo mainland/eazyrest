@@ -181,7 +181,7 @@ Name the type in a class pattern with a dotted name, such as `decimal.Decimal`. 
 
 ## Collections
 
-`filter()` and `all()` return iterables of model instances:
+`filter()` and `all()` return iterators over model instances. The request is sent when `filter()` or `all()` is called, and model instances are created as the iterator advances. An iterator can be consumed only once, so convert it to a list to iterate more than once:
 
 ```python
 users = list(User.all())
