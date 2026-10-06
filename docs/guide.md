@@ -108,8 +108,11 @@ Python types are converted automatically:
 
 - `datetime.datetime` values decode from Unix timestamps and encode back to
   timestamps.
-- `datetime.timedelta` values decode from ISO 8601 durations and encode back to
-  strings.
+- `datetime.timedelta` values decode from duration strings and encode to ISO
+  8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
+  `DurationField` format, the format of `str(timedelta)`, human-readable forms
+  such as `1h 30m` or `2 weeks`, and numbers of seconds. See
+  `parse_duration()`.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
+import isodate
+
 from .dateparse import parse_duration
 
 
@@ -51,7 +53,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
         ),
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
-            encode=lambda value, _: str(value),
+            encode=lambda value, _: isodate.duration_isoformat(value),
         ),
         enum.Enum: Conversion(
             decode=lambda value, cls: cls(value),
