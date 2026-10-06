@@ -293,6 +293,8 @@ Incoming fields are treated as authoritative server state, so queued lazy update
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to `base_url`, applies a default timeout, and raises for HTTP error responses. To customize error handling for a particular API, override `raise_for_response()` in an `API` subclass.
 
+Pass `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning`.
+
 Use the client as a context manager to ensure the session is closed:
 
 ```python
