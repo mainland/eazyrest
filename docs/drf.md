@@ -38,17 +38,18 @@ Many DRF list endpoints return an envelope such as:
 ```
 
 If DRF pagination is not configured, list endpoints usually return a plain JSON
-list and `JSONObject.collection_items()` already handles that shape. If
-pagination is configured, your model can unwrap `results` directly:
+list, which `JSONObject.collection_items()` already handles. If pagination is
+configured, each response holds one page, so return `follow_next_links()` from
+`collection_items()` to read every page:
 
 ```python
-from eazyrest import JSONObject, json_object
+from eazyrest import JSONObject, follow_next_links, json_object
 
 
 class DRFModel(JSONObject):
     @classmethod
     def collection_items(cls, payload):
-        return payload["results"]
+        return follow_next_links(cls.api, payload)
 
 
 @json_object
@@ -59,27 +60,11 @@ class User(DRFModel):
     name: str
 ```
 
-That keeps `filter()` aligned with normal DRF list responses.
-
-For a shared DRF base model, one `collection_items()` implementation can handle
-both unpaginated list responses and paginated responses from
-`PageNumberPagination`, `LimitOffsetPagination`, and `CursorPagination`:
-
-```python
-class DRFPaginatedObject(JSONObject):
-    @classmethod
-    def collection_items(cls, payload):
-        if isinstance(payload, list):
-            yield from payload
-            return
-
-        while True:
-            yield from payload["results"]
-            next_url = payload["next"]
-            if next_url is None:
-                return
-            payload = cls.api.get(next_url).json()
-```
+`follow_next_links()` handles unpaginated list responses as well as paginated
+responses from `PageNumberPagination`, `LimitOffsetPagination`, and
+`CursorPagination`. It requests the next page only when iteration reaches it.
+With `prefetch=`, iteration reads ahead by up to `prefetch_batch_size` objects,
+so a batch can span pages.
 
 With `PageNumberPagination`, a response usually looks like:
 
@@ -119,9 +104,9 @@ With `CursorPagination`, a response usually looks like:
 }
 ```
 
-The iterator logic is the same for all three pagination styles because DRF
-exposes the next page as a URL in each case. The only difference is how DRF
-encodes that URL.
+`follow_next_links()` works the same way for all three pagination styles
+because DRF exposes the next page as a URL in each case. The only difference is
+how DRF encodes that URL.
 
 ## Add a base model for DRF conventions
 
@@ -130,22 +115,13 @@ with pagination and response-shape handling there, then add serializer field
 conversions or API-specific helpers as needed:
 
 ```python
-from eazyrest import API, JSONObject
+from eazyrest import API, JSONObject, follow_next_links
 
 
 class DRFObject(JSONObject):
     @classmethod
     def collection_items(cls, payload):
-        if isinstance(payload, list):
-            yield from payload
-            return
-
-        while True:
-            yield from payload["results"]
-            next_url = payload["next"]
-            if next_url is None:
-                return
-            payload = cls.api.get(next_url).json()
+        return follow_next_links(cls.api, payload)
 
 
 api = API("https://api.example.com/")
@@ -473,10 +449,10 @@ offsets become expensive. `PageNumberPagination` is a good fit when the API is
 intentionally page-oriented, such as `?page=4`, and clients benefit from stable
 page-number links.
 
-If you need to follow `next` links across pages, keep that logic at the model
-or API-wrapper level rather than pushing it into related-field conversion.
-Related fields should describe one object's payload. Page traversal should
-describe how to walk a collection endpoint.
+Follow `next` links in `collection_items()`, as `follow_next_links()` does,
+rather than in related-field conversion. Related fields should describe one
+object's payload. Page traversal should describe how to walk a collection
+endpoint.
 
 ## Recommended DRF server-side setup
 
@@ -486,6 +462,16 @@ For the best experience with `eazyrest`, a DRF app should usually provide:
 - Stable primary keys in relation fields.
 - A documented bulk lookup shape for related resources.
 - Embedded objects only when you intentionally want payload expansion.
+- Next-page links with the public scheme and host.
+
+DRF builds next-page links from the request that Django receives. Behind a
+reverse proxy, that request names the proxy's upstream address and scheme
+unless Django is told to trust the proxy's headers. Set
+`USE_X_FORWARDED_HOST = True` if the proxy sends the public host in
+`X-Forwarded-Host` rather than `Host`, and set `SECURE_PROXY_SSL_HEADER` if TLS
+ends at the proxy. Otherwise a link such as
+`http://127.0.0.1:8000/users/?page=2` reaches the client, and
+`follow_next_links()` raises `ValueError` instead of following it.
 
 On the Django side, continue using ORM-level `select_related()` and
 `prefetch_related()` inside DRF views and serializers. That solves database N+1

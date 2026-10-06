@@ -10,6 +10,7 @@ from .eazyrest import (
     PrefetchNotSupported,
     json_object,
 )
+from .pagination import follow_next_links
 from .write_mode import WriteMode
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "MultipleObjectsReturned",
     "PrefetchNotSupported",
     "WriteMode",
+    "follow_next_links",
     "json_object",
     "parse_datetime",
     "parse_duration",
