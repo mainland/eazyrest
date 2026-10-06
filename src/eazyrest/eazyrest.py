@@ -31,6 +31,7 @@ from typing import (
 )
 from urllib.parse import quote
 
+import isodate
 import requests
 
 from .api import API
@@ -788,8 +789,10 @@ class JSONObject:
             case BaseType(base_type):
                 if base_type is datetime.datetime:
                     return value.timestamp()
-                if base_type is datetime.timedelta:
-                    return str(value)
+                if base_type is datetime.timedelta and isinstance(
+                    value, datetime.timedelta
+                ):
+                    return isodate.duration_isoformat(value)
                 if lenient_issubclass(base_type, enum.Enum):
                     if isinstance(value, base_type):
                         return value.value

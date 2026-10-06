@@ -245,6 +245,16 @@ class IssueHistory(ModelBase):
 
 
 @json_object
+class Task(ModelBase):
+    """Model with a duration field."""
+
+    class_url = "/tasks/"
+
+    id: int
+    duration: datetime.timedelta
+
+
+@json_object
 class Admin(User):
     """Decorated subclass of a decorated model."""
 
@@ -1408,6 +1418,35 @@ def test_delete_sends_delete_request(requests_mock: Any) -> None:
     Todo(id=1).delete()
 
     assert delete.called
+
+
+def test_timedelta_field_decodes_and_encodes_iso_8601(
+    requests_mock: Any,
+) -> None:
+    """Durations decode from JSON strings and encode as ISO 8601."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/tasks/1/",
+        json={"id": 1, "duration": "-PT1H"},
+    )
+    post = requests_mock.post(
+        "https://example.com/v1/tasks/",
+        json={"id": 2, "duration": "P1DT2H3M4S"},
+    )
+
+    task = Task(json={"id": 1, "duration": "1 02:03:04"}, write_mode="eager")
+    decoded = task.duration
+    task.duration = datetime.timedelta(hours=-1)
+    created = Task.create(
+        duration=datetime.timedelta(days=1, hours=2, minutes=3, seconds=4)
+    )
+
+    assert decoded == datetime.timedelta(days=1, hours=2, minutes=3, seconds=4)
+    assert patch.last_request.json() == {"duration": "-PT1H"}
+    assert task.duration == datetime.timedelta(hours=-1)
+    assert post.last_request.json() == {"duration": "P1DT2H3M4S"}
+    assert created.duration == datetime.timedelta(
+        days=1, hours=2, minutes=3, seconds=4
+    )
 
 
 def test_update_from_json_partial_payload_loads_missing_fields(
