@@ -16,8 +16,8 @@ from collections.abc import (
     Mapping,
     MutableSet,
     Sequence,
-    Set,
 )
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -281,7 +281,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
 
 
@@ -292,7 +292,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -302,7 +302,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -550,7 +550,7 @@ class JSONObject:
     key.
     """
 
-    _json_fields: ClassVar[Set[str]]
+    _json_fields: ClassVar[AbstractSet[str]]
     """All JSON fields."""
 
     prefetch_batch_size: ClassVar[int] = 100
@@ -1189,7 +1189,9 @@ class JSONObject:
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
-            raise ValueError(
+            # The field name is the invalid value, so this is a ValueError
+            # even though the check is on the descriptor's type.
+            raise ValueError(  # noqa: TRY004
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 

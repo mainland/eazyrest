@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from http.cookiejar import CookieJar
 from typing import Any
@@ -11,6 +12,11 @@ import requests
 import urllib3
 
 from .write_mode import WriteMode, validate_write_mode
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 
 class API:
@@ -130,11 +136,11 @@ class API:
         """Close the underlying HTTP session."""
         self.session.close()
 
-    def __enter__(self) -> API:
+    def __enter__(self) -> Self:
         """Return this API client for use as a context manager."""
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         """Close the session when leaving a context-manager block."""
         self.close()
 
