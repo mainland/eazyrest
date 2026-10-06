@@ -783,7 +783,6 @@ dependencies = [
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
-    { name = "pytimeparse2" },
     { name = "requests", extra = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
@@ -836,7 +835,6 @@ requires-dist = [
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
-    { name = "pytimeparse2" },
     { name = "requests", extras = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
@@ -1760,15 +1758,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a3/0b/908da9ef8a14b600fc188eee8d63ede071996114613721153f6fc9ea3cd5/python_discovery-1.6.7.tar.gz", hash = "sha256:7f7c28568c8ec3d988d8bddbdbec8e65f08e8767e52f734e18b8b498549b9b70", size = 117807, upload-time = "2026-10-28T06:24:21.878Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/57/e4/1c7c388e874222c28afb92fe3ebfeebe55555276523ba7aab0a82a10b2b5/python_discovery-1.6.7-py3-none-any.whl", hash = "sha256:5422f67e5f533bb02d7b73de1c422ed74037536fd869e05156c07565926ec68e", size = 39156, upload-time = "2026-10-28T06:24:20.462Z" },
-]
-
-[[package]]
-name = "pytimeparse2"
-version = "1.7.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/19/10/cc63fecd69905eb4d300fe71bd580e4a631483e9f53fdcb8c0ad345ce832/pytimeparse2-1.7.1.tar.gz", hash = "sha256:98668cdcba4890e1789e432e8ea0059ccf72402f13f5d52be15bdfaeb3a8b253", size = 10431, upload-time = "2023-05-11T21:40:55.774Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/9e/85abf91ef5df452f56498927affdb7128194d15644084f6c6722477c305b/pytimeparse2-1.7.1-py3-none-any.whl", hash = "sha256:a162ea6a7707fd0bb82dd99556efb783935f51885c8bdced0fce3fffe85ab002", size = 6136, upload-time = "2023-05-11T21:40:46.051Z" },
 ]
 
 [[package]]
