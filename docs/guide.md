@@ -315,3 +315,5 @@ BaseModel.register_api(api)
 ```
 
 Registering the API on a shared base class is the cleanest pattern. The API can be overridden per instance by passing `api=` when creating an object.
+
+A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.

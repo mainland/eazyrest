@@ -590,7 +590,8 @@ class JSONObject:
             json: Optional JSON payload for eager initialization. The object
                 keeps a copy, so later field assignments do not modify the
                 caller's mapping.
-            api: Optional API instance overriding the class-level API.
+            api: Optional API instance overriding the class-level API. Related
+                objects created from this object use the same override.
             write_mode: Optional write mode override. When omitted, the
                 instance inherits ``api.default_write_mode`` and otherwise
                 falls back to ``"lazy"`` when no API is bound. ``"lazy"``
@@ -654,11 +655,14 @@ class JSONObject:
             and arg in self._prefetched_related[field]
         ):
             return cast(T, self._prefetched_related[field][arg])
+        # Pass on only an instance override. Without one, the related object
+        # uses the API registered for its own class.
+        api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
-            return ty(json=arg, api=self.api, write_mode=self.write_mode)
+            return ty(json=arg, api=api, write_mode=self.write_mode)
         else:
-            return ty(pk=arg, api=self.api, write_mode=self.write_mode)
+            return ty(pk=arg, api=api, write_mode=self.write_mode)
 
     def from_json(
         self,
@@ -1227,8 +1231,9 @@ class JSONObject:
             if len(pks) == 0:
                 continue
 
+            # The related model loads through its own registered API.
             prefetched_related[field] = (
-                related_type.model_type.bulk_get_by_pks(pks, api=cls.api)
+                related_type.model_type.bulk_get_by_pks(pks)
             )
 
         return prefetched_related

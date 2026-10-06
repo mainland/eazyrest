@@ -278,6 +278,32 @@ class LegacyTodo(ModelBase):
     owner: LegacyUser
 
 
+class AccountBase(JSONObject):
+    """Base object for test models served by a second API."""
+
+
+accounts_api = API("https://accounts.example.com/")
+AccountBase.register_api(accounts_api)
+
+
+@json_object
+class Account(AccountBase):
+    """Model served by the second API."""
+
+    class_url = "/accounts/"
+
+    id: int
+    name: str
+
+
+@json_object
+class Invoice(ModelBase):
+    """Model served by the first API with a related account."""
+
+    class_url = "/invoices/"
+
+    id: int
+    account: Account
 
 
 @json_object(field_map={"user": "userId"})
@@ -1380,3 +1406,33 @@ def test_embedded_related_object_does_not_share_parent_json() -> None:
     todo.user.name = "Grace"
 
     assert todo.json["userId"] == {"id": 2, "name": "Ada"}
+
+
+def test_related_object_uses_its_own_registered_api(
+    requests_mock: Any,
+) -> None:
+    """A related model registered on another API loads from that API."""
+    requests_mock.get(
+        "https://accounts.example.com/accounts/5/",
+        json={"id": 5, "name": "Acme"},
+    )
+
+    invoice = Invoice(json={"id": 1, "account": 5})
+
+    assert invoice.account.api is accounts_api
+    assert invoice.account.name == "Acme"
+
+
+def test_related_object_inherits_instance_api_override(
+    requests_mock: Any,
+) -> None:
+    """An instance API override also applies to its related objects."""
+    override = API("https://override.example.com/")
+    requests_mock.get(
+        "https://override.example.com/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1, api=override)
+
+    assert todo.user.api is override
