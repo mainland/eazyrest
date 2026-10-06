@@ -237,6 +237,46 @@ class Admin(User):
     role: str
 
 
+@json_object(pk="slug")
+class Org(ModelBase):
+    """Model with a string primary key."""
+
+    class_url = "/orgs/"
+
+    slug: str
+    name: str
+
+
+@json_object
+class Repo(ModelBase):
+    """Model related to a model with a string primary key."""
+
+    class_url = "/repos/"
+
+    id: int
+    org: Org
+
+
+@json_object(field_map={"id": "ID"})
+class LegacyUser(ModelBase):
+    """Model whose primary key has a different JSON name."""
+
+    class_url = "/legacy-users/"
+
+    id: int
+    name: str
+
+
+@json_object
+class LegacyTodo(ModelBase):
+    """Model related to a model with a renamed primary key."""
+
+    class_url = "/legacy-todos/"
+
+    id: int
+    owner: LegacyUser
+
+
 
 
 @json_object(field_map={"user": "userId"})
@@ -1229,3 +1269,34 @@ def test_update_from_json_invalidates_inherited_fields() -> None:
     admin.update_from_json({"name": "new"})
 
     assert admin.name == "new"
+
+
+def test_create_accepts_string_primary_key_for_related_field(
+    requests_mock: Any,
+) -> None:
+    """Related fields accept primary keys of any type, not only ints."""
+    post = requests_mock.post(
+        "https://example.com/v1/repos/",
+        json={"id": 1, "org": "acme"},
+    )
+
+    Repo.create(org="acme")
+    by_key = post.last_request.json()
+    Repo.create(org=Org(slug="acme"))
+    by_object = post.last_request.json()
+
+    assert by_key == {"org": "acme"}
+    assert by_object == {"org": "acme"}
+
+
+def test_related_primary_key_uses_attribute_name(requests_mock: Any) -> None:
+    """A related key works when the primary key has a JSON name mapping."""
+    requests_mock.get(
+        "https://example.com/v1/legacy-users/5/",
+        json={"ID": 5, "name": "Ada"},
+    )
+
+    todo = LegacyTodo(json={"id": 1, "owner": 5})
+
+    assert todo.owner.pk == 5
+    assert todo.owner.name == "Ada"
