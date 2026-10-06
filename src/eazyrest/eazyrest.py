@@ -39,6 +39,9 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import Self
 
+if sys.version_info >= (3, 14):
+    from annotationlib import Format
+
 
 class DoesNotExist(Exception):
     """Raised when no object matches a query that expects one result."""
@@ -113,6 +116,21 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
         ``False``.
     """
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
+
+
+def _annotation_names(cls: type) -> list[str]:
+    """Return the names annotated directly on a class.
+
+    The annotations are not evaluated. A field type may refer to a class that
+    is not defined yet, including the class being decorated, so
+    ``JSONProperty`` resolves field types when they are first used.
+    """
+    if sys.version_info >= (3, 14):
+        # Python 3.14 evaluates annotations on demand, and the default VALUE
+        # format raises NameError for a forward reference.
+        return list(inspect.get_annotations(cls, format=Format.FORWARDREF))
+
+    return list(inspect.get_annotations(cls))
 
 
 def _is_collection_type(ty: Any) -> bool:
@@ -311,14 +329,14 @@ def json_object(
         # for superclasses, so we don't use typing.get_type_hints. We also want
         # to delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
-        for field, ty in inspect.get_annotations(cls, eval_str=False).items():
+        for field in _annotation_names(cls):
             if field not in exclude:
                 json_field = field_map.get(field, field)
 
                 is_primary_key = field == pk
 
                 prop = JSONProperty(
-                    cls, json_field, field, ty, is_primary_key=is_primary_key
+                    cls, json_field, field, is_primary_key=is_primary_key
                 )
 
                 setattr(cls, field, prop)
@@ -372,9 +390,6 @@ class JSONProperty:
     field: str
     """Name of Python field corresponding to this property."""
 
-    _ty: type
-    """Field type."""
-
     json_field: str
     """Name of JSON field corresponding to this property."""
 
@@ -386,7 +401,6 @@ class JSONProperty:
         cls: type[JSONObject],
         json_field: str,
         field: str,
-        ty: type,
         is_primary_key: bool = False,
     ):
         """Initialize a property descriptor.
@@ -395,12 +409,10 @@ class JSONProperty:
             cls: Model class that owns this descriptor.
             json_field: JSON key backing this attribute.
             field: Python attribute name.
-            ty: Declared annotation type.
             is_primary_key: Whether this property stores the primary key.
         """
         self.cls = cls
-        self.field = json_field if field is None else field
-        self._ty = ty
+        self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
 
