@@ -326,6 +326,7 @@ derived from `JSONObject` with the following overrides:
 def collection_items(cls, payload):
     return payload["results"]
 
+
 @classmethod
 def object_json(cls, payload):
     return payload["result"]
