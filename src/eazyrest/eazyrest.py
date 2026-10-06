@@ -767,9 +767,7 @@ class JSONObject:
         if isinstance(arg, dict):
             return ty(json=arg, api=self.api, write_mode=self.write_mode)
         else:
-            assert issubclass(ty, JSONObject)
-            kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
-            return ty(api=self.api, write_mode=self.write_mode, **kwargs)
+            return ty(pk=arg, api=self.api, write_mode=self.write_mode)
 
     def _from_json(
         self,
@@ -875,11 +873,12 @@ class JSONObject:
 
                 return cls._to_json(value, inner_type)
             case RelatedType():
-                # If value is an int, assume it is a primary key already
-                if isinstance(value, int):
-                    return value
+                # Any value other than a model instance is already a primary
+                # key.
+                if isinstance(value, JSONObject):
+                    return value.pk
 
-                return value.pk
+                return value
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(cls))
                 # A subclass of the key reads as the key's type, such as a
