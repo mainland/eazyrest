@@ -134,7 +134,7 @@ Run the pre-commit hooks across the whole tree, as CI does, with:
 tox -e lint
 ```
 
-GitHub Actions runs `ruff`, `mypy`, and `pytest` for Python 3.10, 3.11, and 3.12 on every push and pull request.
+GitHub Actions runs the test suite on Python 3.10 through 3.15 and the lint environment on every push and pull request.
 
 To build and validate a distribution:
 
