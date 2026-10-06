@@ -58,6 +58,8 @@ loaded_user = User(json={"id": 1, "name": "Ada"})
 
 An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. An object constructed from `json=` starts with that payload already loaded.
 
+Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
+
 Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
 
 ```python
@@ -324,3 +326,13 @@ BaseModel.register_api(api)
 Registering the API on a shared base class is the cleanest pattern. The API can be overridden per instance by passing `api=` when creating an object.
 
 A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
+
+## Threads
+
+`eazyrest` is synchronous. Each request blocks until its response arrives, and there is no `asyncio` interface.
+
+A model instance caches its JSON, converted field values, and pending updates without locking. Do not share an instance between threads if any of them reads a field that may load, assigns a field, or calls `save()`, `refresh()`, or `update_from_json()`. Create separate instances in each thread instead, for example by calling `filter()` or `get()` in that thread.
+
+`register_api()` updates a registry shared by the whole process. Register APIs during startup, before other threads use the models.
+
+Each `API` wraps one `requests.Session`, and requests does not promise that a `Session` is safe to share between threads. Class-level queries such as `filter()`, `get()`, and `create()` always use the API registered for the class, so threads that call them share its session. An instance created with `api=` uses that API instead.

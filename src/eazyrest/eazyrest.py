@@ -533,6 +533,10 @@ class JSONObject:
 
     Subclasses usually define annotated attributes and are decorated with
     ``@json_object`` so each field is backed by a ``JSONProperty`` descriptor.
+
+    Reading a field of an object that has not been loaded sends a ``GET``
+    request, so field access can raise ``requests`` exceptions. Instances
+    cache state without locking and are not safe to share between threads.
     """
 
     class_url: ClassVar[str]
