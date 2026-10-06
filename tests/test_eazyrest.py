@@ -6,6 +6,7 @@ import datetime
 import enum
 from collections.abc import Iterable
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -1300,3 +1301,32 @@ def test_related_primary_key_uses_attribute_name(requests_mock: Any) -> None:
 
     assert todo.owner.pk == 5
     assert todo.owner.name == "Ada"
+
+
+def test_get_or_create_encodes_lookup_like_create(
+    requests_mock: Any,
+) -> None:
+    """Lookup parameters use the same JSON names and values as creation."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 9, "userId": 2, "title": "t", "completed": False},
+    )
+
+    obj, created = Todo.get_or_create(
+        user=User(id=2),
+        title="t",
+        defaults={"completed": False},
+    )
+
+    assert created
+    assert obj.pk == 9
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["2"],
+        "title": ["t"],
+    }
+    assert post.last_request.json() == {
+        "userId": 2,
+        "title": "t",
+        "completed": False,
+    }

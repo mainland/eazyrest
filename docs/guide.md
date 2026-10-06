@@ -180,6 +180,12 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`:
+
+```python
+todo, created = Todo.get_or_create(user=user, title="Write docs")
+```
+
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field names as a sequence. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
 
 ## Prefetching related objects
