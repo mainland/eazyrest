@@ -28,7 +28,6 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "dateparser",
     "isodate",
     "python-dateutil",
     "requests[socks]",
@@ -37,12 +36,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dateparser = [
+  "dateparser",
+]
 test = [
+  "dateparser",
   "pytest",
   "requests-mock",
 ]
 dev = [
   "build",
+  "dateparser",
   "docformatter",
   "mypy",
   "pre-commit",

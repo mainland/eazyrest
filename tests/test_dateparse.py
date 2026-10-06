@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import sys
 from typing import Any, cast
 
 import pytest
@@ -40,6 +41,42 @@ def test_parse_datetime_date_only_uses_midnight() -> None:
 
     assert parsed == datetime.datetime(
         2024, 1, 2, tzinfo=datetime.timezone.utc
+    )
+
+
+def test_parse_datetime_uses_dateparser_on_request() -> None:
+    """``use_dateparser=True`` parses with ``dateparser``."""
+    parsed = parse_datetime(
+        "April 1, 2024 12:00",
+        use_dateparser=True,
+        tzinfo=datetime.timezone.utc,
+    )
+
+    assert parsed == datetime.datetime(
+        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+    )
+
+
+def test_parse_datetime_names_missing_dateparser_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without dateparser, the error says which extra to install."""
+    monkeypatch.setitem(sys.modules, "dateparser", None)
+
+    with pytest.raises(ModuleNotFoundError, match=r"eazyrest\[dateparser\]"):
+        parse_datetime("2024-01-02", use_dateparser=True)
+
+
+def test_parse_datetime_does_not_need_dateparser_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default parser works without the dateparser extra."""
+    monkeypatch.setitem(sys.modules, "dateparser", None)
+
+    parsed = parse_datetime("2024-01-02T03:04:05Z")
+
+    assert parsed == datetime.datetime(
+        2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc
     )
 
 

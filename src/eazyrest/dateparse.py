@@ -3,7 +3,6 @@
 import datetime
 import re
 
-import dateparser
 import dateutil.parser
 import isodate
 import tzlocal
@@ -56,14 +55,16 @@ _CALENDAR_UNITS = frozenset(
 
 def parse_datetime(
     date: str,
-    use_dateparser: bool = True,
+    use_dateparser: bool = False,
     tzinfo: datetime.tzinfo | None = None,
 ) -> datetime.datetime:
     """Parse a date/time string.
 
     Args:
         date: Date/time string to parse.
-        use_dateparser: If ``True``, parse with ``dateparser``; otherwise use
+        use_dateparser: If ``True``, parse with ``dateparser``, which also
+            accepts natural language such as ``"2 days ago"`` and requires
+            the ``eazyrest[dateparser]`` extra. Otherwise use
             ``dateutil.parser.parse``.
         tzinfo: Time zone to apply when the parsed datetime is naive. If
             omitted, the local time zone is used.
@@ -73,8 +74,20 @@ def parse_datetime(
 
     Raises:
         dateutil.parser.ParserError: If parsing fails.
+        ModuleNotFoundError: If ``use_dateparser`` is ``True`` and
+            ``dateparser`` is not installed.
     """
     if use_dateparser:
+        try:
+            # dateparser is an optional dependency.
+            import dateparser
+        except ModuleNotFoundError as err:
+            raise ModuleNotFoundError(
+                "parse_datetime(use_dateparser=True) requires dateparser. "
+                'Install it with: pip install "eazyrest[dateparser]"',
+                name="dateparser",
+            ) from err
+
         dt = dateparser.parse(date)
         if dt is None:
             raise dateutil.parser.ParserError(f"Could not parse '{date}'")
