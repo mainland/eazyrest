@@ -104,7 +104,7 @@ python3 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-Install the Git pre-commit hook so `ruff check`, `docformatter --check`, and `mypy` run automatically on every commit:
+Install the Git pre-commit hook so `ruff check`, `ruff format --check`, `docformatter --check`, and `mypy` run automatically on every commit:
 
 ```bash
 pre-commit install
@@ -128,7 +128,7 @@ Run the multi-environment test matrix locally with:
 tox
 ```
 
-Run the lint and type-check environment with:
+Run the pre-commit hooks across the whole tree, as CI does, with:
 
 ```bash
 tox -e lint

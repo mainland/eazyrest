@@ -47,12 +47,15 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]" tox
+      - name: Cache pre-commit Environments
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install tox
+        run: python -m pip install --upgrade pip tox
 
       - name: Run Tox Lint Environment
         run: tox -e lint
