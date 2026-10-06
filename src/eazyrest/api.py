@@ -6,7 +6,6 @@ from http.cookiejar import CookieJar
 from typing import Any
 from urllib.parse import urlparse
 
-import certifi
 import requests
 import urllib3
 
@@ -95,9 +94,7 @@ class API:
         """
         self.session = requests.Session()
 
-        if verify:
-            self.session.verify = certifi.where()
-        else:
+        if not verify:
             self.session.verify = False
             urllib3.disable_warnings()
 
