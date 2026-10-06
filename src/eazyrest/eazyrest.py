@@ -1439,8 +1439,11 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         **kwargs: Any,
-    ) -> Iterable[Self]:
+    ) -> Iterator[Self]:
         """Query objects matching request parameters.
+
+        The request is sent when ``filter()`` is called. Objects are created as
+        the returned iterator advances.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -1449,7 +1452,7 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Iterable of objects built from the response payload.
+            Iterator over objects built from the response payload.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
@@ -1475,7 +1478,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
-    ) -> Iterable[Self]:
+    ) -> Iterator[Self]:
         """Return all objects for this resource type.
 
         Args:
@@ -1484,7 +1487,7 @@ class JSONObject:
                 identity across parent objects within the same batch.
 
         Returns:
-            Iterable of all objects.
+            Iterator over all objects.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
@@ -1552,7 +1555,7 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
         """
-        results = iter(cls.filter(**cls._encode_fields(kwargs)))
+        results = cls.filter(**cls._encode_fields(kwargs))
         first = next(results, None)
         if first is not None:
             second = next(results, None)
