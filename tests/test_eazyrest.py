@@ -524,13 +524,16 @@ def test_create_encodes_datetime_fields(requests_mock: Any) -> None:
     )
     post = requests_mock.post(
         "https://example.com/v1/events/",
-        json={"id": 1, "starts_at": 1711972800.0},
+        json={"id": 1, "starts_at": "2024-04-01T12:00:00Z"},
     )
 
     event = Event.create(starts_at=starts_at)
 
     assert event.id == 1
-    assert post.last_request.json() == {"starts_at": 1711972800.0}
+    assert event.starts_at == starts_at
+    assert post.last_request.json() == {
+        "starts_at": "2024-04-01T12:00:00+00:00"
+    }
 
 
 def test_create_encodes_enum_fields(requests_mock: Any) -> None:
@@ -747,6 +750,91 @@ def test_datetime_list_field_decodes_nested_items() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "2024-04-01T12:00:00Z",
+            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc),
+        ),
+        (
+            "2024-04-01T14:00:00+02:00",
+            datetime.datetime(
+                2024,
+                4,
+                1,
+                14,
+                tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+            ),
+        ),
+        (
+            "2024-04-01T12:00:00.5",
+            # A string without an offset decodes to a naive datetime.
+            datetime.datetime(2024, 4, 1, 12, 0, 0, 500000),  # noqa: DTZ001
+        ),
+        (
+            1711972800,
+            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc),
+        ),
+    ],
+)
+def test_datetime_field_decodes_iso_8601_and_timestamps(
+    value: Any, expected: datetime.datetime
+) -> None:
+    """Datetime fields decode ISO 8601 strings and Unix timestamps.
+
+    Args:
+        value: JSON value of the datetime field, an ISO 8601 string or a Unix
+            timestamp.
+        expected: Datetime that ``value`` decodes to, including its time zone.
+    """
+    event = Event(json={"id": 1, "starts_at": value})
+
+    assert event.starts_at == expected
+    assert event.starts_at.tzinfo == expected.tzinfo
+
+
+def test_naive_datetime_encodes_without_offset(requests_mock: Any) -> None:
+    """A naive datetime is written without inventing a UTC offset."""
+    post = requests_mock.post(
+        "https://example.com/v1/events/",
+        json={"id": 1, "starts_at": "2024-04-01T12:00:00"},
+    )
+
+    Event.create(
+        starts_at=datetime.datetime(2024, 4, 1, 12)  # noqa: DTZ001
+    )
+
+    assert post.last_request.json() == {"starts_at": "2024-04-01T12:00:00"}
+
+
+@pytest.mark.parametrize("value", [True, {"seconds": 1}])
+def test_datetime_field_rejects_other_json_types(value: Any) -> None:
+    """Only strings and numbers decode as datetimes.
+
+    Args:
+        value: JSON value of the datetime field that is neither a string nor a
+            number.
+    """
+    event = Event(json={"id": 1, "starts_at": value})
+
+    with pytest.raises(TypeError, match="ISO 8601"):
+        _ = event.starts_at
+
+
+@pytest.mark.parametrize("value", [1e20, -1e20, float("inf")])
+def test_datetime_field_rejects_out_of_range_timestamps(value: float) -> None:
+    """A timestamp that ``datetime`` cannot represent is a ``ValueError``.
+
+    Args:
+        value: Timestamp outside the range that ``datetime`` represents.
+    """
+    event = Event(json={"id": 1, "starts_at": value})
+
+    with pytest.raises(ValueError, match="out of range"):
+        _ = event.starts_at
+
+
 def test_iterable_datetime_field_is_materialized_when_not_related() -> None:
     """Non-related iterable collections should not stay lazy."""
     timeline = Timeline(
@@ -827,7 +915,10 @@ def test_create_encodes_nested_datetime_and_enum_collections(
     ]
     timeline_post = requests_mock.post(
         "https://example.com/v1/timelines/",
-        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]},
+        json={
+            "id": 1,
+            "starts_at": ["2024-04-01T12:00:00Z", "2024-04-01T13:00:00Z"],
+        },
     )
     snapshot_post = requests_mock.post(
         "https://example.com/v1/issue-snapshots/",
@@ -841,7 +932,7 @@ def test_create_encodes_nested_datetime_and_enum_collections(
 
     assert timeline.starts_at == starts_at
     assert timeline_post.last_request.json() == {
-        "starts_at": [1711972800.0, 1711976400.0]
+        "starts_at": ["2024-04-01T12:00:00+00:00", "2024-04-01T13:00:00+00:00"]
     }
     # eazyrest reads tuple[IssueStatus] as a tuple of any length, but mypy
     # reads it as a tuple of one item.
