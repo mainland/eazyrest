@@ -1280,6 +1280,26 @@ def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
     assert obj.url == "/hyperlinked/1/"
 
 
+def test_pk_and_exclude_options() -> None:
+    """``pk=`` names the key field and ``exclude=`` skips annotations."""
+
+    @json_object(pk="uuid", exclude={"display"})
+    class Thing(ModelBase):
+        """Model with a non-default primary key and an excluded field."""
+
+        class_url = "/things/"
+
+        uuid: str
+        display: str
+
+    thing = Thing(uuid="abc")
+
+    assert thing.pk == "abc"
+    assert thing.url == "/things/abc/"
+    with pytest.raises(AttributeError):
+        thing.display = "label"
+
+
 def test_subclass_accepts_inherited_and_own_fields(
     requests_mock: Any,
 ) -> None:
@@ -1369,6 +1389,25 @@ def test_get_or_create_encodes_lookup_like_create(
         "title": "t",
         "completed": False,
     }
+
+
+def test_get_raises_does_not_exist(requests_mock: Any) -> None:
+    """``get()`` should raise when no object matches."""
+    requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(DoesNotExist):
+        Todo.get(title="missing")
+
+
+def test_delete_sends_delete_request(requests_mock: Any) -> None:
+    """``delete()`` should send ``DELETE`` to the object URL."""
+    delete = requests_mock.delete(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    Todo(id=1).delete()
+
+    assert delete.called
 
 
 def test_update_from_json_partial_payload_loads_missing_fields(
