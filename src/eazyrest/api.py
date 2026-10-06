@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.parse import urlparse
@@ -186,6 +187,28 @@ class API:
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
 
+    def _send(
+        self,
+        send: Callable[..., requests.Response],
+        uri: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Send a request with this client's defaults and check the response.
+
+        Args:
+            send: Session method that sends the request.
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``send``.
+            **kwargs: Keyword arguments forwarded to ``send``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        kwargs.setdefault("timeout", self.timeout)
+        resp = send(self._resolve_url(uri), *args, **kwargs)
+        return self._check_response(resp)
+
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.
 
@@ -197,9 +220,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.get(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.get, uri, *args, **kwargs)
 
     def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``POST`` request.
@@ -212,9 +233,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.post(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.post, uri, *args, **kwargs)
 
     def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PATCH`` request.
@@ -229,9 +248,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.patch(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.patch, uri, *args, **kwargs)
 
     def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PUT`` request.
@@ -246,9 +263,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.put(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.put, uri, *args, **kwargs)
 
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``DELETE`` request.
@@ -263,6 +278,4 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.delete(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.delete, uri, *args, **kwargs)
