@@ -1081,6 +1081,33 @@ class JSONObject:
         return self._json
 
     @classmethod
+    def _encode_fields(cls, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """Encode field values as JSON object members.
+
+        Args:
+            fields: Values keyed by Python attribute name for JSON-backed
+                fields, or by JSON key for other values.
+
+        Returns:
+            JSON values keyed by JSON key. JSON-backed fields are renamed by
+            ``field_map`` and converted by ``_to_json()``. Other values are
+            unchanged.
+        """
+        payload: dict[str, Any] = {}
+
+        for field, value in fields.items():
+            descriptor = getattr(cls, field, None)
+            if isinstance(descriptor, JSONProperty):
+                payload[descriptor.json_field] = cls._to_json(
+                    value,
+                    descriptor.analyzed_type,
+                )
+            else:
+                payload[field] = value
+
+        return payload
+
+    @classmethod
     def create(cls: type[Self], **kwargs: Any) -> Self:
         """Create and return a new remote object.
 
@@ -1091,19 +1118,7 @@ class JSONObject:
         Returns:
             Newly created object instance.
         """
-        payload: dict[str, Any] = {}
-
-        for field, value in kwargs.items():
-            descriptor = getattr(cls, field, None)
-            if isinstance(descriptor, JSONProperty):
-                payload[descriptor.json_field] = cls._to_json(
-                    value,
-                    descriptor.analyzed_type,
-                )
-            else:
-                payload[field] = value
-
-        resp = cls.api.post(cls.class_url, json=payload)
+        resp = cls.api.post(cls.class_url, json=cls._encode_fields(kwargs))
         return cls(json=cls.object_json(resp.json()))
 
     @classmethod
@@ -1414,6 +1429,12 @@ class JSONObject:
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
+        The lookup query and the creation payload encode ``kwargs`` the same
+        way as ``create()``. JSON-backed fields are renamed by ``field_map``
+        and converted to JSON values, so ``user=User(id=2)`` is sent as
+        ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
+        unchanged.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             **kwargs: Fields used for lookup and included in creation.
@@ -1425,7 +1446,7 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
         """
-        results = iter(cls.filter(**kwargs))
+        results = iter(cls.filter(**cls._encode_fields(kwargs)))
         first = next(results, None)
         if first is not None:
             second = next(results, None)
