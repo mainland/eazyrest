@@ -10,6 +10,7 @@ from .eazyrest import (
     PrefetchNotSupported,
     json_object,
 )
+from .write_mode import WriteMode
 
 __all__ = [
     "API",
@@ -19,6 +20,7 @@ __all__ = [
     "JSONObject",
     "MultipleObjectsReturned",
     "PrefetchNotSupported",
+    "WriteMode",
     "json_object",
     "parse_datetime",
     "parse_duration",
