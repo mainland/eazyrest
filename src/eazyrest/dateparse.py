@@ -1,12 +1,21 @@
 """Date and duration parsing helpers used by eazyrest."""
 
 import datetime
+import re
 
 import dateparser
 import dateutil.parser
 import isodate
 import pytimeparse2
 import tzlocal
+
+# The format of str(datetime.timedelta) and Django's duration_string(), for
+# example "1 day, 2:03:04", "-1 day, 23:00:00", or "1 02:03:04.000005".
+_STANDARD_DURATION_RE = re.compile(
+    r"(?:(?P<days>-?\d+) (?:days?, )?)?"
+    r"(?P<hours>\d+):(?P<minutes>\d\d):(?P<seconds>\d\d)"
+    r"(?:\.(?P<microseconds>\d{1,6}))?"
+)
 
 
 def parse_datetime(
@@ -45,22 +54,50 @@ def parse_datetime(
     return dt
 
 
-def parse_duration(delta: str) -> datetime.timedelta:
-    """Parse a duration string.
+def parse_duration(delta: str | float) -> datetime.timedelta:
+    """Parse a duration.
+
+    The following formats are tried in order:
+
+    - The format of ``str(datetime.timedelta)`` and Django's
+      ``duration_string()``, such as ``"1 day, 2:03:04"`` or ``"1 02:03:04"``.
+    - Durations understood by ``pytimeparse2``, such as ``"1h 30m"``,
+      ``"1:30"``, or a number of seconds.
+    - ISO 8601 durations, such as ``"P1DT2H3M4S"`` or ``"-PT1H"``.
 
     Args:
-        delta: Duration string to parse.
+        delta: Duration to parse.
 
     Returns:
         Parsed ``timedelta``.
+
+    Raises:
+        ValueError: If ``delta`` is not in a supported format, or if it is an
+            ISO 8601 duration with years or months, which have no fixed
+            length.
     """
-    # Disable dateutil fallback to ensure we always return
-    # ``datetime.timedelta``
-    pytimeparse2.disable_dateutil()
+    if isinstance(delta, str):
+        match = _STANDARD_DURATION_RE.fullmatch(delta)
+        if match is not None:
+            # Only the days carry a sign, so "-1 day, 23:00:00" is -1 hour.
+            return datetime.timedelta(
+                days=int(match["days"] or 0),
+                hours=int(match["hours"]),
+                minutes=int(match["minutes"]),
+                seconds=int(match["seconds"]),
+                microseconds=int((match["microseconds"] or "").ljust(6, "0")),
+            )
 
-    timedelta = pytimeparse2.parse(delta, as_timedelta=True)
-    if timedelta is not None:
-        assert isinstance(timedelta, datetime.timedelta)
-        return timedelta
+    # Without as_timedelta, pytimeparse2 returns seconds rather than a
+    # dateutil relativedelta.
+    seconds = pytimeparse2.parse(delta)
+    if seconds is not None:
+        return datetime.timedelta(seconds=seconds)
 
-    return isodate.parse_duration(delta)
+    duration = isodate.parse_duration(str(delta))
+    if isinstance(duration, datetime.timedelta):
+        return duration
+
+    raise ValueError(
+        f"Duration {delta!r} has years or months, which have no fixed length"
+    )
