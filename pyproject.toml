@@ -161,6 +161,7 @@ env_list = [
   "py314",
   "py315",
   "lint",
+  "docs",
 ]
 skip_missing_interpreters = true
 

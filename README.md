@@ -139,7 +139,13 @@ Run the pre-commit hooks across the whole tree, as CI does, with:
 .venv/bin/python -m tox -e lint
 ```
 
-On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15 and the lint environment, checks that `uv.lock` is current, and audits the locked dependencies for known vulnerabilities.
+Build the documentation with warnings treated as errors:
+
+```bash
+.venv/bin/python -m tox -e docs
+```
+
+On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15, runs the lint and documentation environments, checks that `uv.lock` is current, audits the locked dependencies for known vulnerabilities, and checks that the built wheel imports without optional dependencies. The test environments install only the runtime dependencies and the `test` dependency group, so a runtime dependency missing from `pyproject.toml` fails the tests, and they report branch coverage.
 
 To build and validate a distribution:
 
