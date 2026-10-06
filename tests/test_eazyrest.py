@@ -1472,3 +1472,20 @@ def test_url_percent_encodes_primary_key() -> None:
     org = Org(slug="a/b?c")
 
     assert org.url == "/orgs/a%2Fb%3Fc/"
+
+
+def test_keyword_arguments_set_primary_key_first(requests_mock: Any) -> None:
+    """Field values may precede the primary key in the constructor."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/",
+        json={"id": 1, "name": "Ada"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/",
+        json={"id": 1, "name": "Grace"},
+    )
+
+    user = User(name="Grace", id=1)
+    user.save()
+
+    assert patch.last_request.json() == {"name": "Grace"}

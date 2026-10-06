@@ -619,9 +619,15 @@ class JSONObject:
         self._json = None if json is None else dict(json)
         self._json_is_partial = False
 
-        # Set all attributes passed in as keyword arguments
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+        # Set the primary key first, because assigning any other field loads
+        # the object from its URL.
+        pk_names = {"pk"}
+        pk_property = getattr(type(self), "_pk", None)
+        if pk_property is not None:
+            pk_names.add(pk_property.field)
+
+        for name in sorted(kwargs, key=lambda name: name not in pk_names):
+            setattr(self, name, kwargs[name])
 
     def _set_prefetched_related(
         self,
