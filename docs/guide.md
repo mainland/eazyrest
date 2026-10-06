@@ -45,6 +45,8 @@ class User(JSONObject):
     resource_url: str
 ```
 
+A decorated subclass of a decorated model keeps the fields of its base class and adds its own.
+
 ## Loading and caching
 
 You can construct an object from a primary key or from an already-loaded JSON payload:
