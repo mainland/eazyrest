@@ -485,18 +485,18 @@ class JSONProperty:
 
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
-        elif self.json_field not in obj.json:
-            raise AttributeError
-        else:
-            if self.field in obj._field_cache:
-                return obj._field_cache[self.field]
-            value = obj.from_json(
-                obj.json[self.json_field],
-                self.analyzed_type,
-                field=self.field,
-            )
-            obj._field_cache[self.field] = value
-            return value
+
+        json = obj._json_with_field(self.json_field, self.field)
+        if self.field in obj._field_cache:
+            return obj._field_cache[self.field]
+
+        value = obj.from_json(
+            json[self.json_field],
+            self.analyzed_type,
+            field=self.field,
+        )
+        obj._field_cache[self.field] = value
+        return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -510,16 +510,15 @@ class JSONProperty:
         """
         if self.is_primary_key and obj._json is None:
             obj._pk_value = value
-        elif self.json_field not in obj.json:
-            raise AttributeError
-        else:
-            obj._field_cache.pop(self.field, None)
-            obj._prefetched_related.pop(self.field, None)
-            new_value = obj.to_json(value, self.analyzed_type)
+            return
 
-            # Access obj.json instead of obj._json to force a load first.
-            if obj.json[self.json_field] != new_value:
-                obj._update_json_field(self.json_field, new_value)
+        json = obj._json_with_field(self.json_field, self.field)
+        obj._field_cache.pop(self.field, None)
+        obj._prefetched_related.pop(self.field, None)
+        new_value = obj.to_json(value, self.analyzed_type)
+
+        if json[self.json_field] != new_value:
+            obj._update_json_field(self.json_field, new_value)
 
 
 class JSONObject:
@@ -573,6 +572,9 @@ class JSONObject:
     _json: Any
     """Object's JSON representation."""
 
+    _json_is_partial: bool
+    """Whether ``_json`` holds only fields from ``update_from_json()``."""
+
     # pylint: disable=redefined-outer-name
     def __init__(
         self,
@@ -609,6 +611,7 @@ class JSONObject:
         # Copy the payload so lazy writes do not modify the caller's mapping,
         # which for an embedded related object is part of the parent's JSON.
         self._json = None if json is None else dict(json)
+        self._json_is_partial = False
 
         # Set all attributes passed in as keyword arguments
         for k, v in kwargs.items():
@@ -853,6 +856,10 @@ class JSONObject:
         authoritative server state, so any pending local updates for the same
         JSON fields are discarded.
 
+        If this object has not been loaded, the payload becomes its JSON
+        without a request. Reading a field that the payload lacks then loads
+        the full object.
+
         Args:
             json: Full or partial JSON object for this instance.
 
@@ -870,6 +877,7 @@ class JSONObject:
 
         if self._json is None:
             self._json = {self._pk_json_field: existing_pk}
+            self._json_is_partial = True
 
         self._json.update(payload)
 
@@ -895,6 +903,7 @@ class JSONObject:
         self._prefetched_related.clear()
         # Clear JSON
         self._json = None
+        self._json_is_partial = False
 
     @classmethod
     def register_api(cls, api: API) -> None:
@@ -950,17 +959,57 @@ class JSONObject:
     def json(self) -> Any:
         """Return and cache this object's JSON representation.
 
+        After ``update_from_json()`` on an object that was not loaded, this is
+        the partial payload received so far.
+
         Returns:
             JSON payload representing this object.
         """
         if self._json is None:
-            self._json = self.object_json(self.api.get(self.url).json())
-            self._field_cache.clear()
+            self._load_json()
 
-            # Have have JSON now, so delete _pk_value
+            # We have JSON now, so delete _pk_value
             del self._pk_value
 
         return self._json
+
+    def _load_json(self) -> None:
+        """Load this object's JSON from the API, keeping pending updates."""
+        json = dict(self.object_json(self.api.get(self.url).json()))
+        # Unsaved lazy updates still take precedence over server state.
+        json.update(self._pending_updates)
+        self._json = json
+        self._json_is_partial = False
+        self._field_cache.clear()
+
+    def _json_with_field(self, json_field: str, field: str) -> Any:
+        """Return this object's JSON after checking that it has a field.
+
+        Args:
+            json_field: JSON key to look for.
+            field: Python attribute name used in the error message.
+
+        Returns:
+            JSON payload containing ``json_field``.
+
+        Raises:
+            AttributeError: If the loaded JSON does not contain
+                ``json_field``.
+        """
+        json = self.json
+        if json_field not in json and self._json_is_partial:
+            # The partial payload from update_from_json() does not say whether
+            # the server has this field, so load the full object.
+            self._load_json()
+            json = self.json
+
+        if json_field not in json:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{field}': "
+                f"JSON field '{json_field}' is missing"
+            )
+
+        return json
 
     @classmethod
     def _encode_fields(cls, fields: Mapping[str, Any]) -> dict[str, Any]:

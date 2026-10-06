@@ -1332,6 +1332,29 @@ def test_get_or_create_encodes_lookup_like_create(
     }
 
 
+def test_update_from_json_partial_payload_loads_missing_fields(
+    requests_mock: Any,
+) -> None:
+    """Reading a field missing from a partial payload loads the object."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "server", "completed": True},
+    )
+
+    todo = Todo(id=1)
+    todo.update_from_json({"title": "new"})
+    title = todo.title
+    calls_before_load = requests_mock.call_count
+    todo.title = "local"
+
+    assert title == "new"
+    assert calls_before_load == 0
+    assert todo.completed is True
+    assert requests_mock.call_count == 1
+    # The unsaved lazy update survives loading the full object.
+    assert todo.title == "local"
+
+
 def test_json_payload_is_copied() -> None:
     """Field assignment does not modify the caller's JSON mapping."""
     payload = {"id": 1, "name": "Ada"}
