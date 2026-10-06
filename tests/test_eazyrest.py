@@ -1455,3 +1455,13 @@ def test_tuple_ellipsis_annotation_converts_items() -> None:
     history = IssueHistory(json={"id": 1, "statuses": ["open", "closed"]})
 
     assert history.statuses == (IssueStatus.OPEN, IssueStatus.CLOSED)
+
+
+def test_filter_rejects_unknown_prefetch_field_before_request(
+    requests_mock: Any,
+) -> None:
+    """A misspelled prefetch field fails without sending a request."""
+    with pytest.raises(ValueError, match="usr"):
+        Todo.filter(prefetch="usr")
+
+    assert requests_mock.call_count == 0

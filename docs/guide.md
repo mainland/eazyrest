@@ -233,7 +233,7 @@ Prefetching is batched so collection iteration can stay lazy. `prefetch_batch_si
 Todo.prefetch_batch_size = 250
 ```
 
-If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing.
+If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing. If a prefetch field is not a related-object field, `filter()`, `all()`, and `get()` raise `ValueError` before sending a request.
 
 ## Response-shape hooks
 

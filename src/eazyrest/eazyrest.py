@@ -1294,10 +1294,19 @@ class JSONObject:
 
         Returns:
             Iterable of objects built from the response payload.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
+        prefetch_fields = _normalize_prefetch(prefetch)
+        # Check the fields before the request, so a misspelled field fails even
+        # when the query matches nothing.
+        for field in prefetch_fields:
+            cls._prefetch_info(field)
+
         resp = cls.api.get(cls.class_url, params=kwargs)
         items = cls.collection_items(resp.json())
-        prefetch_fields = _normalize_prefetch(prefetch)
 
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
@@ -1320,6 +1329,10 @@ class JSONObject:
 
         Returns:
             Iterable of all objects.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
         return cls.filter(prefetch=prefetch)
 
@@ -1344,6 +1357,8 @@ class JSONObject:
         Raises:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
         results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
