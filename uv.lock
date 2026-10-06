@@ -763,7 +763,6 @@ wheels = [
 name = "eazyrest"
 source = { editable = "." }
 dependencies = [
-    { name = "certifi" },
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
@@ -815,7 +814,6 @@ docs = ">=3.12"
 
 [package.metadata]
 requires-dist = [
-    { name = "certifi" },
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
