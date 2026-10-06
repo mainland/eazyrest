@@ -588,7 +588,7 @@ class JSONObject:
         *,
         json: Mapping[str, Any] | None = None,
         api: API | None = None,
-        write_mode: str | None = None,
+        write_mode: WriteMode | None = None,
         **kwargs: Any,
     ) -> None:
         """Create a JSON-backed object.
@@ -819,7 +819,7 @@ class JSONObject:
         """Return this object's write mode."""
         return self._write_mode
 
-    def set_write_mode(self, mode: str) -> None:
+    def set_write_mode(self, mode: WriteMode) -> None:
         """Set how field assignments are persisted for this object.
 
         Args:
