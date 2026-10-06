@@ -218,7 +218,7 @@ class DRFObject(JSONObject):
 
 This also applies inside typed collections such as `list[datetime.datetime]`, because collection conversion recurses into each item.
 
-DRF `DurationField` can emit either ISO 8601 durations or Django-style duration strings depending on serializer settings. `eazyrest` can parse common duration strings into `datetime.timedelta`, but you should override `to_json()` too if your API requires one exact wire format.
+DRF `DurationField` emits Django's duration format, such as `1 02:03:04`, unless it is configured to emit ISO 8601. `eazyrest` parses both formats into `datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations, which DRF accepts as input. Override `to_json()` if your API requires a different wire format.
 
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` are usually easiest to model as `str` URL fields unless you want a custom wrapper type.
 
