@@ -169,6 +169,17 @@ print(todo.absolute_url)
 
 This uses the same URL resolution as `API.get()`, `API.post()`, and the other request helpers. If a model's `class_url` is already absolute, `absolute_url` leaves it unchanged.
 
+`HyperlinkedModelSerializer` puts each object's own URL in a JSON field named `url`. That name is reserved for `JSONObject.url`, so map the field to another attribute name:
+
+```python
+@json_object(field_map={"resource_url": "url"})
+class Todo(DRFObject):
+    class_url = "/todos/"
+
+    id: int
+    resource_url: str
+```
+
 ## Match DRF serializer fields
 
 DRF serializer fields usually emit JSON-friendly primitives. Most of those can be represented directly with annotations, but a few common DRF fields benefit from explicit model conventions.
