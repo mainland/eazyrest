@@ -302,6 +302,9 @@ def json_object(
     descriptors, enabling lazy conversion between JSON payload values and typed
     Python values.
 
+    Fields declared on a decorated base class remain fields of a decorated
+    subclass.
+
     Args:
         cls: Class being decorated when used as ``@json_object``.
         pk: Name of the primary-key field in the class.
@@ -332,11 +335,12 @@ def json_object(
             ValueError: If a field would replace a ``JSONObject`` attribute.
         """
         reserved = set(dir(JSONObject)).union(_annotation_names(JSONObject))
-        fields: MutableSet[str] = set()
+        fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
 
         # We only process annotations for this class *without* any annotations
-        # for superclasses, so we don't use typing.get_type_hints. We also want
-        # to delay resolving references, whereas typing.get_type_hints *does*
+        # for superclasses, so we don't use typing.get_type_hints. Fields of
+        # decorated superclasses already have descriptors. We also want to
+        # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
         for field in _annotation_names(cls):
             if field in exclude:
@@ -360,7 +364,7 @@ def json_object(
             fields.add(field)
 
         # pylint: disable=protected-access
-        cls._json_fields = fields
+        cls._json_fields = frozenset(fields)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
@@ -373,13 +377,15 @@ def json_object(
             Raises:
                 AttributeError: If assignment targets an undeclared field.
             """
+            # Check the fields of the instance's class, which may be a
+            # decorated subclass with more fields than cls.
             if (
                 name != "pk"
-                and name[0] != "_"
-                and name not in cls._json_fields
+                and not name.startswith("_")
+                and name not in type(self)._json_fields
             ):
                 raise AttributeError(
-                    f"'{cls.__name__:}' object has no attribute '{name:}'"
+                    f"'{type(self).__name__}' object has no attribute '{name}'"
                 )
 
             super(cls, self).__setattr__(name, value)
@@ -895,11 +901,12 @@ class JSONObject:
     @property
     def pk(self) -> Any:
         """Return this object's primary key value."""
+        value = type(self)._pk.__get__(self, type(self))
         # If the primary key is another JSON object, return its primary key.
-        if isinstance(self._pk, JSONObject):
-            return self._pk.pk
+        if isinstance(value, JSONObject):
+            return value.pk
         else:
-            return self._pk
+            return value
 
     @pk.setter
     def pk(self, value: Any) -> None:
@@ -910,7 +917,7 @@ class JSONObject:
         """
         # Delegate to the class-installed descriptor instead of shadowing the
         # class variable on this instance.
-        cast(JSONProperty, vars(type(self))["_pk"]).__set__(self, value)
+        type(self)._pk.__set__(self, value)
 
     @property
     def url(self) -> str:
