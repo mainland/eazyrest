@@ -372,6 +372,9 @@ The `API` class wraps a `requests.Session`, resolves request URLs relative to
 customize error handling for a particular API, override `raise_for_response()`
 in an `API` subclass.
 
+Pass `verify=False` to disable TLS certificate verification, which also
+suppresses urllib3's `InsecureRequestWarning` for the whole process.
+
 Use the client as a context manager to ensure the session is closed:
 
 ```python
