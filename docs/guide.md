@@ -81,6 +81,8 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
+`url` percent-encodes the primary key, so a key always forms one path segment. For example, the key `a/b` becomes `a%2Fb`.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:

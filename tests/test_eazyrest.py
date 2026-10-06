@@ -1465,3 +1465,10 @@ def test_filter_rejects_unknown_prefetch_field_before_request(
         Todo.filter(prefetch="usr")
 
     assert requests_mock.call_count == 0
+
+
+def test_url_percent_encodes_primary_key() -> None:
+    """A primary key always forms a single URL path segment."""
+    org = Org(slug="a/b?c")
+
+    assert org.url == "/orgs/a%2Fb%3Fc/"
