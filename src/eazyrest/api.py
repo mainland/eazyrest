@@ -85,7 +85,11 @@ class API:
         self.session.proxies.update(proxies)
 
     def reset_session(self, verify: bool = True, **kwargs: Any) -> None:
-        """Create and configure a fresh underlying ``requests.Session``.
+        """Replace the underlying ``requests.Session``.
+
+        The new session keeps the headers, authentication, cookies, and proxies
+        of the session it replaces. It does not keep connection pools or
+        mounted adapters. The replaced session is closed.
 
         Args:
             verify: Whether TLS certificates should be verified. When
@@ -95,10 +99,18 @@ class API:
               This allows for configuring connection pooling parameters, e.g.,
               ``pool_connections`` and ``pool_maxsize``.
         """
-        self.session = requests.Session()
+        session = requests.Session()
+
+        old_session: requests.Session | None = getattr(self, "session", None)
+        if old_session is not None:
+            session.headers = old_session.headers
+            session.auth = old_session.auth
+            session.cookies = old_session.cookies
+            session.proxies = old_session.proxies
+            old_session.close()
 
         if not verify:
-            self.session.verify = False
+            session.verify = False
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         # Adapt session for multiple connections
@@ -106,7 +118,9 @@ class API:
             url = urlparse(self.base_url)
 
             adapter = requests.adapters.HTTPAdapter(**kwargs)
-            self.session.mount(url.scheme + "://", adapter)
+            session.mount(url.scheme + "://", adapter)
+
+        self.session = session
 
     def close(self) -> None:
         """Close the underlying HTTP session."""

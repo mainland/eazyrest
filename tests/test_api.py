@@ -134,6 +134,31 @@ def test_api_skips_raise_for_response_hook_for_successes(
     assert response.json() == {"ok": True}
 
 
+def test_api_reset_session_keeps_client_configuration() -> None:
+    """Resetting the session keeps headers, auth, cookies, and proxies."""
+    api = API("https://example.com/", proxy="http://proxy.example.com:3128")
+    old_session = api.session
+    old_session.headers["Authorization"] = "Bearer token"
+    old_session.auth = ("user", "password")
+    old_session.cookies.set("session", "abc")
+    closed = False
+
+    def close() -> None:
+        nonlocal closed
+        closed = True
+
+    old_session.close = close  # type: ignore[method-assign]
+
+    api.reset_session(pool_maxsize=4)
+
+    assert api.session is not old_session
+    assert closed
+    assert api.session.headers["Authorization"] == "Bearer token"
+    assert api.session.auth == ("user", "password")
+    assert api.session.cookies.get("session") == "abc"
+    assert api.session.proxies["https"] == "http://proxy.example.com:3128"
+
+
 def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
     """Assigned cookies are sent with later requests."""
     api = API("https://example.com/")
