@@ -152,8 +152,8 @@ Run the pre-commit hooks across the whole tree, as CI does, with:
 ```
 
 On every push and pull request, GitHub Actions runs the test suite on Python
-3.10, 3.11, and 3.12, runs the pre-commit hooks, checks that `uv.lock` is
-current, and audits the locked dependencies for known vulnerabilities.
+3.10 through 3.15 and the lint environment, checks that `uv.lock` is current,
+and audits the locked dependencies for known vulnerabilities.
 
 To build and validate a distribution:
 

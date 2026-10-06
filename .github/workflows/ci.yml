@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: ["py310", "py311", "py312"]
+        env: ["py310", "py311", "py312", "py313", "py314", "py315"]
 
     steps:
       - name: Check Out Repository
