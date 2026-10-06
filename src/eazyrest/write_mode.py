@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Literal, cast
 
 WriteMode = Literal["lazy", "eager"]
+"""How ``JSONObject`` field assignments are persisted.
+
+``"lazy"`` queues assignments until ``save()``. ``"eager"`` sends each
+assignment in its own ``PATCH`` request.
+"""
 
 
 def validate_write_mode(mode: str) -> WriteMode:
