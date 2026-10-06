@@ -577,7 +577,7 @@ class JSONObject:
     def __init__(
         self,
         *,
-        json: Any = None,
+        json: Mapping[str, Any] | None = None,
         api: API | None = None,
         write_mode: str | None = None,
         **kwargs: Any,
@@ -585,7 +585,9 @@ class JSONObject:
         """Create a JSON-backed object.
 
         Args:
-            json: Optional JSON payload for eager initialization.
+            json: Optional JSON payload for eager initialization. The object
+                keeps a copy, so later field assignments do not modify the
+                caller's mapping.
             api: Optional API instance overriding the class-level API.
             write_mode: Optional write mode override. When omitted, the
                 instance inherits ``api.default_write_mode`` and otherwise
@@ -604,7 +606,9 @@ class JSONObject:
         self._pending_updates = {}
         self._field_cache = {}
         self._prefetched_related = {}
-        self._json = json
+        # Copy the payload so lazy writes do not modify the caller's mapping,
+        # which for an embedded related object is part of the parent's JSON.
+        self._json = None if json is None else dict(json)
 
         # Set all attributes passed in as keyword arguments
         for k, v in kwargs.items():
