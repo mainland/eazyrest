@@ -89,7 +89,7 @@ If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
 
-- `datetime.datetime` values decode from Unix timestamps and encode back to timestamps.
+- `datetime.datetime` values decode from ISO 8601 strings, such as `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601 strings. A string without a UTC offset decodes to a naive `datetime`, and a naive `datetime` encodes without an offset.
 - `datetime.timedelta` values decode from duration strings and encode to ISO 8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's `DurationField` format, the format of `str(timedelta)`, unit forms such as `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations with years or months are rejected in every format, because those units have no fixed length. See `parse_duration()`.
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
@@ -117,7 +117,7 @@ class Timeline(JSONObject):
     statuses: tuple[IssueStatus, ...]
 ```
 
-In this example, JSON timestamp values in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
+In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
 
@@ -176,6 +176,27 @@ class Invoice(APIObject):
 ```
 
 The `Invoice.total` field converts through the `Decimal` branch directly. The `Invoice.line_totals` field is a `CollectionType`, so the default collection handling recurses into each item and calls the same `Decimal` branch for every value. When overriding `from_json()`, keep forwarding `field=field` to `super()` so related-object prefetch lookups continue to work.
+
+Decoding accepts Unix timestamps for `datetime.datetime` fields, but encoding writes ISO 8601 strings. For an API that requires timestamps in requests, override `to_json()`:
+
+```python
+import datetime
+from typing import Any
+
+from eazyrest import AnalyzedType, BaseType, JSONObject
+
+
+class TimestampObject(JSONObject):
+    @classmethod
+    def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
+        match conversion:
+            case BaseType(datetime.datetime) if isinstance(
+                value, datetime.datetime
+            ):
+                return value.timestamp()
+
+        return super().to_json(value, conversion)
+```
 
 ## Collections
 

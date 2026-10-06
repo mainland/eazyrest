@@ -31,6 +31,7 @@ from typing import (
 )
 from urllib.parse import quote
 
+import dateutil.parser
 import isodate
 import requests
 
@@ -220,6 +221,39 @@ def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
         analyzed_type = analyzed_type.inner_type
 
     return analyzed_type
+
+
+def _decode_datetime(value: Any) -> datetime.datetime:
+    """Decode a JSON datetime from ISO 8601 text or a Unix timestamp.
+
+    Args:
+        value: ISO 8601 string, or number of seconds since the Unix epoch.
+
+    Returns:
+        Decoded ``datetime``. A string without a UTC offset decodes to a naive
+        ``datetime``, and a timestamp decodes to an aware UTC ``datetime``.
+
+    Raises:
+        TypeError: If ``value`` is neither a string nor a number.
+        ValueError: If a string is not an ISO 8601 datetime.
+    """
+    if isinstance(value, str):
+        dt = dateutil.parser.isoparse(value)
+        offset = dt.utcoffset()
+        if offset is not None:
+            # isoparse() returns dateutil time zones. Use the standard
+            # library's fixed-offset time zone, as timestamps do.
+            dt = dt.replace(tzinfo=datetime.timezone(offset))
+
+        return dt
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+
+    raise TypeError(
+        "Datetime values must be ISO 8601 strings or Unix timestamps, "
+        f"got {type(value).__name__}"
+    )
 
 
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
@@ -707,9 +741,7 @@ class JSONObject:
 
             case BaseType(base_type):
                 if base_type is datetime.datetime:
-                    return datetime.datetime.fromtimestamp(
-                        value, datetime.timezone.utc
-                    )
+                    return _decode_datetime(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
@@ -789,8 +821,10 @@ class JSONObject:
 
                 return value
             case BaseType(base_type):
-                if base_type is datetime.datetime:
-                    return value.timestamp()
+                if base_type is datetime.datetime and isinstance(
+                    value, datetime.datetime
+                ):
+                    return value.isoformat()
                 if base_type is datetime.timedelta and isinstance(
                     value, datetime.timedelta
                 ):
