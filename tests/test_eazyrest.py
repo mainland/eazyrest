@@ -1330,3 +1330,30 @@ def test_get_or_create_encodes_lookup_like_create(
         "title": "t",
         "completed": False,
     }
+
+
+def test_json_payload_is_copied() -> None:
+    """Field assignment does not modify the caller's JSON mapping."""
+    payload = {"id": 1, "name": "Ada"}
+
+    user = User(json=payload)
+    user.name = "Grace"
+
+    assert payload == {"id": 1, "name": "Ada"}
+    assert user.name == "Grace"
+
+
+def test_embedded_related_object_does_not_share_parent_json() -> None:
+    """Unsaved writes to an embedded object do not change its parent."""
+    todo = Todo(
+        json={
+            "id": 1,
+            "userId": {"id": 2, "name": "Ada"},
+            "title": "a",
+            "completed": False,
+        }
+    )
+
+    todo.user.name = "Grace"
+
+    assert todo.json["userId"] == {"id": 2, "name": "Ada"}
