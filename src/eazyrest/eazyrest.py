@@ -198,6 +198,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         assert issubclass(ty, JSONObject)
         return RelatedType(ty)
 
+    if ty_origin is tuple and len(ty_args) == 2 and ty_args[1] is Ellipsis:
+        # tuple[T, ...] is a homogeneous tuple of any length.
+        ty_args = ty_args[:1]
+
     if _is_collection_type(ty_origin) and len(ty_args) == 1:
         return CollectionType(
             collection_type=cast(type[Any], ty_origin),
