@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 from eazyrest import (
     API,
@@ -1489,3 +1490,54 @@ def test_keyword_arguments_set_primary_key_first(requests_mock: Any) -> None:
     user.save()
 
     assert patch.last_request.json() == {"name": "Grace"}
+
+
+def test_save_accepts_empty_patch_response(requests_mock: Any) -> None:
+    """A ``204 No Content`` response keeps the saved local values."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    todo = Todo(id=1)
+    todo.title = "new"
+    todo.save()
+    todo.save()
+
+    assert patch.call_count == 1
+    assert todo.title == "new"
+
+
+def test_eager_write_accepts_empty_patch_response(
+    requests_mock: Any,
+) -> None:
+    """Eager writes also accept ``204 No Content`` responses."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    requests_mock.patch("https://example.com/v1/todos/1/", status_code=204)
+
+    todo = Todo(id=1, write_mode="eager")
+    todo.title = "new"
+
+    assert todo.title == "new"
+    assert todo.json["title"] == "new"
+
+
+def test_failed_eager_write_keeps_previous_value(requests_mock: Any) -> None:
+    """A rejected eager write leaves the local value unchanged."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    requests_mock.patch("https://example.com/v1/todos/1/", status_code=400)
+
+    todo = Todo(id=1, write_mode="eager")
+    with pytest.raises(requests.HTTPError):
+        todo.title = "new"
+
+    assert todo.title == "old"
