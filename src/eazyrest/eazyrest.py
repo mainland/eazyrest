@@ -10,6 +10,7 @@ import re
 import sys
 import types
 import typing
+import uuid
 from collections.abc import (
     Callable,
     Iterable,
@@ -292,6 +293,28 @@ def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
         analyzed_type = analyzed_type.inner_type
 
     return analyzed_type
+
+
+def _decode_uuid(value: Any) -> uuid.UUID:
+    """Decode a JSON UUID string.
+
+    Args:
+        value: UUID in any form that ``uuid.UUID`` accepts, such as
+            ``"6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40"``.
+
+    Returns:
+        Decoded ``UUID``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not a UUID.
+    """
+    if not isinstance(value, str):
+        raise TypeError(
+            f"UUID values must be strings, got {type(value).__name__}"
+        )
+
+    return uuid.UUID(value)
 
 
 def _query_value(value: Any) -> Any:
@@ -800,21 +823,20 @@ class JSONObject:
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
             return arg
-        if (
-            field is not None
-            and not isinstance(arg, dict)
-            and field in self._prefetched_related
-            and arg in self._prefetched_related[field]
-        ):
-            return cast(T, self._prefetched_related[field][arg])
         # Pass on only an instance override. Without one, the related object
         # uses the API registered for its own class.
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
             return ty(json=arg, api=api, write_mode=self.write_mode)
-        else:
-            return ty(pk=arg, api=api, write_mode=self.write_mode)
+
+        related = ty(pk=arg, api=api, write_mode=self.write_mode)
+        if field is not None and field in self._prefetched_related:
+            pk = related._normalize_pk(arg)
+            if pk in self._prefetched_related[field]:
+                return cast(T, self._prefetched_related[field][pk])
+
+        return related
 
     def from_json(
         self,
@@ -848,6 +870,10 @@ class JSONObject:
             case BaseType(base_type):
                 if base_type is datetime.datetime:
                     return parse_datetime(value)
+                if base_type is datetime.date:
+                    return datetime.date.fromisoformat(value)
+                if base_type is uuid.UUID:
+                    return _decode_uuid(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
@@ -917,7 +943,8 @@ class JSONObject:
             JSON-serializable representation of ``value``.
 
         Raises:
-            TypeError: If ``conversion`` is not a supported analyzed type.
+            TypeError: If ``conversion`` is ``datetime.date`` and ``value`` is
+                a ``datetime.datetime``.
         """
         match conversion:
             case OptionalType(inner_type):
@@ -925,18 +952,30 @@ class JSONObject:
                     return None
 
                 return cls.to_json(value, inner_type)
-            case RelatedType():
-                # Any value other than a model instance is already a primary
-                # key.
+            case RelatedType(model_type):
                 if isinstance(value, JSONObject):
-                    return value.pk
+                    model_type = type(value)
+                    value = value.pk
 
-                return value
+                return model_type.to_json(value, model_type._pk.analyzed_type)
             case BaseType(base_type):
                 if base_type is datetime.datetime and isinstance(
                     value, datetime.datetime
                 ):
                     return value.isoformat()
+                if base_type is datetime.date and isinstance(
+                    value, datetime.date
+                ):
+                    if isinstance(value, datetime.datetime):
+                        # A datetime is a date, but its ISO 8601 form has a
+                        # time, which a date field cannot read back.
+                        raise TypeError(
+                            "Date field values must be dates, got datetime"
+                        )
+
+                    return value.isoformat()
+                if base_type is uuid.UUID and isinstance(value, uuid.UUID):
+                    return str(value)
                 if base_type is datetime.timedelta and isinstance(
                     value, datetime.timedelta
                 ):
@@ -1073,13 +1112,17 @@ class JSONObject:
 
         existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
-        if incoming_pk != existing_pk:
+        if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
             raise ValueError(
                 "Incoming JSON primary key does not match this object"
             )
 
         if self._json is None:
-            self._json = {self._pk_json_field: existing_pk}
+            self._json = {
+                self._pk_json_field: self.to_json(
+                    existing_pk, type(self)._pk.analyzed_type
+                )
+            }
             self._json_is_partial = True
 
         self._json.update(payload)
@@ -1153,6 +1196,24 @@ class JSONObject:
             return self._saved_pk
 
         return self.pk
+
+    def _normalize_pk(self, value: Any) -> Any:
+        """Return a decoded scalar primary key from a Python or JSON value.
+
+        Args:
+            value: Primary key, as a Python value or a JSON value.
+
+        Returns:
+            The primary key, encoded and decoded by the primary-key field's
+            type. A key that decodes to a model instance gives that instance's
+            own decoded primary key.
+        """
+        conversion = type(self)._pk.analyzed_type
+        value = self.from_json(self.to_json(value, conversion), conversion)
+        if isinstance(value, JSONObject):
+            return value._normalize_pk(value.pk)
+
+        return value
 
     @property
     def url(self) -> str:
@@ -1521,9 +1582,11 @@ class JSONObject:
                 continue
 
             # The related model loads through its own registered API.
-            prefetched_related[field] = (
-                related_type.model_type.bulk_get_by_pks(pks)
-            )
+            related_objects = related_type.model_type.bulk_get_by_pks(pks)
+            prefetched_related[field] = {
+                obj._normalize_pk(pk): obj
+                for pk, obj in related_objects.items()
+            }
 
         return prefetched_related
 

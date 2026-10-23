@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import enum
 import typing
+import uuid
 from collections.abc import Iterable
 from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
@@ -208,6 +209,17 @@ class Event(ModelBase):
 
     id: int
     starts_at: datetime.datetime
+
+
+@json_object
+class Booking(ModelBase):
+    """Model with date and UUID fields."""
+
+    class_url = "/bookings/"
+
+    id: int
+    day: datetime.date
+    token: uuid.UUID
 
 
 @json_object
@@ -835,6 +847,236 @@ def test_datetime_field_rejects_out_of_range_timestamps(value: float) -> None:
 
     with pytest.raises(ValueError, match="out of range"):
         _ = event.starts_at
+
+
+BOOKING_TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
+
+
+@json_object(pk="key", field_map={"key": "ID"})
+class UUIDUser(ModelBase):
+    """Related model with a UUID primary key and a distinct JSON name."""
+
+    class_url = "/uuid-users/"
+
+    key: uuid.UUID
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: API | None = None
+    ) -> dict[Any, UUIDUser]:
+        """Load users and key the result by their decoded primary keys.
+
+        Args:
+            pks: Primary keys of the users to load.
+            api: Unused. The users load through the model's own API.
+
+        Returns:
+            The loaded users, keyed by decoded primary key.
+        """
+        del api
+        return {user.pk: user for user in cls.filter(key=sorted(pks))}
+
+
+@json_object
+class UUIDTeam(ModelBase):
+    """Model with scalar and collection relations to UUID-keyed users."""
+
+    class_url = "/uuid-teams/"
+
+    id: int
+    owner: UUIDUser
+    members: list[UUIDUser]
+
+
+@pytest.mark.parametrize(
+    "related",
+    [
+        BOOKING_TOKEN,
+        UUIDUser(key=BOOKING_TOKEN),
+        UUIDUser(json={"ID": str(BOOKING_TOKEN), "name": "Ada"}),
+    ],
+)
+def test_uuid_relations_encode_primary_keys(
+    requests_mock: Any, related: Any
+) -> None:
+    """Related UUID keys encode for creation and field assignments.
+
+    Args:
+        related: Related user, given as a UUID key or as a ``UUIDUser``.
+    """
+    payload = {
+        "id": 1,
+        "owner": str(BOOKING_TOKEN),
+        "members": [str(BOOKING_TOKEN)],
+    }
+    post = requests_mock.post(
+        "https://example.com/v1/uuid-teams/", json=payload
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/uuid-teams/1/", status_code=204
+    )
+
+    UUIDTeam.create(owner=related, members=[related])
+    team = UUIDTeam(json={"id": 1, "owner": None, "members": []})
+    team.owner = related
+    team.members = [related]
+    team.save()
+
+    expected = {"owner": str(BOOKING_TOKEN), "members": [str(BOOKING_TOKEN)]}
+    assert post.last_request.json() == expected
+    assert patch.last_request.json() == expected
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_update_from_json_matches_decoded_uuid_primary_keys(
+    requests_mock: Any, loaded: bool
+) -> None:
+    """Equivalent UUID spellings identify the same loaded or lazy object.
+
+    Args:
+        loaded: Whether the user starts from its JSON or from only its primary
+            key.
+    """
+    user = (
+        UUIDUser(json={"ID": str(BOOKING_TOKEN), "name": "Ada"})
+        if loaded
+        else UUIDUser(key=BOOKING_TOKEN)
+    )
+
+    user.update_from_json({"ID": BOOKING_TOKEN.hex.upper(), "name": "Grace"})
+
+    assert user.pk == BOOKING_TOKEN
+    assert user.name == "Grace"
+    assert requests_mock.call_count == 0
+
+
+def test_partial_update_seeds_uuid_primary_key_as_json(
+    requests_mock: Any,
+) -> None:
+    """A partial payload leaves a lazy object's UUID key readable."""
+    user = UUIDUser(key=BOOKING_TOKEN)
+
+    user.update_from_json({"name": "Grace"})
+
+    assert user.pk == BOOKING_TOKEN
+    assert user.json["ID"] == str(BOOKING_TOKEN)
+    assert user.name == "Grace"
+    assert requests_mock.call_count == 0
+
+
+def test_update_from_json_rejects_different_uuid_primary_key() -> None:
+    """Normalizing UUIDs must still reject updates for another object."""
+    user = UUIDUser(json={"ID": str(BOOKING_TOKEN), "name": "Ada"})
+
+    with pytest.raises(ValueError, match="primary key"):
+        user.update_from_json({"ID": str(uuid.UUID(int=0)), "name": "Grace"})
+
+    assert user.pk == BOOKING_TOKEN
+    assert user.name == "Ada"
+
+
+def test_uuid_relations_reuse_prefetched_objects(requests_mock: Any) -> None:
+    """Scalar and collection UUID relations share bulk-loaded objects."""
+    requests_mock.get(
+        "https://example.com/v1/uuid-teams/",
+        json=[
+            {
+                "id": 1,
+                "owner": str(BOOKING_TOKEN),
+                "members": [str(BOOKING_TOKEN)],
+            },
+            {
+                "id": 2,
+                "owner": BOOKING_TOKEN.hex.upper(),
+                "members": [str(BOOKING_TOKEN)],
+            },
+        ],
+    )
+    requests_mock.get(
+        "https://example.com/v1/uuid-users/",
+        json=[{"ID": str(BOOKING_TOKEN), "name": "Ada"}],
+    )
+
+    first, second = UUIDTeam.filter(prefetch=["owner", "members"])
+    calls_after_prefetch = requests_mock.call_count
+
+    assert first.owner is second.owner
+    assert first.members[0] is second.members[0]
+    assert first.owner.name == first.members[0].name == "Ada"
+    # Each field has its own bulk lookup, but no individual user is fetched.
+    assert calls_after_prefetch == 3
+    assert requests_mock.call_count == calls_after_prefetch
+
+
+def test_date_and_uuid_fields_decode() -> None:
+    """Date and UUID strings decode to ``date`` and ``UUID`` values."""
+    booking = Booking(
+        json={"id": 1, "day": "2026-01-02", "token": str(BOOKING_TOKEN)}
+    )
+
+    assert booking.day == datetime.date(2026, 1, 2)
+    assert booking.token == BOOKING_TOKEN
+
+
+def test_date_and_uuid_fields_encode(requests_mock: Any) -> None:
+    """Assigned ``date`` and ``UUID`` values are sent as strings."""
+    patch = requests_mock.patch("https://example.com/v1/bookings/1/")
+    booking = Booking(
+        json={"id": 1, "day": "2026-01-02", "token": str(uuid.UUID(int=0))}
+    )
+
+    booking.day = datetime.date(2026, 1, 3)
+    booking.token = BOOKING_TOKEN
+    booking.save()
+
+    assert patch.last_request.json() == {
+        "day": "2026-01-03",
+        "token": "6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40",
+    }
+
+
+def test_date_field_rejects_datetime() -> None:
+    """A ``datetime`` is not written to a ``date`` field."""
+    booking = Booking(
+        json={"id": 1, "day": "2026-01-02", "token": str(uuid.UUID(int=0))}
+    )
+
+    with pytest.raises(TypeError, match="must be dates, got datetime"):
+        booking.day = datetime.datetime(
+            2026, 1, 3, 10, 30, tzinfo=datetime.timezone.utc
+        )
+
+    assert booking.day == datetime.date(2026, 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("day", "2026-01-02T00:00:00", ValueError),
+        ("day", "2026-01", ValueError),
+        ("day", 20260102, TypeError),
+        ("token", "not-a-uuid", ValueError),
+        ("token", 5, TypeError),
+    ],
+)
+def test_date_and_uuid_fields_reject_other_values(
+    field: str, value: Any, error: type[Exception]
+) -> None:
+    """A date field holds a complete date, and a UUID field a UUID string.
+
+    Args:
+        field: Name of the field to read, ``"day"`` or ``"token"``.
+        value: Invalid JSON value of the field.
+        error: Exception type that reading the field should raise.
+    """
+    booking = Booking(
+        json={"id": 1, "day": "2026-01-02", "token": str(BOOKING_TOKEN)}
+        | {field: value}
+    )
+
+    with pytest.raises(error):
+        getattr(booking, field)
 
 
 def test_iterable_datetime_field_is_materialized_when_not_related() -> None:
