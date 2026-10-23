@@ -1130,6 +1130,141 @@ def test_lazy_write_mode_batches_updates_until_save(
     assert patch.last_request.json() == {"title": "new", "userId": 3}
 
 
+@pytest.mark.parametrize("state", ["unloaded", "loaded", "refreshed"])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_primary_key_assignment_preserves_saved_identity(
+    requests_mock: Any, state: str, write_mode: WriteMode
+) -> None:
+    """Key changes address the saved object in every loading state."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+    if state == "unloaded":
+        user = User(id=1, write_mode=write_mode)
+    else:
+        user = User(json={"id": 1, "name": "Ada"}, write_mode=write_mode)
+        if state == "refreshed":
+            user.refresh()
+
+    assert requests_mock.call_count == 0
+    user.pk = 2
+
+    assert user.pk == 2
+    assert patch.call_count == (1 if write_mode == "eager" else 0)
+    if write_mode == "lazy":
+        assert user.url == "/users/1/"
+    user.save()
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"id": 2}
+    assert user.url == "/users/2/"
+
+
+def test_failed_unloaded_primary_key_write_keeps_saved_identity(
+    requests_mock: Any,
+) -> None:
+    """A rejected eager key change preserves the original resource."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    requests_mock.patch("https://example.com/v1/users/1/", status_code=400)
+    user = User(id=1, write_mode="eager")
+
+    with pytest.raises(requests.HTTPError):
+        user.id = 2
+
+    assert user.pk == 1
+    assert user.url == "/users/1/"
+
+
+def test_lazy_primary_key_change_saves_to_saved_url(
+    requests_mock: Any,
+) -> None:
+    """``save()`` sends a new primary key to the object's saved URL."""
+    old = requests_mock.patch(
+        "https://example.com/v1/users/1/",
+        json={"id": 2, "name": "Ada"},
+    )
+
+    user = User(json={"id": 1, "name": "Ada"})
+    user.id = 2
+
+    assert user.pk == 2
+    assert user.url == "/users/1/"
+
+    user.save()
+
+    assert old.last_request.json() == {"id": 2}
+    assert user.url == "/users/2/"
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_delete_with_pending_primary_key_change_uses_saved_url(
+    requests_mock: Any, loaded: bool
+) -> None:
+    """``delete()`` removes the saved object, not one at the new key."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    delete = requests_mock.delete("https://example.com/v1/users/1/")
+
+    user = User(json={"id": 1, "name": "Ada"}) if loaded else User(id=1)
+    user.id = 2
+    user.delete()
+
+    assert delete.called
+
+
+def test_eager_write_after_lazy_primary_key_change_uses_saved_url(
+    requests_mock: Any,
+) -> None:
+    """An eager write sends the pending key change to the saved URL."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/",
+        json={"id": 2, "name": "Grace"},
+    )
+
+    user = User(json={"id": 1, "name": "Ada"})
+    user.id = 2
+    user.set_write_mode("eager")
+    user.name = "Grace"
+
+    assert patch.last_request.json() == {"id": 2, "name": "Grace"}
+    assert user.url == "/users/2/"
+
+
+def test_update_from_json_matches_saved_primary_key() -> None:
+    """Server state for the saved object replaces a pending key change."""
+    user = User(json={"id": 1, "name": "Ada"})
+    user.id = 2
+
+    user.update_from_json({"id": 1, "name": "Grace"})
+
+    assert user.pk == 1
+    assert user.name == "Grace"
+    assert user.url == "/users/1/"
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_refresh_discards_pending_primary_key_change(
+    requests_mock: Any, loaded: bool
+) -> None:
+    """``refresh()`` reloads the object under its saved primary key."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+
+    user = User(json={"id": 1, "name": "Ada"}) if loaded else User(id=1)
+    user.id = 2
+    user.refresh()
+
+    assert user.name == "Ada"
+    assert user.pk == 1
+
+
 def test_refresh_discards_pending_updates_and_reloads(
     requests_mock: Any,
 ) -> None:

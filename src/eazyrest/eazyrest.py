@@ -593,17 +593,25 @@ class JSONProperty:
         Raises:
             AttributeError: If the backing JSON does not contain this field.
         """
-        if self.is_primary_key and obj._json is None:
+        # Only the first key assignment initializes a lazy object's identity.
+        # Later assignments must update the resource at its saved key.
+        if (
+            self.is_primary_key
+            and obj._json is None
+            and not hasattr(obj, "_pk_value")
+        ):
             obj._pk_value = value
             return
 
         json = obj._json_with_field(self.json_field, self.field)
-        obj._field_cache.pop(self.field, None)
-        obj._prefetched_related.pop(self.field, None)
         new_value = obj.to_json(value, self.analyzed_type)
 
         if json[self.json_field] != new_value:
             obj._update_json_field(self.json_field, new_value)
+
+        # Drop cached values only now, because the update may read this field.
+        obj._field_cache.pop(self.field, None)
+        obj._prefetched_related.pop(self.field, None)
 
 
 class JSONObject:
@@ -641,6 +649,13 @@ class JSONObject:
     """Value of the primary key.
 
     If None, look in JSON
+    """
+
+    _saved_pk: Any
+    """Primary key of the saved object while a primary-key change is pending.
+
+    Set only while ``_pending_updates`` holds the primary-key JSON
+    field.
     """
 
     _api_override: API | None
@@ -935,6 +950,14 @@ class JSONObject:
             self._apply_patch_response(resp, payload)
             return
 
+        if (
+            json_field == getattr(type(self), "_pk_json_field", None)
+            and json_field not in self._pending_updates
+        ):
+            # Until save() sends the new primary key, the object is still
+            # saved under the old one.
+            self._saved_pk = self.pk
+
         self.json[json_field] = value
         self._pending_updates[json_field] = value
 
@@ -1001,7 +1024,7 @@ class JSONObject:
         """
         payload = dict(json)
 
-        existing_pk = self.pk
+        existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
         if incoming_pk != existing_pk:
             raise ValueError(
@@ -1029,7 +1052,7 @@ class JSONObject:
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
         # Store value of primary key
-        self._pk_value = self.pk
+        self._pk_value = self._persisted_pk()
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -1064,17 +1087,31 @@ class JSONObject:
         # class variable on this instance.
         type(self)._pk.__set__(self, value)
 
+    def _persisted_pk(self) -> Any:
+        """Return the primary key under which the object is saved.
+
+        This differs from ``pk`` while a lazy primary-key change waits
+        for ``save()``.
+        """
+        if self._pk_json_field in self._pending_updates:
+            return self._saved_pk
+
+        return self.pk
+
     @property
     def url(self) -> str:
         """Return the resource URL for this object.
 
         The primary key is percent-encoded, so it always forms a single path
-        segment.
+        segment. While a primary-key change waits for ``save()``, the URL
+        uses the saved primary key, so ``save()`` sends the change to the
+        saved object.
 
         Returns:
             Relative URL for this object, always ending with ``/``.
         """
-        url = f"{self.class_url.rstrip('/')}/{quote(str(self.pk), safe='')}"
+        pk = quote(str(self._persisted_pk()), safe="")
+        url = f"{self.class_url.rstrip('/')}/{pk}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
