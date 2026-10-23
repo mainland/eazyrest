@@ -211,6 +211,10 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+`filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
+
+A keyword argument named after a JSON-backed field, or after its JSON key such as `userId`, must not be `None` or an empty collection in `filter()`, `get()`, or the lookup of `get_or_create()`. A query string has no null value or empty list, and requests omits such a parameter, so the query would ignore the field. These methods raise `ValueError` instead of sending such a query. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
+
 `get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`:
 
 ```python
