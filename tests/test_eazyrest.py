@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import datetime
 import enum
+import typing
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -1436,6 +1437,27 @@ def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
 
     assert obj.resource_url == "https://example.com/v1/hyperlinked/1/"
     assert obj.url == "/hyperlinked/1/"
+
+
+def test_class_var_annotations_are_not_fields() -> None:
+    """``ClassVar`` annotations declare class attributes, not fields."""
+
+    @json_object
+    class Widget(ModelBase):
+        """Model with annotated class attributes."""
+
+        class_url: ClassVar[str] = "/widgets/"
+        prefetch_batch_size: typing.ClassVar[int] = 5
+        kind: ClassVar[str] = "widget"
+
+        id: int
+
+    widget = Widget(json={"id": 1})
+
+    assert Widget._json_fields == {"id"}
+    assert widget.url == "/widgets/1/"
+    assert Widget.prefetch_batch_size == 5
+    assert widget.kind == "widget"
 
 
 def test_pk_and_exclude_options() -> None:

@@ -32,7 +32,7 @@ class User(JSONObject):
     display_label: str
 ```
 
-Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields.
+Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields. An attribute annotated with `ClassVar`, such as `class_url: ClassVar[str]`, is a class attribute and never becomes a field.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`, or `save`, and `@json_object` raises `ValueError` for such a field. Use `field_map=` to give the JSON key another attribute name:
 
