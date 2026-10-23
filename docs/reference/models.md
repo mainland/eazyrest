@@ -25,9 +25,9 @@
 .. data:: eazyrest.DEFAULT_CONVERSIONS
    :type: Mapping[type, Conversion]
 
-   eazyrest's conversions for ``datetime``, ``timedelta``, and enums, keyed
-   by the type they convert. The mapping is read-only. A model's
-   ``conversions`` are merged over it.
+   eazyrest's conversions for ``datetime``, ``date``, ``timedelta``,
+   ``UUID``, and enums, keyed by the type they convert. The mapping is
+   read-only. A model's ``conversions`` are merged over it.
 ```
 
 ```{eval-rst}

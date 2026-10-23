@@ -119,6 +119,12 @@ Python types are converted automatically:
   `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
   strings. A string without a UTC offset decodes to a naive `datetime`, and a
   naive `datetime` encodes without an offset. See `parse_datetime()`.
+- `datetime.date` values decode from ISO 8601 dates, such as `2024-04-01`, and
+  encode back to them. A date with a time is rejected, and so is a
+  `datetime.datetime` assigned to the field, although it is also a
+  `datetime.date`.
+- `uuid.UUID` values decode from UUID strings and encode to the standard
+  hyphenated form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -128,6 +134,10 @@ Python types are converted automatically:
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
+
+Related-object writes encode primary keys using the related model's primary-key
+annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
+equivalent UUID spellings identify the same object.
 
 Collection annotations are converted recursively, so item annotations are
 honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields.
@@ -169,10 +179,11 @@ converted. Reading such a field returns its JSON value unchanged.
 ## Custom field conversion
 
 A model converts field values by a table of conversions, keyed by type. The
-default table converts `datetime`, `timedelta`, and enums, as the previous
-section describes, and any other type reads and writes its JSON value as it is.
-To convert another type, or to convert one of these differently, declare
-`conversions` on a shared base model, mapping the type to a `Conversion`:
+default table converts `datetime`, `date`, `timedelta`, `UUID`, and enums, as
+the previous section describes, and any other type reads and writes its JSON
+value as it is. To convert another type, or to convert one of these
+differently, declare `conversions` on a shared base model, mapping the type to
+a `Conversion`:
 
 ```python
 import ipaddress

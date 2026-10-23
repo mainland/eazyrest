@@ -693,13 +693,14 @@ class JSONObject:
     """Conversions of field types, keyed by the type they convert.
 
     A class's entries are merged over its bases', and theirs over the
-    default ones for ``datetime``, ``timedelta``, and enums. A field type
-    converts by the entry for exactly that type, else by the entry of the
-    nearest class in its MRO, else, for a ``NewType``, as its supertype. A
-    key cannot be a model, or a type that eazyrest converts itself:
-    ``object``, ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
-    collection type such as ``list`` or ``dict``. Declare the mapping in the
-    class body: the class merges and checks its table when it is defined.
+    default ones for ``datetime``, ``date``, ``timedelta``, ``UUID``,
+    and enums. A field type converts by the entry for exactly that type,
+    else by the entry of the nearest class in its MRO, else, for a
+    ``NewType``, as its supertype. A key cannot be a model, or a type
+    that eazyrest converts itself: ``object``, ``bool``, ``int``,
+    ``float``, ``str``, ``None``'s type, or a collection type such as
+    ``list`` or ``dict``. Declare the mapping in the class body: the
+    class merges and checks its table when it is defined.
     """
 
     _pk_value: Any
@@ -849,21 +850,20 @@ class JSONObject:
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
             return arg
-        if (
-            field is not None
-            and not isinstance(arg, dict)
-            and field in self._prefetched_related
-            and arg in self._prefetched_related[field]
-        ):
-            return cast(T, self._prefetched_related[field][arg])
         # Pass on only an instance override. Without one, the related object
         # uses the API registered for its own class.
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
             return ty(json=arg, api=api, write_mode=self.write_mode)
-        else:
-            return ty(pk=arg, api=api, write_mode=self.write_mode)
+
+        related = ty(pk=arg, api=api, write_mode=self.write_mode)
+        if field is not None and field in self._prefetched_related:
+            pk = related._normalize_pk(arg)
+            if pk in self._prefetched_related[field]:
+                return cast(T, self._prefetched_related[field][pk])
+
+        return related
 
     def _from_json(
         self,
@@ -963,7 +963,8 @@ class JSONObject:
             JSON-serializable representation of ``value``.
 
         Raises:
-            TypeError: If ``conversion`` is not a supported analyzed type.
+            TypeError: If ``conversion`` is ``datetime.date`` and ``value`` is
+                a ``datetime.datetime``.
         """
         match conversion:
             case OptionalType(inner_type):
@@ -971,13 +972,12 @@ class JSONObject:
                     return None
 
                 return cls._to_json(value, inner_type)
-            case RelatedType():
-                # Any value other than a model instance is already a primary
-                # key.
+            case RelatedType(model_type):
                 if isinstance(value, JSONObject):
-                    return value.pk
+                    model_type = type(value)
+                    value = value.pk
 
-                return value
+                return model_type._to_json(value, model_type._pk.analyzed_type)
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(cls))
                 # A subclass of the key reads as the key's type, such as a
@@ -1112,13 +1112,17 @@ class JSONObject:
 
         existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
-        if incoming_pk != existing_pk:
+        if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
             raise ValueError(
                 "Incoming JSON primary key does not match this object"
             )
 
         if self._json is None:
-            self._json = {self._pk_json_field: existing_pk}
+            self._json = {
+                self._pk_json_field: self._to_json(
+                    existing_pk, type(self)._pk.analyzed_type
+                )
+            }
             self._json_is_partial = True
 
         self._json.update(payload)
@@ -1192,6 +1196,24 @@ class JSONObject:
             return self._saved_pk
 
         return self.pk
+
+    def _normalize_pk(self, value: Any) -> Any:
+        """Return a decoded scalar primary key from a Python or JSON value.
+
+        Args:
+            value: Primary key, as a Python value or a JSON value.
+
+        Returns:
+            The primary key, encoded and decoded by the primary-key field's
+            type. A key that decodes to a model instance gives that instance's
+            own decoded primary key.
+        """
+        conversion = type(self)._pk.analyzed_type
+        value = self._from_json(self._to_json(value, conversion), conversion)
+        if isinstance(value, JSONObject):
+            return value._normalize_pk(value.pk)
+
+        return value
 
     @property
     def url(self) -> str:
@@ -1560,9 +1582,11 @@ class JSONObject:
                 continue
 
             # The related model loads through its own registered API.
-            prefetched_related[field] = (
-                related_type.model_type.bulk_get_by_pks(pks)
-            )
+            related_objects = related_type.model_type.bulk_get_by_pks(pks)
+            prefetched_related[field] = {
+                obj._normalize_pk(pk): obj
+                for pk, obj in related_objects.items()
+            }
 
         return prefetched_related
 
