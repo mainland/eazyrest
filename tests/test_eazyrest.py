@@ -6,7 +6,7 @@ import datetime
 import enum
 import typing
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -178,6 +178,16 @@ class Event(ModelBase):
 
     id: int
     starts_at: datetime.datetime
+
+
+@json_object
+class SequenceTeam(ModelBase):
+    """Model with a sequence of related objects."""
+
+    class_url = "/sequence-teams/"
+
+    id: int
+    members: Sequence[User]
 
 
 @json_object
@@ -796,6 +806,22 @@ def test_datetime_field_rejects_out_of_range_timestamps(value: float) -> None:
 
     with pytest.raises(ValueError, match="out of range"):
         _ = event.starts_at
+
+
+def test_sequence_field_reads_as_tuple_of_converted_items(
+    requests_mock: Any,
+) -> None:
+    """A ``Sequence`` field converts its items and reads as a tuple."""
+    patch = requests_mock.patch("https://example.com/v1/sequence-teams/1/")
+    team = SequenceTeam(json={"id": 1, "members": [{"id": 2}, 3]})
+
+    assert isinstance(team.members, tuple)
+    assert [member.pk for member in team.members] == [2, 3]
+
+    team.members = [User(id=4)]
+    team.save()
+
+    assert patch.last_request.json() == {"members": [4]}
 
 
 BOOKING_TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
