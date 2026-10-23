@@ -109,6 +109,10 @@ If `class_url` is already absolute, `absolute_url` leaves it absolute.
 `url` percent-encodes the primary key, so a key always forms one path segment.
 For example, the key `a/b` becomes `a%2Fb`.
 
+The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
+raises `ValueError` because those keys could address the collection or another
+resource.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to
