@@ -90,9 +90,15 @@ If `class_url` is already absolute, `absolute_url` leaves it absolute.
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
 
 - `datetime.datetime` values decode from ISO 8601 strings, such as `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601 strings. A string without a UTC offset decodes to a naive `datetime`, and a naive `datetime` encodes without an offset. See `parse_datetime()`.
+- `datetime.date` values decode from ISO 8601 dates, such as `2024-04-01`, and encode back to them. A date with a time is rejected, and so is a `datetime.datetime` assigned to the field, although it is also a `datetime.date`.
+- `uuid.UUID` values decode from UUID strings and encode to the standard hyphenated form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO 8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's `DurationField` format, the format of `str(timedelta)`, unit forms such as `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations with years or months are rejected in every format, because those units have no fixed length. See `parse_duration()`.
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
+
+Related-object writes encode primary keys using the related model's primary-key
+annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
+equivalent UUID spellings identify the same object.
 
 Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields. Annotate a tuple of any length as `tuple[T, ...]`:
 
@@ -125,7 +131,7 @@ Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not conv
 
 ## Custom field conversion
 
-Override `from_json()` and `to_json()` on a shared base model when an API needs conversion rules beyond the built-in `datetime`, `timedelta`, `Enum`, and related-object handling.
+Override `from_json()` and `to_json()` on a shared base model when an API needs conversion rules beyond the built-in `datetime`, `date`, `timedelta`, `UUID`, `Enum`, and related-object handling.
 
 Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metadata derived from the field annotation:
 
