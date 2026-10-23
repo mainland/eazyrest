@@ -2288,6 +2288,23 @@ def test_url_percent_encodes_primary_key() -> None:
     assert org.url == "/orgs/a%2Fb%3Fc/"
 
 
+@pytest.mark.parametrize("slug", [None, "", ".", ".."])
+def test_invalid_primary_key_has_no_url(
+    requests_mock: Any, slug: str | None
+) -> None:
+    """An invalid primary key cannot address another resource.
+
+    Args:
+        slug: Primary key that has no URL, such as ``None`` or ``".."``.
+    """
+    org = Org(slug=slug)
+
+    with pytest.raises(ValueError, match="no URL"):
+        org.delete()
+
+    assert requests_mock.call_count == 0
+
+
 def test_keyword_arguments_set_primary_key_first(requests_mock: Any) -> None:
     """Field values may precede the primary key in the constructor."""
     requests_mock.get(

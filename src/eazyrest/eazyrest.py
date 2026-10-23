@@ -1227,9 +1227,21 @@ class JSONObject:
 
         Returns:
             Relative URL for this object, always ending with ``/``.
+
+        Raises:
+            ValueError: If the primary key is ``None``, empty, or a dot
+                segment. The URL would name another resource, such as the
+                collection.
         """
-        pk = quote(str(self._persisted_pk()), safe="")
-        url = f"{self.class_url.rstrip('/')}/{pk}"
+        pk = self._persisted_pk()
+        pk_text = str(pk)
+        if pk is None or pk_text in ("", ".", ".."):
+            raise ValueError(
+                f"{type(self).__name__} object has primary key {pk!r}, "
+                "so it has no URL"
+            )
+
+        url = f"{self.class_url.rstrip('/')}/{quote(pk_text, safe='')}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
