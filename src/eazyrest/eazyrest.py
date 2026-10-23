@@ -1439,6 +1439,8 @@ class JSONObject:
         Raises:
             ValueError: If ``field`` is not a JSON-backed related-object
                 field.
+            PrefetchNotSupported: If the related model does not override
+                ``bulk_get_by_pks()``.
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
@@ -1449,21 +1451,33 @@ class JSONObject:
             )
 
         analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
-        if isinstance(analyzed_type, RelatedType):
-            return descriptor, analyzed_type, None
-
+        collection_type = None
         if isinstance(analyzed_type, CollectionType):
-            item_type = _unwrap_optional_type(analyzed_type.item_type)
-            if isinstance(item_type, RelatedType):
-                return (
-                    descriptor,
-                    item_type,
-                    analyzed_type.collection_type,
-                )
+            collection_type = analyzed_type.collection_type
+            analyzed_type = _unwrap_optional_type(analyzed_type.item_type)
 
-        raise ValueError(
-            f"{cls.__name__}.{field} is not a related-object field"
+        if not isinstance(analyzed_type, RelatedType):
+            # As above, the field name is the invalid value.
+            raise ValueError(  # noqa: TRY004
+                f"{cls.__name__}.{field} is not a related-object field"
+            )
+
+        model_type = analyzed_type.model_type
+        if not model_type._supports_bulk_get():
+            raise PrefetchNotSupported(
+                f"{cls.__name__}.{field} cannot be prefetched, because "
+                f"{model_type.__name__} does not implement bulk_get_by_pks()"
+            )
+
+        return descriptor, analyzed_type, collection_type
+
+    @classmethod
+    def _supports_bulk_get(cls) -> bool:
+        """Return whether this class overrides ``bulk_get_by_pks()``."""
+        owner = next(
+            base for base in cls.__mro__ if "bulk_get_by_pks" in vars(base)
         )
+        return owner is not JSONObject
 
     @classmethod
     def _apply_prefetch(
@@ -1605,10 +1619,12 @@ class JSONObject:
                 related-object field, or if a parameter named after a
                 JSON-backed field or its JSON key is ``None`` or an empty
                 collection.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         prefetch_fields = _normalize_prefetch(prefetch)
-        # Check the fields before the request, so a misspelled field fails even
-        # when the query matches nothing.
+        # Check the fields before the request, so a misspelled field or a
+        # model without bulk lookup fails even when the query matches nothing.
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
@@ -1640,6 +1656,8 @@ class JSONObject:
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         return cls.filter(prefetch=prefetch)
 
@@ -1670,6 +1688,8 @@ class JSONObject:
                 related-object field, or if a parameter named after a
                 JSON-backed field or its JSON key is ``None`` or an empty
                 collection.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
