@@ -1407,14 +1407,13 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
 def test_prefetch_requires_explicit_bulk_support(
     requests_mock: Any,
 ) -> None:
-    """Requested prefetch should fail for models without bulk support."""
-    requests_mock.get(
-        "https://example.com/v1/nobulk-todos/",
-        json=[{"id": 1, "userId": 2, "title": "a"}],
-    )
+    """Prefetch without bulk support fails before sending the request."""
+    requests_mock.get("https://example.com/v1/nobulk-todos/", json=[])
 
-    with pytest.raises(PrefetchNotSupported):
-        list(NoBulkTodo.filter(prefetch=["user"]))
+    with pytest.raises(PrefetchNotSupported, match="bulk_get_by_pks"):
+        NoBulkTodo.filter(prefetch=["user"])
+
+    assert requests_mock.call_count == 0
 
 
 def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
