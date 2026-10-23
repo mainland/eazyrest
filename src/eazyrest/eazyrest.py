@@ -196,7 +196,7 @@ def _is_collection_type(ty: Any) -> bool:
         Whether ``ty`` is ``Iterable``, ``list``, ``tuple``, ``set``, or
         ``frozenset``.
     """
-    return ty in (Iterable, list, tuple, set, frozenset)
+    return ty in (Iterable, Sequence, list, tuple, set, frozenset)
 
 
 def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
@@ -918,7 +918,8 @@ class JSONObject:
                     for item in value
                 )
 
-                if collection_type is Iterable:
+                # Abstract collection types read as tuples.
+                if collection_type in (Iterable, Sequence):
                     return tuple(converted_items)
 
                 return collection_type(converted_items)
