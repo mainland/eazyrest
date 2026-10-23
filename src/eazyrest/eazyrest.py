@@ -6,6 +6,7 @@ import datetime
 import enum
 import inspect
 import itertools
+import re
 import sys
 import types
 import typing
@@ -122,19 +123,37 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 
-def _annotation_names(cls: type) -> list[str]:
-    """Return the names annotated directly on a class.
+def _annotations(cls: type) -> dict[str, Any]:
+    """Return the annotations made directly on a class.
 
     The annotations are not evaluated. A field type may refer to a class
     that is not defined yet, including the class being decorated, so
-    ``JSONProperty`` resolves field types when they are first used.
+    ``JSONProperty`` resolves field types when they are first used. An
+    annotation may therefore be a string or a ``typing.ForwardRef``.
     """
     if sys.version_info >= (3, 14):
         # Python 3.14 evaluates annotations on demand, and the default VALUE
         # format raises NameError for a forward reference.
-        return list(inspect.get_annotations(cls, format=Format.FORWARDREF))
+        return inspect.get_annotations(cls, format=Format.FORWARDREF)
 
-    return list(inspect.get_annotations(cls))
+    return inspect.get_annotations(cls)
+
+
+# An unevaluated ClassVar annotation, such as "ClassVar[int]" or
+# "typing.ClassVar[int]". Like dataclasses, this recognizes ClassVar by name
+# instead of evaluating the annotation.
+_CLASS_VAR_RE = re.compile(r"\s*(?:\w+\s*\.\s*)*ClassVar\b")
+
+
+def _is_class_var(annotation: Any) -> bool:
+    """Return whether an annotation, evaluated or not, is a ``ClassVar``."""
+    if isinstance(annotation, typing.ForwardRef):
+        annotation = annotation.__forward_arg__
+
+    if isinstance(annotation, str):
+        return _CLASS_VAR_RE.match(annotation) is not None
+
+    return annotation is ClassVar or typing.get_origin(annotation) is ClassVar
 
 
 def _is_collection_type(ty: Any) -> bool:
@@ -352,7 +371,9 @@ def json_object(
     Python values.
 
     Fields declared on a decorated base class remain fields of a decorated
-    subclass.
+    subclass. An attribute annotated with ``ClassVar``, such as
+    ``class_url: ClassVar[str] = "/users/"``, is a class attribute rather
+    than a field.
 
     Args:
         cls: Class being decorated when used as ``@json_object``.
@@ -383,7 +404,7 @@ def json_object(
         Raises:
             ValueError: If a field would replace a ``JSONObject`` attribute.
         """
-        reserved = set(dir(JSONObject)).union(_annotation_names(JSONObject))
+        reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
 
         # We only process annotations for this class *without* any annotations
@@ -391,8 +412,8 @@ def json_object(
         # decorated superclasses already have descriptors. We also want to
         # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
-        for field in _annotation_names(cls):
-            if field in exclude:
+        for field, annotation in _annotations(cls).items():
+            if field in exclude or _is_class_var(annotation):
                 continue
 
             if field in reserved:
