@@ -13,7 +13,7 @@ import enum
 import typing
 import uuid
 import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple
@@ -125,6 +125,7 @@ _OWN_TYPES: frozenset[type[Any]] = frozenset(
         set,
         frozenset,
         Iterable,
+        Sequence,
     }
 )
 """Types that eazyrest converts itself, which cannot key a conversion.
