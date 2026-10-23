@@ -1512,6 +1512,135 @@ def test_get_or_create_encodes_lookup_like_create(
     }
 
 
+@pytest.mark.parametrize(
+    ("query", "url", "expected"),
+    [
+        (
+            lambda: Todo.filter(user=User(id=2), ordering="-id"),
+            "https://example.com/v1/todos/",
+            {"userId": ["2"], "ordering": ["-id"]},
+        ),
+        (
+            lambda: Event.filter(
+                starts_at=datetime.datetime(
+                    2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc
+                )
+            ),
+            "https://example.com/v1/events/",
+            {"starts_at": ["2026-01-02T03:04:05+00:00"]},
+        ),
+        (
+            lambda: Issue.filter(status=IssueStatus.OPEN),
+            "https://example.com/v1/issues/",
+            {"status": ["open"]},
+        ),
+        (
+            lambda: Team.filter(members=User(id=3)),
+            "https://example.com/v1/teams/",
+            {"members": ["3"]},
+        ),
+        (
+            lambda: Timeline.filter(starts_at="2026-01-02"),
+            "https://example.com/v1/timelines/",
+            {"starts_at": ["2026-01-02"]},
+        ),
+        (
+            lambda: Todo.filter(completed=False, archived=True),
+            "https://example.com/v1/todos/",
+            {"completed": ["false"], "archived": ["True"]},
+        ),
+    ],
+)
+def test_filter_encodes_parameters_like_create(
+    requests_mock: Any,
+    query: Any,
+    url: str,
+    expected: dict[str, list[str]],
+) -> None:
+    """Query parameters for fields use the JSON names and values."""
+    lookup = requests_mock.get(url, json=[])
+
+    list(query())
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == expected
+
+
+def test_get_encodes_parameters_like_create(requests_mock: Any) -> None:
+    """``get()`` encodes its query parameters as ``filter()`` does."""
+    lookup = requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "t", "completed": False}],
+    )
+
+    Todo.get(user=User(id=2))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["2"]
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        lambda: MaybeTodo.filter(user=None),
+        lambda: MaybeTodo.get(user=None),
+        lambda: MaybeTodo.get_or_create(user=None),
+    ],
+)
+def test_query_rejects_none_for_json_backed_field(
+    requests_mock: Any, query: Any
+) -> None:
+    """A ``None`` field value is not silently dropped from the query."""
+    with pytest.raises(ValueError, match="user=None"):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("query", "match"),
+    [
+        (lambda: Todo.filter(userId=None), "userId=None"),
+        (lambda: Todo.get_or_create(userId=None), "userId=None"),
+        (lambda: MaybeTodo.get(user=User(pk=None)), "is None"),
+        (lambda: Team.filter(members=[]), "members=\\[\\]"),
+        (lambda: SetTeam.get(members=set()), "empty collection"),
+        (lambda: Team.get_or_create(members=()), "empty collection"),
+    ],
+)
+def test_query_rejects_unsendable_field_constraints(
+    requests_mock: Any, query: Any, match: str
+) -> None:
+    """A JSON-key alias or an empty collection is not silently dropped."""
+    with pytest.raises(ValueError, match=match):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+def test_query_omits_none_for_other_parameters(requests_mock: Any) -> None:
+    """A ``None`` value for another parameter is still left to requests."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(ordering=None))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {}
+
+
+def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
+    """``None`` in ``defaults`` is sent only in the creation payload."""
+    requests_mock.get("https://example.com/v1/maybe-todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/maybe-todos/", json={"id": 5, "user": None}
+    )
+
+    todo, created = MaybeTodo.get_or_create(defaults={"user": None}, id=5)
+
+    assert created
+    assert todo.user is None
+    assert post.last_request.json() == {"id": 5, "user": None}
+
+
 def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])

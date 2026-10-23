@@ -283,6 +283,21 @@ def _decode_datetime(value: Any) -> datetime.datetime:
     )
 
 
+def _query_value(value: Any) -> Any:
+    """Return an encoded field value as a query string should send it.
+
+    requests converts a query value with ``str()``, which writes
+    Python's ``True`` and ``False``. Send JSON's ``true`` and ``false``
+    instead, as the field's value would be written in a request body.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return [_query_value(item) for item in value]
+
+    return value
+
+
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
     """Return prefetch field names as a tuple."""
     if prefetch is None:
@@ -829,6 +844,10 @@ class JSONObject:
     def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
+        A collection converts to a list. A single value for a collection
+        type, such as a string, converts as one item rather than as a
+        collection.
+
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
@@ -866,6 +885,13 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
+                if not isinstance(value, Iterable) or isinstance(
+                    value, (str, bytes, Mapping)
+                ):
+                    # A single value, such as a query for the objects whose
+                    # collection holds it, converts as one item.
+                    return cls.to_json(value, item_type)
+
                 return [cls.to_json(item, item_type) for item in value]
             case _:
                 raise TypeError(
@@ -1149,6 +1175,65 @@ class JSONObject:
         return payload
 
     @classmethod
+    def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Encode query parameters as ``_encode_fields()`` encodes fields.
+
+        A boolean field value is sent as ``true`` or ``false``, as in JSON.
+
+        Args:
+            params: Query parameter values keyed as for ``_encode_fields()``.
+
+        Returns:
+            Query parameters keyed by JSON key.
+
+        Raises:
+            ValueError: If a parameter named after a JSON-backed field, or
+                after its JSON key, encodes to ``None`` or to an empty
+                collection. A query string has no null value or empty list,
+                and requests omits such a parameter, so the query would match
+                objects whatever their value for that field.
+        """
+        payload = cls._encode_fields(params)
+        json_keys = {
+            getattr(cls, field).json_field
+            for field in getattr(cls, "_json_fields", ())
+        }
+
+        for name, value in params.items():
+            descriptor = getattr(cls, name, None)
+            if isinstance(descriptor, JSONProperty):
+                json_field = descriptor.json_field
+            elif name in json_keys:
+                json_field = name
+            else:
+                continue
+
+            encoded = payload[json_field]
+            if encoded is None:
+                omitted = "is None"
+            elif isinstance(encoded, (list, tuple, set, frozenset)) and (
+                len(encoded) == 0
+            ):
+                omitted = "is an empty collection"
+            else:
+                continue
+
+            raise ValueError(
+                f"Query parameter {name}={value!r} for {cls.__name__} cannot "
+                f"be sent, because requests omits parameters whose value "
+                f"{omitted}"
+            )
+
+        for name in params:
+            descriptor = getattr(cls, name, None)
+            if isinstance(descriptor, JSONProperty):
+                payload[descriptor.json_field] = _query_value(
+                    payload[descriptor.json_field]
+                )
+
+        return payload
+
+    @classmethod
     def create(cls: type[Self], **kwargs: Any) -> Self:
         """Create and return a new remote object.
 
@@ -1400,6 +1485,17 @@ class JSONObject:
         The request is sent when ``filter()`` is called. Objects are created
         as the returned iterator advances.
 
+        Query parameters are encoded the same way as a ``create()`` payload.
+        Parameters named after JSON-backed fields are renamed by
+        ``field_map`` and converted to JSON values, so ``user=User(id=2)`` is
+        sent as ``userId=2`` when ``field_map={"user": "userId"}``. Other
+        parameters are sent unchanged.
+
+        A parameter named after a JSON-backed field, or after its JSON key,
+        must not be ``None`` or an empty collection. A query string has no
+        null value or empty list, and requests omits such a parameter, so the
+        query would ignore that field.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -1411,7 +1507,9 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field.
+                related-object field, or if a parameter named after a
+                JSON-backed field or its JSON key is ``None`` or an empty
+                collection.
         """
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field fails even
@@ -1419,7 +1517,7 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
-        resp = cls.api.get(cls.class_url, params=kwargs)
+        resp = cls.api.get(cls.class_url, params=cls._encode_query(kwargs))
         items = cls.collection_items(resp.json())
 
         # Treat an empty prefetch list the same as no prefetch at all.
@@ -1459,6 +1557,8 @@ class JSONObject:
     ) -> Self:
         """Fetch exactly one object matching query parameters.
 
+        Query parameters are encoded as in ``filter()``.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -1472,7 +1572,9 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field.
+                related-object field, or if a parameter named after a
+                JSON-backed field or its JSON key is ``None`` or an empty
+                collection.
         """
         results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
@@ -1499,6 +1601,11 @@ class JSONObject:
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are
         sent unchanged.
 
+        As in ``filter()``, a lookup field must not be ``None`` or an empty
+        collection, because the query would ignore it while the creation
+        payload sends ``null`` or ``[]``. Such a value in ``defaults`` is sent
+        only on creation and is allowed.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             **kwargs: Fields used for lookup and included in creation.
@@ -1509,8 +1616,10 @@ class JSONObject:
 
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
+            ValueError: If a lookup parameter named after a JSON-backed field
+                or its JSON key is ``None`` or an empty collection.
         """
-        results = cls.filter(**cls._encode_fields(kwargs))
+        results = cls.filter(**kwargs)
         first = next(results, None)
         if first is not None:
             second = next(results, None)
