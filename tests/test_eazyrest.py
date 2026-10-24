@@ -1978,6 +1978,105 @@ def test_equal_json_assignment_sends_no_patch(
     assert requests_mock.call_count == 0
 
 
+@json_object
+class Profile(ModelBase):
+    """Model with JSON values that are not converted."""
+
+    class_url = "/profiles/"
+
+    id: int
+    settings: dict[str, Any]
+    contacts: list[dict[str, Any]]
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_assigning_value_changed_in_place_sends_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """A value read from a field, changed, and assigned back is saved.
+
+    Args:
+        write_mode: Write mode of the profile.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]},
+        write_mode=write_mode,
+    )
+
+    settings = profile.settings
+    settings["theme"] = "dark"
+    profile.settings = settings
+    contacts = profile.contacts
+    contacts[0]["n"] = 2
+    profile.contacts = contacts
+    profile.save()
+
+    sent = [request.json() for request in patch.request_history]
+    if write_mode == "eager":
+        assert sent == [
+            {"settings": {"theme": "dark"}},
+            {"contacts": [{"n": 2}]},
+        ]
+    else:
+        assert sent == [
+            {"settings": {"theme": "dark"}, "contacts": [{"n": 2}]},
+        ]
+    assert profile.json["settings"] == {"theme": "dark"}
+
+
+def test_changing_read_value_in_place_leaves_object_unchanged(
+    requests_mock: Any,
+) -> None:
+    """A read value is a copy of the JSON, not a view of it."""
+    payload = {"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]}
+    profile = Profile(json=payload)
+
+    profile.settings["theme"] = "dark"
+    profile.contacts[0]["n"] = 2
+    profile.save()
+
+    assert profile.json["settings"] == {"theme": "light"}
+    assert profile.json["contacts"] == [{"n": 1}]
+    assert payload == {
+        "id": 1,
+        "settings": {"theme": "light"},
+        "contacts": [{"n": 1}],
+    }
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_reassigning_value_changed_after_save_sends_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """Saving an assigned value does not keep a reference to it.
+
+    Args:
+        write_mode: Write mode of the profile.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {}, "contacts": []}, write_mode=write_mode
+    )
+
+    settings = {"theme": "dark"}
+    profile.settings = settings
+    profile.save()
+    settings["font"] = "mono"
+    profile.settings = settings
+    profile.save()
+
+    assert [request.json() for request in patch.request_history] == [
+        {"settings": {"theme": "dark"}},
+        {"settings": {"theme": "dark", "font": "mono"}},
+    ]
+
+
 def test_update_from_json_merges_partial_payload_and_invalidates_cache(
     requests_mock: Any,
 ) -> None:
