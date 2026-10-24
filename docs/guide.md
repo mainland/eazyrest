@@ -133,7 +133,14 @@ In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` obje
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
 
-Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns its JSON value unchanged.
+Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Changing that copy in place does not change the object, so assign the changed value to the field to update it:
+
+```python
+settings = profile.settings
+settings["theme"] = "dark"
+profile.settings = settings
+profile.save()
+```
 
 ## Custom field conversion
 
