@@ -1651,8 +1651,18 @@ class JSONObject:
                 return
 
             prefetched_related = cls._apply_prefetch(batch_items, fields)
-            for item in batch_items:
-                obj = cls(json=item)
+            parents = [cls(json=item) for item in batch_items]
+
+            # Related objects inherit their parent's write mode. A prefetched
+            # object is shared by every parent in the batch, so set its mode
+            # once, from the mode the parents are created with, rather than
+            # when a parent reads it. Reading a relation through one parent
+            # must not change how it saves through another.
+            for related_objects in prefetched_related.values():
+                for related in related_objects.values():
+                    related.set_write_mode(parents[0].write_mode)
+
+            for obj in parents:
                 obj._set_prefetched_related(prefetched_related)
                 yield obj
 
