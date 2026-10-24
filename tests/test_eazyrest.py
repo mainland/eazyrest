@@ -2343,6 +2343,82 @@ def test_url_percent_encodes_primary_key() -> None:
     assert org.url == "/orgs/a%2Fb%3Fc/"
 
 
+@pytest.mark.parametrize("initialization", ["raw", "typed", "json"])
+def test_enum_primary_key_urls_use_serialized_values(
+    requests_mock: Any, initialization: str
+) -> None:
+    """Loading and saving enum keys must keep their wire values in URLs."""
+
+    @json_object(pk="status", field_map={"status": "state"})
+    class Workflow(ModelBase):
+        """Resource addressed by an enum key."""
+
+        class_url = "/workflows/"
+
+        status: IssueStatus
+        label: str
+
+    requests_mock.get(
+        "https://example.com/v1/workflows/open/",
+        json={"state": "open", "label": "Active"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/workflows/open/", status_code=204
+    )
+    delete = requests_mock.delete(
+        "https://example.com/v1/workflows/closed/", status_code=204
+    )
+    if initialization == "json":
+        workflow = Workflow(json={"state": "open", "label": "Active"})
+    elif initialization == "typed":
+        workflow = Workflow(status=IssueStatus.OPEN)
+    else:
+        workflow = Workflow(status="open")
+
+    assert workflow.url == "/workflows/open/"
+    assert requests_mock.call_count == 0
+    assert workflow.label == "Active"
+    assert workflow.pk is IssueStatus.OPEN
+    assert workflow.url == "/workflows/open/"
+    workflow.status = IssueStatus.CLOSED
+    assert workflow.url == "/workflows/open/"
+    workflow.save()
+
+    assert patch.last_request.json() == {"state": "closed"}
+    assert workflow.url == "/workflows/closed/"
+    workflow.delete()
+    assert delete.called
+
+
+@pytest.mark.parametrize("value", [None, "", ".", ".."])
+def test_invalid_serialized_enum_key_has_no_url(
+    requests_mock: Any, value: str | None
+) -> None:
+    """Validate the serialized key before it becomes a URL segment."""
+
+    @json_object
+    class InvalidKey(ModelBase):
+        """Model whose enum values cannot address resources."""
+
+        class Kind(enum.Enum):
+            """Keys whose wire values have no resource URL."""
+
+            MISSING = None
+            EMPTY = ""
+            DOT = "."
+            PARENT = ".."
+
+        class_url = "/invalid-keys/"
+
+        id: Kind
+
+    obj = InvalidKey(id=InvalidKey.Kind(value))
+    with pytest.raises(ValueError, match="no URL"):
+        obj.delete()
+
+    assert requests_mock.call_count == 0
+
+
 @pytest.mark.parametrize("slug", [None, "", ".", ".."])
 def test_invalid_primary_key_has_no_url(
     requests_mock: Any, slug: str | None

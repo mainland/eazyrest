@@ -1179,10 +1179,10 @@ class JSONObject:
     def url(self) -> str:
         """Return the resource URL for this object.
 
-        The primary key is percent-encoded, so it always forms a single path
-        segment. While a primary-key change waits for ``save()``, the URL
-        uses the saved primary key, so ``save()`` sends the change to the
-        saved object.
+        The primary key is converted to its JSON value and percent-encoded, so
+        it always forms a single path segment. While a primary-key change waits
+        for ``save()``, the URL uses the saved primary key, so ``save()`` sends
+        the change to the saved object.
 
         Returns:
             Relative URL for this object, always ending with ``/``.
@@ -1192,7 +1192,7 @@ class JSONObject:
                 segment. The URL would name another resource, such as the
                 collection.
         """
-        pk = self._persisted_pk()
+        pk = self.to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
             raise ValueError(
