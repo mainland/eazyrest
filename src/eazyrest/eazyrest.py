@@ -598,8 +598,11 @@ class JSONProperty:
         Returns:
             Resolved Python type for the owning class attribute.
         """
-        # Resolve type using typing.get_type_hints
-        return typing.get_type_hints(self.cls)[self.field]
+        # A class defined inside a function is absent from its module's
+        # globals. Keep its own namespace when resolving self-references.
+        localns = dict(vars(self.cls))
+        localns[self.cls.__name__] = self.cls
+        return typing.get_type_hints(self.cls, localns=localns)[self.field]
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
