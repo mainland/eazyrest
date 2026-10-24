@@ -24,6 +24,10 @@ from eazyrest import (
     json_object,
 )
 
+if typing.TYPE_CHECKING:
+    # Imported only for type checkers, so the name is unbound at run time.
+    from fractions import Fraction
+
 
 class ModelBase(JSONObject):
     """Base object for test-only models."""
@@ -2243,6 +2247,29 @@ def test_postponed_annotations_resolve_local_self_and_nested_types() -> None:
     assert node.id == 1
     assert node.parent is None
     assert node.kind is Node.Kind.ROOT
+
+
+def test_type_checking_only_annotations_leave_other_fields_readable() -> None:
+    """Only a field's own annotation must resolve when the field is read."""
+
+    @json_object(exclude={"excluded_ratio"})
+    class Measurement(ModelBase):
+        """Model with annotations that name a type-checking-only import."""
+
+        class_url = "/measurements/"
+        default_ratio: ClassVar[Fraction]
+
+        id: int
+        name: str
+        excluded_ratio: Fraction
+        ratio: Fraction
+
+    measurement = Measurement(json={"id": 1, "name": "x", "ratio": "1/2"})
+
+    assert measurement.id == 1
+    assert measurement.name == "x"
+    with pytest.raises(NameError, match="Fraction"):
+        _ = measurement.ratio
 
 
 def test_class_var_annotations_are_not_fields() -> None:
