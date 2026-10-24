@@ -645,6 +645,10 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the backing JSON does not contain this field.
+            TypeError: If a primary key that initializes an unloaded object
+                cannot be converted to the field's type.
+            ValueError: If such a primary key is not a valid value of the
+                field's type.
         """
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
@@ -653,6 +657,15 @@ class JSONProperty:
             and obj._json is None
             and not hasattr(obj, "_pk_value")
         ):
+            # Convert the key as if it were read from JSON, so it has the same
+            # type before and after the object loads. A related object passed
+            # as the key is kept as is.
+            if not isinstance(value, JSONObject):
+                conversion = self.analyzed_type
+                value = obj.from_json(
+                    obj.to_json(value, conversion), conversion
+                )
+
             obj._pk_value = value
             return
 

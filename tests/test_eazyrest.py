@@ -925,6 +925,45 @@ def test_partial_update_seeds_uuid_primary_key_as_json(
     assert requests_mock.call_count == 0
 
 
+def test_lazy_related_uuid_primary_keys_are_decoded(
+    requests_mock: Any,
+) -> None:
+    """A related key read from JSON has the key field's type before loading."""
+    team = UUIDTeam(
+        json={
+            "id": 1,
+            "owner": str(BOOKING_TOKEN),
+            "members": [BOOKING_TOKEN.hex.upper()],
+        }
+    )
+
+    assert team.owner.key == BOOKING_TOKEN
+    assert team.owner.pk == BOOKING_TOKEN
+    assert [member.pk for member in team.members] == [BOOKING_TOKEN]
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "key", [BOOKING_TOKEN, str(BOOKING_TOKEN), BOOKING_TOKEN.hex]
+)
+def test_constructor_decodes_uuid_primary_key(
+    requests_mock: Any, key: Any
+) -> None:
+    """Any accepted spelling of a key reads back as the decoded value."""
+    user = UUIDUser(key=key)
+
+    assert isinstance(user.key, uuid.UUID)
+    assert user.pk == BOOKING_TOKEN
+    assert user.url == f"/uuid-users/{BOOKING_TOKEN}/"
+    assert requests_mock.call_count == 0
+
+
+def test_constructor_rejects_invalid_uuid_primary_key() -> None:
+    """A key that the field cannot decode fails when the object is made."""
+    with pytest.raises(ValueError):
+        UUIDUser(key="not-a-uuid")
+
+
 def test_update_from_json_rejects_different_uuid_primary_key() -> None:
     """Normalizing UUIDs must still reject updates for another object."""
     user = UUIDUser(json={"ID": str(BOOKING_TOKEN), "name": "Ada"})
