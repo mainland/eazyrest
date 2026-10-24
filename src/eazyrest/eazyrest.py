@@ -641,11 +641,24 @@ class JSONProperty:
         Returns:
             Resolved Python type for the owning class attribute.
         """
+        # Evaluate only this field's annotation. Another annotation, such as a
+        # ClassVar or an excluded field, may name a type that exists only for
+        # type checkers, and it must not make this field unreadable.
+        holder = type(
+            self.cls.__name__,
+            (),
+            {
+                "__module__": self.cls.__module__,
+                "__annotations__": {
+                    self.field: _annotations(self.cls)[self.field]
+                },
+            },
+        )
         # A class defined inside a function is absent from its module's
         # globals. Keep its own namespace when resolving self-references.
         localns = dict(vars(self.cls))
         localns[self.cls.__name__] = self.cls
-        return typing.get_type_hints(self.cls, localns=localns)[self.field]
+        return typing.get_type_hints(holder, localns=localns)[self.field]
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
