@@ -1565,7 +1565,9 @@ class JSONObject:
                 # Explicit prefetch only bulk-loads foreign-key style entries.
                 # Embedded related JSON objects do not need to be prefetched.
                 pks.update(
-                    item for item in raw_items if not isinstance(item, dict)
+                    item
+                    for item in raw_items
+                    if item is not None and not isinstance(item, dict)
                 )
 
             if len(pks) == 0:
