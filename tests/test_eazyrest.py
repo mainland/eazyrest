@@ -1430,6 +1430,16 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         Todo.get(userId=2)
 
 
+def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
+    """A lazy object's primary key and URL are known without a ``GET``."""
+    user = User(id=1)
+
+    assert user.id == 1
+    assert user.pk == 1
+    assert user.url == "/users/1/"
+    assert requests_mock.call_count == 0
+
+
 def test_lazy_write_mode_batches_updates_until_save(
     requests_mock: Any,
 ) -> None:
