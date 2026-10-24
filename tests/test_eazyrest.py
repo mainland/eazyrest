@@ -1845,6 +1845,29 @@ def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
     assert obj.url == "/hyperlinked/1/"
 
 
+def test_postponed_annotations_resolve_local_self_and_nested_types() -> None:
+    """A local model resolves both its own name and class-local field types."""
+
+    @json_object
+    class Node(JSONObject):
+        """Local model with postponed annotations."""
+
+        class Kind(str, enum.Enum):
+            """Type declared in the model's own namespace."""
+
+            ROOT = "root"
+
+        id: int
+        parent: Node | None
+        kind: Kind
+
+    node = Node(json={"id": 1, "parent": None, "kind": "root"})
+
+    assert node.id == 1
+    assert node.parent is None
+    assert node.kind is Node.Kind.ROOT
+
+
 def test_class_var_annotations_are_not_fields() -> None:
     """``ClassVar`` annotations declare class attributes, not fields."""
 
