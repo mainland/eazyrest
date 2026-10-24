@@ -69,8 +69,10 @@ An object constructed from a primary key is lazy. The first access to `json` or
 a JSON-backed field other than the primary key performs a `GET` against the
 object's `url`, caches the payload, and caches converted field values as they
 are read. Reading the primary key returns the value given to the constructor
-without a request. An object constructed from `json=` starts with that payload
-already loaded.
+without a request, converted as if it were read from JSON. A `uuid.UUID` key
+given as a string therefore reads as a `UUID`, before and after the object
+loads, and the constructor raises `ValueError` for a key that is not a UUID. An
+object constructed from `json=` starts with that payload already loaded.
 
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or
