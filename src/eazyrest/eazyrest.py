@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import itertools
 import re
@@ -349,6 +350,21 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+def _copy_json(value: Any) -> Any:
+    """Return a copy of a JSON value that shares no mutable containers.
+
+    Args:
+        value: JSON value to copy.
+
+    Returns:
+        A deep copy of a dict or list, and ``value`` itself otherwise.
+    """
+    if isinstance(value, (dict, list)):
+        return copy.deepcopy(value)
+
+    return value
+
+
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
     """Return prefetch field names as a tuple.
 
@@ -681,7 +697,9 @@ class JSONProperty:
         new_value = obj._to_json(value, self.analyzed_type)
 
         if not _json_equal(json[self.json_field], new_value):
-            obj._update_json_field(self.json_field, new_value)
+            # Store a copy, so that changing the assigned value in place later
+            # cannot match the stored JSON and suppress the next update.
+            obj._update_json_field(self.json_field, _copy_json(new_value))
 
         # Drop cached values only now, because the update may read this field.
         obj._field_cache.pop(self.field, None)
@@ -929,7 +947,9 @@ class JSONObject:
                 if found is not None:
                     return found.entry.decode(value, found.declared)
 
-                return value
+                # Changing the returned value in place must not change the
+                # object's JSON without recording an update.
+                return _copy_json(value)
 
             case RelatedType(model_type):
                 return self.create_related(
