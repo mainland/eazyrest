@@ -1487,6 +1487,62 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
     assert users.last_request.qs == {"id": ["3"]}
 
 
+@pytest.mark.parametrize(
+    ("members", "expected_names", "expected_ids"),
+    [
+        ([None], [None], []),
+        (
+            [2, None, {"id": 3, "name": "Grace"}, 2],
+            ["Ada", None, "Grace", "Ada"],
+            ["2"],
+        ),
+    ],
+)
+def test_prefetch_skips_null_collection_members(
+    requests_mock: Any,
+    members: list[Any],
+    expected_names: list[str | None],
+    expected_ids: list[str],
+) -> None:
+    """Null and embedded members need no primary-key lookup.
+
+    Args:
+        members: JSON value of the team's ``members`` collection.
+        expected_names: Names of the loaded members, with ``None`` for a null
+            member.
+        expected_ids: Primary keys that the prefetch request should ask for, as
+            query-string values.
+    """
+
+    @json_object
+    class MaybeTeam(ModelBase):
+        """Model with nullable members in a related collection."""
+
+        class_url = "/maybe-teams/"
+
+        id: int
+        members: list[User | None]
+
+    requests_mock.get(
+        "https://example.com/v1/maybe-teams/",
+        json=[{"id": 1, "members": members}],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    team = next(MaybeTeam.filter(prefetch="members"))
+
+    assert [
+        member.name if member is not None else None for member in team.members
+    ] == expected_names
+    assert users.call_count == bool(expected_ids)
+    if expected_ids:
+        assert users.last_request.qs == {"id": expected_ids}
+        assert team.members[0] is team.members[-1]
+    assert requests_mock.call_count == 1 + bool(expected_ids)
+
+
 def test_prefetch_requires_explicit_bulk_support(
     requests_mock: Any,
 ) -> None:
