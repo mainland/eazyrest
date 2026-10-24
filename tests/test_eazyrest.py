@@ -7,6 +7,7 @@ import enum
 import typing
 import uuid
 from collections.abc import Iterable, Sequence
+from copy import deepcopy
 from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -1742,6 +1743,67 @@ def test_switching_to_eager_flushes_pending_lazy_changes(
 
     assert patch.called
     assert patch.last_request.json() == {"title": "new", "completed": True}
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (False, 0),
+        (1, True),
+        ({"nested": [False]}, {"nested": [0]}),
+    ],
+)
+def test_assignments_distinguish_booleans_from_numbers(
+    requests_mock: Any, write_mode: WriteMode, old: Any, new: Any
+) -> None:
+    """Assignments must distinguish JSON booleans from numbers."""
+
+    @json_object
+    class Setting(ModelBase):
+        """Model with an arbitrary JSON value."""
+
+        class_url = "/settings/"
+
+        id: int
+        value: Any
+
+    patch = requests_mock.patch(
+        "https://example.com/v1/settings/1/", status_code=204
+    )
+    setting = Setting(json={"id": 1, "value": old}, write_mode=write_mode)
+
+    setting.value = new
+    setting.save()
+
+    assert patch.call_count == 1
+    # Inspect the serialized types as well as their values.
+    assert type(patch.last_request.json()["value"]) is type(new)
+    if isinstance(new, dict):
+        assert type(patch.last_request.json()["value"]["nested"][0]) is int
+    assert patch.last_request.json() == {"value": new}
+    assert type(setting.value) is type(new)
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_equal_json_assignment_sends_no_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """An equal nested JSON value still leaves the object unchanged."""
+
+    @json_object
+    class Setting(ModelBase):
+        """Model with a nested JSON value."""
+
+        id: int
+        value: dict
+
+    value = {"nested": [False, 0, {"enabled": True}]}
+    setting = Setting(json={"id": 1, "value": value}, write_mode=write_mode)
+    setting.value = deepcopy(value)
+    setting.save()
+
+    assert requests_mock.call_count == 0
 
 
 def test_update_from_json_merges_partial_payload_and_invalidates_cache(
