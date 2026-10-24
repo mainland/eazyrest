@@ -83,7 +83,9 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
-`url` percent-encodes the primary key, so a key always forms one path segment. For example, the key `a/b` becomes `a%2Fb`.
+`url` converts the primary key to its JSON value before percent-encoding it, so
+an enum key uses its value and a key always forms one path segment. For example,
+the key `a/b` becomes `a%2Fb`.
 
 The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
 raises `ValueError` because those keys could address the collection or another
