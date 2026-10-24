@@ -787,6 +787,7 @@ dependencies = [
     { name = "requests", extra = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -839,6 +840,7 @@ requires-dist = [
     { name = "requests", extras = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
+    { name = "urllib3" },
 ]
 
 [package.metadata.requires-dev]

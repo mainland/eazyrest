@@ -32,7 +32,8 @@ dependencies = [
     "pytimeparse2",
     "requests[socks]",
     "typing_extensions; python_version < '3.11'",
-    "tzlocal"
+    "tzlocal",
+    "urllib3",
 ]
 
 [dependency-groups]
