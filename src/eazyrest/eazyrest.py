@@ -317,6 +317,33 @@ def _decode_uuid(value: Any) -> uuid.UUID:
     return uuid.UUID(value)
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without equating booleans with numbers.
+
+    Args:
+        left: First JSON value.
+        right: Second JSON value.
+
+    Returns:
+        Whether the values are equal. A boolean equals only the same boolean,
+        and dicts, lists, and tuples are compared item by item.
+    """
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_equal(value, right[key]) for key, value in left.items()
+        )
+
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _json_equal(a, b) for a, b in zip(left, right, strict=True)
+        )
+
+    return bool(left == right)
+
+
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
 
@@ -670,7 +697,7 @@ class JSONProperty:
         json = obj._json_with_field(self.json_field, self.field)
         new_value = obj.to_json(value, self.analyzed_type)
 
-        if json[self.json_field] != new_value:
+        if not _json_equal(json[self.json_field], new_value):
             obj._update_json_field(self.json_field, new_value)
 
         # Drop cached values only now, because the update may read this field.
