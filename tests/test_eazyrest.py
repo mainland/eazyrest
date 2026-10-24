@@ -1359,6 +1359,88 @@ def test_prefetch_reuses_related_instances_within_a_batch(
     assert first.user is second.user
 
 
+def test_reading_shared_prefetched_relation_keeps_its_write_mode(
+    requests_mock: Any,
+) -> None:
+    """One parent's write mode does not change a relation it shares."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "userId": 2, "title": "a", "completed": False},
+            {"id": 2, "userId": 2, "title": "b", "completed": True},
+        ],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/2/", status_code=204
+    )
+
+    first, second = list(Todo.filter(prefetch="user"))
+    first.user.name = "Grace"
+    second.set_write_mode("eager")
+    _ = second.user
+    first.user.name = "Hopper"
+
+    assert first.user.write_mode == "lazy"
+    assert patch.call_count == 0
+    first.user.save()
+    assert patch.last_request.json() == {"name": "Hopper"}
+
+
+@pytest.mark.parametrize(
+    ("parent_mode", "related_mode"), [("lazy", "eager"), ("eager", "lazy")]
+)
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_prefetch_preserves_related_write_mode(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    parent_mode: WriteMode,
+    related_mode: WriteMode,
+    prefetch: bool,
+) -> None:
+    """Prefetch must preserve a relation's inherited persistence behavior.
+
+    Args:
+        parent_mode: Default write mode of the API that serves todos.
+        related_mode: Default write mode of the API that serves users.
+        prefetch: Whether the todos are listed with the ``user`` relation
+            prefetched.
+    """
+    parent_api = API(
+        "https://parents.example.com/", default_write_mode=parent_mode
+    )
+    related_api = API(
+        "https://users.example.com/", default_write_mode=related_mode
+    )
+    monkeypatch.setattr(Todo, "api", parent_api)
+    monkeypatch.setattr(User, "api", related_api)
+    requests_mock.get(
+        "https://parents.example.com/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+    requests_mock.get(
+        "https://users.example.com/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    requests_mock.get(
+        "https://users.example.com/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://users.example.com/users/2/", status_code=204
+    )
+
+    todo = next(Todo.filter(prefetch="user" if prefetch else None))
+    todo.user.name = "Grace"
+
+    assert todo.user.write_mode == parent_mode
+    assert todo.user.api is related_api
+    assert patch.call_count == (1 if parent_mode == "eager" else 0)
+    todo.user.save()
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
 def test_prefetches_related_collections_via_bulk_get(
     requests_mock: Any,
 ) -> None:

@@ -270,6 +270,13 @@ The exact implementation depends on the API. Some APIs accept repeated parameter
 
 Prefetch works for single related-object fields and typed related collections. Embedded related objects do not need prefetching, because `eazyrest` only bulk-loads primary-key-style values. When the same related primary key appears more than once in a prefetch batch, parent objects share the same related instance.
 
+Related objects inherit their parent's write mode, including when they are
+prefetched. Enabling prefetch preserves when assignments are saved, even if the
+related model's API has a different default write mode. A prefetched object is
+shared by the parents in its batch, so it takes the write mode that they have
+when the batch is loaded. Changing one parent's write mode afterward does not
+change the mode of its prefetched related objects.
+
 Prefetching is batched so collection iteration can stay lazy. `prefetch_batch_size` controls how many parent JSON objects are scanned before each related bulk lookup:
 
 ```python
