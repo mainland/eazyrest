@@ -96,6 +96,34 @@ def test_absolute_url_keeps_absolute_class_url() -> None:
     assert todo.absolute_url == "https://other.example.com/todos/1/"
 
 
+def test_object_with_overridden_url_loads_without_primary_key(
+    requests_mock: Any,
+) -> None:
+    """A singleton resource that needs no key loads on first read."""
+
+    @json_object
+    class CurrentUser(ModelBase):
+        """Resource addressed by a fixed URL."""
+
+        id: int
+        name: str
+
+        @property
+        def url(self) -> str:
+            """Return the fixed resource URL."""
+            return "/me/"
+
+    requests_mock.get(
+        "https://example.com/v1/me/", json={"id": 7, "name": "Ada"}
+    )
+
+    me = CurrentUser()
+
+    assert me.name == "Ada"
+    assert me.pk == 7
+    assert requests_mock.call_count == 1
+
+
 @json_object
 class SearchResult(ModelBase):
     """Model that extracts results from envelope responses."""

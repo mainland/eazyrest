@@ -1269,8 +1269,9 @@ class JSONObject:
         if self._json is None:
             self._load_json()
 
-            # We have JSON now, so delete _pk_value
-            del self._pk_value
+            # The JSON now holds the primary key. An object whose subclass
+            # overrides url may have loaded without one.
+            vars(self).pop("_pk_value", None)
 
         return self._json
 
