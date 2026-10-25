@@ -1592,6 +1592,40 @@ def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+def test_object_without_primary_key_reports_missing_url(
+    requests_mock: Any,
+) -> None:
+    """An object created without a key cannot load, and says why."""
+    user = User()
+
+    assert user.pk is None
+    with pytest.raises(ValueError, match="primary key None, so it has no URL"):
+        _ = user.name
+    with pytest.raises(ValueError, match="no URL"):
+        User(name="Ada")
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_constructor_field_arguments_are_assignments(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """Fields other than the key are assigned after the key is set."""
+    get = requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+
+    user = User(id=1, name="Grace", write_mode=write_mode)
+
+    assert get.call_count == 1
+    assert patch.call_count == (1 if write_mode == "eager" else 0)
+    user.save()
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
 def test_lazy_write_mode_batches_updates_until_save(
     requests_mock: Any,
 ) -> None:
