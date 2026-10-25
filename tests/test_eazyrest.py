@@ -2414,6 +2414,29 @@ def test_json_object_rejects_options_that_name_no_field(
         json_object(**options)(Thing)
 
 
+def test_json_object_rejects_fields_that_share_a_json_key() -> None:
+    """Two attributes backed by one JSON key are rejected."""
+
+    class Alias(ModelBase):
+        """Model mapping a second attribute to the key of the first."""
+
+        class_url = "/aliases/"
+
+        id: int
+        name: str
+        label: str
+
+    class Renamed(Org):
+        """Subclass mapping a new attribute to an inherited key."""
+
+        title: str
+
+    with pytest.raises(ValueError, match=r"Alias\.name and Alias\.label"):
+        json_object(field_map={"label": "name"})(Alias)
+    with pytest.raises(ValueError, match=r"Renamed\.name and Renamed\.title"):
+        json_object(field_map={"title": "name"})(Renamed)
+
+
 def test_json_object_accepts_inherited_primary_key() -> None:
     """A subclass may name the primary key that it inherits."""
 
