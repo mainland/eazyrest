@@ -2191,6 +2191,10 @@ class JSONObject:
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
         unchanged.
 
+        As in Django, a key that contains ``__`` and does not name a field,
+        such as ``name__iexact`` or ``created__gte``, is a lookup rather than a
+        field value. It is sent in the query but not in the creation payload.
+
         As in ``filter()``, a lookup field must not be ``None`` or an empty
         collection, because the query would ignore it while the creation
         payload sends ``null`` or ``[]``. Such a value in ``defaults`` is sent
@@ -2218,7 +2222,12 @@ class JSONObject:
 
             return first, False
 
-        create_kwargs = dict(kwargs)
+        create_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if "__" not in name
+            or isinstance(getattr(cls, name, None), JSONProperty)
+        }
         if defaults is not None:
             create_kwargs.update(defaults)
 
