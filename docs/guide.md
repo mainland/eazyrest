@@ -381,6 +381,8 @@ Incoming fields are treated as authoritative server state, so queued lazy update
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to `base_url`, applies a default timeout, and raises for HTTP error responses. To customize error handling for a particular API, override `raise_for_response()` in an `API` subclass.
 
+Requests follows redirects, but it resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`. The server has then not performed the original request, so such a redirect raises `requests.HTTPError` rather than letting `create()`, `save()`, or `delete()` report success. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a `class_url` lacks the trailing slash that Django's `APPEND_SLASH` adds. Use the URL that the server redirects to. Redirects that keep the method, such as 307 and 308, are followed.
+
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`. Pass `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
 
 Use the client as a context manager to ensure the session is closed:

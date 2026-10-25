@@ -41,6 +41,14 @@ class API:
 
     The class wraps a ``requests.Session`` and automatically joins
     request paths against ``base_url`` while applying a default timeout.
+
+    Requests follows redirects, and it resends a ``POST`` answered with
+    a 301 or 302, and any other request answered with a 302 or 303, as a
+    ``GET``. The server has then not performed the original request, so
+    a request whose method a redirect changes raises
+    ``requests.HTTPError`` instead of returning the response to the
+    ``GET``. Redirects that keep the method, such as 307 and 308, are
+    followed.
     """
 
     base_url: str
@@ -236,6 +244,10 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            requests.HTTPError: If a redirect changed the request method, or
+                if ``raise_for_response()`` raises it for the response.
         """
         kwargs.setdefault("timeout", self.timeout)
         if self.session.proxies:
@@ -245,7 +257,33 @@ class API:
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
         resp = send(self.resolve_url(uri), *args, **kwargs)
+        self._check_redirects(resp)
         return self._check_response(resp)
+
+    @staticmethod
+    def _check_redirects(resp: requests.Response) -> None:
+        """Reject a response to a request whose method a redirect changed.
+
+        Args:
+            resp: Final response, after requests followed any redirects.
+
+        Raises:
+            requests.HTTPError: If requests sent the final request with a
+                different method from the original request.
+        """
+        if not resp.history:
+            return
+
+        redirect = resp.history[0]
+        sent = redirect.request.method
+        if resp.request.method != sent:
+            raise requests.HTTPError(
+                f"{sent} {redirect.url} was redirected with status "
+                f"{redirect.status_code}, and requests resent it to "
+                f"{resp.url} as {resp.request.method}, so the {sent} request "
+                "was not performed",
+                response=redirect,
+            )
 
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.

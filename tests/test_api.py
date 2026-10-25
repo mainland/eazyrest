@@ -44,6 +44,64 @@ def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
     assert response.json() == {"id": 1}
 
 
+@pytest.mark.parametrize(
+    ("method", "status"),
+    [("post", 301), ("post", 302), ("patch", 302), ("delete", 303)],
+)
+def test_api_rejects_redirect_that_changes_method(
+    requests_mock: Any, method: str, status: int
+) -> None:
+    """A write that a redirect would resend as a GET raises."""
+    api = API("https://example.com/v1/")
+    requests_mock.request(
+        method.upper(),
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://example.com/v2/users/"},
+    )
+    requests_mock.get("https://example.com/v2/users/", json=[{"id": 1}])
+
+    with pytest.raises(requests.HTTPError, match="was not performed") as info:
+        getattr(api, method)("/users/", json={"name": "Ada"})
+
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+
+
+@pytest.mark.parametrize("status", [307, 308])
+def test_api_follows_redirect_that_keeps_method(
+    requests_mock: Any, status: int
+) -> None:
+    """Redirects that keep the method and body are followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://example.com/v2/users/"},
+    )
+    created = requests_mock.post(
+        "https://example.com/v2/users/", status_code=201, json={"id": 1}
+    )
+
+    response = api.post("/users/", json={"name": "Ada"})
+
+    assert response.json() == {"id": 1}
+    assert created.last_request.json() == {"name": "Ada"}
+
+
+def test_api_follows_get_redirect(requests_mock: Any) -> None:
+    """A redirected GET is still a GET, so it is followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    requests_mock.get("https://example.com/v1/users/1/", json={"id": 1})
+
+    assert api.get("/users/1").json() == {"id": 1}
+
+
 def test_api_closes_session_as_context_manager() -> None:
     """The API client should close its session on context exit."""
     api = API("https://example.com/")
