@@ -133,14 +133,16 @@ In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` obje
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item. The same holds for values assigned to collection fields or passed to `create()`, which raise `TypeError` unless they are collections. In `filter()` and `get()`, a single value for a collection field, such as `Team.filter(members=user)`, is sent as one item and matches the objects whose collection holds it.
 
-Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Changing that copy in place does not change the object, so assign the changed value to the field to update it:
+Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value.
+
+A field's value is cached when it is first read, so later reads return the same value. If you change that value in place, `save()` sends the change, as it does for an assignment:
 
 ```python
-settings = profile.settings
-settings["theme"] = "dark"
-profile.settings = settings
+profile.settings["theme"] = "dark"
 profile.save()
 ```
+
+The object detects such a change by comparing the value's encoding with its encoding when it was read. It does so only when `save()` runs, when an eager assignment sends a `PATCH`, or before the object loads missing fields, so `json` does not show the change before then. In eager mode, a change made in place is therefore sent by the next `save()` or eager assignment, not immediately. Assigning the field, `refresh()`, and an `update_from_json()` payload that holds the field each discard a change made in place that has not been sent.
 
 ## Custom field conversion
 
