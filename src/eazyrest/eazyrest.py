@@ -163,6 +163,17 @@ def _is_collection_type(ty: Any) -> bool:
     return ty in (Iterable, Sequence, list, tuple, set, frozenset)
 
 
+def _is_collection_value(value: Any) -> bool:
+    """Return whether a value is a collection of items.
+
+    A string, bytes, or a mapping is iterable but is not a collection of
+    items.
+    """
+    return isinstance(value, Iterable) and not isinstance(
+        value, (str, bytes, Mapping)
+    )
+
+
 def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
     """Return whether a related collection should stay lazy."""
     return collection_type is Iterable
@@ -1116,9 +1127,7 @@ class JSONObject:
     def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
-        A collection converts to a list. A single value for a collection
-        type, such as a string, converts as one item rather than as a
-        collection.
+        A collection converts to a list.
 
         Args:
             value: Python value to serialize.
@@ -1128,8 +1137,10 @@ class JSONObject:
             JSON-serializable representation of ``value``.
 
         Raises:
-            TypeError: If ``conversion`` is ``datetime.date`` and ``value`` is
-                a ``datetime.datetime``.
+            TypeError: If ``conversion`` is a collection type and ``value`` is
+                not a collection. A string, bytes, or a mapping is not a
+                collection of items. Also raised if ``conversion`` is
+                ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
         match conversion:
             case OptionalType(inner_type):
@@ -1173,12 +1184,11 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
-                if not isinstance(value, Iterable) or isinstance(
-                    value, (str, bytes, Mapping)
-                ):
-                    # A single value, such as a query for the objects whose
-                    # collection holds it, converts as one item.
-                    return cls.to_json(value, item_type)
+                if not _is_collection_value(value):
+                    raise TypeError(
+                        "Collection field values must be collections, "
+                        f"got {type(value).__name__}"
+                    )
 
                 return [cls.to_json(item, item_type) for item in value]
             case _:
@@ -1600,10 +1610,25 @@ class JSONObject:
         }
 
     @classmethod
+    def _is_single_collection_item(cls, name: str, value: Any) -> bool:
+        """Return whether a query value is one item of a collection field."""
+        descriptor = getattr(cls, name, None)
+        return (
+            isinstance(descriptor, JSONProperty)
+            and isinstance(
+                _unwrap_optional_type(descriptor.analyzed_type), CollectionType
+            )
+            and value is not None
+            and not _is_collection_value(value)
+        )
+
+    @classmethod
     def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
-        A boolean field value is sent as ``true`` or ``false``, as in JSON.
+        Unlike a field value, a query value for a collection field may be a
+        single item, which matches the objects whose collection holds it. A
+        boolean field value is sent as ``true`` or ``false``, as in JSON.
 
         Args:
             params: Query parameter values keyed as for ``_encode_fields()``.
@@ -1618,8 +1643,24 @@ class JSONObject:
                 and requests omits such a parameter, so the query would match
                 objects whatever their value for that field.
         """
-        payload = cls._encode_fields(params)
+        payload = cls._encode_fields(
+            {
+                name: value
+                for name, value in params.items()
+                if not cls._is_single_collection_item(name, value)
+            }
+        )
         json_keys = cls._json_keys()
+        for name, value in params.items():
+            if cls._is_single_collection_item(name, value):
+                # A single value, such as a query for the objects whose
+                # collection holds it, converts as one item.
+                descriptor = getattr(cls, name)
+                collection = _unwrap_optional_type(descriptor.analyzed_type)
+                assert isinstance(collection, CollectionType)
+                payload[descriptor.json_field] = cls.to_json(
+                    value, collection.item_type
+                )
 
         for name, value in params.items():
             descriptor = getattr(cls, name, None)
