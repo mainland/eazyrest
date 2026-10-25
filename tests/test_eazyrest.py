@@ -667,6 +667,37 @@ def test_related_collection_is_loaded_lazily(
     assert requests_mock.call_count == 3
 
 
+def test_lazy_related_collection_is_single_pass() -> None:
+    """A second traversal raises instead of creating new members."""
+    team = Team(json={"id": 1, "members": [2, 3]})
+
+    members = iter(team.members)
+    first = next(members)
+    rest = list(members)
+
+    assert first.pk == 2
+    assert [member.pk for member in rest] == [3]
+    with pytest.raises(RuntimeError, match=r"Team\.members is a lazy related"):
+        iter(team.members)
+
+
+def test_encoding_lazy_related_collection_keeps_its_traversal(
+    requests_mock: Any,
+) -> None:
+    """Assigning or creating from the field does not use it up."""
+    post = requests_mock.post(
+        "https://example.com/v1/teams/", json={"id": 2, "members": [2, 3]}
+    )
+    team = Team(json={"id": 1, "members": [2, 3]})
+
+    team.members = team.members
+    Team.create(members=team.members)
+
+    assert post.last_request.json() == {"members": [2, 3]}
+    assert team._pending_updates == {}
+    assert [member.pk for member in team.members] == [2, 3]
+
+
 def test_related_tuple_is_materialized(
     requests_mock: Any,
 ) -> None:
