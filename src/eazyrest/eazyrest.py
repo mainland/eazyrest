@@ -325,6 +325,10 @@ def _json_equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+_MISSING = object()
+"""Stands for a key that a JSON object lacks."""
+
+
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
 
@@ -1087,17 +1091,72 @@ class JSONObject:
             TypeError: If the response body does not hold a JSON object. The
                 object's state, including its pending updates, is unchanged.
         """
-        if resp.content:
-            self._json = self._object_from_response(resp.json())
-            self._json_is_partial = False
-            self._field_cache.clear()
-            self._prefetched_related.clear()
-        else:
-            # A response such as 204 No Content has no representation of the
-            # object, so apply the patch to the local JSON instead.
-            self.json.update(payload)
-
+        self._replace_json(self.merge_response(resp, self.json, payload))
         self._pending_updates.clear()
+
+    def _replace_json(self, json: dict[str, Any]) -> None:
+        """Replace this object's JSON after a write.
+
+        Cached values stay valid for the fields whose JSON the write left
+        unchanged, so only the others are dropped. In particular, a related
+        object assigned before ``save()`` stays the field's value.
+
+        Args:
+            json: The object's new JSON.
+        """
+        before = self._json if self._json is not None else {}
+        self._json = json
+
+        for field in getattr(self, "_json_fields", ()):
+            json_field = getattr(type(self), field).json_field
+            if not _json_equal(
+                before.get(json_field, _MISSING),
+                json.get(json_field, _MISSING),
+            ):
+                self._field_cache.pop(field, None)
+                self._prefetched_related.pop(field, None)
+
+    def merge_response(
+        self,
+        resp: requests.Response,
+        current: Mapping[str, Any],
+        sent: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Return this object's JSON after a successful write.
+
+        ``save()``, eager field assignments, and ``create()`` call this hook
+        once the server has accepted a write, and the result becomes the
+        object's JSON. The default applies the sent fields to the current
+        JSON, then merges over them the object that the response body holds,
+        if there is a body. A body that omits fields, or no body at all, as
+        with ``204 No Content``, therefore keeps their values. A field that
+        the server computes, such as a modification time, keeps its old value
+        unless the body holds it.
+
+        Override this hook for an API whose write responses hold something
+        other than the object, such as a status message. Raise before
+        changing any state if the response is unusable. ``save()`` then keeps
+        its pending updates, although the server may have applied them.
+
+        Args:
+            resp: Successful response to the write.
+            current: The object's JSON before the write. It is empty for
+                ``create()``.
+            sent: JSON fields that the write sent. For ``create()``, these are
+                only the JSON-backed fields, so that an extra key such as a
+                write-only password is not kept in the object's JSON.
+
+        Returns:
+            The object's JSON after the write.
+
+        Raises:
+            TypeError: If the response body does not hold a JSON object.
+        """
+        json = {**current, **sent}
+        if resp.content:
+            json.update(self._object_from_response(resp.json()))
+
+        return json
 
     def save(self) -> None:
         """Persist all pending lazy field updates.
@@ -1108,10 +1167,10 @@ class JSONObject:
         ``save()`` is a no-op unless pending updates remain from an
         earlier lazy mode.
 
-        When the ``PATCH`` response has a body, it replaces the object's
-        JSON. When it has no body, as with ``204 No Content``, the
-        object keeps its local JSON, which already includes the saved
-        updates.
+        After a successful ``PATCH``, ``merge_response()`` determines the
+        object's JSON. By default, the object keeps its JSON, which already
+        includes the saved updates, and the object that the response body
+        holds, if any, is merged over it.
 
         Raises:
             TypeError: If the response body does not hold a JSON object.
@@ -1375,6 +1434,14 @@ class JSONObject:
         return payload
 
     @classmethod
+    def _json_keys(cls) -> set[str]:
+        """Return the JSON keys of this class's JSON-backed fields."""
+        return {
+            getattr(cls, field).json_field
+            for field in getattr(cls, "_json_fields", ())
+        }
+
+    @classmethod
     def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
@@ -1394,10 +1461,7 @@ class JSONObject:
                 objects whatever their value for that field.
         """
         payload = cls._encode_fields(params)
-        json_keys = {
-            getattr(cls, field).json_field
-            for field in getattr(cls, "_json_fields", ())
-        }
+        json_keys = cls._json_keys()
 
         for name, value in params.items():
             descriptor = getattr(cls, name, None)
@@ -1441,14 +1505,31 @@ class JSONObject:
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
+        The new object's JSON is the result of ``merge_response()``. By
+        default, it holds the JSON-backed fields that were sent, with the
+        object that the response body holds merged over them. If a field is
+        in neither, as when the body holds only the new primary key, reading
+        it loads the object.
+
         Returns:
             Newly created object instance.
 
         Raises:
             TypeError: If the response does not hold a JSON object.
         """
-        resp = cls.api.post(cls.class_url, json=cls._encode_fields(kwargs))
-        return cls(json=cls._object_from_response(resp.json()))
+        payload = cls._encode_fields(kwargs)
+        resp = cls.api.post(cls.class_url, json=payload)
+
+        json_keys = cls._json_keys()
+        sent = {
+            key: value for key, value in payload.items() if key in json_keys
+        }
+        obj = cls(json={})
+        obj._json = obj.merge_response(resp, {}, sent)
+        # A new object has no earlier state, so a field that neither the
+        # payload nor the response holds is unknown rather than absent.
+        obj._json_is_partial = not json_keys.issubset(obj._json)
+        return obj
 
     @classmethod
     def bulk_get_by_pks(
