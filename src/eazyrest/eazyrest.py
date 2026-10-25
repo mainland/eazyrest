@@ -336,6 +336,25 @@ def _json_equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+_UNCHANGEABLE_VALUES = (
+    str,
+    bytes,
+    int,
+    float,
+    type(None),
+    enum.Enum,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    uuid.UUID,
+    frozenset,
+)
+"""Types of field values that cannot be changed in place.
+
+``bool`` is a subclass of ``int`` and ``datetime.datetime`` of
+``datetime.date``.
+"""
+
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
 
@@ -787,6 +806,18 @@ class JSONProperty:
             field=self.field,
         )
         obj._field_cache[self.field] = value
+        # A related object saves its own changes.
+        if not isinstance(
+            value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
+        ):
+            # The caller can change this value in place. Record its encoding,
+            # so that save() can detect the change. Encoding the value rather
+            # than copying the JSON keeps a different spelling of the same
+            # value, such as "Z" for "+00:00", from counting as a change.
+            obj._field_snapshots[self.field] = _copy_json(
+                obj.to_json(value, self.analyzed_type)
+            )
+
         return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
@@ -841,6 +872,9 @@ class JSONProperty:
             obj._field_cache[self.field] = value
         else:
             obj._field_cache.pop(self.field, None)
+
+        # An assignment replaces any change made in place to the old value.
+        obj._field_snapshots.pop(self.field, None)
 
 
 class JSONObject:
@@ -898,6 +932,13 @@ class JSONObject:
 
     _field_cache: dict[str, Any]
     """Converted field values cached by Python attribute name."""
+
+    _field_snapshots: dict[str, Any]
+    """Encodings of cached mutable values when they were read.
+
+    A cached value whose encoding differs from its snapshot was changed
+    in place, and ``save()`` sends the change.
+    """
 
     _prefetched_related: PrefetchMap
     """Prefetched related objects keyed by field name and primary key."""
@@ -974,6 +1015,7 @@ class JSONObject:
         self._write_mode = validate_write_mode(write_mode)
         self._pending_updates = {}
         self._field_cache = {}
+        self._field_snapshots = {}
         self._prefetched_related = {}
         # Copy the payload so lazy writes do not modify the caller's mapping,
         # which for an embedded related object is part of the parent's JSON.
@@ -1227,12 +1269,22 @@ class JSONObject:
             value: JSON-serializable field value.
         """
         if self.write_mode == "eager":
+            self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self.api.patch(self.url, json=payload)
             self._apply_patch_response(resp, payload)
             return
 
+        self._queue_update(json_field, value)
+
+    def _queue_update(self, json_field: str, value: Any) -> None:
+        """Apply a JSON field update locally and queue it for ``save()``.
+
+        Args:
+            json_field: Name of the backing JSON field.
+            value: JSON-serializable field value.
+        """
         if (
             json_field == getattr(type(self), "_pk_json_field", None)
             and json_field not in self._pending_updates
@@ -1243,6 +1295,17 @@ class JSONObject:
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
+
+    def _queue_in_place_changes(self) -> None:
+        """Queue updates for cached values that were changed in place."""
+        for field, snapshot in self._field_snapshots.items():
+            descriptor = getattr(type(self), field)
+            encoded = self.to_json(
+                self._field_cache[field], descriptor.analyzed_type
+            )
+            if not _json_equal(encoded, snapshot):
+                self._queue_update(descriptor.json_field, _copy_json(encoded))
+                self._field_snapshots[field] = _copy_json(encoded)
 
     def _apply_patch_response(
         self,
@@ -1282,6 +1345,7 @@ class JSONObject:
                 json.get(json_field, _MISSING),
             ):
                 self._field_cache.pop(field, None)
+                self._field_snapshots.pop(field, None)
                 self._prefetched_related.pop(field, None)
 
     def merge_response(
@@ -1335,6 +1399,11 @@ class JSONObject:
         ``save()`` is a no-op unless pending updates remain from an
         earlier lazy mode.
 
+        A value read from a field and then changed in place, such as a list
+        appended to, is saved too, in either mode. Such a change is
+        detected only when ``save()`` runs, or when an eager assignment
+        sends a ``PATCH``, so ``json`` does not show it before then.
+
         After a successful ``PATCH``, ``merge_response()`` determines the
         object's JSON. By default, the object keeps its JSON, which already
         includes the saved updates, and the object that the response body
@@ -1345,6 +1414,7 @@ class JSONObject:
                 The server may have applied the updates, but they remain
                 pending.
         """
+        self._queue_in_place_changes()
         if len(self._pending_updates) == 0:
             return
 
@@ -1397,6 +1467,7 @@ class JSONObject:
                 continue
 
             self._field_cache.pop(field, None)
+            self._field_snapshots.pop(field, None)
             self._prefetched_related.pop(field, None)
             self._pending_updates.pop(descriptor.json_field, None)
 
@@ -1407,6 +1478,7 @@ class JSONObject:
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
+        self._field_snapshots.clear()
         self._prefetched_related.clear()
         # Clear JSON
         self._json = None
@@ -1525,6 +1597,8 @@ class JSONObject:
         Raises:
             TypeError: If the response does not hold a JSON object.
         """
+        # Reloading drops cached values, so queue their in-place changes first.
+        self._queue_in_place_changes()
         json = self._object_from_response(self.api.get(self.url).json())
 
         # Some APIs leave the primary key out of a detail response, because
@@ -1544,6 +1618,7 @@ class JSONObject:
         self._json = json
         self._json_is_partial = False
         self._field_cache.clear()
+        self._field_snapshots.clear()
 
     def _json_with_field(self, json_field: str, field: str) -> Any:
         """Return this object's JSON after checking that it has a field.
