@@ -457,12 +457,65 @@ class RelatedCollection(Iterable[T]):
             )
 
 
+def _check_options(
+    cls: type[JSONObject],
+    pk: str | None,
+    field_map: Mapping[str, str],
+    exclude: AbstractSet[str],
+) -> None:
+    """Check that ``json_object()`` options name fields of ``cls``.
+
+    A misspelled option would otherwise be ignored, leaving a field mapped to
+    the wrong JSON key or a model without the intended primary key.
+
+    Args:
+        cls: Class being decorated.
+        pk: Explicit primary-key field name, or ``None``.
+        field_map: Mapping from Python attribute name to JSON key.
+        exclude: Annotated attribute names to ignore.
+
+    Raises:
+        ValueError: If an option names no field of ``cls``.
+    """
+    annotations = _annotations(cls)
+    declared = {
+        field
+        for field, annotation in annotations.items()
+        if field not in exclude and not _is_class_var(annotation)
+    }
+
+    unknown_excluded = sorted(set(exclude) - set(annotations))
+    if unknown_excluded:
+        raise ValueError(
+            f"json_object(exclude=...) names {unknown_excluded}, which "
+            f"{cls.__name__} does not annotate"
+        )
+
+    unknown_mapped = sorted(set(field_map) - declared)
+    if unknown_mapped:
+        raise ValueError(
+            f"json_object(field_map=...) maps {unknown_mapped}, which are not "
+            f"fields declared on {cls.__name__}"
+        )
+
+    inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+    if (
+        pk is not None
+        and pk not in declared
+        and (inherited_pk is None or inherited_pk.field != pk)
+    ):
+        raise ValueError(
+            f"json_object(pk={pk!r}) names no field declared on "
+            f"{cls.__name__} and is not the primary key it inherits"
+        )
+
+
 @overload
 def json_object(
     cls: type[T],
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
@@ -473,7 +526,7 @@ def json_object(
     cls: None = None,
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
@@ -483,7 +536,7 @@ def json_object(
     cls: type[T] | None = None,
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> type[T] | Callable[[type[T]], type[T]]:
@@ -500,7 +553,11 @@ def json_object(
 
     Args:
         cls: Class being decorated when used as ``@json_object``.
-        pk: Name of the primary-key field in the class.
+        pk: Name of the primary-key field. It must be a field declared on the
+            class or the primary key that the class inherits. If omitted, the
+            class keeps the primary key it inherits, even if it redeclares that
+            field. A class that inherits none uses a field named ``id``
+            declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
 
@@ -510,7 +567,10 @@ def json_object(
     Raises:
         ValueError: If a field would replace a ``JSONObject`` attribute, such
             as ``url`` or ``json``. Map such a JSON key to a different
-            attribute name with ``field_map``.
+            attribute name with ``field_map``. Also raised if ``pk`` names no
+            field of the class, if a ``field_map`` key names no field declared
+            on the class, or if ``exclude`` names no annotated attribute of the
+            class.
     """
     if field_map is None:
         field_map = {}
@@ -525,10 +585,22 @@ def json_object(
             The same class after descriptor installation.
 
         Raises:
-            ValueError: If a field would replace a ``JSONObject`` attribute.
+            ValueError: If a field would replace a ``JSONObject`` attribute, or
+                if an option names no field of the class.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
+        _check_options(cls, pk, field_map, exclude)
+
+        inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+        if pk is not None:
+            pk_field = pk
+        elif inherited_pk is not None:
+            # A subclass keeps its primary key, also when it redeclares the
+            # field, rather than switching to a new field named id.
+            pk_field = inherited_pk.field
+        else:
+            pk_field = "id"
 
         # We only process annotations for this class *without* any annotations
         # for superclasses, so we don't use typing.get_type_hints. Fields of
@@ -549,7 +621,10 @@ def json_object(
             json_field = field_map.get(field, field)
 
             prop = JSONProperty(
-                cls, json_field, field, is_primary_key=field == pk
+                cls,
+                json_field,
+                field,
+                is_primary_key=field == pk_field,
             )
 
             setattr(cls, field, prop)
