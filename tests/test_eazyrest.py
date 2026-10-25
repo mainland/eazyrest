@@ -2869,6 +2869,29 @@ def test_save_accepts_empty_patch_response(requests_mock: Any) -> None:
     assert todo.title == "new"
 
 
+def test_redirected_save_keeps_pending_updates(requests_mock: Any) -> None:
+    """A PATCH that a redirect turns into a GET is not reported as saved."""
+    requests_mock.patch(
+        "https://example.com/v1/todos/1/",
+        status_code=302,
+        headers={"Location": "https://example.com/v2/todos/1/"},
+    )
+    requests_mock.get(
+        "https://example.com/v2/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+
+    todo.title = "new"
+    with pytest.raises(requests.HTTPError, match="was not performed"):
+        todo.save()
+
+    assert todo.title == "new"
+    assert todo._pending_updates == {"title": "new"}
+
+
 def test_eager_write_accepts_empty_patch_response(
     requests_mock: Any,
 ) -> None:
