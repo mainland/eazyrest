@@ -1330,6 +1330,28 @@ def test_assigning_field_invalidates_cached_related_value(
     assert updated is not original
 
 
+def test_reassigning_related_object_keeps_its_unsaved_changes(
+    requests_mock: Any,
+) -> None:
+    """Assigning a related object keeps that object, edits and all."""
+    requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/2/", status_code=204
+    )
+    todo = Todo(json={"id": 1, "userId": 2, "title": "a", "completed": False})
+    grace = User(json={"id": 3, "name": "Grace"})
+
+    todo.user.name = "Hopper"
+    todo.user = todo.user
+    todo.user.save()
+    todo.user = grace
+
+    assert patch.last_request.json() == {"name": "Hopper"}
+    assert todo.user is grace
+
+
 def test_filter_prefetches_related_objects_via_bulk_get(
     requests_mock: Any,
 ) -> None:
