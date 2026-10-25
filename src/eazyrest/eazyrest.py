@@ -1291,6 +1291,19 @@ class JSONObject:
             TypeError: If the response does not hold a JSON object.
         """
         json = self._object_from_response(self.api.get(self.url).json())
+
+        # Some APIs leave the primary key out of a detail response, because
+        # the URL holds it. Keep the key that the object was loaded by, so
+        # that the object keeps its identity and URL.
+        pk_json_field = getattr(type(self), "_pk_json_field", None)
+        if pk_json_field is not None and pk_json_field not in json:
+            if self._json is not None and pk_json_field in self._json:
+                json[pk_json_field] = self._json[pk_json_field]
+            elif "_pk_value" in vars(self):
+                json[pk_json_field] = self.to_json(
+                    self._pk_value, type(self)._pk.analyzed_type
+                )
+
         # Unsaved lazy updates still take precedence over server state.
         json.update(self._pending_updates)
         self._json = json

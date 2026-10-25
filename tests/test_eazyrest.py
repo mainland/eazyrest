@@ -96,6 +96,23 @@ def test_absolute_url_keeps_absolute_class_url() -> None:
     assert todo.absolute_url == "https://other.example.com/todos/1/"
 
 
+def test_detail_response_without_primary_key_keeps_identity(
+    requests_mock: Any,
+) -> None:
+    """A loaded object keeps the key it was loaded by."""
+    requests_mock.get("https://example.com/v1/users/3/", json={"name": "Ada"})
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/3/", status_code=204
+    )
+    user = User(id=3)
+
+    assert user.name == "Ada"
+    assert user.pk == 3
+    user.name = "Grace"
+    user.save()
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
 def test_object_with_overridden_url_loads_without_primary_key(
     requests_mock: Any,
 ) -> None:
