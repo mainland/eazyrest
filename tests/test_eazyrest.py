@@ -2243,6 +2243,67 @@ def test_pk_and_exclude_options() -> None:
         thing.display = "label"
 
 
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"pk": "uid"}, "pk='uid'"),
+        ({"pk": "name", "exclude": {"name"}}, "pk='name'"),
+        ({"field_map": {"emial": "emailAddress"}}, "'emial'"),
+        ({"field_map": {"label": "Label"}}, "'label'"),
+        ({"exclude": {"dispaly"}}, "'dispaly'"),
+    ],
+)
+def test_json_object_rejects_options_that_name_no_field(
+    options: dict[str, Any], match: str
+) -> None:
+    """A misspelled option is an error, not silently ignored."""
+
+    class Thing(ModelBase):
+        """Model whose decoration fails."""
+
+        class_url = "/things/"
+        label: ClassVar[str] = "Thing"
+
+        id: int
+        name: str
+
+    with pytest.raises(ValueError, match=match):
+        json_object(**options)(Thing)
+
+
+def test_json_object_accepts_inherited_primary_key() -> None:
+    """A subclass may name the primary key that it inherits."""
+
+    @json_object(pk="slug")
+    class Department(Org):
+        """Subclass that restates its inherited primary key."""
+
+        size: int
+
+    assert Department(slug="core").url == "/orgs/core/"
+
+
+def test_subclass_keeps_inherited_primary_key(requests_mock: Any) -> None:
+    """Without ``pk=``, a subclass keeps the primary key it inherits."""
+
+    @json_object
+    class Renamed(Org):
+        """Subclass that redeclares its inherited primary key."""
+
+        slug: str
+
+    @json_object
+    class Numbered(Org):
+        """Subclass that declares a field named ``id``."""
+
+        id: int
+
+    assert Renamed(slug="core").url == "/orgs/core/"
+    assert Numbered(slug="core").url == "/orgs/core/"
+    assert Numbered._pk.field == "slug"
+    assert requests_mock.call_count == 0
+
+
 def test_subclass_accepts_inherited_and_own_fields(
     requests_mock: Any,
 ) -> None:
