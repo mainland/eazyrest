@@ -1074,9 +1074,13 @@ class JSONObject:
         Args:
             resp: Response to the ``PATCH`` request.
             payload: JSON fields sent in the request.
+
+        Raises:
+            TypeError: If the response body does not hold a JSON object. The
+                object's state, including its pending updates, is unchanged.
         """
         if resp.content:
-            self._json = self.object_json(resp.json())
+            self._json = self._object_from_response(resp.json())
             self._json_is_partial = False
             self._field_cache.clear()
             self._prefetched_related.clear()
@@ -1100,6 +1104,11 @@ class JSONObject:
         JSON. When it has no body, as with ``204 No Content``, the
         object keeps its local JSON, which already includes the saved
         updates.
+
+        Raises:
+            TypeError: If the response body does not hold a JSON object.
+                The server may have applied the updates, but they remain
+                pending.
         """
         if len(self._pending_updates) == 0:
             return
@@ -1276,8 +1285,12 @@ class JSONObject:
         return self._json
 
     def _load_json(self) -> None:
-        """Load this object's JSON from the API, keeping pending updates."""
-        json = dict(self.object_json(self.api.get(self.url).json()))
+        """Load this object's JSON from the API, keeping pending updates.
+
+        Raises:
+            TypeError: If the response does not hold a JSON object.
+        """
+        json = self._object_from_response(self.api.get(self.url).json())
         # Unsaved lazy updates still take precedence over server state.
         json.update(self._pending_updates)
         self._json = json
@@ -1409,9 +1422,12 @@ class JSONObject:
 
         Returns:
             Newly created object instance.
+
+        Raises:
+            TypeError: If the response does not hold a JSON object.
         """
         resp = cls.api.post(cls.class_url, json=cls._encode_fields(kwargs))
-        return cls(json=cls.object_json(resp.json()))
+        return cls(json=cls._object_from_response(resp.json()))
 
     @classmethod
     def bulk_get_by_pks(
@@ -1493,6 +1509,28 @@ class JSONObject:
             return payload[0]
 
         return payload
+
+    @classmethod
+    def _object_from_response(cls, payload: Any) -> dict[str, Any]:
+        """Return the JSON object that a single-object response holds.
+
+        Args:
+            payload: Decoded JSON payload of the response.
+
+        Returns:
+            A copy of the mapping that ``object_json()`` extracts.
+
+        Raises:
+            TypeError: If ``object_json()`` does not return a mapping.
+        """
+        json = cls.object_json(payload)
+        if not isinstance(json, Mapping):
+            raise TypeError(
+                f"{cls.__name__} response must hold a JSON object, "
+                f"got {type(json).__name__}"
+            )
+
+        return dict(json)
 
     @classmethod
     def _prefetch_info(

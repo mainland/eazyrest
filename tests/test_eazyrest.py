@@ -2724,6 +2724,40 @@ def test_redirected_save_keeps_pending_updates(requests_mock: Any) -> None:
     assert todo._pending_updates == {"title": "new"}
 
 
+_NON_OBJECT_BODIES = ["null", '"ok"', "3", "[3]"]
+
+
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+def test_save_rejects_patch_response_without_object(
+    requests_mock: Any, body: str
+) -> None:
+    """A body that holds no object leaves the object's state unchanged."""
+    requests_mock.patch("https://example.com/v1/users/1/", text=body)
+    user = User(json={"id": 1, "name": "Ada"})
+
+    user.name = "Grace"
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        user.save()
+
+    assert user.json == {"id": 1, "name": "Grace"}
+    assert user._pending_updates == {"name": "Grace"}
+    assert user.url == "/users/1/"
+
+
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+def test_create_and_load_reject_response_without_object(
+    requests_mock: Any, body: str
+) -> None:
+    """Creating or loading an object requires a JSON object."""
+    requests_mock.post("https://example.com/v1/users/", text=body)
+    requests_mock.get("https://example.com/v1/users/1/", text=body)
+
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        User.create(name="Ada")
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        _ = User(id=1).name
+
+
 def test_eager_write_accepts_empty_patch_response(
     requests_mock: Any,
 ) -> None:
