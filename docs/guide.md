@@ -86,6 +86,13 @@ given as a string therefore reads as a `UUID`, before and after the object
 loads, and the constructor raises `ValueError` for a key that is not a UUID. An
 object constructed from `json=` starts with that payload already loaded.
 
+Other keyword arguments to the constructor are assignments, made after the
+primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
+a change to its name, and in eager mode it also sends a `PATCH`. Use `create()`
+to create a new object. An object constructed without a primary key has `pk`
+`None` until it loads, and loading it raises `ValueError` because it has no
+URL.
+
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or
 `requests.ConnectionError`. Related objects load the same way, so reading
