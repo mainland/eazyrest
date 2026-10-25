@@ -403,6 +403,57 @@ class RelatedCollection(Iterable[T]):
             )
 
 
+def _declared_fields(
+    cls: type[JSONObject], exclude: AbstractSet[str]
+) -> list[str]:
+    """Return the fields that ``cls`` declares, in declaration order."""
+    return [
+        field
+        for field, annotation in _annotations(cls).items()
+        if field not in exclude and not _is_class_var(annotation)
+    ]
+
+
+def _check_json_keys(
+    cls: type[JSONObject],
+    field_map: Mapping[str, str],
+    exclude: AbstractSet[str],
+) -> None:
+    """Check that no two fields of ``cls`` share a JSON key.
+
+    Each field caches its own converted value, so assigning one of two fields
+    backed by the same key would leave the other reading a stale value.
+
+    Args:
+        cls: Class being decorated.
+        field_map: Mapping from Python attribute name to JSON key.
+        exclude: Annotated attribute names to ignore.
+
+    Raises:
+        ValueError: If two fields, declared or inherited, map to one key.
+    """
+    declared = _declared_fields(cls, exclude)
+    inherited = sorted(
+        field
+        for field in getattr(cls, "_json_fields", ())
+        if field not in declared
+    )
+
+    fields_by_key: dict[str, str] = {}
+    for field in [*inherited, *declared]:
+        if field in declared:
+            json_field = field_map.get(field, field)
+        else:
+            json_field = getattr(cls, field).json_field
+
+        other = fields_by_key.setdefault(json_field, field)
+        if other != field:
+            raise ValueError(
+                f"Fields {cls.__name__}.{other} and {cls.__name__}.{field} "
+                f"both map to the JSON key {json_field!r}"
+            )
+
+
 def _check_options(
     cls: type[JSONObject],
     pk: str | None,
@@ -424,11 +475,7 @@ def _check_options(
         ValueError: If an option names no field of ``cls``.
     """
     annotations = _annotations(cls)
-    declared = {
-        field
-        for field, annotation in annotations.items()
-        if field not in exclude and not _is_class_var(annotation)
-    }
+    declared = _declared_fields(cls, exclude)
 
     unknown_excluded = sorted(set(exclude) - set(annotations))
     if unknown_excluded:
@@ -437,7 +484,7 @@ def _check_options(
             f"{cls.__name__} does not annotate"
         )
 
-    unknown_mapped = sorted(set(field_map) - declared)
+    unknown_mapped = sorted(set(field_map).difference(declared))
     if unknown_mapped:
         raise ValueError(
             f"json_object(field_map=...) maps {unknown_mapped}, which are not "
@@ -515,8 +562,9 @@ def json_object(
             as ``url`` or ``json``. Map such a JSON key to a different
             attribute name with ``field_map``. Also raised if ``pk`` names no
             field of the class, if a ``field_map`` key names no field declared
-            on the class, or if ``exclude`` names no annotated attribute of
-            the class.
+            on the class, if ``exclude`` names no annotated attribute of the
+            class, or if two fields, declared or inherited, map to the same
+            JSON key.
     """
     if field_map is None:
         field_map = {}
@@ -532,11 +580,13 @@ def json_object(
 
         Raises:
             ValueError: If a field would replace a ``JSONObject`` attribute,
-                or if an option names no field of the class.
+                if an option names no field of the class, or if two fields
+                map to the same JSON key.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
         _check_options(cls, pk, field_map, exclude)
+        _check_json_keys(cls, field_map, exclude)
 
         inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
         if pk is not None:
