@@ -2587,6 +2587,24 @@ def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
     assert post.last_request.json() == {"id": 5, "user": None}
 
 
+def test_get_or_create_sends_lookups_only_in_query(requests_mock: Any) -> None:
+    """A ``__`` lookup constrains the query but is not a field value."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 5, "userId": 2, "title": "Docs", "completed": False},
+    )
+
+    Todo.get_or_create(title__iexact="docs", title="Docs", user=User(id=2))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "title__iexact": ["docs"],
+        "title": ["Docs"],
+        "userId": ["2"],
+    }
+    assert post.last_request.json() == {"title": "Docs", "userId": 2}
+
+
 def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])
