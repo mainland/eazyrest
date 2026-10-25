@@ -367,6 +367,24 @@ todo = Todo(id=1, write_mode="eager")
 todo.completed = True
 ```
 
+### Write responses
+
+After a successful write, the object's JSON holds the fields that were sent, with the object that the response body holds, if any, merged over them. A response with no body, such as `204 No Content`, and a body that holds only some fields, such as only the changed ones, therefore leave the other fields as they were. A field that the server computes, such as a modification time, keeps its old value unless the body holds it. Call `refresh()` to reload it.
+
+`create()` works the same way, starting from the JSON-backed fields that it sent. An extra keyword argument that is not a field, such as a write-only password, is sent but not kept. If a field is in neither the payload nor the body, as when the body holds only the new primary key, reading it loads the object.
+
+`merge_response()` computes the new JSON, and an API whose write responses hold something else, such as a status message, can override it on a shared base model:
+
+```python
+from eazyrest import JSONObject
+
+
+class StatusObject(JSONObject):
+    def merge_response(self, resp, current, sent):
+        # The body is {"status": "ok"}, not the object.
+        return {**current, **sent}
+```
+
 Call `refresh()` to discard unsaved local changes and force the next read to reload object state from the API.
 
 For out-of-band updates, such as a websocket message carrying a full or partial object payload, call `update_from_json()` to merge server state into an existing object without refetching it:
