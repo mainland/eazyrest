@@ -691,8 +691,16 @@ class JSONProperty:
             obj._update_json_field(self.json_field, _copy_json(new_value))
 
         # Drop cached values only now, because the update may read this field.
-        obj._field_cache.pop(self.field, None)
         obj._prefetched_related.pop(self.field, None)
+        if isinstance(value, JSONObject) and isinstance(
+            _unwrap_optional_type(self.analyzed_type), RelatedType
+        ):
+            # Keep the assigned object, so that reading the field returns it.
+            # Assigning the object the field already holds must not discard
+            # that object's unsaved changes.
+            obj._field_cache[self.field] = value
+        else:
+            obj._field_cache.pop(self.field, None)
 
 
 class JSONObject:
