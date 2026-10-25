@@ -310,7 +310,9 @@ objects whose field is null.
 
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. The lookup query and the creation
-payload use the same JSON field names and conversions as `create()`:
+payload use the same JSON field names and conversions as `create()`. As in
+Django, a keyword argument that contains `__` and is not a field, such as
+`title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")
