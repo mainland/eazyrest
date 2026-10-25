@@ -58,6 +58,8 @@ loaded_user = User(json={"id": 1, "name": "Ada"})
 
 An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field other than the primary key performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. Reading the primary key returns the value given to the constructor without a request, converted as if it were read from JSON. A `uuid.UUID` key given as a string therefore reads as a `UUID`, before and after the object loads, and the constructor raises `ValueError` for a key that is not a UUID. An object constructed from `json=` starts with that payload already loaded.
 
+Other keyword arguments to the constructor are assignments, made after the primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues a change to its name, and in eager mode it also sends a `PATCH`. Use `create()` to create a new object. An object constructed without a primary key has `pk` `None` until it loads, and loading it raises `ValueError` because it has no URL.
+
 Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
 
 Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
