@@ -396,7 +396,13 @@ T = TypeVar("T", bound="JSONObject")
 
 
 class RelatedCollection(Iterable[T]):
-    """Lazy iterable view over related objects backed by JSON values."""
+    """Lazy, single-pass iterable of related objects backed by JSON values.
+
+    Each related object is created when iteration reaches it. The
+    collection can be iterated only once, so each related object is
+    created only once, and changes made to it while iterating are not
+    lost to a second set of objects.
+    """
 
     _owner: JSONObject
     """Object that owns the related field."""
@@ -410,6 +416,9 @@ class RelatedCollection(Iterable[T]):
     _field: str | None
     """Owning field name used to resolve prefetched related objects."""
 
+    _iterated: bool
+    """Whether ``__iter__()`` has been called."""
+
     def __init__(
         self,
         owner: JSONObject,
@@ -422,9 +431,34 @@ class RelatedCollection(Iterable[T]):
         self._values = tuple(values)
         self._related_type = related_type
         self._field = field
+        self._iterated = False
 
     def __iter__(self) -> Iterator[T]:
-        """Yield related objects lazily as iteration advances."""
+        """Return an iterator that creates related objects as it advances.
+
+        Returns:
+            Iterator over the related objects.
+
+        Raises:
+            RuntimeError: If the collection has already been iterated.
+        """
+        if self._iterated:
+            name = type(self._owner).__name__
+            if self._field is not None:
+                name = f"{name}.{self._field}"
+
+            raise RuntimeError(
+                f"{name} is a lazy related collection, which can be iterated "
+                "only once. Call list() on it to iterate more than once, or "
+                "annotate the field as list[...] or tuple[..., ...] to keep "
+                "its related objects."
+            )
+
+        self._iterated = True
+        return self._related_objects()
+
+    def _related_objects(self) -> Iterator[T]:
+        """Yield the related objects without marking the collection used."""
         for value in self._values:
             yield self._owner.create_related(
                 value,
@@ -1231,7 +1265,11 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
-                if not _is_collection_value(value):
+                if isinstance(value, RelatedCollection):
+                    # Encoding the collection must not use up its single
+                    # traversal.
+                    value = value._related_objects()
+                elif not _is_collection_value(value):
                     raise TypeError(
                         "Collection field values must be collections, "
                         f"got {type(value).__name__}"
