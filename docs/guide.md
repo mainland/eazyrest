@@ -234,7 +234,7 @@ admins = list(User.filter(role="admin"))
 
 A keyword argument named after a JSON-backed field, or after its JSON key such as `userId`, must not be `None` or an empty collection in `filter()`, `get()`, or the lookup of `get_or_create()`. A query string has no null value or empty list, and requests omits such a parameter, so the query would ignore the field. These methods raise `ValueError` instead of sending such a query. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
 
-`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`:
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")
