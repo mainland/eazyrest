@@ -862,7 +862,8 @@ class JSONProperty:
             return self
 
         if self.is_primary_key and obj._json is None:
-            return obj._pk_value
+            # An object created without a key has none until it loads.
+            return getattr(obj, "_pk_value", None)
 
         json = obj._json_with_field(self.json_field, self.field)
         if self.field in obj._field_cache:
@@ -1071,7 +1072,11 @@ class JSONObject:
                 falls back to ``"lazy"`` when no API is bound. ``"lazy"``
                 batches assignments until ``save()``. ``"eager"`` persists each
                 assignment immediately.
-            **kwargs: Field values, typically including the primary key.
+            **kwargs: Field values, typically including the primary key. The
+                primary key is set first. Every other field value is an
+                assignment, as after construction: it loads the object if
+                ``json`` is omitted, and in ``"eager"`` mode it sends a
+                ``PATCH``.
         """
         self._api_override = api
         if write_mode is None:
