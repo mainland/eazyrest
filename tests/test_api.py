@@ -265,6 +265,28 @@ def test_api_reset_session_can_enable_verification() -> None:
     assert api.session.verify is True
 
 
+def test_api_accepts_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CA bundle path verifies certificates and keeps warnings."""
+    disabled: list[type[Warning]] = []
+    monkeypatch.setattr(urllib3, "disable_warnings", disabled.append)
+
+    api = API("https://example.com/", verify="/etc/ssl/certs/internal.pem")
+
+    assert api.session.verify == "/etc/ssl/certs/internal.pem"
+    assert disabled == []
+
+
+def test_api_mounts_adapter_with_retries() -> None:
+    """Extra keyword arguments configure the base URL's adapter."""
+    api = API("https://example.com/", max_retries=3)
+
+    adapter = cast(
+        requests.adapters.HTTPAdapter,
+        api.session.get_adapter("https://example.com/users/"),
+    )
+    assert adapter.max_retries.total == 3
+
+
 def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
     """Assigned cookies are sent with later requests."""
     api = API("https://example.com/")
