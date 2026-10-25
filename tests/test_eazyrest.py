@@ -2142,25 +2142,125 @@ def test_assigning_value_changed_in_place_sends_patch(
     assert profile.json["settings"] == {"theme": "dark"}
 
 
-def test_changing_read_value_in_place_leaves_object_unchanged(
-    requests_mock: Any,
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_value_changed_in_place_is_saved(
+    requests_mock: Any, write_mode: WriteMode
 ) -> None:
-    """A read value is a copy of the JSON, not a view of it."""
+    """A value read and then changed in place is sent by ``save()``.
+
+    Args:
+        write_mode: Write mode of the profile.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
     payload = {"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]}
-    profile = Profile(json=payload)
+    profile = Profile(json=payload, write_mode=write_mode)
 
     profile.settings["theme"] = "dark"
     profile.contacts[0]["n"] = 2
+
+    # The change is a copy until save() detects it.
+    assert profile.json["settings"] == {"theme": "light"}
+    assert patch.call_count == 0
+    profile.save()
     profile.save()
 
-    assert profile.json["settings"] == {"theme": "light"}
-    assert profile.json["contacts"] == [{"n": 1}]
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {
+        "settings": {"theme": "dark"},
+        "contacts": [{"n": 2}],
+    }
+    assert profile.json["settings"] == {"theme": "dark"}
     assert payload == {
         "id": 1,
         "settings": {"theme": "light"},
         "contacts": [{"n": 1}],
     }
-    assert requests_mock.call_count == 0
+
+
+def test_in_place_change_compares_encodings(requests_mock: Any) -> None:
+    """Another spelling of an unchanged value is not a change."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/timelines/1/", status_code=204
+    )
+    timeline = Timeline(json={"id": 1, "starts_at": ["2026-01-02T03:04:05Z"]})
+    later = datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc)
+
+    assert len(timeline.starts_at) == 1
+    timeline.save()
+    assert patch.call_count == 0
+
+    timeline.starts_at.append(later)
+    timeline.save()
+
+    assert patch.last_request.json() == {
+        "starts_at": ["2026-01-02T03:04:05+00:00", later.isoformat()]
+    }
+
+
+def test_eager_assignment_sends_in_place_changes(
+    requests_mock: Any,
+) -> None:
+    """An eager PATCH includes values changed in place."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {}, "contacts": []}, write_mode="eager"
+    )
+
+    profile.contacts.append({"n": 1})
+    profile.settings = {"theme": "dark"}
+
+    assert patch.last_request.json() == {
+        "contacts": [{"n": 1}],
+        "settings": {"theme": "dark"},
+    }
+
+
+def test_assignment_and_refresh_discard_in_place_changes(
+    requests_mock: Any,
+) -> None:
+    """An assignment or a refresh wins over a change made in place."""
+    requests_mock.get(
+        "https://example.com/v1/profiles/1/",
+        json={"id": 1, "settings": {}, "contacts": []},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+
+    profile.contacts.append({"n": 1})
+    profile.contacts = []
+    profile.settings["theme"] = "dark"
+    profile.refresh()
+    profile.save()
+
+    assert patch.call_count == 0
+    assert profile.contacts == []
+    assert profile.settings == {}
+
+
+def test_reload_keeps_in_place_changes(requests_mock: Any) -> None:
+    """Loading the rest of a partial object keeps changes made in place."""
+    requests_mock.get(
+        "https://example.com/v1/profiles/1/",
+        json={"id": 1, "settings": {}, "contacts": []},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(id=1)
+    profile.update_from_json({"contacts": []})
+
+    profile.contacts.append({"n": 1})
+    assert profile.settings == {}
+    profile.save()
+
+    assert profile.contacts == [{"n": 1}]
+    assert patch.last_request.json() == {"contacts": [{"n": 1}]}
 
 
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
