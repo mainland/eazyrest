@@ -131,7 +131,7 @@ class Timeline(JSONObject):
 
 In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
-Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
+Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item. The same holds for values assigned to collection fields or passed to `create()`, which raise `TypeError` unless they are collections. In `filter()` and `get()`, a single value for a collection field, such as `Team.filter(members=user)`, is sent as one item and matches the objects whose collection holds it.
 
 Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Changing that copy in place does not change the object, so assign the changed value to the field to update it:
 
