@@ -42,7 +42,9 @@ not become JSON-backed fields. An attribute annotated with `ClassVar`, such as
 `@json_object` raises `ValueError` if `pk=` names no field of the class, if a
 `field_map=` key names no field declared on the class, or if `exclude=` names
 an attribute that the class does not annotate, so a misspelled option does not
-go unnoticed.
+go unnoticed. It also raises `ValueError` if two fields, including inherited
+ones, map to the same JSON key, because each field caches its own value and
+assigning one would leave the other stale.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`,
 or `save`, and `@json_object` raises `ValueError` for such a field. Use
