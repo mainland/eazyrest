@@ -57,8 +57,13 @@ class API:
     session: requests.Session
     """Session object for API requests."""
 
-    timeout: float | None = 10.0
-    """Default request timeout."""
+    timeout: float | tuple[float, float] | None = 10.0
+    """Default request timeout in seconds, as requests accepts it.
+
+    A pair gives the connect and read timeouts separately, and ``None``
+    waits forever. A request's own ``timeout`` argument takes
+    precedence.
+    """
 
     default_write_mode: WriteMode
     """Default write mode inherited by newly created model instances."""
@@ -68,7 +73,7 @@ class API:
         url: str,
         proxy: str | None = None,
         default_write_mode: WriteMode = "lazy",
-        verify: bool = True,
+        verify: bool | str = True,
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -78,13 +83,16 @@ class API:
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
-            verify: Whether TLS certificates should be verified. When
+            verify: Whether TLS certificates should be verified, or the path
+                of a CA bundle to verify them with, as for requests. When
                 ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
                 for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
               This allows for configuring connection pooling parameters, e.g.,
-              ``pool_connections`` and ``pool_maxsize``.
+              ``pool_connections`` and ``pool_maxsize``, and retries, with
+              ``max_retries``. To change the request timeout, set the
+              ``timeout`` attribute instead.
         """
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
@@ -121,7 +129,9 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool | None = None, **kwargs: Any) -> None:
+    def reset_session(
+        self, verify: bool | str | None = None, **kwargs: Any
+    ) -> None:
         """Replace the underlying ``requests.Session``.
 
         The new session keeps the configuration of the session it replaces,
@@ -130,9 +140,10 @@ class API:
         or mounted adapters. The replaced session is closed.
 
         Args:
-            verify: Whether TLS certificates should be verified. If omitted,
-                the new session keeps the replaced session's setting, and a
-                first session verifies certificates. When ``False``, urllib3's
+            verify: Whether TLS certificates should be verified, or the path
+                of a CA bundle to verify them with. If omitted, the new
+                session keeps the replaced session's setting, and a first
+                session verifies certificates. When ``False``, urllib3's
                 ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
@@ -149,7 +160,7 @@ class API:
 
         if verify is not None:
             session.verify = verify
-            if not verify:
+            if verify is False:
                 urllib3.disable_warnings(
                     urllib3.exceptions.InsecureRequestWarning
                 )

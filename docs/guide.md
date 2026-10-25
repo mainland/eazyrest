@@ -383,7 +383,18 @@ The `API` class wraps a `requests.Session`, resolves request URLs relative to `b
 
 Requests follows redirects, but it resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`. The server has then not performed the original request, so such a redirect raises `requests.HTTPError` rather than letting `create()`, `save()`, or `delete()` report success. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a `class_url` lacks the trailing slash that Django's `APPEND_SLASH` adds. Use the URL that the server redirects to. Redirects that keep the method, such as 307 and 308, are followed.
 
-Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`. Pass `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
+Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`. Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
+
+Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
+
+```python
+from urllib3.util import Retry
+
+api = API("https://api.example.com/v1/", max_retries=Retry(total=3))
+api.timeout = 30
+```
+
+urllib3 retries only idempotent methods by default, so a `POST` is not resent. `reset_session()` keeps the session's configuration but not its adapters, so pass the adapter arguments again when you call it.
 
 Use the client as a context manager to ensure the session is closed:
 
