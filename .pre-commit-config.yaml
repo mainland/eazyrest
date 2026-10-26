@@ -20,6 +20,7 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
+          - pytest
           - requests[socks]
           - tzlocal
           - types-dateparser
