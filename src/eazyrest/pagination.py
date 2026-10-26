@@ -4,34 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import requests
 
-from .api import API
-
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def _origin(url: str) -> tuple[str, str | None, int | None]:
-    """Return the scheme, host, and port of an absolute URL.
-
-    Args:
-        url: Absolute URL.
-
-    Returns:
-        Lowercased scheme, host, and port of ``url`` as Requests would send it.
-        If ``url`` names no port, the port is the scheme's default port, or
-        ``None`` if the scheme has no known default.
-    """
-    # Requests and urlsplit disagree about backslashes in an authority. Check
-    # the URL Requests would send, before attaching session credentials.
-    request = requests.PreparedRequest()
-    request.prepare_url(url, None)
-    assert request.url is not None
-    parts = urlsplit(request.url)
-    scheme = parts.scheme.lower()
-    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+from .api import (
+    API,
+    _origin,
+    _redirect_destination,
+    _redirect_origins,
+    _response_hooks,
+)
 
 
 def follow_next_links(
@@ -63,7 +46,9 @@ def follow_next_links(
     headers and credentials with every request, so following a link to another
     origin could send them to another server, or over plain HTTP. A server
     behind a misconfigured reverse proxy can produce such links by naming its
-    internal address or the wrong scheme.
+    internal address or the wrong scheme. With ``allow_other_origins``, a
+    redirect must still lead to the origin of the page request it answers, or
+    to one of the API's ``redirect_origins``, as for every request.
 
     The defaults match the responses of Django REST Framework's
     ``PageNumberPagination``, ``LimitOffsetPagination``, and
@@ -79,8 +64,9 @@ def follow_next_links(
             from.
         results_key: Member of a page that holds the page's items.
         next_key: Member of a page that holds the next page's URL.
-        allow_other_origins: Whether to follow next-page URLs and redirects
-            whose origin differs from the API's base URL.
+        allow_other_origins: Whether to follow next-page URLs, and redirects
+            from page requests, whose origin differs from the API's base URL. A
+            redirect must still lead to an origin that the API allows.
 
     Yields:
         JSON items from every page, in order.
@@ -117,6 +103,9 @@ def follow_next_links(
     def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
         """Check redirects before requests follows them.
 
+        The API checks every redirect too, as for any request. This hook adds
+        the reader's own origin restriction.
+
         Args:
             resp: Response, which may be a redirect.
             kwargs: Other arguments that requests passes to response hooks,
@@ -128,12 +117,17 @@ def follow_next_links(
                 closed first.
         """
         target = api.session.get_redirect_target(resp)
-        if target is not None:
-            try:
-                check_origin(urljoin(resp.url, target))
-            except ValueError:
-                resp.close()
-                raise
+        if not target or allow_other_origins:
+            return
+        destination = _redirect_destination(resp, target)
+        if _redirect_origins(resp, target) != {api_origin}:
+            resp.close()
+            raise ValueError(
+                f"Page request {resp.url!r} was redirected to "
+                f"{destination!r}, which has a different origin from the "
+                f"API's base URL {api.base_url!r}. Pass "
+                "allow_other_origins=True to follow it."
+            )
 
     while True:
         if isinstance(payload, list):
@@ -166,8 +160,11 @@ def follow_next_links(
         check_origin(next_url)
 
         # Request hooks replace session hooks, so preserve the existing ones.
-        # Run the guard last, after any hook that might change the response.
-        hooks = [*api.session.hooks.get("response", []), check_redirect]
+        # Run the guard after any hook that might change the response.
+        hooks = [
+            *_response_hooks(api.session.hooks.get("response")),
+            check_redirect,
+        ]
         resp = api.get(next_url, hooks={"response": hooks})
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url

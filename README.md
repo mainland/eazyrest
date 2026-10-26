@@ -14,6 +14,12 @@ items in collection annotations such as `list[datetime.datetime]`,
 pip install eazyrest
 ```
 
+To send requests through a SOCKS proxy, install the `socks` extra:
+
+```bash
+pip install "eazyrest[socks]"
+```
+
 Requires Python 3.10+.
 
 ## Documentation
