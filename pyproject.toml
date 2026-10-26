@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
+# setuptools 77 is the first release to accept a license expression.
+requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,17 +26,21 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "certifi",
     "dateparser",
     "isodate",
     "python-dateutil",
     "pytimeparse2",
     "requests[socks]",
     "typing_extensions; python_version < '3.11'",
-    "tzlocal"
+    "tzlocal",
+    "urllib3",
 ]
 
 [project.optional-dependencies]
+test = [
+  "pytest",
+  "requests-mock",
+]
 dev = [
   "build",
   "docformatter",
