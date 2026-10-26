@@ -26,9 +26,11 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
+    Literal,
     TypeAlias,
     TypeVar,
     Union,
@@ -51,6 +53,9 @@ else:
 
 if sys.version_info >= (3, 14):
     from annotationlib import Format
+
+if TYPE_CHECKING:
+    from pydantic import TypeAdapter
 
 
 class EazyrestError(Exception):
@@ -348,15 +353,107 @@ class CollectionType:
     item_type: AnalyzedType
 
 
+@dataclass(frozen=True)
+class PydanticType:
+    """Leaf type metadata for a type that Pydantic converts.
+
+    A type that mentions Pydantic, such as a Pydantic model or ``Annotated[int,
+    pydantic.Field(gt=0)]``, converts with a Pydantic ``TypeAdapter``.
+    """
+
+    annotation: Any
+    """Declared type, with its ``Annotated`` metadata."""
+
+    @cached_property
+    def adapter(self) -> TypeAdapter[Any]:
+        """Return the ``TypeAdapter`` that converts values of the type.
+
+        The adapter converts ``datetime``, ``date``, ``timedelta``, ``UUID``,
+        and enum types that the annotation names as eazyrest does. Types inside
+        a class that the annotation names, such as the fields of a Pydantic
+        model, follow that class's rules.
+
+        Raises:
+            TypeError: If Pydantic is not installed, or it cannot convert the
+                type.
+        """
+        try:
+            from .pydantic import _type_adapter
+        except ImportError as err:
+            raise TypeError(
+                f"Converting {self.annotation!r} needs Pydantic, which the "
+                "eazyrest[pydantic] extra installs"
+            ) from err
+
+        return _type_adapter(self.annotation)
+
+
 AnalyzedType: TypeAlias = (
-    BaseType | RelatedType | OptionalType | CollectionType
+    BaseType | RelatedType | OptionalType | CollectionType | PydanticType
 )
+
+
+def _is_pydantic_metadata(metadata: Any) -> bool:
+    """Return whether ``Annotated`` metadata is for Pydantic.
+
+    Constraints from ``annotated_types``, which other libraries also use, are
+    not.
+
+    Args:
+        metadata: One item of ``Annotated`` metadata.
+
+    Returns:
+        Whether ``metadata`` has Pydantic's schema hook or its type comes from
+        the ``pydantic`` package.
+    """
+    return (
+        hasattr(metadata, "__get_pydantic_core_schema__")
+        or type(metadata).__module__.partition(".")[0] == "pydantic"
+    )
+
+
+def _mentions_pydantic(ty: Any) -> bool:
+    """Return whether a type, or a type inside it, is for Pydantic.
+
+    A class with Pydantic's schema hook, such as a Pydantic model, a class with
+    a Pydantic config, such as a ``TypedDict`` decorated with
+    ``pydantic.with_config()``, and ``Annotated`` metadata for Pydantic are for
+    Pydantic.
+
+    Args:
+        ty: Type to inspect. The values of a ``Literal`` are not inspected.
+
+    Returns:
+        Whether ``ty``, or any type argument inside it, is for Pydantic.
+    """
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if origin is Annotated:
+        return _mentions_pydantic(args[0]) or any(
+            _is_pydantic_metadata(metadata) for metadata in args[1:]
+        )
+
+    # A generic alias, such as Spec[int], does not forward these attributes to
+    # the generic class.
+    for candidate in (ty, origin):
+        if hasattr(candidate, "__get_pydantic_core_schema__") or hasattr(
+            candidate, "__pydantic_config__"
+        ):
+            return True
+
+    if origin is Literal:
+        return False
+
+    return any(_mentions_pydantic(arg) for arg in args)
 
 
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
-    ``Annotated[T, ...]`` analyzes as ``T``.
+    ``Annotated[T, ...]`` analyzes as ``T``, unless its metadata is for
+    Pydantic. Then, and for a type below eazyrest's structure of related
+    objects, optional values, and collections that mentions Pydantic, Pydantic
+    converts the whole type.
 
     Args:
         ty: Declared field type.
@@ -368,6 +465,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     ty_args = typing.get_args(ty)
 
     if ty_origin is Annotated:
+        if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):
+            return PydanticType(ty)
+
         return analyze_type(ty_args[0])
 
     if ty_origin in (Union, types.UnionType):
@@ -388,6 +488,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             collection_type=cast(type[Any], ty_origin),
             item_type=analyze_type(ty_args[0]),
         )
+
+    if _mentions_pydantic(ty):
+        return PydanticType(ty)
 
     return BaseType(ty)
 
@@ -1379,6 +1482,11 @@ class JSONObject:
                 # object's JSON without recording an update.
                 return _copy_json(value)
 
+            case PydanticType():
+                # Pydantic does not copy nested values of type Any, which the
+                # returned value would then share with the JSON.
+                return conversion.adapter.validate_python(_copy_json(value))
+
             case RelatedType(model_type):
                 return self.create_related(
                     value,
@@ -1499,6 +1607,13 @@ class JSONObject:
                     )
 
                 return [cls.to_json(item, item_type) for item in value]
+            case PydanticType():
+                if value is None:
+                    return None
+
+                from .pydantic import _encode
+
+                return _encode(conversion.adapter, value)
             case _:
                 raise TypeError(
                     f"Unsupported analyzed type {type(conversion).__name__}"

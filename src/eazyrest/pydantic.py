@@ -13,15 +13,25 @@ Importing this module requires Pydantic, which the ``pydantic`` extra installs.
 from __future__ import annotations
 
 import datetime
+import enum
+import types
+import typing
 import uuid
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, Union
 
 import isodate
-from pydantic import PlainSerializer, PlainValidator, WithJsonSchema
+from pydantic import (
+    PlainSerializer,
+    PlainValidator,
+    PydanticUserError,
+    TypeAdapter,
+    WithJsonSchema,
+)
+from pydantic_core import PydanticSerializationError
 
 from .dateparse import parse_datetime, parse_duration
-from .eazyrest import _decode_uuid
+from .eazyrest import JSONObject, _decode_uuid, lenient_issubclass
 
 __all__ = ["UUID", "Date", "Datetime", "Duration"]
 
@@ -58,7 +68,9 @@ def _validator(
 
 
 def _serializer(
-    is_value: Callable[[Any], bool], encode: Callable[[Any], str]
+    is_value: Callable[[Any], bool],
+    encode: Callable[[Any], Any],
+    return_type: Any = str,
 ) -> PlainSerializer:
     """Return a serializer that encodes only values of the type.
 
@@ -68,20 +80,22 @@ def _serializer(
     Args:
         is_value: Whether a value has the type, so that the serializer encodes
             it.
-        encode: Function that converts a value of the type to its JSON string.
+        encode: Function that converts a value of the type to its JSON form.
+        return_type: Type of the value that ``encode`` returns, which Pydantic
+            uses to describe the serialized value.
 
     Returns:
         Pydantic serializer that encodes values with ``encode``, and raises
         ``TypeError`` for values for which ``is_value`` is false.
     """
 
-    def serialize(value: Any) -> str:
+    def serialize(value: Any) -> Any:
         if not is_value(value):
             raise TypeError(f"Unexpected value of type {type(value).__name__}")
 
         return encode(value)
 
-    return PlainSerializer(serialize, return_type=str)
+    return PlainSerializer(serialize, return_type=return_type)
 
 
 def _is_datetime(value: Any) -> bool:
@@ -149,3 +163,132 @@ UUID = Annotated[
     WithJsonSchema({"type": "string", "format": "uuid"}),
 ]
 """A ``UUID`` read from and written as a string."""
+
+
+def _enum_type(cls: type[enum.Enum]) -> Any:
+    """Return an enum type that converts values as eazyrest does.
+
+    Unlike Pydantic, eazyrest does not convert ``"1"`` to a member whose value
+    is ``1``.
+
+    Args:
+        cls: Enum class to convert.
+
+    Returns:
+        ``cls``, annotated with a validator and a serializer that convert its
+        members as eazyrest does.
+    """
+
+    def is_member(value: Any) -> bool:
+        return isinstance(value, cls)
+
+    return Annotated[
+        cls,
+        _validator(is_member, cls),
+        _serializer(is_member, lambda member: member.value, Any),
+    ]
+
+
+_EAZYREST_TYPES: dict[Any, Any] = {
+    datetime.datetime: Datetime,
+    datetime.date: Date,
+    datetime.timedelta: Duration,
+    uuid.UUID: UUID,
+}
+
+
+def _eazyrest_types(ty: Any) -> Any:
+    """Return a type with eazyrest's conversions for the types it names.
+
+    ``datetime``, ``date``, ``timedelta``, ``UUID``, and enum types that ``ty``
+    names, also as type arguments, are replaced by types that convert as
+    eazyrest's fields do. Types inside a class that ``ty`` names are left to
+    that class.
+
+    Args:
+        ty: Field type to convert.
+
+    Returns:
+        ``ty`` with those types replaced, or ``ty`` itself if it names none of
+        them.
+
+    Raises:
+        TypeError: If ``ty`` names an eazyrest model, which Pydantic cannot
+            convert.
+    """
+    if lenient_issubclass(ty, JSONObject):
+        raise TypeError(
+            f"Pydantic cannot convert {ty.__name__}, an eazyrest model"
+        )
+    if isinstance(ty, type) and ty in _EAZYREST_TYPES:
+        return _EAZYREST_TYPES[ty]
+    if lenient_issubclass(ty, enum.Enum):
+        return _enum_type(ty)
+
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if not args or origin is Literal:
+        return ty
+    if origin is Annotated:
+        return Annotated[(_eazyrest_types(args[0]), *args[1:])]
+
+    new_args = tuple(_eazyrest_types(arg) for arg in args)
+    if all(new is old for new, old in zip(new_args, args, strict=True)):
+        return ty
+    if origin is types.UnionType:
+        origin = Union
+
+    return origin[new_args]
+
+
+def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
+    """Return a ``TypeAdapter`` for a field type that Pydantic converts.
+
+    Args:
+        annotation: Field type to convert.
+
+    Returns:
+        ``TypeAdapter`` for ``annotation``, with eazyrest's conversions for the
+        types it names.
+
+    Raises:
+        TypeError: If Pydantic cannot convert the type.
+    """
+    try:
+        return TypeAdapter(_eazyrest_types(annotation))
+    except PydanticUserError as err:
+        # A PydanticUserError is a TypeError in some Pydantic releases and a
+        # RuntimeError in others.
+        raise TypeError(str(err)) from err
+
+
+def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
+    """Return the JSON value of a field value.
+
+    A value of the field's type is serialized as it is. Otherwise, it is
+    validated as input first, so that a field typed as ``Base64Bytes``, for
+    example, writes both ``b"hello"`` and its encoding, ``"aGVsbG8="``, as
+    ``"aGVsbG8="``. Validating every value first would fail for such a type,
+    which would decode raw bytes as base64.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        value: Field value to encode.
+
+    Returns:
+        JSON value of ``value``.
+
+    Raises:
+        ValueError: If the value is not valid input for the field, or the field
+            could not read its JSON value back, for example because the value
+            breaks a constraint that only validation checks.
+    """
+    try:
+        encoded = adapter.dump_python(value, mode="json", warnings="error")
+    except PydanticSerializationError:
+        encoded = adapter.dump_python(
+            adapter.validate_python(value), mode="json"
+        )
+
+    adapter.validate_python(encoded)
+    return encoded
