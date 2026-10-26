@@ -16,6 +16,12 @@ To parse natural-language dates with `parse_datetime(..., use_dateparser=True)`,
 pip install "eazyrest[dateparser]"
 ```
 
+To have Pydantic convert fields whose types use it, such as Pydantic models or `Annotated[int, pydantic.Field(gt=0)]`, install the `pydantic` extra:
+
+```bash
+pip install "eazyrest[pydantic]"
+```
+
 To send requests through a SOCKS proxy, install the `socks` extra:
 
 ```bash
