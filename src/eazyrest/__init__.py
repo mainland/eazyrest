@@ -13,6 +13,7 @@ from .eazyrest import (
     MultipleObjectsReturned,
     OptionalType,
     PrefetchNotSupported,
+    PydanticType,
     RelatedType,
     json_object,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "MultipleObjectsReturned",
     "OptionalType",
     "PrefetchNotSupported",
+    "PydanticType",
     "RelatedType",
     "WriteMode",
     "follow_link_headers",
