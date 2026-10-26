@@ -2564,6 +2564,28 @@ def test_query_rejects_unsendable_field_constraints(
     assert requests_mock.call_count == 0
 
 
+def test_collection_field_values_must_be_collections(
+    requests_mock: Any,
+) -> None:
+    """A field value is not converted as one item of a collection."""
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+    timeline = Timeline(json={"id": 1, "starts_at": []})
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+
+    # The annotations reject these values statically, so assign them
+    # dynamically to check the run-time behavior.
+    with pytest.raises(TypeError, match="must be collections, got dict"):
+        setattr(profile, "contacts", {"n": 1})  # noqa: B010
+    with pytest.raises(TypeError, match="must be collections, got datetime"):
+        setattr(timeline, "starts_at", when)  # noqa: B010
+    with pytest.raises(TypeError, match="must be collections, got User"):
+        Team.create(members=User(id=2))
+
+    assert profile.contacts == []
+    assert profile._pending_updates == {}
+    assert requests_mock.call_count == 0
+
+
 def test_query_omits_none_for_other_parameters(requests_mock: Any) -> None:
     """A ``None`` value for another parameter is still left to requests."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
@@ -2585,6 +2607,24 @@ def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
     assert created
     assert todo.user is None
     assert post.last_request.json() == {"id": 5, "user": None}
+
+
+def test_get_or_create_sends_lookups_only_in_query(requests_mock: Any) -> None:
+    """A ``__`` lookup constrains the query but is not a field value."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 5, "userId": 2, "title": "Docs", "completed": False},
+    )
+
+    Todo.get_or_create(title__iexact="docs", title="Docs", user=User(id=2))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "title__iexact": ["docs"],
+        "title": ["Docs"],
+        "userId": ["2"],
+    }
+    assert post.last_request.json() == {"title": "Docs", "userId": 2}
 
 
 def test_get_raises_does_not_exist(requests_mock: Any) -> None:

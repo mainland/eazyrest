@@ -199,6 +199,87 @@ users = User.filter(**{"created__gte": "2026-01-01T00:00:00Z"})
 
 On the DRF side, keep sensitive filtering and ordering fields explicit. For example, prefer explicit `filterset_fields`, `search_fields`, and `ordering_fields` so clients cannot accidentally query or order by fields that should not be exposed.
 
+## Reject unknown filter parameters
+
+django-filter passes every query parameter to a Django form whose fields are the view's filters, and a form ignores data that it has no field for. A parameter that names no filter, such as a misspelled field or a field missing from `filterset_fields`, therefore filters nothing. `filter()` then returns more objects than it should. `get()` and `get_or_create()` rely on the server to apply every lookup parameter, so `get()` can return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating it. django-filter has no setting that rejects unknown parameters. Its strict mode, which django-filter 2.0 removed, applied to invalid values, not unknown names.
+
+This filter backend answers a request that has an unknown parameter with a 400 response:
+
+```python
+from django import forms
+from django_filters.rest_framework import DjangoFilterBackend
+from django_filters.widgets import QueryArrayWidget, SuffixedMultiWidget
+from rest_framework.exceptions import ValidationError
+from rest_framework.settings import api_settings
+
+
+class StrictDjangoFilterBackend(DjangoFilterBackend):
+    """A DjangoFilterBackend that rejects query parameters nothing reads."""
+
+    def filter_queryset(self, request, queryset, view):
+        filterset = self.get_filterset(request, queryset, view)
+        known = self.get_known_parameters(view, filterset)
+        unknown = sorted(set(request.query_params) - known)
+        if unknown:
+            raise ValidationError(
+                {name: ["Unknown query parameter."] for name in unknown}
+            )
+
+        return super().filter_queryset(request, queryset, view)
+
+    def get_known_parameters(self, view, filterset):
+        known = set(getattr(view, "extra_query_params", ()))
+        if api_settings.URL_FORMAT_OVERRIDE:
+            known.add(api_settings.URL_FORMAT_OVERRIDE)
+
+        # The paginator and the other filter backends name their parameters
+        # in attributes such as page_query_param, search_param, and
+        # ordering_param.
+        components = [getattr(view, "paginator", None), *view.filter_backends]
+        for component in components:
+            for attr in dir(component):
+                value = getattr(component, attr, None)
+                if attr.endswith("_param") and isinstance(value, str):
+                    known.add(value)
+
+        if filterset is not None:
+            form = filterset.form
+            for name, field in form.fields.items():
+                key = form.add_prefix(name)
+                widget = field.widget
+                # Range and lookup filters read suffixed parameters, such as
+                # price_min and price_max.
+                if isinstance(widget, SuffixedMultiWidget):
+                    known.update(
+                        widget.suffixed(key, suffix)
+                        for suffix in widget.suffixes
+                    )
+                elif isinstance(widget, forms.MultiWidget):
+                    known.update(
+                        key + suffix for suffix in widget.widgets_names
+                    )
+                elif isinstance(widget, QueryArrayWidget):
+                    known.update((key, f"{key}[]"))
+                else:
+                    known.add(key)
+
+        return known
+```
+
+It accepts the parameters that the view's filters read, including suffixed ones such as `price_min` and `price_max` for a `RangeFilter` and `created_after` for a `DateFromToRangeFilter`. It also accepts the parameters of the view's paginator and other filter backends, such as `page`, `cursor`, `search`, and `ordering`, and the `format` parameter. Use it in place of `DjangoFilterBackend`, in a view's `filter_backends` or in the settings:
+
+```python
+REST_FRAMEWORK = {
+    "DEFAULT_FILTER_BACKENDS": [
+        "myapp.filters.StrictDjangoFilterBackend",
+        "rest_framework.filters.SearchFilter",
+        "rest_framework.filters.OrderingFilter",
+    ],
+}
+```
+
+List a parameter that the view reads itself, such as `expand`, or that a custom widget reads under another name, in the view's `extra_query_params` attribute. The backend was tested with Django 5.2 and 6.1, DRF 3.15 and 3.18, and django-filter 24.3 and 26.2, with page-number, limit-offset, and cursor pagination.
+
 ## Match DRF write behavior
 
 Lazy field assignment and `save()` use `PATCH`, which matches DRF viewsets that support partial updates. `create()` uses `POST` against `class_url`, and `delete()` uses `DELETE` against the object URL.
