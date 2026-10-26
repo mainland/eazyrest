@@ -322,6 +322,7 @@ If you request prefetch for a related model that does not implement `bulk_get_by
 Override these hooks if an API wraps responses in envelopes:
 
 - `collection_items()` for collection endpoints
+- `collection_items_from_response()` for collection endpoints whose items or later pages depend on the response itself, such as its headers or URL
 - `object_json()` for single-object endpoints
 
 For example, an API that returns singleton responses in a "result" field and collection responses in a "results" field should define a new base class derived from `JSONObject` with the following overrides:
@@ -353,13 +354,13 @@ With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size` object
 
 By default, `follow_next_links()` reads a page's items from `results` and the next page's URL from `next`, as Django REST Framework does. Pass `results_key=` and `next_key=` for other names. A list payload is a single unpaginated page. A page whose next link is null, empty, or absent is the last page. A next link to a page that was already read raises `ValueError`, rather than reading the same pages forever.
 
-A next-page URL is resolved against the URL of the page that holds it, as a browser resolves a link. An absolute URL, which is what Django REST Framework sends, is used as is. A path such as `/v1/items/?page=2` is resolved against the server's origin, and a query such as `?page=2` against the page's path. `collection_items()` does not receive the URL of the first page, so links in the first page are resolved against `base_url` unless you pass `url=`. For an API that sends query-only links, pass the collection's path:
+A next-page URL is resolved against the URL of the page that holds it, as a browser resolves a link. An absolute URL, which is what Django REST Framework sends, is used as is. A path such as `/v1/items/?page=2` is resolved against the server's origin, and a query such as `?page=2` against the page's path. `collection_items()` receives only the payload, so links in the first page are resolved against `base_url` unless you pass `url=`. For an API that sends query-only links, override `collection_items_from_response()`, which receives the response, and pass the URL of the first page:
 
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload, url=cls.class_url)
+    def collection_items_from_response(cls, resp):
+        return follow_next_links(cls.api, resp.json(), url=resp.url)
 ```
 
 `follow_next_links()` raises `ValueError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.

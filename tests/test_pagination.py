@@ -32,6 +32,27 @@ class Item(PagedBase):
     id: int
 
 
+class ResponsePagedBase(JSONObject):
+    """Base object whose collection hook reads the response."""
+
+    @classmethod
+    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+        """Read every page, resolving links against the first page's URL."""
+        return follow_next_links(cls.api, resp.json(), url=resp.url)
+
+
+ResponsePagedBase.register_api(API("https://example.com/v1/"))
+
+
+@json_object
+class Entry(ResponsePagedBase):
+    """Model whose collection pages link to each other by query only."""
+
+    class_url = "/entries/"
+
+    id: int
+
+
 @json_object
 class Owner(PagedBase):
     """Related model whose bulk lookup sends no request."""
@@ -487,6 +508,23 @@ def test_filter_with_api_reads_every_page_with_it(requests_mock: Any) -> None:
         "tenant.example.com"
     }
     assert Item.api is not tenant
+
+
+def test_collection_hook_receives_the_response(requests_mock: Any) -> None:
+    """A query-only next link resolves against the first page's URL."""
+    requests_mock.get(
+        "https://example.com/v1/entries/?kind=a",
+        json={"results": [{"id": 1}], "next": "?kind=a&page=2"},
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/entries/?kind=a&page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    entries = list(Entry.filter(kind="a"))
+
+    assert [entry.id for entry in entries] == [1, 2]
+    assert second.call_count == 1
 
 
 def test_prefetch_reads_ahead_across_pages(requests_mock: Any) -> None:
