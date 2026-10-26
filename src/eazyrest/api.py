@@ -1,5 +1,7 @@
 """HTTP API client primitives for eazyrest."""
 
+from __future__ import annotations
+
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.parse import urlparse
@@ -110,6 +112,14 @@ class API:
         """Close the underlying HTTP session."""
         self.session.close()
 
+    def __enter__(self) -> API:
+        """Return this API client for use as a context manager."""
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """Close the session when leaving a context-manager block."""
+        self.close()
+
     def _check_response(self, resp: requests.Response) -> requests.Response:
         """Validate an HTTP response.
 
@@ -189,6 +199,23 @@ class API:
         """
         kwargs.setdefault("timeout", self.timeout)
         req = self.session.patch(self._resolve_url(uri), *args, **kwargs)
+        return self._check_response(req)
+
+    def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``PUT`` request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to
+                ``requests.Session.put``.
+            **kwargs: Keyword arguments forwarded to
+                ``requests.Session.put``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        kwargs.setdefault("timeout", self.timeout)
+        req = self.session.put(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
 
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
