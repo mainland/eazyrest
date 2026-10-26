@@ -301,6 +301,37 @@ class IssueStatus(str, enum.Enum):
     CLOSED = "closed"
 
 
+class Priority(str, enum.Enum):
+    """Priority values whose enum maps unknown values to ``UNKNOWN``."""
+
+    LOW = "low"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Priority:
+        """Map a value the enum lacks to ``UNKNOWN``.
+
+        Args:
+            value: Value that matches no member. It is not inspected.
+
+        Returns:
+            The ``UNKNOWN`` member.
+        """
+        return cls.UNKNOWN
+
+
+@json_object
+class PrioritizedTask(ModelBase):
+    """Model with an enum field that accepts unknown values."""
+
+    class_url = "/prioritized-tasks/"
+
+    id: int
+    title: str
+    priority: Priority
+
+
 @json_object
 class Issue(ModelBase):
     """Model with an enum field."""
@@ -1187,6 +1218,21 @@ def test_date_and_uuid_fields_encode(requests_mock: Any) -> None:
         "day": "2026-01-03",
         "token": "6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40",
     }
+
+
+def test_enum_fallback_keeps_the_server_value(requests_mock: Any) -> None:
+    """A value mapped by ``_missing_()`` is not written back."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/prioritized-tasks/1/", status_code=204
+    )
+    task = PrioritizedTask(json={"id": 1, "title": "a", "priority": "urgent"})
+
+    assert task.priority is Priority.UNKNOWN
+    task.title = "b"
+    task.save()
+
+    assert patch.last_request.json() == {"title": "b"}
+    assert task.json["priority"] == "urgent"
 
 
 def test_conversion_errors_name_the_field(requests_mock: Any) -> None:
