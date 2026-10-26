@@ -45,6 +45,7 @@ socks = [
 [dependency-groups]
 test = [
   "coverage",
+  "hypothesis",
   # pytest 9 is the first release that reads [tool.pytest].
   "pytest>=9",
   "requests-mock",
