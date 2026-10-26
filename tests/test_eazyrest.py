@@ -3211,6 +3211,34 @@ def test_url_percent_encodes_primary_key() -> None:
     assert org.url == "/orgs/a%2Fb%3Fc/"
 
 
+def test_url_omits_trailing_slash_when_api_does(requests_mock: Any) -> None:
+    """An API without trailing slashes gets object URLs without one."""
+    api = API("https://example.com/v1/")
+    api.trailing_slash = False
+    get = requests_mock.get(
+        "https://example.com/v1/users/1", json={"id": 1, "name": "Ada"}
+    )
+    user = User(id=1, api=api)
+
+    assert user.url == "/users/1"
+    assert user.name == "Ada"
+    assert get.call_count == 1
+
+
+def test_url_without_api_keeps_trailing_slash() -> None:
+    """A model with no registered API still has a URL."""
+
+    @json_object
+    class Unbound(JSONObject):
+        """Model with no registered API."""
+
+        class_url = "/unbound/"
+
+        id: int
+
+    assert Unbound(id=1).url == "/unbound/1/"
+
+
 @pytest.mark.parametrize("initialization", ["raw", "typed", "json"])
 def test_enum_primary_key_urls_use_serialized_values(
     requests_mock: Any, initialization: str
