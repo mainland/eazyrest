@@ -29,7 +29,9 @@ from pydantic import (
     TypeAdapter,
     WithJsonSchema,
 )
+from pydantic.dataclasses import is_pydantic_dataclass
 from pydantic_core import PydanticSerializationError
+from typing_extensions import is_typeddict
 
 from .dateparse import parse_duration
 from .eazyrest import (
@@ -177,6 +179,36 @@ _EAZYREST_TYPES: dict[Any, Any] = {
 }
 
 
+def _check_undeclared_keys(cls: Any) -> None:
+    """Check that a class keeps or rejects the keys it does not declare.
+
+    Under Pydantic's default config, validating and serializing a
+    ``TypedDict`` or a Pydantic dataclass drop the keys it does not
+    declare. Saving such a value would then delete those keys on the
+    server. A ``TypedDict`` keeps them under ``extra="allow"``, but a
+    Pydantic dataclass never writes them, so only ``extra="forbid"``,
+    which rejects them, is safe for it.
+
+    Raises:
+        TypeError: If the class's config would drop undeclared keys.
+    """
+    extra = getattr(cls, "__pydantic_config__", {}).get("extra")
+    if is_pydantic_dataclass(cls):
+        if extra != "forbid":
+            raise TypeError(
+                f"{cls.__name__} would drop the keys it does not declare, "
+                "because a Pydantic dataclass never writes them. Give it "
+                'extra="forbid", or use a Pydantic model or a TypedDict '
+                'with extra="allow".'
+            )
+    elif extra not in ("allow", "forbid"):
+        raise TypeError(
+            f"{cls.__name__} would drop the keys it does not declare. "
+            "Decorate it with "
+            '@pydantic.with_config(pydantic.ConfigDict(extra="allow")).'
+        )
+
+
 def _eazyrest_types(ty: Any) -> Any:
     """Return a type with eazyrest's conversions for the types it names.
 
@@ -187,7 +219,8 @@ def _eazyrest_types(ty: Any) -> Any:
 
     Raises:
         TypeError: If ``ty`` names an eazyrest model, which Pydantic cannot
-            convert.
+            convert, or a ``TypedDict`` or Pydantic dataclass that would
+            drop the keys it does not declare.
     """
     if lenient_issubclass(ty, JSONObject):
         raise TypeError(
@@ -200,6 +233,10 @@ def _eazyrest_types(ty: Any) -> Any:
 
     origin = typing.get_origin(ty)
     args = typing.get_args(ty)
+    if is_typeddict(ty) or is_typeddict(origin):
+        _check_undeclared_keys(origin or ty)
+    if isinstance(ty, type) and is_pydantic_dataclass(ty):
+        _check_undeclared_keys(ty)
     if not args or origin is Literal:
         return ty
     if origin is Annotated:
