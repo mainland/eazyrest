@@ -2,7 +2,7 @@
 
 from http.cookiejar import CookieJar
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import certifi
 import requests
@@ -116,6 +116,25 @@ class API:
         resp.raise_for_status()
         return resp
 
+    def _resolve_url(self, uri: str) -> str:
+        """Resolve a request URI against ``base_url``.
+
+        Absolute URIs are returned unchanged. Relative paths are appended to
+        ``base_url`` without letting leading slashes discard any existing path
+        prefix on the base URL.
+
+        Args:
+            uri: Relative or absolute request URI.
+
+        Returns:
+            Fully resolved request URL.
+        """
+        parsed = urlparse(uri)
+        if parsed.scheme or parsed.netloc:
+            return uri
+
+        return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
+
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.
 
@@ -128,7 +147,7 @@ class API:
             Validated HTTP response.
         """
         kwargs.setdefault("timeout", self.timeout)
-        req = self.session.get(urljoin(self.base_url, uri), *args, **kwargs)
+        req = self.session.get(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
 
     def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
@@ -143,7 +162,7 @@ class API:
             Validated HTTP response.
         """
         kwargs.setdefault("timeout", self.timeout)
-        req = self.session.post(urljoin(self.base_url, uri), *args, **kwargs)
+        req = self.session.post(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
 
     def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
@@ -160,7 +179,7 @@ class API:
             Validated HTTP response.
         """
         kwargs.setdefault("timeout", self.timeout)
-        req = self.session.patch(urljoin(self.base_url, uri), *args, **kwargs)
+        req = self.session.patch(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
 
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
@@ -177,5 +196,5 @@ class API:
             Validated HTTP response.
         """
         kwargs.setdefault("timeout", self.timeout)
-        req = self.session.delete(urljoin(self.base_url, uri), *args, **kwargs)
+        req = self.session.delete(self._resolve_url(uri), *args, **kwargs)
         return self._check_response(req)
