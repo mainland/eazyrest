@@ -190,7 +190,9 @@ DRF `DateTimeField` defaults to ISO 8601 strings. `eazyrest`'s built-in `datetim
 import datetime
 from typing import Any
 
-from eazyrest import AnalyzedType, BaseType, JSONObject, parse_datetime
+from dateutil.parser import isoparse
+
+from eazyrest import AnalyzedType, BaseType, JSONObject
 
 
 class DRFObject(JSONObject):
@@ -203,7 +205,7 @@ class DRFObject(JSONObject):
     ) -> Any:
         match conversion:
             case BaseType(datetime.datetime) if value is not None:
-                return parse_datetime(value)
+                return isoparse(value)
 
         return super().from_json(value, conversion, field=field)
 
@@ -217,6 +219,8 @@ class DRFObject(JSONObject):
 ```
 
 This also applies inside typed collections such as `list[datetime.datetime]`, because collection conversion recurses into each item.
+
+`isoparse()` comes from `python-dateutil`, which `eazyrest` depends on. It accepts the `Z` suffix that DRF uses for UTC. It returns a naive `datetime` for a string without an offset, which DRF emits when Django's `USE_TZ` setting is `False`.
 
 DRF `DurationField` emits Django's duration format, such as `1 02:03:04`, unless it is configured to emit ISO 8601. `eazyrest` parses both formats into `datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations, which DRF accepts as input. Override `to_json()` if your API requires a different wire format.
 
