@@ -17,6 +17,7 @@ import requests
 from eazyrest import (
     API,
     DoesNotExist,
+    EazyrestError,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -1711,8 +1712,11 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         ],
     )
 
-    with pytest.raises(MultipleObjectsReturned):
+    match = "More than one Todo userId=2 exists"
+    with pytest.raises(MultipleObjectsReturned, match=match):
         Todo.get(userId=2)
+    with pytest.raises(EazyrestError, match=match):
+        Todo.get_or_create(userId=2)
 
 
 def test_repr_shows_primary_key_without_a_request(
@@ -2987,8 +2991,10 @@ def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    with pytest.raises(DoesNotExist):
+    with pytest.raises(DoesNotExist, match="No Todo title='missing' exists"):
         Todo.get(title="missing")
+    with pytest.raises(EazyrestError, match=r"^No Todo exists$"):
+        Todo.get()
 
 
 def test_delete_sends_delete_request(requests_mock: Any) -> None:

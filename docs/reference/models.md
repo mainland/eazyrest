@@ -1,6 +1,10 @@
 # Model Reference
 
 ```{eval-rst}
+.. autoexception:: eazyrest.EazyrestError
+```
+
+```{eval-rst}
 .. autoexception:: eazyrest.DoesNotExist
 ```
 

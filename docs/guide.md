@@ -257,6 +257,8 @@ todo, created = Todo.get_or_create(user=user, title="Write docs")
 
 `get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
+`get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup, as in `No Todo title='a' exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
+
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field names as a sequence. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
