@@ -971,18 +971,25 @@ class JSONObject:
     """Whether ``_json`` holds only fields from ``update_from_json()``."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Merge and check a class's conversions.
+        """Check a class's conversions and the models it inherits fields from.
 
         The class's conversion table is merged and checked now, so that a
         bad entry fails when the class is defined rather than when a field
         first converts.
+
+        A model inherits its fields through a single chain of decorated
+        classes. Fields from two decorated classes, neither of which is a
+        subclass of the other, would need their field sets and primary keys
+        reconciled, so such a class is an error. Undecorated bases, which
+        declare no fields, may be mixed in freely.
 
         Args:
             **kwargs: Keyword arguments for ``object.__init_subclass__()``.
 
         Raises:
             TypeError: If the class's ``conversions`` or a base's has a bad
-                entry, such as one keyed by a model.
+                entry, such as one keyed by a model, or if two decorated
+                ancestors of the class are not subclasses of one another.
         """
         super().__init_subclass__(**kwargs)
 
@@ -999,6 +1006,21 @@ class JSONObject:
                         "conversion cannot replace."
                     )
         _table_of(cls)
+
+        # A decorated class records its fields in its own namespace.
+        decorated = [
+            base for base in cls.__mro__[1:] if "_json_fields" in vars(base)
+        ]
+        # In a single chain, the MRO lists each decorated ancestor before the
+        # decorated ancestors it inherits from.
+        for derived, base in itertools.pairwise(decorated):
+            if not issubclass(derived, base):
+                raise TypeError(
+                    f"{cls.__name__} inherits fields from both "
+                    f"{derived.__name__} and {base.__name__}, which are not "
+                    "subclasses of one another. Declare the shared fields on "
+                    "one decorated base class instead."
+                )
 
     # pylint: disable=redefined-outer-name
     def __init__(

@@ -60,7 +60,12 @@ class User(JSONObject):
 ```
 
 A decorated subclass of a decorated model keeps the fields of its base class
-and adds its own.
+and adds its own. A model inherits fields through a single chain of decorated
+classes. A class whose decorated ancestors are not subclasses of one another,
+such as `class Both(Named, Dated)` for two decorated models, raises `TypeError`
+when it is defined. Put shared fields on one decorated base class instead.
+Undecorated base classes, which declare no fields, can be mixed in freely, for
+example to share hooks such as `collection_items()`.
 
 ## Loading and caching
 
