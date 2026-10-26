@@ -29,6 +29,9 @@ from typing import (
     cast,
     overload,
 )
+from urllib.parse import quote
+
+import requests
 
 from .api import API
 from .dateparse import parse_duration
@@ -233,6 +236,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     if lenient_issubclass(ty, JSONObject):
         assert issubclass(ty, JSONObject)
         return RelatedType(ty)
+
+    if ty_origin is tuple and len(ty_args) == 2 and ty_args[1] is Ellipsis:
+        # tuple[T, ...] is a homogeneous tuple of any length.
+        ty_args = ty_args[:1]
 
     if _is_collection_type(ty_origin) and len(ty_args) == 1:
         return CollectionType(
@@ -548,18 +555,18 @@ class JSONProperty:
 
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
-        elif self.json_field not in obj.json:
-            raise AttributeError
-        else:
-            if self.field in obj._field_cache:
-                return obj._field_cache[self.field]
-            value = obj.from_json(
-                obj.json[self.json_field],
-                self.analyzed_type,
-                field=self.field,
-            )
-            obj._field_cache[self.field] = value
-            return value
+
+        json = obj._json_with_field(self.json_field, self.field)
+        if self.field in obj._field_cache:
+            return obj._field_cache[self.field]
+
+        value = obj.from_json(
+            json[self.json_field],
+            self.analyzed_type,
+            field=self.field,
+        )
+        obj._field_cache[self.field] = value
+        return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -573,16 +580,15 @@ class JSONProperty:
         """
         if self.is_primary_key and obj._json is None:
             obj._pk_value = value
-        elif self.json_field not in obj.json:
-            raise AttributeError
-        else:
-            obj._field_cache.pop(self.field, None)
-            obj._prefetched_related.pop(self.field, None)
-            new_value = obj.to_json(value, self.analyzed_type)
+            return
 
-            # Access obj.json instead of obj._json to force a load first.
-            if obj.json[self.json_field] != new_value:
-                obj._update_json_field(self.json_field, new_value)
+        json = obj._json_with_field(self.json_field, self.field)
+        obj._field_cache.pop(self.field, None)
+        obj._prefetched_related.pop(self.field, None)
+        new_value = obj.to_json(value, self.analyzed_type)
+
+        if json[self.json_field] != new_value:
+            obj._update_json_field(self.json_field, new_value)
 
 
 class JSONObject:
@@ -636,20 +642,26 @@ class JSONObject:
     _json: Any
     """Object's JSON representation."""
 
+    _json_is_partial: bool
+    """Whether ``_json`` holds only fields from ``update_from_json()``."""
+
     # pylint: disable=redefined-outer-name
     def __init__(
         self,
         *,
-        json: Any = None,
+        json: Mapping[str, Any] | None = None,
         api: API | None = None,
-        write_mode: str | None = None,
+        write_mode: WriteMode | None = None,
         **kwargs: Any,
     ) -> None:
         """Create a JSON-backed object.
 
         Args:
-            json: Optional JSON payload for eager initialization.
-            api: Optional API instance overriding the class-level API.
+            json: Optional JSON payload for eager initialization. The object
+                keeps a copy, so later field assignments do not modify the
+                caller's mapping.
+            api: Optional API instance overriding the class-level API. Related
+                objects created from this object use the same override.
             write_mode: Optional write mode override. When omitted, the
                 instance inherits ``api.default_write_mode`` and otherwise
                 falls back to ``"lazy"`` when no API is bound. ``"lazy"``
@@ -667,11 +679,20 @@ class JSONObject:
         self._pending_updates = {}
         self._field_cache = {}
         self._prefetched_related = {}
-        self._json = json
+        # Copy the payload so lazy writes do not modify the caller's mapping,
+        # which for an embedded related object is part of the parent's JSON.
+        self._json = None if json is None else dict(json)
+        self._json_is_partial = False
 
-        # Set all attributes passed in as keyword arguments
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+        # Set the primary key first, because assigning any other field loads
+        # the object from its URL.
+        pk_names = {"pk"}
+        pk_property = getattr(type(self), "_pk", None)
+        if pk_property is not None:
+            pk_names.add(pk_property.field)
+
+        for name in sorted(kwargs, key=lambda name: name not in pk_names):
+            setattr(self, name, kwargs[name])
 
     def _set_prefetched_related(
         self,
@@ -715,13 +736,14 @@ class JSONObject:
             and arg in self._prefetched_related[field]
         ):
             return cast(T, self._prefetched_related[field][arg])
+        # Pass on only an instance override. Without one, the related object
+        # uses the API registered for its own class.
+        api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
-            return ty(json=arg, api=self.api, write_mode=self.write_mode)
+            return ty(json=arg, api=api, write_mode=self.write_mode)
         else:
-            assert issubclass(ty, JSONObject)
-            kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
-            return ty(api=self.api, write_mode=self.write_mode, **kwargs)
+            return ty(pk=arg, api=api, write_mode=self.write_mode)
 
     def from_json(
         self,
@@ -832,11 +854,12 @@ class JSONObject:
 
                 return cls.to_json(value, inner_type)
             case RelatedType():
-                # If value is an int, assume it is a primary key already
-                if isinstance(value, int):
-                    return value
+                # Any value other than a model instance is already a primary
+                # key.
+                if isinstance(value, JSONObject):
+                    return value.pk
 
-                return value.pk
+                return value
             case BaseType(base_type):
                 if base_type is datetime.datetime:
                     return value.timestamp()
@@ -870,7 +893,7 @@ class JSONObject:
         """Return this object's write mode."""
         return self._write_mode
 
-    def set_write_mode(self, mode: str) -> None:
+    def set_write_mode(self, mode: WriteMode) -> None:
         """Set how field assignments are persisted for this object.
 
         Args:
@@ -890,14 +913,34 @@ class JSONObject:
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self.api.patch(self.url, json=payload)
-            self._json = self.object_json(resp.json())
-            self._pending_updates.clear()
-            self._field_cache.clear()
-            self._prefetched_related.clear()
+            self._apply_patch_response(resp, payload)
             return
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
+
+    def _apply_patch_response(
+        self,
+        resp: requests.Response,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Update local state after a successful ``PATCH`` request.
+
+        Args:
+            resp: Response to the ``PATCH`` request.
+            payload: JSON fields sent in the request.
+        """
+        if resp.content:
+            self._json = self.object_json(resp.json())
+            self._json_is_partial = False
+            self._field_cache.clear()
+            self._prefetched_related.clear()
+        else:
+            # A response such as 204 No Content has no representation of the
+            # object, so apply the patch to the local JSON instead.
+            self.json.update(payload)
+
+        self._pending_updates.clear()
 
     def save(self) -> None:
         """Persist all pending lazy field updates.
@@ -906,15 +949,16 @@ class JSONObject:
         in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
         mode, assignments are patched immediately and ``save()`` is a no-op
         unless pending updates remain from an earlier lazy mode.
+
+        When the ``PATCH`` response has a body, it replaces the object's JSON.
+        When it has no body, as with ``204 No Content``, the object keeps its
+        local JSON, which already includes the saved updates.
         """
         if len(self._pending_updates) == 0:
             return
 
         resp = self.api.patch(self.url, json=self._pending_updates)
-        self._json = self.object_json(resp.json())
-        self._pending_updates.clear()
-        self._field_cache.clear()
-        self._prefetched_related.clear()
+        self._apply_patch_response(resp, self._pending_updates)
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
         """Merge server-provided JSON into this object without a refetch.
@@ -923,6 +967,10 @@ class JSONObject:
         carry a full or partial object payload. Incoming fields are treated as
         authoritative server state, so any pending local updates for the same
         JSON fields are discarded.
+
+        If this object has not been loaded, the payload becomes its JSON
+        without a request. Reading a field that the payload lacks then loads
+        the full object.
 
         Args:
             json: Full or partial JSON object for this instance.
@@ -941,6 +989,7 @@ class JSONObject:
 
         if self._json is None:
             self._json = {self._pk_json_field: existing_pk}
+            self._json_is_partial = True
 
         self._json.update(payload)
 
@@ -966,6 +1015,7 @@ class JSONObject:
         self._prefetched_related.clear()
         # Clear JSON
         self._json = None
+        self._json_is_partial = False
 
     @classmethod
     def register_api(cls, api: API) -> None:
@@ -1002,10 +1052,13 @@ class JSONObject:
     def url(self) -> str:
         """Return the resource URL for this object.
 
+        The primary key is percent-encoded, so it always forms a single path
+        segment.
+
         Returns:
             Relative URL for this object, always ending with ``/``.
         """
-        url = f"{self.class_url.rstrip('/')}/{self.pk}"
+        url = f"{self.class_url.rstrip('/')}/{quote(str(self.pk), safe='')}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
@@ -1026,20 +1079,83 @@ class JSONObject:
     def json(self) -> Any:
         """Return and cache this object's JSON representation.
 
+        After ``update_from_json()`` on an object that was not loaded, this is
+        the partial payload received so far.
+
         Returns:
             JSON payload representing this object.
-
-        Raises:
-            DoesNotExist: If the API returns an empty list for this object.
         """
         if self._json is None:
-            self._json = self.object_json(self.api.get(self.url).json())
-            self._field_cache.clear()
+            self._load_json()
 
-            # Have have JSON now, so delete _pk_value
+            # We have JSON now, so delete _pk_value
             del self._pk_value
 
         return self._json
+
+    def _load_json(self) -> None:
+        """Load this object's JSON from the API, keeping pending updates."""
+        json = dict(self.object_json(self.api.get(self.url).json()))
+        # Unsaved lazy updates still take precedence over server state.
+        json.update(self._pending_updates)
+        self._json = json
+        self._json_is_partial = False
+        self._field_cache.clear()
+
+    def _json_with_field(self, json_field: str, field: str) -> Any:
+        """Return this object's JSON after checking that it has a field.
+
+        Args:
+            json_field: JSON key to look for.
+            field: Python attribute name used in the error message.
+
+        Returns:
+            JSON payload containing ``json_field``.
+
+        Raises:
+            AttributeError: If the loaded JSON does not contain ``json_field``.
+        """
+        json = self.json
+        if json_field not in json and self._json_is_partial:
+            # The partial payload from update_from_json() does not say whether
+            # the server has this field, so load the full object.
+            self._load_json()
+            json = self.json
+
+        if json_field not in json:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{field}': "
+                f"JSON field '{json_field}' is missing"
+            )
+
+        return json
+
+    @classmethod
+    def _encode_fields(cls, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """Encode field values as JSON object members.
+
+        Args:
+            fields: Values keyed by Python attribute name for JSON-backed
+                fields, or by JSON key for other values.
+
+        Returns:
+            JSON values keyed by JSON key. JSON-backed fields are renamed by
+            ``field_map`` and converted by ``to_json()``. Other values are
+            unchanged.
+        """
+        payload: dict[str, Any] = {}
+
+        for field, value in fields.items():
+            descriptor = getattr(cls, field, None)
+            if isinstance(descriptor, JSONProperty):
+                payload[descriptor.json_field] = cls.to_json(
+                    value,
+                    descriptor.analyzed_type,
+                )
+            else:
+                payload[field] = value
+
+        return payload
 
     @classmethod
     def create(cls: type[Self], **kwargs: Any) -> Self:
@@ -1052,19 +1168,7 @@ class JSONObject:
         Returns:
             Newly created object instance.
         """
-        payload: dict[str, Any] = {}
-
-        for field, value in kwargs.items():
-            descriptor = getattr(cls, field, None)
-            if isinstance(descriptor, JSONProperty):
-                payload[descriptor.json_field] = cls.to_json(
-                    value,
-                    descriptor.analyzed_type,
-                )
-            else:
-                payload[field] = value
-
-        resp = cls.api.post(cls.class_url, json=payload)
+        resp = cls.api.post(cls.class_url, json=cls._encode_fields(kwargs))
         return cls(json=cls.object_json(resp.json()))
 
     @classmethod
@@ -1248,8 +1352,9 @@ class JSONObject:
             if len(pks) == 0:
                 continue
 
+            # The related model loads through its own registered API.
             prefetched_related[field] = (
-                related_type.model_type.bulk_get_by_pks(pks, api=cls.api)
+                related_type.model_type.bulk_get_by_pks(pks)
             )
 
         return prefetched_related
@@ -1294,8 +1399,11 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         **kwargs: Any,
-    ) -> Iterable[Self]:
+    ) -> Iterator[Self]:
         """Query objects matching request parameters.
+
+        The request is sent when ``filter()`` is called. Objects are created as
+        the returned iterator advances.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -1304,11 +1412,20 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Iterable of objects built from the response payload.
+            Iterator over objects built from the response payload.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
+        prefetch_fields = _normalize_prefetch(prefetch)
+        # Check the fields before the request, so a misspelled field fails even
+        # when the query matches nothing.
+        for field in prefetch_fields:
+            cls._prefetch_info(field)
+
         resp = cls.api.get(cls.class_url, params=kwargs)
         items = cls.collection_items(resp.json())
-        prefetch_fields = _normalize_prefetch(prefetch)
 
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
@@ -1321,7 +1438,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
-    ) -> Iterable[Self]:
+    ) -> Iterator[Self]:
         """Return all objects for this resource type.
 
         Args:
@@ -1330,7 +1447,11 @@ class JSONObject:
                 identity across parent objects within the same batch.
 
         Returns:
-            Iterable of all objects.
+            Iterator over all objects.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
         return cls.filter(prefetch=prefetch)
 
@@ -1355,6 +1476,8 @@ class JSONObject:
         Raises:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field.
         """
         results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
@@ -1375,6 +1498,12 @@ class JSONObject:
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
+        The lookup query and the creation payload encode ``kwargs`` the same
+        way as ``create()``. JSON-backed fields are renamed by ``field_map``
+        and converted to JSON values, so ``user=User(id=2)`` is sent as
+        ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
+        unchanged.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             **kwargs: Fields used for lookup and included in creation.
@@ -1386,7 +1515,7 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
         """
-        results = iter(cls.filter(**kwargs))
+        results = cls.filter(**cls._encode_fields(kwargs))
         first = next(results, None)
         if first is not None:
             second = next(results, None)
