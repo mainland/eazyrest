@@ -336,6 +336,16 @@ def _json_equal(left: Any, right: Any) -> bool:
     return left == right
 
 
+class _OwnedJSON(dict[str, Any]):
+    """JSON object that the library owns, so a constructor need not copy it.
+
+    A mapping passed to ``JSONObject(json=...)`` by a caller is copied
+    deeply, because the caller may change it later. Internal
+    construction from a response or a parent's JSON wraps the mapping in
+    this class instead.
+    """
+
+
 _UNCHANGEABLE_VALUES = (
     str,
     bytes,
@@ -1030,8 +1040,9 @@ class JSONObject:
 
         Args:
             json: Optional JSON payload for eager initialization. The object
-                keeps a copy, so later field assignments do not modify the
-                caller's mapping.
+                keeps a deep copy, so changing the mapping or its nested
+                values later does not change the object, and the object's
+                changes do not reach the mapping.
             api: Optional API instance overriding the class-level API. Related
                 objects created from this object use the same override.
             write_mode: Optional write mode override. When omitted, the
@@ -1056,9 +1067,17 @@ class JSONObject:
         self._field_cache = {}
         self._field_snapshots = {}
         self._prefetched_related = {}
-        # Copy the payload so lazy writes do not modify the caller's mapping,
-        # which for an embedded related object is part of the parent's JSON.
-        self._json = None if json is None else dict(json)
+        if isinstance(json, _OwnedJSON):
+            # The library owns this JSON, such as an item of a collection
+            # response or an embedded object in a parent's JSON. It never
+            # changes nested values in place, so a copy of the top level,
+            # which writes replace, keeps the object from modifying it.
+            self._json = dict(json)
+        elif json is not None:
+            # The caller may change its mapping or the values nested in it.
+            self._json = copy.deepcopy(dict(json))
+        else:
+            self._json = None
         self._json_is_partial = False
 
         # Set the primary key first, because assigning any other field loads
@@ -1106,7 +1125,9 @@ class JSONObject:
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
-            return ty(json=arg, api=api, write_mode=self.write_mode)
+            return ty(
+                json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
+            )
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
         if field is not None and field in self._prefetched_related:
@@ -2109,7 +2130,7 @@ class JSONObject:
                 return
 
             prefetched_related = cls._apply_prefetch(batch_items, fields)
-            parents = [cls(json=item) for item in batch_items]
+            parents = [cls(json=_OwnedJSON(item)) for item in batch_items]
 
             # Related objects inherit their parent's write mode. A prefetched
             # object is shared by every parent in the batch, so set its mode
@@ -2175,7 +2196,7 @@ class JSONObject:
 
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
-            return (cls(json=item) for item in items)
+            return (cls(json=_OwnedJSON(item)) for item in items)
 
         return cls._prefetched_filter(items, prefetch_fields)
 

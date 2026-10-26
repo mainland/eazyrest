@@ -2870,6 +2870,23 @@ def test_json_payload_is_copied() -> None:
     assert user.name == "Grace"
 
 
+def test_nested_json_payload_is_copied(requests_mock: Any) -> None:
+    """A later change to a nested payload value does not reach the object."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    settings = {"theme": "light"}
+    payload = {"id": 1, "settings": settings, "contacts": []}
+    profile = Profile(json=payload)
+
+    settings["theme"] = "dark"
+    assert profile.settings == {"theme": "light"}
+    profile.settings = settings
+    profile.save()
+
+    assert patch.last_request.json() == {"settings": {"theme": "dark"}}
+
+
 def test_embedded_related_object_does_not_share_parent_json() -> None:
     """Unsaved writes to an embedded object do not change its parent."""
     todo = Todo(
