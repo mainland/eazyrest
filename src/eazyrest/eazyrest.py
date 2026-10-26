@@ -361,6 +361,34 @@ def _json_equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
+class _OwnedJSON(dict[str, Any]):
+    """JSON object that the library owns, so a constructor need not copy it.
+
+    A mapping passed to ``JSONObject(json=...)`` by a caller is copied deeply,
+    because the caller may change it later. Internal construction from a
+    response or a parent's JSON wraps the mapping in this class instead.
+    """
+
+
+_UNCHANGEABLE_VALUES = (
+    str,
+    bytes,
+    int,
+    float,
+    type(None),
+    enum.Enum,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    uuid.UUID,
+    frozenset,
+)
+"""Types of field values that cannot be changed in place.
+
+``bool`` is a subclass of ``int`` and ``datetime.datetime`` of
+``datetime.date``.
+"""
+
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
 
@@ -423,7 +451,12 @@ T = TypeVar("T", bound="JSONObject")
 
 
 class RelatedCollection(Iterable[T]):
-    """Lazy iterable view over related objects backed by JSON values."""
+    """Lazy, single-pass iterable of related objects backed by JSON values.
+
+    Each related object is created when iteration reaches it. The collection
+    can be iterated only once, so each related object is created only once, and
+    changes made to it while iterating are not lost to a second set of objects.
+    """
 
     _owner: JSONObject
     """Object that owns the related field."""
@@ -436,6 +469,9 @@ class RelatedCollection(Iterable[T]):
 
     _field: str | None
     """Owning field name used to resolve prefetched related objects."""
+
+    _iterated: bool
+    """Whether ``__iter__()`` has been called."""
 
     def __init__(
         self,
@@ -458,9 +494,34 @@ class RelatedCollection(Iterable[T]):
         self._values = tuple(values)
         self._related_type = related_type
         self._field = field
+        self._iterated = False
 
     def __iter__(self) -> Iterator[T]:
-        """Yield related objects lazily as iteration advances.
+        """Return an iterator that creates related objects as it advances.
+
+        Returns:
+            Iterator over the related objects.
+
+        Raises:
+            RuntimeError: If the collection has already been iterated.
+        """
+        if self._iterated:
+            name = type(self._owner).__name__
+            if self._field is not None:
+                name = f"{name}.{self._field}"
+
+            raise RuntimeError(
+                f"{name} is a lazy related collection, which can be iterated "
+                "only once. Call list() on it to iterate more than once, or "
+                "annotate the field as list[...] or tuple[..., ...] to keep "
+                "its related objects."
+            )
+
+        self._iterated = True
+        return self._related_objects()
+
+    def _related_objects(self) -> Iterator[T]:
+        """Yield the related objects without marking the collection used.
 
         Yields:
             Each related object, created from the next raw JSON value.
@@ -843,7 +904,8 @@ class JSONProperty:
             return self
 
         if self.is_primary_key and obj._json is None:
-            return obj._pk_value
+            # An object created without a key has none until it loads.
+            return getattr(obj, "_pk_value", None)
 
         json = obj._json_with_field(self.json_field, self.field)
         if self.field in obj._field_cache:
@@ -855,6 +917,18 @@ class JSONProperty:
             field=self.field,
         )
         obj._field_cache[self.field] = value
+        # A related object saves its own changes.
+        if not isinstance(
+            value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
+        ):
+            # The caller can change this value in place. Record its encoding,
+            # so that save() can detect the change. Encoding the value rather
+            # than copying the JSON keeps a different spelling of the same
+            # value, such as "Z" for "+00:00", from counting as a change.
+            obj._field_snapshots[self.field] = _copy_json(
+                obj.to_json(value, self.analyzed_type)
+            )
+
         return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
@@ -909,6 +983,9 @@ class JSONProperty:
             obj._field_cache[self.field] = value
         else:
             obj._field_cache.pop(self.field, None)
+
+        # An assignment replaces any change made in place to the old value.
+        obj._field_snapshots.pop(self.field, None)
 
 
 class JSONObject:
@@ -966,6 +1043,13 @@ class JSONObject:
     _field_cache: dict[str, Any]
     """Converted field values cached by Python attribute name."""
 
+    _field_snapshots: dict[str, Any]
+    """Encodings of cached mutable values when they were read.
+
+    A cached value whose encoding differs from its snapshot was changed in
+    place, and ``save()`` sends the change.
+    """
+
     _prefetched_related: PrefetchMap
     """Prefetched related objects keyed by field name and primary key."""
 
@@ -1021,8 +1105,9 @@ class JSONObject:
 
         Args:
             json: Optional JSON payload for eager initialization. The object
-                keeps a copy, so later field assignments do not modify the
-                caller's mapping.
+                keeps a deep copy, so changing the mapping or its nested values
+                later does not change the object, and the object's changes do
+                not reach the mapping.
             api: Optional API instance overriding the class-level API. Related
                 objects created from this object use the same override.
             write_mode: Optional write mode override. When omitted, the
@@ -1030,7 +1115,11 @@ class JSONObject:
                 falls back to ``"lazy"`` when no API is bound. ``"lazy"``
                 batches assignments until ``save()``. ``"eager"`` persists each
                 assignment immediately.
-            **kwargs: Field values, typically including the primary key.
+            **kwargs: Field values, typically including the primary key. The
+                primary key is set first. Every other field value is an
+                assignment, as after construction: it loads the object if
+                ``json`` is omitted, and in ``"eager"`` mode it sends a
+                ``PATCH``.
         """
         self._api_override = api
         if write_mode is None:
@@ -1041,10 +1130,19 @@ class JSONObject:
         self._write_mode = validate_write_mode(write_mode)
         self._pending_updates = {}
         self._field_cache = {}
+        self._field_snapshots = {}
         self._prefetched_related = {}
-        # Copy the payload so lazy writes do not modify the caller's mapping,
-        # which for an embedded related object is part of the parent's JSON.
-        self._json = None if json is None else dict(json)
+        if isinstance(json, _OwnedJSON):
+            # The library owns this JSON, such as an item of a collection
+            # response or an embedded object in a parent's JSON. It never
+            # changes nested values in place, so a copy of the top level, which
+            # writes replace, keeps the object from modifying it.
+            self._json = dict(json)
+        elif json is not None:
+            # The caller may change its mapping or the values nested in it.
+            self._json = copy.deepcopy(dict(json))
+        else:
+            self._json = None
         self._json_is_partial = False
 
         # Set the primary key first, because assigning any other field loads
@@ -1097,7 +1195,9 @@ class JSONObject:
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
-            return ty(json=arg, api=api, write_mode=self.write_mode)
+            return ty(
+                json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
+            )
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
         if field is not None and field in self._prefetched_related:
@@ -1261,7 +1361,11 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
-                if not _is_collection_value(value):
+                if isinstance(value, RelatedCollection):
+                    # Encoding the collection must not use up its single
+                    # traversal.
+                    value = value._related_objects()
+                elif not _is_collection_value(value):
                     raise TypeError(
                         "Collection field values must be collections, "
                         f"got {type(value).__name__}"
@@ -1304,12 +1408,22 @@ class JSONObject:
             value: JSON-serializable field value.
         """
         if self.write_mode == "eager":
+            self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self.api.patch(self.url, json=payload)
             self._apply_patch_response(resp, payload)
             return
 
+        self._queue_update(json_field, value)
+
+    def _queue_update(self, json_field: str, value: Any) -> None:
+        """Apply a JSON field update locally and queue it for ``save()``.
+
+        Args:
+            json_field: Name of the backing JSON field.
+            value: JSON-serializable field value.
+        """
         if (
             json_field == getattr(type(self), "_pk_json_field", None)
             and json_field not in self._pending_updates
@@ -1320,6 +1434,17 @@ class JSONObject:
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
+
+    def _queue_in_place_changes(self) -> None:
+        """Queue updates for cached values that were changed in place."""
+        for field, snapshot in self._field_snapshots.items():
+            descriptor = getattr(type(self), field)
+            encoded = self.to_json(
+                self._field_cache[field], descriptor.analyzed_type
+            )
+            if not _json_equal(encoded, snapshot):
+                self._queue_update(descriptor.json_field, _copy_json(encoded))
+                self._field_snapshots[field] = _copy_json(encoded)
 
     def _apply_patch_response(
         self,
@@ -1359,6 +1484,7 @@ class JSONObject:
                 json.get(json_field, _MISSING),
             ):
                 self._field_cache.pop(field, None)
+                self._field_snapshots.pop(field, None)
                 self._prefetched_related.pop(field, None)
 
     def merge_response(
@@ -1411,6 +1537,11 @@ class JSONObject:
         mode, assignments are patched immediately and ``save()`` is a no-op
         unless pending updates remain from an earlier lazy mode.
 
+        A value read from a field and then changed in place, such as a list
+        appended to, is saved too, in either mode. Such a change is detected
+        only when ``save()`` runs, or when an eager assignment sends a
+        ``PATCH``, so ``json`` does not show it before then.
+
         After a successful ``PATCH``, ``merge_response()`` determines the
         object's JSON. By default, the object keeps its JSON, which already
         includes the saved updates, and the object that the response body
@@ -1420,6 +1551,7 @@ class JSONObject:
             TypeError: If the response body does not hold a JSON object. The
                 server may have applied the updates, but they remain pending.
         """
+        self._queue_in_place_changes()
         if len(self._pending_updates) == 0:
             return
 
@@ -1439,12 +1571,14 @@ class JSONObject:
         the full object.
 
         Args:
-            json: Full or partial JSON object for this instance.
+            json: Full or partial JSON object for this instance. The object
+                keeps a deep copy, so changing the mapping or its nested values
+                later does not change the object.
 
         Raises:
             ValueError: If the payload refers to a different primary key.
         """
-        payload = dict(json)
+        payload = copy.deepcopy(dict(json))
 
         existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
@@ -1472,6 +1606,7 @@ class JSONObject:
                 continue
 
             self._field_cache.pop(field, None)
+            self._field_snapshots.pop(field, None)
             self._prefetched_related.pop(field, None)
             self._pending_updates.pop(descriptor.json_field, None)
 
@@ -1482,6 +1617,7 @@ class JSONObject:
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
+        self._field_snapshots.clear()
         self._prefetched_related.clear()
         # Clear JSON
         self._json = None
@@ -1618,6 +1754,8 @@ class JSONObject:
         Raises:
             TypeError: If the response does not hold a JSON object.
         """
+        # Reloading drops cached values, so queue their in-place changes first.
+        self._queue_in_place_changes()
         json = self._object_from_response(self.api.get(self.url).json())
 
         # Some APIs leave the primary key out of a detail response, because the
@@ -1637,6 +1775,7 @@ class JSONObject:
         self._json = json
         self._json_is_partial = False
         self._field_cache.clear()
+        self._field_snapshots.clear()
 
     def _json_with_field(self, json_field: str, field: str) -> Any:
         """Return this object's JSON after checking that it has a field.
@@ -2099,7 +2238,7 @@ class JSONObject:
                 return
 
             prefetched_related = cls._apply_prefetch(batch_items, fields)
-            parents = [cls(json=item) for item in batch_items]
+            parents = [cls(json=_OwnedJSON(item)) for item in batch_items]
 
             # Related objects inherit their parent's write mode. A prefetched
             # object is shared by every parent in the batch, so set its mode
@@ -2165,7 +2304,7 @@ class JSONObject:
 
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
-            return (cls(json=item) for item in items)
+            return (cls(json=_OwnedJSON(item)) for item in items)
 
         return cls._prefetched_filter(items, prefetch_fields)
 

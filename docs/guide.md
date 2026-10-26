@@ -56,7 +56,9 @@ lazy_user = User(id=1)
 loaded_user = User(json={"id": 1, "name": "Ada"})
 ```
 
-An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field other than the primary key performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. Reading the primary key returns the value given to the constructor without a request, converted as if it were read from JSON. A `uuid.UUID` key given as a string therefore reads as a `UUID`, before and after the object loads, and the constructor raises `ValueError` for a key that is not a UUID. An object constructed from `json=` starts with that payload already loaded.
+An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field other than the primary key performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. Reading the primary key returns the value given to the constructor without a request, converted as if it were read from JSON. A `uuid.UUID` key given as a string therefore reads as a `UUID`, before and after the object loads, and the constructor raises `ValueError` for a key that is not a UUID. An object constructed from `json=` starts with that payload already loaded. It keeps a deep copy of the payload, as `update_from_json()` does, so changing the payload or its nested values afterward does not change the object.
+
+Other keyword arguments to the constructor are assignments, made after the primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues a change to its name, and in eager mode it also sends a `PATCH`. Use `create()` to create a new object. An object constructed without a primary key has `pk` `None` until it loads, and loading it raises `ValueError` because it has no URL.
 
 Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
 
@@ -131,16 +133,20 @@ class Timeline(JSONObject):
 
 In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
+An `Iterable` field of related objects, such as `members: Iterable[User]`, is lazy. Reading it creates no related objects, and each is created when iteration reaches it. The field can be iterated only once, so that each related object, and any change you make to it while iterating, exists only once. A second iteration raises `RuntimeError`. To iterate more than once, call `list()` on the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create the related objects when the field is first read and keep them.
+
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item. The same holds for values assigned to collection fields or passed to `create()`, which raise `TypeError` unless they are collections. In `filter()` and `get()`, a single value for a collection field, such as `Team.filter(members=user)`, is sent as one item and matches the objects whose collection holds it.
 
-Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Changing that copy in place does not change the object, so assign the changed value to the field to update it:
+Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value.
+
+A field's value is cached when it is first read, so later reads return the same value. If you change that value in place, `save()` sends the change, as it does for an assignment:
 
 ```python
-settings = profile.settings
-settings["theme"] = "dark"
-profile.settings = settings
+profile.settings["theme"] = "dark"
 profile.save()
 ```
+
+The object detects such a change by comparing the value's encoding with its encoding when it was read. It does so only when `save()` runs, when an eager assignment sends a `PATCH`, or before the object loads missing fields, so `json` does not show the change before then. In eager mode, a change made in place is therefore sent by the next `save()` or eager assignment, not immediately. Assigning the field, `refresh()`, and an `update_from_json()` payload that holds the field each discard a change made in place that has not been sent.
 
 ## Custom field conversion
 
