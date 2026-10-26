@@ -50,6 +50,11 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.PydanticType
+   :members:
+```
+
+```{eval-rst}
 .. autoclass:: eazyrest.JSONObject
    :members:
    :show-inheritance:
