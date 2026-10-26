@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import enum
 from collections.abc import Iterable
 from typing import Any
 
@@ -150,6 +151,53 @@ class Event(ModelBase):
     starts_at: datetime.datetime
 
 
+@json_object
+class Timeline(ModelBase):
+    """Model with a list of datetimes."""
+
+    class_url = "/timelines/"
+
+    id: int
+    starts_at: list[datetime.datetime]
+
+
+class IssueStatus(str, enum.Enum):
+    """Status values for enum conversion tests."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+@json_object
+class Issue(ModelBase):
+    """Model with an enum field."""
+
+    class_url = "/issues/"
+
+    id: int
+    status: IssueStatus
+
+
+@json_object
+class MaybeIssue(ModelBase):
+    """Model with an optional enum field."""
+
+    class_url = "/maybe-issues/"
+
+    id: int
+    status: IssueStatus | None
+
+
+@json_object
+class IssueSnapshot(ModelBase):
+    """Model with a tuple of enums."""
+
+    class_url = "/issue-snapshots/"
+
+    id: int
+    statuses: tuple[IssueStatus]
+
+
 class NoBulkUser(ModelBase):
     """Related model without bulk prefetch support."""
 
@@ -289,6 +337,79 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert requests_mock.call_count == 1
 
 
+def test_create_encodes_json_backed_fields(requests_mock: Any) -> None:
+    """``create()`` should map and encode declared JSON-backed fields."""
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo.create(
+        user=User(id=2),
+        title="a",
+        completed=False,
+        metadata={"source": "test"},
+    )
+
+    assert todo.id == 1
+    assert post.last_request.json() == {
+        "userId": 2,
+        "title": "a",
+        "completed": False,
+        "metadata": {"source": "test"},
+    }
+
+
+def test_create_encodes_datetime_fields(requests_mock: Any) -> None:
+    """``create()`` should use typed JSON encoding for scalar fields."""
+    starts_at = datetime.datetime(
+        2024,
+        4,
+        1,
+        12,
+        0,
+        tzinfo=datetime.timezone.utc,
+    )
+    post = requests_mock.post(
+        "https://example.com/v1/events/",
+        json={"id": 1, "starts_at": 1711972800.0},
+    )
+
+    event = Event.create(starts_at=starts_at)
+
+    assert event.id == 1
+    assert post.last_request.json() == {"starts_at": 1711972800.0}
+
+
+def test_create_encodes_enum_fields(requests_mock: Any) -> None:
+    """``create()`` should encode enum fields using their JSON values."""
+    post = requests_mock.post(
+        "https://example.com/v1/issues/",
+        json={"id": 1, "status": "open"},
+    )
+
+    issue = Issue.create(status=IssueStatus.OPEN)
+
+    assert issue.status is IssueStatus.OPEN
+    assert post.last_request.json() == {"status": "open"}
+
+
+def test_create_uses_object_json_hook_for_response(
+    requests_mock: Any,
+) -> None:
+    """``create()`` should unwrap custom single-object response envelopes."""
+    post = requests_mock.post(
+        "https://example.com/v1/search/",
+        json={"result": {"id": 1, "name": "Ada"}},
+    )
+
+    result = SearchResult.create(name="Ada")
+
+    assert result.id == 1
+    assert result.name == "Ada"
+    assert post.last_request.json() == {"name": "Ada"}
+
+
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
@@ -367,6 +488,33 @@ def test_related_set_is_materialized(
     assert requests_mock.call_count == 3
 
 
+@pytest.mark.parametrize(
+    ("payload", "value_type"),
+    [
+        ("23", "str"),
+        ({"id": 2}, "dict"),
+    ],
+)
+def test_invalid_related_collection_payload_raises_type_error(
+    requests_mock: Any,
+    payload: Any,
+    value_type: str,
+) -> None:
+    """Malformed related collections should fail fast."""
+    requests_mock.get(
+        "https://example.com/v1/teams/1/",
+        json={"id": 1, "members": payload},
+    )
+
+    team = Team(id=1)
+
+    with pytest.raises(
+        TypeError,
+        match=rf"Related collection values must be iterable, got {value_type}",
+    ):
+        _ = team.members
+
+
 def test_optional_pep604_related_object_is_converted(
     requests_mock: Any,
 ) -> None:
@@ -428,6 +576,117 @@ def test_repeated_datetime_access_returns_cached_instance(
     assert first == datetime.datetime(
         2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc
     )
+
+
+def test_datetime_list_field_decodes_nested_items() -> None:
+    """Collection items should use nested datetime conversion."""
+    timeline = Timeline(
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]}
+    )
+
+    assert timeline.starts_at == [
+        datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2024, 4, 1, 13, 0, tzinfo=datetime.timezone.utc),
+    ]
+
+
+def test_iterable_datetime_field_is_materialized_when_not_related() -> None:
+    """Non-related iterable collections should not stay lazy."""
+    timeline = Timeline(
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]}
+    )
+
+    assert isinstance(timeline.starts_at, list)
+
+
+def test_enum_field_decodes_from_json() -> None:
+    """Enum fields should decode JSON values using the declared type."""
+    issue = Issue(json={"id": 1, "status": "open"})
+
+    assert issue.status is IssueStatus.OPEN
+
+
+def test_optional_enum_field_decodes_from_json() -> None:
+    """Optional enum fields should decode values and preserve ``None``."""
+    with_status = MaybeIssue(json={"id": 1, "status": "closed"})
+    without_status = MaybeIssue(json={"id": 2, "status": None})
+
+    assert with_status.status is IssueStatus.CLOSED
+    assert without_status.status is None
+
+
+def test_enum_tuple_field_decodes_nested_items() -> None:
+    """Collection items should use nested enum conversion."""
+    snapshot = IssueSnapshot(json={"id": 1, "statuses": ["open", "closed"]})
+
+    assert snapshot.statuses == (IssueStatus.OPEN, IssueStatus.CLOSED)
+
+
+def test_assigning_enum_field_encodes_value(requests_mock: Any) -> None:
+    """Enum assignment should write the enum value to JSON."""
+    requests_mock.get(
+        "https://example.com/v1/issues/1/",
+        json={"id": 1, "status": "open"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/issues/1/",
+        json={"id": 1, "status": "closed"},
+    )
+
+    issue = Issue(id=1, write_mode="eager")
+    issue.status = IssueStatus.CLOSED
+
+    assert patch.called
+    assert patch.last_request.json() == {"status": "closed"}
+
+
+def test_create_encodes_nested_datetime_and_enum_collections(
+    requests_mock: Any,
+) -> None:
+    """``create()`` should recursively encode nested collection items."""
+    starts_at = [
+        datetime.datetime(
+            2024,
+            4,
+            1,
+            12,
+            0,
+            tzinfo=datetime.timezone.utc,
+        ),
+        datetime.datetime(
+            2024,
+            4,
+            1,
+            13,
+            0,
+            tzinfo=datetime.timezone.utc,
+        ),
+    ]
+    timeline_post = requests_mock.post(
+        "https://example.com/v1/timelines/",
+        json={"id": 1, "starts_at": [1711972800.0, 1711976400.0]},
+    )
+    snapshot_post = requests_mock.post(
+        "https://example.com/v1/issue-snapshots/",
+        json={"id": 1, "statuses": ["open", "closed"]},
+    )
+
+    timeline = Timeline.create(starts_at=starts_at)
+    snapshot = IssueSnapshot.create(
+        statuses=(IssueStatus.OPEN, IssueStatus.CLOSED)
+    )
+
+    assert timeline.starts_at == starts_at
+    assert timeline_post.last_request.json() == {
+        "starts_at": [1711972800.0, 1711976400.0]
+    }
+    assert snapshot.statuses == (
+        IssueStatus.OPEN,
+        IssueStatus.CLOSED,
+    )
+    assert snapshot_post.last_request.json() == {
+        "statuses": ["open", "closed"]
+    }
 
 
 def test_assigning_field_invalidates_cached_related_value(
