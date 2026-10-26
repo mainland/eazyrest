@@ -78,7 +78,9 @@ reload object state from the API.
 ## API client
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to
-`base_url`, applies a default timeout, and raises for HTTP error responses.
+`base_url`, applies a default timeout, and raises for HTTP error responses. To
+customize error handling for a particular API, override `raise_for_response()`
+in an `API` subclass.
 
 Use the client as a context manager to ensure the session is closed:
 
