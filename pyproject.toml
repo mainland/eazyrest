@@ -34,12 +34,15 @@ dependencies = [
     "tzlocal"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+  "mypy==2.4.1",
+  "pre-commit==4.6.0",
+  "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
-  "types-urllib3"
+  "types-urllib3",
 ]
 
 [tool.setuptools]
@@ -53,3 +56,56 @@ eazyrest = ["py.typed"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+extend-select = [
+  "UP",   # pyupgrade
+  "D",    # pydocstyle
+  "E501", # line too long
+  "E",    # pycodestyle
+  "F",    # Pyflakes
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "I",    # isort
+  "C4",   # flake8-comprehensions
+  "PT",   # flake8-pytest-style
+  "RUF",  # Ruff-specific rules
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+files = ["src"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+  "ignore-without-code",
+  "redundant-expr",
+  "truthy-bool",
+]
+pretty = true
+
+# isodate and pytimeparse2 ship no type information.
+[[tool.mypy.overrides]]
+module = ["isodate", "pytimeparse2"]
+ignore_missing_imports = true
+
+[tool.rumdl]
+flavor = "myst"
+
+# Markdown prose is filled to 79 columns, the Python source's line length,
+# and `rumdl fmt` refills it. Code blocks are not checked, and a line may run
+# long only by a code span, which is never broken.
+[tool.rumdl.MD013]
+line-length = 79
+code-blocks = false
+code-spans = false
+reflow = true
+reflow-mode = "normalize"

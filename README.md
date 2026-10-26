@@ -1,6 +1,8 @@
 # eazyrest
 
-`eazyrest` is a small library for consuming REST APIs with less boilerplate. It combines a session-based API client with a lightweight, type-directed JSON object mapping layer that models REST resources as typed Python classes.
+`eazyrest` is a small library for consuming REST APIs with less boilerplate. It
+combines a session-based API client with a lightweight, type-directed JSON
+object mapping layer that models REST resources as typed Python classes.
 
 ## Installation
 
@@ -12,7 +14,8 @@ Requires Python 3.10+.
 
 ## Example
 
-The example uses the public REST demo API available at [https://jsonplaceholder.typicode.com/](https://jsonplaceholder.typicode.com/).
+The example uses the public REST demo API available at
+[https://jsonplaceholder.typicode.com/](https://jsonplaceholder.typicode.com/).
 
 ```python
 from eazyrest import API, JSONObject, json_object
@@ -75,12 +78,41 @@ MIT. See `LICENSE`.
 
 ## Development
 
+Create the development environment in `.venv` with
+[uv](https://docs.astral.sh/uv/). It installs the project in editable mode with
+the `dev` dependency group, at the versions that `uv.lock` pins:
+
+```bash
+uv sync
+```
+
+Without uv, create the environment with pip 25.1 or later, which does not read
+the lock:
+
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -U build twine
-python -m build
-python -m twine check dist/*
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -e . --group dev
+```
+
+Install the Git pre-commit hooks, which run ruff, mypy, and the other checks on
+every commit:
+
+```bash
+.venv/bin/python -m pre_commit install
+```
+
+You can run the hooks manually across the whole tree with:
+
+```bash
+.venv/bin/python -m pre_commit run --all-files
+```
+
+To build and validate a distribution:
+
+```bash
+uv build
+uvx twine check dist/eazyrest-*
 ```
 
 ### Publishing
@@ -88,11 +120,11 @@ python -m twine check dist/*
 To publish to PyPI:
 
 ```bash
-python -m twine upload dist/*
+uvx twine upload dist/*
 ```
 
 To publish to Test PyPI:
 
 ```bash
-python -m twine upload --repository testpypi dist/*
+uvx twine upload --repository testpypi dist/*
 ```
