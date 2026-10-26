@@ -10,6 +10,12 @@ Typed fields are converted as objects are read and written, including nested ite
 pip install eazyrest
 ```
 
+To parse natural-language dates with `parse_datetime(..., use_dateparser=True)`, install the `dateparser` extra:
+
+```bash
+pip install "eazyrest[dateparser]"
+```
+
 Requires Python 3.10+.
 
 ## Documentation
