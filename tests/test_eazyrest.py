@@ -262,6 +262,13 @@ class NoBulkUser(ModelBase):
     name: str
 
 
+@json_object
+class Admin(User):
+    """Decorated subclass of a decorated model."""
+
+    role: str
+
+
 @json_object(field_map={"user": "userId"})
 class NoBulkTodo(ModelBase):
     """Todo model whose relation does not opt into bulk prefetch."""
@@ -1214,3 +1221,68 @@ def test_update_from_json_rejects_mismatched_primary_key() -> None:
 
     with pytest.raises(ValueError, match="primary key"):
         todo.update_from_json({"id": 2, "title": "new"})
+
+
+def test_reserved_field_name_is_rejected() -> None:
+    """A field must not replace a ``JSONObject`` attribute such as ``url``."""
+    with pytest.raises(ValueError, match="field_map"):
+
+        @json_object
+        class Hyperlinked(ModelBase):
+            """Model with a field that would replace ``JSONObject.url``."""
+
+            class_url = "/hyperlinked/"
+
+            id: int
+            url: str
+
+
+def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
+    """A reserved JSON key is usable through ``field_map``."""
+
+    @json_object(field_map={"resource_url": "url"})
+    class Hyperlinked(ModelBase):
+        """Model that maps the ``url`` JSON key to another attribute."""
+
+        class_url = "/hyperlinked/"
+
+        id: int
+        resource_url: str
+
+    obj = Hyperlinked(
+        json={"id": 1, "url": "https://example.com/v1/hyperlinked/1/"}
+    )
+
+    assert obj.resource_url == "https://example.com/v1/hyperlinked/1/"
+    assert obj.url == "/hyperlinked/1/"
+
+
+def test_subclass_accepts_inherited_and_own_fields(
+    requests_mock: Any,
+) -> None:
+    """A decorated subclass keeps the fields of its decorated base."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/",
+        json={"id": 1, "name": "Grace", "role": "owner"},
+    )
+
+    by_pk = Admin(pk=1)
+    by_id = Admin(id=1)
+    admin = Admin(json={"id": 1, "name": "Ada", "role": "staff"})
+    admin.name = "Grace"
+    admin.role = "owner"
+    admin.save()
+
+    assert by_pk.pk == 1
+    assert by_id.pk == 1
+    assert patch.last_request.json() == {"name": "Grace", "role": "owner"}
+
+
+def test_update_from_json_invalidates_inherited_fields() -> None:
+    """Incoming JSON replaces cached values of inherited fields."""
+    admin = Admin(json={"id": 1, "name": "old", "role": "staff"})
+    assert admin.name == "old"
+
+    admin.update_from_json({"name": "new"})
+
+    assert admin.name == "new"
