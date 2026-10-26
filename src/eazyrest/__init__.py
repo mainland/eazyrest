@@ -6,6 +6,7 @@ from .eazyrest import (
     DoesNotExist,
     JSONObject,
     MultipleObjectsReturned,
+    PrefetchNotSupported,
     json_object,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "DoesNotExist",
     "MultipleObjectsReturned",
     "JSONObject",
+    "PrefetchNotSupported",
     "json_object",
     "parse_datetime",
     "parse_duration",
