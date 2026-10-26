@@ -53,16 +53,29 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format
 
 
-class DoesNotExist(Exception):
+class EazyrestError(Exception):
+    """Base class of the exceptions that eazyrest defines."""
+
+
+class DoesNotExist(EazyrestError):
     """Raised when no object matches a query that expects one result."""
 
 
-class MultipleObjectsReturned(Exception):
+class MultipleObjectsReturned(EazyrestError):
     """Raised when a query expected one object but got multiple results."""
 
 
-class PrefetchNotSupported(Exception):
+class PrefetchNotSupported(EazyrestError):
     """Raised when explicit prefetch is requested for an unsupported model."""
+
+
+def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
+    """Describe a lookup for an error message, as in ``Todo title='a'``."""
+    if not params:
+        return model.__name__
+
+    terms = ", ".join(f"{name}={value!r}" for name, value in params.items())
+    return f"{model.__name__} {terms}"
 
 
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
@@ -1992,7 +2005,9 @@ class JSONObject:
         """
         if isinstance(payload, list):
             if len(payload) == 0:
-                raise DoesNotExist
+                raise DoesNotExist(
+                    f"{cls.__name__} response is an empty list, not one object"
+                )
             if len(payload) > 1:
                 raise MultipleObjectsReturned(
                     f"{cls.__name__} response is a list of {len(payload)} "
@@ -2343,11 +2358,13 @@ class JSONObject:
         results = iter(cls.filter(prefetch=prefetch, api=api, **kwargs))
         first = next(results, None)
         if first is None:
-            raise DoesNotExist
+            raise DoesNotExist(f"No {_describe_lookup(cls, kwargs)} exists")
 
         second = next(results, None)
         if second is not None:
-            raise MultipleObjectsReturned
+            raise MultipleObjectsReturned(
+                f"More than one {_describe_lookup(cls, kwargs)} exists"
+            )
 
         return first
 
@@ -2404,7 +2421,9 @@ class JSONObject:
         if first is not None:
             second = next(results, None)
             if second is not None:
-                raise MultipleObjectsReturned
+                raise MultipleObjectsReturned(
+                    f"More than one {_describe_lookup(cls, kwargs)} exists"
+                )
 
             return first, False
 
