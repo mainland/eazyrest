@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from http.cookiejar import CookieJar
 from typing import Any
 from urllib.parse import urlparse
@@ -10,6 +11,23 @@ import requests
 import urllib3
 
 from .write_mode import WriteMode, validate_write_mode
+
+# The configuration that reset_session() copies to a new session. These are
+# the attributes of requests.Session.__attrs__ other than adapters, which hold
+# the connection pools.
+_SESSION_SETTINGS = (
+    "headers",
+    "cookies",
+    "auth",
+    "proxies",
+    "hooks",
+    "params",
+    "verify",
+    "cert",
+    "stream",
+    "trust_env",
+    "max_redirects",
+)
 
 
 class API:
@@ -36,6 +54,7 @@ class API:
         url: str,
         proxy: str | None = None,
         default_write_mode: WriteMode = "lazy",
+        verify: bool = True,
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -45,6 +64,9 @@ class API:
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
+            verify: Whether TLS certificates should be verified. When
+                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
+                for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
               This allows for configuring connection pooling parameters, e.g.,
@@ -53,7 +75,7 @@ class API:
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
 
-        self.reset_session(**kwargs)
+        self.reset_session(verify=verify, **kwargs)
 
         if proxy is not None:
             self.set_proxy(proxy)
@@ -75,6 +97,9 @@ class API:
     def set_proxy(self, proxy: str) -> None:
         """Configure an HTTP/HTTPS proxy for subsequent requests.
 
+        The proxy takes precedence over proxy environment variables such as
+        ``HTTPS_PROXY``.
+
         Args:
             proxy: Proxy URL to apply to both ``http`` and ``https`` schemes.
         """
@@ -82,28 +107,47 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool = True, **kwargs: Any) -> None:
-        """Create and configure a fresh underlying ``requests.Session``.
+    def reset_session(self, verify: bool | None = None, **kwargs: Any) -> None:
+        """Replace the underlying ``requests.Session``.
+
+        The new session keeps the configuration of the session it replaces,
+        including its headers, authentication, cookies, proxies, query
+        parameters, hooks, and TLS settings. It does not keep connection pools
+        or mounted adapters. The replaced session is closed.
 
         Args:
-            verify: Whether TLS certificates should be verified.
+            verify: Whether TLS certificates should be verified. If omitted,
+                the new session keeps the replaced session's setting, and a
+                first session verifies certificates. When ``False``, urllib3's
+                ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
               This allows for configuring connection pooling parameters, e.g.,
               ``pool_connections`` and ``pool_maxsize``.
         """
-        self.session = requests.Session()
+        session = requests.Session()
 
-        if not verify:
-            self.session.verify = False
-            urllib3.disable_warnings()
+        old_session: requests.Session | None = getattr(self, "session", None)
+        if old_session is not None:
+            for name in _SESSION_SETTINGS:
+                setattr(session, name, getattr(old_session, name))
+            old_session.close()
+
+        if verify is not None:
+            session.verify = verify
+            if not verify:
+                urllib3.disable_warnings(
+                    urllib3.exceptions.InsecureRequestWarning
+                )
 
         # Adapt session for multiple connections
         if len(kwargs) != 0:
             url = urlparse(self.base_url)
 
             adapter = requests.adapters.HTTPAdapter(**kwargs)
-            self.session.mount(url.scheme + "://", adapter)
+            session.mount(url.scheme + "://", adapter)
+
+        self.session = session
 
     def close(self) -> None:
         """Close the underlying HTTP session."""
@@ -150,7 +194,7 @@ class API:
         """
         resp.raise_for_status()
 
-    def _resolve_url(self, uri: str) -> str:
+    def resolve_url(self, uri: str) -> str:
         """Resolve a request URI against ``base_url``.
 
         Absolute URIs are returned unchanged. Relative paths are appended to
@@ -169,6 +213,34 @@ class API:
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
 
+    def _send(
+        self,
+        send: Callable[..., requests.Response],
+        uri: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Send a request with this client's defaults and check the response.
+
+        Args:
+            send: Session method that sends the request.
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``send``.
+            **kwargs: Keyword arguments forwarded to ``send``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        kwargs.setdefault("timeout", self.timeout)
+        if self.session.proxies:
+            # requests lets proxy environment variables override session
+            # proxies, but not proxies passed with the request. requests adds
+            # environment proxies to the dict it receives, so pass a copy.
+            kwargs.setdefault("proxies", dict(self.session.proxies))
+
+        resp = send(self.resolve_url(uri), *args, **kwargs)
+        return self._check_response(resp)
+
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.
 
@@ -180,9 +252,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.get(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.get, uri, *args, **kwargs)
 
     def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``POST`` request.
@@ -195,9 +265,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.post(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.post, uri, *args, **kwargs)
 
     def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PATCH`` request.
@@ -212,9 +280,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.patch(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.patch, uri, *args, **kwargs)
 
     def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PUT`` request.
@@ -229,9 +295,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.put(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.put, uri, *args, **kwargs)
 
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``DELETE`` request.
@@ -246,6 +310,4 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        kwargs.setdefault("timeout", self.timeout)
-        req = self.session.delete(self._resolve_url(uri), *args, **kwargs)
-        return self._check_response(req)
+        return self._send(self.session.delete, uri, *args, **kwargs)
