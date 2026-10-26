@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import datetime
 import enum
@@ -70,6 +71,11 @@ PrefetchFields: TypeAlias = str | Sequence[str] | None
 
 _api_registry: dict[type[JSONObject], API] = {}
 
+_query_api: contextvars.ContextVar[tuple[type[JSONObject], API] | None] = (
+    contextvars.ContextVar("_query_api", default=None)
+)
+"""The class and API of a query that passed ``api=``, while it reads items."""
+
 
 class APIDescriptor:
     """Descriptor that resolves APIs from instance overrides or a registry."""
@@ -107,6 +113,14 @@ class APIDescriptor:
         """
         if obj is not None and obj._api_override is not None:
             return obj._api_override
+
+        if obj is None and objtype is not None:
+            # While a query that passed api= calls collection_items(), that API
+            # is the queried class's API, so a hook such as
+            # follow_next_links(cls.api, payload) reads later pages with it.
+            query = _query_api.get()
+            if query is not None and query[0] is objtype:
+                return query[1]
 
         if objtype is None:
             if obj is None:
@@ -1943,7 +1957,9 @@ class JSONObject:
         return payload
 
     @classmethod
-    def create(cls: type[Self], **kwargs: Any) -> Self:
+    def create(
+        cls: type[Self], *, api: API | None = None, **kwargs: Any
+    ) -> Self:
         """Create and return a new remote object.
 
         The new object's JSON is the result of ``merge_response()``. By
@@ -1953,6 +1969,9 @@ class JSONObject:
         loads the object.
 
         Args:
+            api: Optional API to send the request with, instead of the API
+                registered for the class. The new object keeps it as their API,
+                so their later requests use it too.
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
@@ -1963,13 +1982,14 @@ class JSONObject:
             TypeError: If the response does not hold a JSON object.
         """
         payload = cls._encode_fields(kwargs)
-        resp = cls.api.post(cls.class_url, json=payload)
+        client = cls.api if api is None else api
+        resp = client.post(cls.class_url, json=payload)
 
         json_keys = cls._json_keys()
         sent = {
             key: value for key, value in payload.items() if key in json_keys
         }
-        obj = cls(json={})
+        obj = cls(json={}, api=api)
         obj._json = obj.merge_response(resp, {}, sent)
         # A new object has no earlier state, so a field that neither the
         # payload nor the response holds is unknown rather than absent.
@@ -1987,7 +2007,9 @@ class JSONObject:
 
         Args:
             pks: Primary keys to load.
-            api: Optional API override for the bulk request.
+            api: The API of the query that prefetches, if it passed ``api=``.
+                Prefetch passes it only then, and the bulk request should use
+                it instead of the class's registered API.
 
         Returns:
             Mapping from primary key to loaded object.
@@ -2007,7 +2029,9 @@ class JSONObject:
         The default implementation yields items from a list response directly.
         Subclasses can override this hook to unwrap envelope responses or
         follow pagination links by issuing additional requests through
-        ``cls.api``.
+        ``cls.api``. When the query passed ``api=``, ``cls.api`` is that API
+        while ``filter()`` calls this hook, so read it during the call rather
+        than later, while iterating.
 
         Args:
             payload: Decoded JSON payload returned by a collection request.
@@ -2146,12 +2170,14 @@ class JSONObject:
         cls: type[Self],
         items: Iterable[Any],
         fields: Sequence[str],
+        api: API | None = None,
     ) -> PrefetchMap:
         """Bulk-load related objects for a batch of parent JSON items.
 
         Args:
             items: Parent JSON objects to scan for related-object primary keys.
             fields: Model attribute names to prefetch.
+            api: The API that the query passed as ``api=``, if any.
 
         Returns:
             Mapping of each prefetched field name to related objects keyed by
@@ -2200,8 +2226,12 @@ class JSONObject:
             if len(pks) == 0:
                 continue
 
-            # The related model loads through its own registered API.
-            related_objects = related_type.model_type.bulk_get_by_pks(pks)
+            # The related model loads through its own registered API, unless
+            # the query passed api=.
+            bulk_kwargs = {} if api is None else {"api": api}
+            related_objects = related_type.model_type.bulk_get_by_pks(
+                pks, **bulk_kwargs
+            )
             prefetched_related[field] = {
                 obj._normalize_pk(pk): obj
                 for pk, obj in related_objects.items()
@@ -2214,12 +2244,14 @@ class JSONObject:
         cls: type[Self],
         items: Iterable[Any],
         fields: Sequence[str],
+        api: API | None = None,
     ) -> Iterator[Self]:
         """Yield prefetched objects lazily in batches.
 
         Args:
             items: Parent JSON objects returned by a collection query.
             fields: Model attribute names to prefetch for each batch.
+            api: The API that the query passed as ``api=``, if any.
 
         Yields:
             Model instances populated from ``items`` with prefetched related
@@ -2237,8 +2269,10 @@ class JSONObject:
             if len(batch_items) == 0:
                 return
 
-            prefetched_related = cls._apply_prefetch(batch_items, fields)
-            parents = [cls(json=_OwnedJSON(item)) for item in batch_items]
+            prefetched_related = cls._apply_prefetch(batch_items, fields, api)
+            parents = [
+                cls(json=_OwnedJSON(item), api=api) for item in batch_items
+            ]
 
             # Related objects inherit their parent's write mode. A prefetched
             # object is shared by every parent in the batch, so set its mode
@@ -2258,6 +2292,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
+        api: API | None = None,
         **kwargs: Any,
     ) -> Iterator[Self]:
         """Query objects matching request parameters.
@@ -2280,6 +2315,9 @@ class JSONObject:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
                 identity across parent objects within the same batch.
+            api: Optional API to send the request with, instead of the API
+                registered for the class. Returned objects keep it as their
+                API, so their later requests use it too.
             **kwargs: Query string parameters.
 
         Returns:
@@ -2299,20 +2337,26 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
-        resp = cls.api.get(cls.class_url, params=cls._encode_query(kwargs))
-        items = cls.collection_items(resp.json())
+        client = cls.api if api is None else api
+        resp = client.get(cls.class_url, params=cls._encode_query(kwargs))
+        token = _query_api.set((cls, client))
+        try:
+            items = cls.collection_items(resp.json())
+        finally:
+            _query_api.reset(token)
 
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
-            return (cls(json=_OwnedJSON(item)) for item in items)
+            return (cls(json=_OwnedJSON(item), api=api) for item in items)
 
-        return cls._prefetched_filter(items, prefetch_fields)
+        return cls._prefetched_filter(items, prefetch_fields, api)
 
     @classmethod
     def all(
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
+        api: API | None = None,
     ) -> Iterator[Self]:
         """Return all objects for this resource type.
 
@@ -2320,6 +2364,9 @@ class JSONObject:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
                 identity across parent objects within the same batch.
+            api: Optional API to send the request with, instead of the API
+                registered for the class. Returned objects keep it as their
+                API, so their later requests use it too.
 
         Returns:
             Iterator over all objects.
@@ -2330,13 +2377,14 @@ class JSONObject:
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
-        return cls.filter(prefetch=prefetch)
+        return cls.filter(prefetch=prefetch, api=api)
 
     @classmethod
     def get(
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
+        api: API | None = None,
         **kwargs: Any,
     ) -> Self:
         """Fetch exactly one object matching query parameters.
@@ -2353,6 +2401,9 @@ class JSONObject:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
                 identity across parent objects within the same batch.
+            api: Optional API to send the request with, instead of the API
+                registered for the class. The returned object keeps it as their
+                API, so their later requests use it too.
             **kwargs: Query string parameters.
 
         Returns:
@@ -2368,7 +2419,7 @@ class JSONObject:
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
-        results = iter(cls.filter(prefetch=prefetch, **kwargs))
+        results = iter(cls.filter(prefetch=prefetch, api=api, **kwargs))
         first = next(results, None)
         if first is None:
             raise DoesNotExist
@@ -2383,6 +2434,8 @@ class JSONObject:
     def get_or_create(
         cls: type[Self],
         defaults: Mapping[str, Any] | None = None,
+        *,
+        api: API | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
@@ -2410,6 +2463,9 @@ class JSONObject:
 
         Args:
             defaults: Optional fields applied only when creating a new object.
+            api: Optional API to send the lookup and any creation with, instead
+                of the API registered for the class. The returned object keeps
+                it as its API, so its later requests use it too.
             **kwargs: Fields used for lookup and included in creation.
 
         Returns:
@@ -2421,7 +2477,7 @@ class JSONObject:
             ValueError: If a lookup parameter named after a JSON-backed field
                 or its JSON key is ``None`` or an empty collection.
         """
-        results = cls.filter(**kwargs)
+        results = cls.filter(api=api, **kwargs)
         first = next(results, None)
         if first is not None:
             second = next(results, None)
@@ -2439,5 +2495,5 @@ class JSONObject:
         if defaults is not None:
             create_kwargs.update(defaults)
 
-        obj = cls.create(**create_kwargs)
+        obj = cls.create(api=api, **create_kwargs)
         return obj, True
