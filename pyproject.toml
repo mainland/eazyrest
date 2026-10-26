@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     "isodate",
     "python-dateutil",
-    "requests[socks]",
+    "requests",
     "typing_extensions; python_version < '3.11'",
     "tzlocal",
     "urllib3",
@@ -39,6 +39,9 @@ dependencies = [
 [project.optional-dependencies]
 dateparser = [
   "dateparser",
+]
+socks = [
+  "requests[socks]",
 ]
 test = [
   "dateparser",

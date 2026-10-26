@@ -41,6 +41,14 @@ class API:
 
     The class wraps a ``requests.Session`` and automatically joins
     request paths against ``base_url`` while applying a default timeout.
+
+    Requests follows redirects, and it resends a ``POST`` answered with
+    a 301 or 302, and any other request answered with a 302 or 303, as a
+    ``GET``. The server has then not performed the original request, so
+    a request whose method a redirect changes raises
+    ``requests.HTTPError`` instead of returning the response to the
+    ``GET``. Redirects that keep the method, such as 307 and 308, are
+    followed.
     """
 
     base_url: str
@@ -49,8 +57,13 @@ class API:
     session: requests.Session
     """Session object for API requests."""
 
-    timeout: float | None = 10.0
-    """Default request timeout."""
+    timeout: float | tuple[float, float] | None = 10.0
+    """Default request timeout in seconds, as requests accepts it.
+
+    A pair gives the connect and read timeouts separately, and ``None``
+    waits forever. A request's own ``timeout`` argument takes
+    precedence.
+    """
 
     default_write_mode: WriteMode
     """Default write mode inherited by newly created model instances."""
@@ -60,7 +73,7 @@ class API:
         url: str,
         proxy: str | None = None,
         default_write_mode: WriteMode = "lazy",
-        verify: bool = True,
+        verify: bool | str = True,
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -70,13 +83,16 @@ class API:
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
-            verify: Whether TLS certificates should be verified. When
+            verify: Whether TLS certificates should be verified, or the path
+                of a CA bundle to verify them with, as for requests. When
                 ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
                 for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
               This allows for configuring connection pooling parameters, e.g.,
-              ``pool_connections`` and ``pool_maxsize``.
+              ``pool_connections`` and ``pool_maxsize``, and retries, with
+              ``max_retries``. To change the request timeout, set the
+              ``timeout`` attribute instead.
         """
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
@@ -113,7 +129,9 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool | None = None, **kwargs: Any) -> None:
+    def reset_session(
+        self, verify: bool | str | None = None, **kwargs: Any
+    ) -> None:
         """Replace the underlying ``requests.Session``.
 
         The new session keeps the configuration of the session it replaces,
@@ -122,9 +140,10 @@ class API:
         or mounted adapters. The replaced session is closed.
 
         Args:
-            verify: Whether TLS certificates should be verified. If omitted,
-                the new session keeps the replaced session's setting, and a
-                first session verifies certificates. When ``False``, urllib3's
+            verify: Whether TLS certificates should be verified, or the path
+                of a CA bundle to verify them with. If omitted, the new
+                session keeps the replaced session's setting, and a first
+                session verifies certificates. When ``False``, urllib3's
                 ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
               ``requests.adapters.HTTPAdapter`` and mounted on the session.
@@ -141,7 +160,7 @@ class API:
 
         if verify is not None:
             session.verify = verify
-            if not verify:
+            if verify is False:
                 urllib3.disable_warnings(
                     urllib3.exceptions.InsecureRequestWarning
                 )
@@ -236,6 +255,10 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            requests.HTTPError: If a redirect changed the request method, or
+                if ``raise_for_response()`` raises it for the response.
         """
         kwargs.setdefault("timeout", self.timeout)
         if self.session.proxies:
@@ -245,7 +268,33 @@ class API:
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
         resp = send(self.resolve_url(uri), *args, **kwargs)
+        self._check_redirects(resp)
         return self._check_response(resp)
+
+    @staticmethod
+    def _check_redirects(resp: requests.Response) -> None:
+        """Reject a response to a request whose method a redirect changed.
+
+        Args:
+            resp: Final response, after requests followed any redirects.
+
+        Raises:
+            requests.HTTPError: If requests sent the final request with a
+                different method from the original request.
+        """
+        if not resp.history:
+            return
+
+        redirect = resp.history[0]
+        sent = redirect.request.method
+        if resp.request.method != sent:
+            raise requests.HTTPError(
+                f"{sent} {redirect.url} was redirected with status "
+                f"{redirect.status_code}, and requests resent it to "
+                f"{resp.url} as {resp.request.method}, so the {sent} request "
+                "was not performed",
+                response=redirect,
+            )
 
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.

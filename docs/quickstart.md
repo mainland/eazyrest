@@ -12,6 +12,12 @@ To parse natural-language dates with `parse_datetime(..., use_dateparser=True)`,
 pip install "eazyrest[dateparser]"
 ```
 
+To send requests through a SOCKS proxy, install the `socks` extra:
+
+```bash
+pip install "eazyrest[socks]"
+```
+
 Requires Python 3.10+.
 
 ## Example
