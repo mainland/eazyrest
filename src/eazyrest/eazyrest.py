@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
 from typing import (
+    Annotated,
     Any,
     ClassVar,
     TypeAlias,
@@ -367,6 +368,8 @@ AnalyzedType: TypeAlias = (
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
+    ``Annotated[T, ...]`` analyzes as ``T``.
+
     Args:
         ty: Declared field type.
 
@@ -375,6 +378,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     """
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
+
+    if ty_origin is Annotated:
+        return analyze_type(ty_args[0])
 
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
@@ -1034,7 +1040,10 @@ class JSONProperty:
             if not isinstance(value, JSONProperty)
         }
         localns[self.cls.__name__] = self.cls
-        return typing.get_type_hints(holder, localns=localns)[self.field]
+        # Keep Annotated metadata, which analyze_type() interprets.
+        return typing.get_type_hints(
+            holder, localns=localns, include_extras=True
+        )[self.field]
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
