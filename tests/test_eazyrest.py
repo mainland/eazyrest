@@ -8,7 +8,7 @@ import typing
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
-from typing import Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -292,6 +292,17 @@ class Timeline(ModelBase):
 
     id: int
     starts_at: list[datetime.datetime]
+
+
+@json_object
+class AnnotatedTimeline(ModelBase):
+    """Model whose field types carry metadata that eazyrest does not use."""
+
+    class_url = "/annotated-timelines/"
+
+    id: int
+    owner: Annotated[User, "owner"] | None
+    starts_at: Annotated[list[Annotated[datetime.datetime, "start"]], "all"]
 
 
 class IssueStatus(str, enum.Enum):
@@ -886,6 +897,35 @@ def test_datetime_list_field_decodes_nested_items() -> None:
         datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc),
         datetime.datetime(2024, 4, 1, 13, 0, tzinfo=datetime.timezone.utc),
     ]
+
+
+def test_annotated_field_types_convert_like_their_types(
+    requests_mock: Any,
+) -> None:
+    """``Annotated[T, ...]`` converts as ``T`` and keeps its metadata."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/annotated-timelines/1/", status_code=204
+    )
+    timeline = AnnotatedTimeline(
+        json={"id": 1, "owner": {"id": 2}, "starts_at": [1711972800]}
+    )
+    start = datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc)
+
+    assert isinstance(timeline.owner, User)
+    assert timeline.owner.id == 2
+    assert timeline.starts_at == [start]
+    assert typing.get_args(vars(AnnotatedTimeline)["starts_at"].ty)[1:] == (
+        "all",
+    )
+
+    timeline.owner = None
+    timeline.starts_at = [start]
+    timeline.save()
+
+    assert patch.last_request.json() == {
+        "owner": None,
+        "starts_at": ["2024-04-01T12:00:00+00:00"],
+    }
 
 
 @pytest.mark.parametrize(
