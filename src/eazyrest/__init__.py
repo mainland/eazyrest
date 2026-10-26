@@ -16,7 +16,7 @@ from .eazyrest import (
     RelatedType,
     json_object,
 )
-from .pagination import follow_next_links
+from .pagination import follow_link_headers, follow_next_links
 from .write_mode import WriteMode
 
 __all__ = [
@@ -33,6 +33,7 @@ __all__ = [
     "PrefetchNotSupported",
     "RelatedType",
     "WriteMode",
+    "follow_link_headers",
     "follow_next_links",
     "json_object",
     "parse_datetime",
