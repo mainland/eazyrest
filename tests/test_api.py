@@ -130,3 +130,16 @@ def test_api_skips_raise_for_response_hook_for_successes(
     response = api.get("/ok")
 
     assert response.json() == {"ok": True}
+
+
+def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
+    """Assigned cookies are sent with later requests."""
+    api = API("https://example.com/")
+    jar = requests.cookies.RequestsCookieJar()
+    jar.set("session", "abc", domain="example.com", path="/")
+    requests_mock.get("https://example.com/me", json={})
+
+    api.cookies = jar
+    api.get("/me")
+
+    assert requests_mock.last_request.headers["Cookie"] == "session=abc"

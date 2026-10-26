@@ -5,9 +5,11 @@ from __future__ import annotations
 import datetime
 import enum
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+import requests
 
 from eazyrest import (
     API,
@@ -263,10 +265,88 @@ class NoBulkUser(ModelBase):
 
 
 @json_object
+class IssueHistory(ModelBase):
+    """Model with a variable-length tuple of enums."""
+
+    class_url = "/issue-histories/"
+
+    id: int
+    statuses: tuple[IssueStatus, ...]
+
+
+@json_object
 class Admin(User):
     """Decorated subclass of a decorated model."""
 
     role: str
+
+
+@json_object(pk="slug")
+class Org(ModelBase):
+    """Model with a string primary key."""
+
+    class_url = "/orgs/"
+
+    slug: str
+    name: str
+
+
+@json_object
+class Repo(ModelBase):
+    """Model related to a model with a string primary key."""
+
+    class_url = "/repos/"
+
+    id: int
+    org: Org
+
+
+@json_object(field_map={"id": "ID"})
+class LegacyUser(ModelBase):
+    """Model whose primary key has a different JSON name."""
+
+    class_url = "/legacy-users/"
+
+    id: int
+    name: str
+
+
+@json_object
+class LegacyTodo(ModelBase):
+    """Model related to a model with a renamed primary key."""
+
+    class_url = "/legacy-todos/"
+
+    id: int
+    owner: LegacyUser
+
+
+class AccountBase(JSONObject):
+    """Base object for test models served by a second API."""
+
+
+accounts_api = API("https://accounts.example.com/")
+AccountBase.register_api(accounts_api)
+
+
+@json_object
+class Account(AccountBase):
+    """Model served by the second API."""
+
+    class_url = "/accounts/"
+
+    id: int
+    name: str
+
+
+@json_object
+class Invoice(ModelBase):
+    """Model served by the first API with a related account."""
+
+    class_url = "/invoices/"
+
+    id: int
+    account: Account
 
 
 @json_object(field_map={"user": "userId"})
@@ -1131,7 +1211,7 @@ def test_object_write_mode_overrides_api_default(
 def test_invalid_write_mode_raises_value_error() -> None:
     """Unsupported write modes should be rejected."""
     with pytest.raises(ValueError, match="Unsupported write mode"):
-        Todo(id=1, write_mode="later")
+        Todo(id=1, write_mode=cast(Any, "later"))
 
 
 def test_switching_to_eager_flushes_pending_lazy_changes(
@@ -1257,6 +1337,26 @@ def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
     assert obj.url == "/hyperlinked/1/"
 
 
+def test_pk_and_exclude_options() -> None:
+    """``pk=`` names the key field and ``exclude=`` skips annotations."""
+
+    @json_object(pk="uuid", exclude={"display"})
+    class Thing(ModelBase):
+        """Model with a non-default primary key and an excluded field."""
+
+        class_url = "/things/"
+
+        uuid: str
+        display: str
+
+    thing = Thing(uuid="abc")
+
+    assert thing.pk == "abc"
+    assert thing.url == "/things/abc/"
+    with pytest.raises(AttributeError):
+        thing.display = "label"
+
+
 def test_subclass_accepts_inherited_and_own_fields(
     requests_mock: Any,
 ) -> None:
@@ -1286,3 +1386,254 @@ def test_update_from_json_invalidates_inherited_fields() -> None:
     admin.update_from_json({"name": "new"})
 
     assert admin.name == "new"
+
+
+def test_create_accepts_string_primary_key_for_related_field(
+    requests_mock: Any,
+) -> None:
+    """Related fields accept primary keys of any type, not only ints."""
+    post = requests_mock.post(
+        "https://example.com/v1/repos/",
+        json={"id": 1, "org": "acme"},
+    )
+
+    Repo.create(org="acme")
+    by_key = post.last_request.json()
+    Repo.create(org=Org(slug="acme"))
+    by_object = post.last_request.json()
+
+    assert by_key == {"org": "acme"}
+    assert by_object == {"org": "acme"}
+
+
+def test_related_primary_key_uses_attribute_name(requests_mock: Any) -> None:
+    """A related key works when the primary key has a JSON name mapping."""
+    requests_mock.get(
+        "https://example.com/v1/legacy-users/5/",
+        json={"ID": 5, "name": "Ada"},
+    )
+
+    todo = LegacyTodo(json={"id": 1, "owner": 5})
+
+    assert todo.owner.pk == 5
+    assert todo.owner.name == "Ada"
+
+
+def test_get_or_create_encodes_lookup_like_create(
+    requests_mock: Any,
+) -> None:
+    """Lookup parameters use the same JSON names and values as creation."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 9, "userId": 2, "title": "t", "completed": False},
+    )
+
+    obj, created = Todo.get_or_create(
+        user=User(id=2),
+        title="t",
+        defaults={"completed": False},
+    )
+
+    assert created
+    assert obj.pk == 9
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["2"],
+        "title": ["t"],
+    }
+    assert post.last_request.json() == {
+        "userId": 2,
+        "title": "t",
+        "completed": False,
+    }
+
+
+def test_get_raises_does_not_exist(requests_mock: Any) -> None:
+    """``get()`` should raise when no object matches."""
+    requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(DoesNotExist):
+        Todo.get(title="missing")
+
+
+def test_delete_sends_delete_request(requests_mock: Any) -> None:
+    """``delete()`` should send ``DELETE`` to the object URL."""
+    delete = requests_mock.delete(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    Todo(id=1).delete()
+
+    assert delete.called
+
+
+def test_update_from_json_partial_payload_loads_missing_fields(
+    requests_mock: Any,
+) -> None:
+    """Reading a field missing from a partial payload loads the object."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "server", "completed": True},
+    )
+
+    todo = Todo(id=1)
+    todo.update_from_json({"title": "new"})
+    title = todo.title
+    calls_before_load = requests_mock.call_count
+    todo.title = "local"
+
+    assert title == "new"
+    assert calls_before_load == 0
+    assert todo.completed is True
+    assert requests_mock.call_count == 1
+    # The unsaved lazy update survives loading the full object.
+    assert todo.title == "local"
+
+
+def test_json_payload_is_copied() -> None:
+    """Field assignment does not modify the caller's JSON mapping."""
+    payload = {"id": 1, "name": "Ada"}
+
+    user = User(json=payload)
+    user.name = "Grace"
+
+    assert payload == {"id": 1, "name": "Ada"}
+    assert user.name == "Grace"
+
+
+def test_embedded_related_object_does_not_share_parent_json() -> None:
+    """Unsaved writes to an embedded object do not change its parent."""
+    todo = Todo(
+        json={
+            "id": 1,
+            "userId": {"id": 2, "name": "Ada"},
+            "title": "a",
+            "completed": False,
+        }
+    )
+
+    todo.user.name = "Grace"
+
+    assert todo.json["userId"] == {"id": 2, "name": "Ada"}
+
+
+def test_related_object_uses_its_own_registered_api(
+    requests_mock: Any,
+) -> None:
+    """A related model registered on another API loads from that API."""
+    requests_mock.get(
+        "https://accounts.example.com/accounts/5/",
+        json={"id": 5, "name": "Acme"},
+    )
+
+    invoice = Invoice(json={"id": 1, "account": 5})
+
+    assert invoice.account.api is accounts_api
+    assert invoice.account.name == "Acme"
+
+
+def test_related_object_inherits_instance_api_override(
+    requests_mock: Any,
+) -> None:
+    """An instance API override also applies to its related objects."""
+    override = API("https://override.example.com/")
+    requests_mock.get(
+        "https://override.example.com/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1, api=override)
+
+    assert todo.user.api is override
+
+
+def test_tuple_ellipsis_annotation_converts_items() -> None:
+    """``tuple[T, ...]`` fields convert each item."""
+    history = IssueHistory(json={"id": 1, "statuses": ["open", "closed"]})
+
+    assert history.statuses == (IssueStatus.OPEN, IssueStatus.CLOSED)
+
+
+def test_filter_rejects_unknown_prefetch_field_before_request(
+    requests_mock: Any,
+) -> None:
+    """A misspelled prefetch field fails without sending a request."""
+    with pytest.raises(ValueError, match="usr"):
+        Todo.filter(prefetch="usr")
+
+    assert requests_mock.call_count == 0
+
+
+def test_url_percent_encodes_primary_key() -> None:
+    """A primary key always forms a single URL path segment."""
+    org = Org(slug="a/b?c")
+
+    assert org.url == "/orgs/a%2Fb%3Fc/"
+
+
+def test_keyword_arguments_set_primary_key_first(requests_mock: Any) -> None:
+    """Field values may precede the primary key in the constructor."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/",
+        json={"id": 1, "name": "Ada"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/",
+        json={"id": 1, "name": "Grace"},
+    )
+
+    user = User(name="Grace", id=1)
+    user.save()
+
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
+def test_save_accepts_empty_patch_response(requests_mock: Any) -> None:
+    """A ``204 No Content`` response keeps the saved local values."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    todo = Todo(id=1)
+    todo.title = "new"
+    todo.save()
+    todo.save()
+
+    assert patch.call_count == 1
+    assert todo.title == "new"
+
+
+def test_eager_write_accepts_empty_patch_response(
+    requests_mock: Any,
+) -> None:
+    """Eager writes also accept ``204 No Content`` responses."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    requests_mock.patch("https://example.com/v1/todos/1/", status_code=204)
+
+    todo = Todo(id=1, write_mode="eager")
+    todo.title = "new"
+
+    assert todo.title == "new"
+    assert todo.json["title"] == "new"
+
+
+def test_failed_eager_write_keeps_previous_value(requests_mock: Any) -> None:
+    """A rejected eager write leaves the local value unchanged."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    requests_mock.patch("https://example.com/v1/todos/1/", status_code=400)
+
+    todo = Todo(id=1, write_mode="eager")
+    with pytest.raises(requests.HTTPError):
+        todo.title = "new"
+
+    assert todo.title == "old"

@@ -97,6 +97,9 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
+`url` percent-encodes the primary key, so a key always forms one path segment.
+For example, the key `a/b` becomes `a%2Fb`.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to
@@ -112,7 +115,8 @@ Python types are converted automatically:
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
 Collection annotations are converted recursively, so item annotations are
-honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields.
+Annotate a tuple of any length as `tuple[T, ...]`:
 
 ```python
 import datetime
@@ -132,7 +136,7 @@ class Timeline(JSONObject):
 
     id: int
     starts_at: list[datetime.datetime]
-    statuses: tuple[IssueStatus]
+    statuses: tuple[IssueStatus, ...]
 ```
 
 In this example, JSON timestamp values in `starts_at` become
@@ -143,6 +147,9 @@ encodes the nested items back to JSON.
 Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item.
+
+Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not
+converted. Reading such a field returns its JSON value unchanged.
 
 ## Custom field conversion
 
@@ -203,11 +210,22 @@ table, so an entry can reuse a default's `decode` or `encode`.
 
 ## Collections
 
-`filter()` and `all()` return iterables of model instances:
+`filter()` and `all()` return iterators over model instances. The request is
+sent when `filter()` or `all()` is called, and model instances are created as
+the iterator advances. An iterator can be consumed only once, so convert it to
+a list to iterate more than once:
 
 ```python
 users = list(User.all())
 admins = list(User.filter(role="admin"))
+```
+
+`get_or_create()` returns the one object that matches its keyword arguments, or
+creates an object from them if none matches. The lookup query and the creation
+payload use the same JSON field names and conversions as `create()`:
+
+```python
+todo, created = Todo.get_or_create(user=user, title="Write docs")
 ```
 
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit
@@ -278,6 +296,8 @@ Todo.prefetch_batch_size = 250
 If you request prefetch for a related model that does not implement
 `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is
 intentional: prefetch should map to a real API bulk lookup instead of guessing.
+If a prefetch field is not a related-object field, `filter()`, `all()`, and
+`get()` raise `ValueError` before sending a request.
 
 ## Response-shape hooks
 
@@ -337,7 +357,9 @@ todo.update_from_json({"id": 1, "completed": True})
 ```
 
 Incoming fields are treated as authoritative server state, so queued lazy
-updates for those same JSON fields are discarded.
+updates for those same JSON fields are discarded. If the object has not been
+loaded, the payload becomes its JSON without a request. Reading a field that
+the payload lacks then loads the full object.
 
 ## API client
 
@@ -373,3 +395,7 @@ BaseModel.register_api(api)
 
 Registering the API on a shared base class is the cleanest pattern. The API can
 be overridden per instance by passing `api=` when creating an object.
+
+A related object loads through the API registered for its own class, so models
+served by different APIs can refer to each other. If the parent object has an
+`api=` override, its related objects use that override too.
