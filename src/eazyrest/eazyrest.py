@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import copy
 import datetime
@@ -52,16 +53,92 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format
 
 
-class DoesNotExist(Exception):
+class EazyrestError(Exception):
+    """Base class of the exceptions that eazyrest defines."""
+
+
+class DoesNotExist(EazyrestError):
     """Raised when no object matches a query that expects one result."""
 
 
-class MultipleObjectsReturned(Exception):
+class MultipleObjectsReturned(EazyrestError):
     """Raised when a query expected one object but got multiple results."""
 
 
-class PrefetchNotSupported(Exception):
+class PrefetchNotSupported(EazyrestError):
     """Raised when explicit prefetch is requested for an unsupported model."""
+
+
+class FieldConversionError(EazyrestError, TypeError, ValueError):
+    """Raised when a field's value cannot be converted to or from JSON.
+
+    The message names the model and field, and the conversion's own error is
+    the ``__cause__``. It is both a ``TypeError`` and a ``ValueError``, the
+    errors that conversion raises, so code that catches either one still
+    catches it.
+    """
+
+    model: type
+    """Model whose field failed to convert."""
+
+    field: str
+    """Python attribute name of the field."""
+
+    def __init__(self, model: type, field: str, error: Exception) -> None:
+        """Describe a conversion error of a field.
+
+        Args:
+            model: Model whose field failed to convert.
+            field: Python attribute name of the field.
+            error: Error that the conversion raised.
+        """
+        super().__init__(f"{model.__name__}.{field}: {error}")
+        self.model = model
+        self.field = field
+
+
+@contextlib.contextmanager
+def _converting(model: type, field: str) -> Iterator[None]:
+    """Report a conversion error of ``field`` as a FieldConversionError.
+
+    Args:
+        model: Model class that owns the field.
+        field: Name of the field being converted.
+
+    Yields:
+        ``None``, while the conversion runs.
+
+    Raises:
+        FieldConversionError: If the conversion raises a ``TypeError`` or a
+            ``ValueError``. A ``FieldConversionError`` that the conversion
+            raises propagates unchanged.
+    """
+    try:
+        yield
+    except FieldConversionError:
+        raise
+    except (TypeError, ValueError) as err:
+        raise FieldConversionError(model, field, err) from err
+
+
+def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
+    """Describe a lookup for an error message, as in ``Todo matching title``.
+
+    The description names the parameters but not their values, which may be
+    secrets such as a password or a token.
+
+    Args:
+        model: Model class the lookup is for.
+        params: Lookup parameters, by name.
+
+    Returns:
+        The model's name, followed by the parameter names, or the model's name
+        alone if there are no parameters.
+    """
+    if not params:
+        return model.__name__
+
+    return f"{model.__name__} matching {', '.join(params)}"
 
 
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
@@ -349,6 +426,55 @@ def _decode_uuid(value: Any) -> uuid.UUID:
         )
 
     return uuid.UUID(value)
+
+
+def _decode_date(value: Any) -> datetime.date:
+    """Decode a JSON ISO 8601 date string.
+
+    Args:
+        value: ISO 8601 date, such as ``"2024-04-01"``.
+
+    Returns:
+        Decoded ``date``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not an ISO 8601 date. The message does not
+            quote ``value``.
+    """
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as err:
+        # Python quotes a string that is not ISO 8601, but not one with a field
+        # out of range, as in "month must be in 1..12".
+        if repr(value) in str(err):
+            raise ValueError("Date is not in ISO 8601 format") from err
+
+        raise
+
+
+def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
+    """Decode a JSON value as a member of an enum.
+
+    Args:
+        cls: Enum class to decode to.
+        value: Value of a member of ``cls``.
+
+    Returns:
+        The member of ``cls`` whose value is ``value``.
+
+    Raises:
+        ValueError: If ``cls`` has no such member. The message does not quote
+            ``value``.
+    """
+    try:
+        return cls(value)
+    except ValueError as err:
+        # Python quotes the value that the enum lacks.
+        if repr(value) in str(err):
+            raise ValueError(f"Value is not a valid {cls.__name__}") from err
+
+        raise
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -1010,11 +1136,12 @@ class JSONProperty:
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
 
-        value = obj.from_json(
-            json[self.json_field],
-            self.analyzed_type,
-            field=self.field,
-        )
+        with _converting(type(obj), self.field):
+            value = obj.from_json(
+                json[self.json_field],
+                self.analyzed_type,
+                field=self.field,
+            )
         obj._field_cache[self.field] = value
         # A related object saves its own changes.
         if not isinstance(
@@ -1024,9 +1151,9 @@ class JSONProperty:
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
-            obj._field_snapshots[self.field] = _copy_json(
-                obj.to_json(value, self.analyzed_type)
-            )
+            with _converting(type(obj), self.field):
+                encoded = obj.to_json(value, self.analyzed_type)
+            obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
 
@@ -1039,10 +1166,9 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the backing JSON does not contain this field.
-            TypeError: If a primary key that initializes an unloaded object
-                cannot be converted to the field's type.
-            ValueError: If such a primary key is not a valid value of the
-                field's type.
+            FieldConversionError: If the value cannot be converted to the
+                field's JSON value, or a primary key that initializes an
+                unloaded object is not a valid value of the field's type.
         """
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
@@ -1056,15 +1182,17 @@ class JSONProperty:
             # as the key is kept as is.
             if not isinstance(value, JSONObject):
                 conversion = self.analyzed_type
-                value = obj.from_json(
-                    obj.to_json(value, conversion), conversion
-                )
+                with _converting(type(obj), self.field):
+                    value = obj.from_json(
+                        obj.to_json(value, conversion), conversion
+                    )
 
             obj._pk_value = value
             return
 
         json = obj._json_with_field(self.json_field, self.field)
-        new_value = obj.to_json(value, self.analyzed_type)
+        with _converting(type(obj), self.field):
+            new_value = obj.to_json(value, self.analyzed_type)
 
         if not _json_equal(json[self.json_field], new_value):
             # Store a copy, so that changing the assigned value in place later
@@ -1306,6 +1434,33 @@ class JSONObject:
         for name in sorted(kwargs, key=lambda name: name not in pk_names):
             setattr(self, name, kwargs[name])
 
+    def __repr__(self) -> str:
+        """Return the class and primary key without sending a request.
+
+        The key is shown as its JSON value, whether or not the object has
+        loaded, as in ``<User id=1>``.
+
+        Returns:
+            The class name and primary key in angle brackets, or the class name
+            alone, as in ``<User>``, if the class has no primary key.
+        """
+        name = type(self).__name__
+        pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
+        if pk_property is None:
+            return f"<{name}>"
+
+        state = vars(self)
+        json = state.get("_json")
+        if json is not None:
+            value = json.get(pk_property.json_field)
+        else:
+            value = state.get("_pk_value")
+            # A repr must not fail, so show a key that cannot be encoded as is.
+            with contextlib.suppress(TypeError, ValueError):
+                value = self.to_json(value, pk_property.analyzed_type)
+
+        return f"<{name} {pk_property.field}={value!r}>"
+
     def _set_prefetched_related(
         self,
         prefetched_related: Mapping[str, Mapping[Any, JSONObject]],
@@ -1391,13 +1546,13 @@ class JSONObject:
                 if base_type is datetime.datetime:
                     return parse_datetime(value)
                 if base_type is datetime.date:
-                    return datetime.date.fromisoformat(value)
+                    return _decode_date(value)
                 if base_type is uuid.UUID:
                     return _decode_uuid(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
-                    return base_type(value)
+                    return _decode_enum(base_type, value)
 
                 # Changing the returned value in place must not change the
                 # object's JSON without recording an update.
@@ -1590,9 +1745,10 @@ class JSONObject:
         """Queue updates for cached values that were changed in place."""
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
-            encoded = self.to_json(
-                self._field_cache[field], descriptor.analyzed_type
-            )
+            with _converting(type(self), field):
+                encoded = self.to_json(
+                    self._field_cache[field], descriptor.analyzed_type
+                )
             if not _json_equal(encoded, snapshot):
                 self._queue_update(descriptor.json_field, _copy_json(encoded))
                 self._field_snapshots[field] = _copy_json(encoded)
@@ -1978,10 +2134,11 @@ class JSONObject:
         for field, value in fields.items():
             descriptor = getattr(cls, field, None)
             if isinstance(descriptor, JSONProperty):
-                payload[descriptor.json_field] = cls.to_json(
-                    value,
-                    descriptor.analyzed_type,
-                )
+                with _converting(cls, field):
+                    payload[descriptor.json_field] = cls.to_json(
+                        value,
+                        descriptor.analyzed_type,
+                    )
             else:
                 payload[field] = value
 
@@ -2056,11 +2213,12 @@ class JSONObject:
                 descriptor = getattr(cls, name)
                 collection = _unwrap_optional_type(descriptor.analyzed_type)
                 assert isinstance(collection, CollectionType)
-                payload[descriptor.json_field] = cls.to_json(
-                    value, collection.item_type
-                )
+                with _converting(cls, name):
+                    payload[descriptor.json_field] = cls.to_json(
+                        value, collection.item_type
+                    )
 
-        for name, value in params.items():
+        for name in params:
             descriptor = getattr(cls, name, None)
             json_field = (
                 descriptor.json_field
@@ -2071,8 +2229,8 @@ class JSONObject:
             problem = _unsendable_query_value(value)
             if problem is not None:
                 raise ValueError(
-                    f"Query parameter {name}={value!r} for {cls.__name__} "
-                    f"cannot be sent, because its value {problem}"
+                    f"Query parameter {name} for {cls.__name__} cannot be "
+                    f"sent, because its value {problem}"
                 )
             if isinstance(descriptor, JSONProperty):
                 value = _query_value(value)
@@ -2198,7 +2356,9 @@ class JSONObject:
         """
         if isinstance(payload, list):
             if len(payload) == 0:
-                raise DoesNotExist
+                raise DoesNotExist(
+                    f"{cls.__name__} response is an empty list, not one object"
+                )
             if len(payload) > 1:
                 raise MultipleObjectsReturned(
                     f"{cls.__name__} response is a list of {len(payload)} "
@@ -2551,11 +2711,13 @@ class JSONObject:
         results = iter(cls.filter(prefetch=prefetch, api=api, **kwargs))
         first = next(results, None)
         if first is None:
-            raise DoesNotExist
+            raise DoesNotExist(f"No {_describe_lookup(cls, kwargs)} exists")
 
         second = next(results, None)
         if second is not None:
-            raise MultipleObjectsReturned
+            raise MultipleObjectsReturned(
+                f"More than one {_describe_lookup(cls, kwargs)} exists"
+            )
 
         return first
 
@@ -2625,7 +2787,9 @@ class JSONObject:
         if first is not None:
             second = next(results, None)
             if second is not None:
-                raise MultipleObjectsReturned
+                raise MultipleObjectsReturned(
+                    f"More than one {_describe_lookup(cls, kwargs)} exists"
+                )
 
             return first, False
 

@@ -19,6 +19,8 @@ from requests_mock import ANY as requests_mock_ANY
 from eazyrest import (
     API,
     DoesNotExist,
+    EazyrestError,
+    FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -1199,6 +1201,27 @@ def test_date_and_uuid_fields_encode(requests_mock: Any) -> None:
     }
 
 
+def test_conversion_errors_name_the_field(requests_mock: Any) -> None:
+    """A conversion error names the model and field and keeps its cause."""
+    booking = Booking(json={"id": 1, "day": "2026-13-01", "token": "x"})
+    when = datetime.datetime(2026, 1, 3, tzinfo=datetime.timezone.utc)
+
+    with pytest.raises(FieldConversionError, match=r"^Booking\.day: ") as info:
+        _ = booking.day
+    with pytest.raises(TypeError, match=r"^Booking\.day: "):
+        Booking.create(day=when)
+    with pytest.raises(ValueError, match=r"^UUIDUser\.key: "):
+        UUIDUser(key="not-a-uuid")
+
+    error = info.value
+    assert (error.model, error.field) == (Booking, "day")
+    assert isinstance(error, TypeError)
+    assert isinstance(error, ValueError)
+    assert isinstance(error, EazyrestError)
+    assert isinstance(error.__cause__, ValueError)
+    assert requests_mock.call_count == 0
+
+
 def test_date_field_rejects_datetime() -> None:
     """A ``datetime`` is not written to a ``date`` field."""
     booking = Booking(
@@ -1723,8 +1746,26 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         ],
     )
 
-    with pytest.raises(MultipleObjectsReturned):
+    match = r"^More than one Todo matching userId exists$"
+    with pytest.raises(MultipleObjectsReturned, match=match):
         Todo.get(userId=2)
+    with pytest.raises(EazyrestError, match=match):
+        Todo.get_or_create(userId=2)
+
+
+def test_repr_shows_primary_key_without_a_request(
+    requests_mock: Any,
+) -> None:
+    """``repr()`` names the class and key and never loads the object."""
+    key = uuid.UUID(int=1)
+
+    assert repr(User(id=1)) == "<User id=1>"
+    assert repr(User(json={"id": 2, "name": "Ada"})) == "<User id=2>"
+    assert repr(User()) == "<User id=None>"
+    assert repr(UUIDUser(key=key)) == f"<UUIDUser key={str(key)!r}>"
+    assert repr(UUIDUser(json={"ID": str(key)})) == repr(UUIDUser(key=key))
+    assert repr(ModelBase()) == "<ModelBase>"
+    assert requests_mock.call_count == 0
 
 
 def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
@@ -2927,7 +2968,7 @@ def test_query_rejects_none_for_json_backed_field(
     Args:
         query: Callable that runs a query constraining a field to ``None``.
     """
-    with pytest.raises(ValueError, match="user=None"):
+    with pytest.raises(ValueError, match="parameter user for"):
         query()
 
     assert requests_mock.call_count == 0
@@ -2936,10 +2977,10 @@ def test_query_rejects_none_for_json_backed_field(
 @pytest.mark.parametrize(
     ("query", "match"),
     [
-        (lambda: Todo.filter(userId=None), "userId=None"),
-        (lambda: Todo.get_or_create(userId=None), "userId=None"),
+        (lambda: Todo.filter(userId=None), "parameter userId for"),
+        (lambda: Todo.get_or_create(userId=None), "parameter userId for"),
         (lambda: MaybeTodo.get(user=User(pk=None)), "is None"),
-        (lambda: Team.filter(members=[]), "members=\\[\\]"),
+        (lambda: Team.filter(members=[]), "parameter members for"),
         (lambda: SetTeam.get(members=set()), "empty collection"),
         (lambda: Team.get_or_create(members=()), "empty collection"),
     ],
@@ -2990,6 +3031,80 @@ def test_query_rejects_values_requests_would_change(
     with pytest.raises(ValueError, match=match):
         query()
 
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class Secretive(ModelBase):
+    """Model whose fields decode with eazyrest's own codecs."""
+
+    class_url = "/secretive/"
+
+    id: int
+    when: datetime.datetime
+    day: datetime.date
+    length: datetime.timedelta
+    status: IssueStatus
+
+
+SECRET = "TOP-SECRET-1234"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("when", SECRET, "not in ISO 8601 format"),
+        ("when", 1e300, "out of range"),
+        ("day", SECRET, "not in ISO 8601 format"),
+        ("day", "2024-13-01", "month must be in 1..12"),
+        ("length", SECRET, "not in a supported format"),
+        ("length", f"P{SECRET}", "not in ISO 8601 format"),
+        ("status", SECRET, "not a valid IssueStatus"),
+    ],
+)
+def test_field_conversion_error_does_not_quote_the_value(
+    field: str, value: Any, reason: str
+) -> None:
+    """A message names the field and the reason but not the value.
+
+    The value can be a secret that the server sent. The error that eazyrest
+    replaced is still the cause.
+
+    Args:
+        field: Field whose JSON value is invalid.
+        value: Invalid JSON value.
+        reason: Text that the message gives as the reason.
+    """
+    obj = Secretive(json={"id": 1, field: value})
+
+    with pytest.raises(FieldConversionError, match=reason) as info:
+        getattr(obj, field)
+
+    assert str(info.value).startswith(f"Secretive.{field}: ")
+    assert SECRET not in str(info.value)
+    assert repr(value) not in str(info.value)
+
+
+def test_lookup_errors_name_parameters_without_values(
+    requests_mock: Any,
+) -> None:
+    """``get()`` names the lookup parameters but not their values."""
+    requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(DoesNotExist) as info:
+        Todo.get(title="a", password=SECRET)
+
+    assert str(info.value) == "No Todo matching title, password exists"
+
+
+def test_query_error_names_parameter_without_value(
+    requests_mock: Any,
+) -> None:
+    """A query value that cannot be sent is not quoted."""
+    with pytest.raises(ValueError, match="parameter settings for") as info:
+        Profile.filter(settings={"token": SECRET})
+
+    assert SECRET not in str(info.value)
     assert requests_mock.call_count == 0
 
 
@@ -3153,8 +3268,10 @@ def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    with pytest.raises(DoesNotExist):
+    with pytest.raises(DoesNotExist, match=r"^No Todo matching title exists$"):
         Todo.get(title="missing")
+    with pytest.raises(EazyrestError, match=r"^No Todo exists$"):
+        Todo.get()
 
 
 def test_delete_sends_delete_request(requests_mock: Any) -> None:
