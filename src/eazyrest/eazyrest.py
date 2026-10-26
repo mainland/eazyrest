@@ -35,7 +35,7 @@ import isodate
 import requests
 
 from .api import API
-from .dateparse import parse_duration
+from .dateparse import parse_datetime, parse_duration
 from .write_mode import WriteMode, validate_write_mode
 
 if sys.version_info >= (3, 11):
@@ -781,9 +781,7 @@ class JSONObject:
 
             case BaseType(base_type):
                 if base_type is datetime.datetime:
-                    return datetime.datetime.fromtimestamp(
-                        value, datetime.timezone.utc
-                    )
+                    return parse_datetime(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
@@ -866,8 +864,10 @@ class JSONObject:
 
                 return value
             case BaseType(base_type):
-                if base_type is datetime.datetime:
-                    return value.timestamp()
+                if base_type is datetime.datetime and isinstance(
+                    value, datetime.datetime
+                ):
+                    return value.isoformat()
                 if base_type is datetime.timedelta and isinstance(
                     value, datetime.timedelta
                 ):
