@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from http.cookiejar import CookieJar
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 import urllib3
+from requests.utils import requote_uri
 
 from .write_mode import WriteMode, validate_write_mode
 
@@ -35,12 +36,196 @@ _SESSION_SETTINGS = (
     "max_redirects",
 )
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    """Return the scheme, host, and port of an absolute URL.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        Lowercased scheme, host, and port of ``url`` as Requests would send it.
+        If ``url`` names no port, the port is the scheme's default port, or
+        ``None`` if the scheme has no known default.
+    """
+    # Requests and urlsplit disagree about backslashes in an authority. Check
+    # the URL Requests would send, before attaching session credentials.
+    request = requests.PreparedRequest()
+    request.prepare_url(url, None)
+    assert request.url is not None
+    parts = urlsplit(request.url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+
+
+# Redirects that make requests resend the request body. requests drops the body
+# of a request that it follows through any other redirect.
+_BODY_PRESERVING_REDIRECTS = frozenset({307, 308})
+
+
+def _redirect_destination(resp: requests.Response, target: str) -> str:
+    """Return the URL to which requests follows a redirect.
+
+    This repeats the steps of ``requests.Session.resolve_redirects()``.
+    requests sends the resulting string without preparing it again, so an
+    origin check must examine exactly this string. In particular, requests
+    percent-encodes a backslash in an absolute target, which moves the end of
+    its userinfo, so ``urljoin()`` of the raw target can name a different host.
+
+    Args:
+        resp: Redirect response.
+        target: Redirect target, from ``Session.get_redirect_target()``.
+
+    Returns:
+        Absolute URL of the redirected request.
+    """
+    url = target
+    if url.startswith("//"):
+        url = f"{urlparse(resp.url).scheme}:{url}"
+    parsed = urlparse(url)
+    url = parsed.geturl()
+    if not parsed.netloc:
+        return urljoin(resp.url, requote_uri(url))
+    return requote_uri(url)
+
+
+def _redirect_origins(
+    resp: requests.Response, target: str
+) -> set[tuple[str, str | None, int | None]]:
+    r"""Return the origins that a redirect can be taken to name.
+
+    The connection that requests opens for a redirect uses ``urlparse()`` of
+    the URL that ``_redirect_destination()`` returns. A proxy, or a client that
+    treats a backslash as a slash, as browsers do, may read the target
+    differently, so ``https://a.test\@b.test/`` names ``b.test`` to requests
+    but ``a.test`` to a browser. A redirect is safe only if every reading names
+    an allowed origin.
+
+    Args:
+        resp: Redirect response.
+        target: Redirect target, from ``Session.get_redirect_target()``.
+
+    Returns:
+        The origins of the redirect under each reading. A reading that fails
+        gives an origin with no host, which no allowed origin matches.
+    """
+    destination = _redirect_destination(resp, target)
+    origins: set[tuple[str, str | None, int | None]] = set()
+    try:
+        parts = urlsplit(destination)
+        scheme = parts.scheme.lower()
+        origins.add(
+            (scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme))
+        )
+    except ValueError:
+        origins.add(("", None, None))
+    for url in (destination, urljoin(resp.url, target)):
+        try:
+            origins.add(_origin(url))
+        except (ValueError, requests.RequestException):
+            origins.add(("", None, None))
+    return origins
+
+
+def _response_hooks(hooks: Any) -> list[Callable[..., Any]]:
+    """Return response hooks as a list, as requests accepts them.
+
+    Args:
+        hooks: A response hook, a sequence of them, or ``None``.
+
+    Returns:
+        A new list of the hooks.
+    """
+    if hooks is None:
+        return []
+    if callable(hooks):
+        return [hooks]
+    return list(hooks)
+
+
+def _redirected_method(method: str, status: int) -> str:
+    """Return the method with which requests follows a redirect.
+
+    This repeats ``requests.Session.rebuild_method()``.
+
+    Args:
+        method: Method of the redirected request, in upper case.
+        status: Status code of the redirect.
+
+    Returns:
+        Method of the request that requests sends next.
+    """
+    if status == 303 and method != "HEAD":
+        return "GET"
+    if status == 302 and method != "HEAD":
+        return "GET"
+    if status == 301 and method == "POST":
+        return "GET"
+    return method
+
+
+def _check_write_redirect(resp: requests.Response, target: str) -> None:
+    """Refuse a redirect that would not resend the request it answers.
+
+    requests follows a 301, 302, or 303 without the request body. It changes a
+    ``POST`` to a ``GET`` for a 301 or 302, and any method but ``HEAD`` to a
+    ``GET`` for a 302 or 303, but it resends a ``PATCH`` or ``PUT`` answered
+    with a 301 with its method and without its body. A server that answered
+    the resent request would report success for a request it never received.
+
+    Args:
+        resp: Redirect response.
+        target: Redirect target.
+
+    Raises:
+        requests.HTTPError: If requests would follow ``resp`` with another
+            method, or without the body of the request it answers. The
+            response is closed first.
+    """
+    request = resp.request
+    method = (request.method or "").upper()
+    if resp.status_code in _BODY_PRESERVING_REDIRECTS:
+        return
+    changed = _redirected_method(method, resp.status_code) != method
+    if not changed and request.body is None:
+        return
+
+    resp.close()
+    raise requests.HTTPError(
+        f"{method} {resp.url} was redirected with status {resp.status_code} "
+        f"to {target}, which requests follows "
+        + ("as a GET" if changed else "without the request body")
+        + f", so the {method} request would not be performed. Only 307 "
+        "and 308 redirects resend a request unchanged. Send the request to "
+        "the URL that the server expects, for example by setting "
+        "API.trailing_slash.",
+        response=resp,
+    )
+
 
 class API:
     """HTTP client wrapper for REST APIs.
 
     The class wraps a ``requests.Session`` and automatically joins request
     paths against ``base_url`` while applying a default timeout.
+
+    Requests follows redirects, but only a 307 or 308 redirect keeps the
+    request's method and body. It resends a ``POST`` answered with a 301 or
+    302, and any other request answered with a 302 or 303, as a ``GET``, and it
+    resends a request answered with a 301 without its body. The server then
+    never receives the original request, so a redirect that would change the
+    method or drop a body raises ``requests.HTTPError`` before it is followed.
+    Django's ``APPEND_SLASH`` answers a URL that lacks its trailing slash with
+    such a redirect.
+
+    A redirect is followed only to the origin of the request it answers, or to
+    an origin in ``redirect_origins``. Requests drops an ``Authorization``
+    header when a redirect leaves the host, but it sends every other header,
+    such as an API key or a CSRF token, and a 307 or 308 resends the body. A
+    redirect to another origin raises ``requests.HTTPError`` before anything is
+    sent there.
     """
 
     base_url: str
@@ -49,8 +234,23 @@ class API:
     session: requests.Session
     """Session object for API requests."""
 
-    timeout: float | None = 10.0
-    """Default request timeout."""
+    timeout: float | tuple[float, float] | None = 10.0
+    """Default request timeout in seconds, as requests accepts it.
+
+    A pair gives the connect and read timeouts separately, and ``None`` waits
+    forever. A request's own ``timeout`` argument takes precedence.
+    """
+
+    redirect_origins: Collection[str] = ()
+    """Other origins to which a redirect may lead, as URLs.
+
+    By default, a redirect must lead to the scheme, host, and port of the
+    request it answers, so a redirect from ``http`` to ``https`` is refused
+    too. Add an origin here, such as ``"https://cdn.example.com"``, on an
+    instance or in a subclass, to follow redirects to it. Only the scheme,
+    host, and port of each URL count. Every header and any body of the
+    redirected request is sent to these origins.
+    """
 
     default_write_mode: WriteMode
     """Default write mode inherited by newly created model instances."""
@@ -60,7 +260,7 @@ class API:
         url: str,
         proxy: str | None = None,
         default_write_mode: WriteMode = "lazy",
-        verify: bool = True,
+        verify: bool | str = True,
         **kwargs: Any,
     ):
         """Initialize an API client.
@@ -70,13 +270,18 @@ class API:
             proxy: Optional proxy URL for both HTTP and HTTPS traffic.
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
-            verify: Whether TLS certificates should be verified. When
-                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
-                for the whole process.
+            verify: Whether TLS certificates should be verified, or the path of
+                a CA bundle to verify them with, as for requests. A path or
+                ``False`` takes precedence over the ``REQUESTS_CA_BUNDLE`` and
+                ``CURL_CA_BUNDLE`` environment variables, which requests
+                otherwise uses. When ``False``, urllib3's
+                ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
-                e.g., ``pool_connections`` and ``pool_maxsize``.
+                e.g., ``pool_connections`` and ``pool_maxsize``, and retries,
+                with ``max_retries``. To change the request timeout, set the
+                ``timeout`` attribute instead.
         """
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
@@ -113,7 +318,9 @@ class API:
 
         self.session.proxies.update(proxies)
 
-    def reset_session(self, verify: bool | None = None, **kwargs: Any) -> None:
+    def reset_session(
+        self, verify: bool | str | None = None, **kwargs: Any
+    ) -> None:
         """Replace the underlying ``requests.Session``.
 
         The new session keeps the configuration of the session it replaces,
@@ -122,9 +329,10 @@ class API:
         or mounted adapters. The replaced session is closed.
 
         Args:
-            verify: Whether TLS certificates should be verified. If omitted,
-                the new session keeps the replaced session's setting, and a
-                first session verifies certificates. When ``False``, urllib3's
+            verify: Whether TLS certificates should be verified, or the path of
+                a CA bundle to verify them with. If omitted, the new session
+                keeps the replaced session's setting, and a first session
+                verifies certificates. When ``False``, urllib3's
                 ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
@@ -141,7 +349,7 @@ class API:
 
         if verify is not None:
             session.verify = verify
-            if not verify:
+            if verify is False:
                 urllib3.disable_warnings(
                     urllib3.exceptions.InsecureRequestWarning
                 )
@@ -245,16 +453,119 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            requests.HTTPError: If a redirect leads to an origin that is not
+                allowed, if requests would follow a redirect without the
+                request's body or with another method, or if
+                ``raise_for_response()`` raises it for the response.
         """
         kwargs.setdefault("timeout", self.timeout)
+        if self.session.verify is not True:
+            # With trust_env, requests replaces a verify setting of True with
+            # the CA bundle that REQUESTS_CA_BUNDLE or CURL_CA_BUNDLE names,
+            # and then prefers it over the session's setting. Only a setting
+            # passed with the request is kept.
+            kwargs.setdefault("verify", self.session.verify)
         if self.session.proxies:
             # requests lets proxy environment variables override session
             # proxies, but not proxies passed with the request. requests adds
             # environment proxies to the dict it receives, so pass a copy.
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
-        resp = send(self.resolve_url(uri), *args, **kwargs)
+        url = self.resolve_url(uri)
+        kwargs["hooks"] = self._guard_redirects(url, kwargs.get("hooks"))
+        resp = send(url, *args, **kwargs)
+        self._check_redirects(resp)
         return self._check_response(resp)
+
+    def _guard_redirects(
+        self, url: str, hooks: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return request hooks that refuse unsafe redirects.
+
+        Args:
+            url: Absolute URL of the request.
+            hooks: Hooks passed with the request, if any.
+
+        Returns:
+            ``hooks``, or the session's hooks if ``hooks`` has no response
+            hooks, with a final response hook that checks each redirect before
+            requests follows it.
+        """
+        allowed = {_origin(url), *map(_origin, self.redirect_origins)}
+
+        def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
+            """Refuse a redirect that is not safe to follow.
+
+            Args:
+                resp: Response, which may be a redirect.
+                kwargs: Other arguments that requests passes to response hooks,
+                    which are ignored.
+
+            Raises:
+                requests.HTTPError: If ``resp`` redirects to an origin that is
+                    not allowed, or if requests would follow it without the
+                    request's body. The response is closed first.
+            """
+            target = self.session.get_redirect_target(resp)
+            # requests follows no redirect to an empty target.
+            if not target:
+                return
+
+            destination = _redirect_destination(resp, target)
+            if _redirect_origins(resp, target) <= allowed:
+                _check_write_redirect(resp, target)
+                return
+
+            resp.close()
+            raise requests.HTTPError(
+                f"{resp.request.method} {resp.url} was redirected with status "
+                f"{resp.status_code} to {destination}, whose origin differs "
+                "from the request's, so it was not followed. Add the origin "
+                "to API.redirect_origins to follow it.",
+                response=resp,
+            )
+
+        # requests uses a request's response hooks instead of the session's, so
+        # keep the session's when the request has none. Run the guard last,
+        # after any hook that might change the response.
+        merged = dict(hooks or {})
+        response = merged.get("response") or self.session.hooks.get("response")
+        merged["response"] = [*_response_hooks(response), check_redirect]
+        return merged
+
+    @staticmethod
+    def _check_redirects(resp: requests.Response) -> None:
+        """Reject a response to a request that a redirect changed.
+
+        The response hook refuses such a redirect before requests follows it.
+        This check is a second line of defense, in case a hook was bypassed.
+
+        Args:
+            resp: Final response, after requests followed any redirects.
+
+        Raises:
+            requests.HTTPError: If requests followed a redirect that dropped
+                the original request's body or changed its method.
+        """
+        if not resp.history:
+            return
+
+        redirect = resp.history[0]
+        sent = (redirect.request.method or "").upper()
+        dropped = redirect.request.body is not None and any(
+            hop.status_code not in _BODY_PRESERVING_REDIRECTS
+            for hop in resp.history
+        )
+        if dropped or resp.request.method != redirect.request.method:
+            raise requests.HTTPError(
+                f"{sent} {redirect.url} was redirected with status "
+                f"{redirect.status_code}, and requests resent it to "
+                f"{resp.url} as {resp.request.method}, so the {sent} request "
+                "was not performed",
+                response=redirect,
+            )
 
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``GET`` request.

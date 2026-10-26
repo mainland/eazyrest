@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import Any, cast
 
 import pytest
 import requests
 import urllib3
+from requests_mock import ANY as requests_mock_ANY
 
 from eazyrest import API
 
@@ -42,6 +44,252 @@ def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
     response = api.put("/users/1", json={"name": "Ada"})
 
     assert response.json() == {"id": 1}
+
+
+@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_api_refuses_redirect_that_drops_write(
+    requests_mock: Any, method: str, status: int
+) -> None:
+    """A write that requests would resend without its body raises.
+
+    A 301 keeps ``PATCH``, ``PUT``, and ``DELETE`` but drops the body, and
+    the other redirects change the method to ``GET``. Either way the server
+    would never receive the write, so nothing is sent to the destination.
+
+    Args:
+        method: Name of the ``API`` method that sends the write, such as
+            ``"post"``.
+        status: Redirect status code that the server returns for the write.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.request(
+        method.upper(),
+        "https://example.com/v1/users/1",
+        status_code=status,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    destination = requests_mock.request(
+        requests_mock_ANY, "https://example.com/v1/users/1/", json={"id": 1}
+    )
+
+    with pytest.raises(requests.HTTPError, match="not be performed") as info:
+        getattr(api, method)("/users/1", json={"name": "Ada"})
+
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+    assert not destination.called
+
+
+def test_api_follows_moved_bodyless_delete(requests_mock: Any) -> None:
+    """A 301 resends a bodyless ``DELETE`` unchanged, so it is followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.delete(
+        "https://example.com/v1/users/1",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    deleted = requests_mock.delete(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+
+    api.delete("/users/1")
+
+    assert deleted.called
+
+
+def test_api_check_redirects_rejects_followed_body_loss() -> None:
+    """The final-response check catches a body lost after the hook ran."""
+    first = requests.Response()
+    first.status_code = 301
+    first.url = "https://example.com/v1/users/1"
+    first.request = requests.Request(
+        "PATCH", first.url, json={"name": "Ada"}
+    ).prepare()
+    final = requests.Response()
+    final.status_code = 200
+    final.url = "https://example.com/v1/users/1/"
+    final.request = requests.Request("PATCH", final.url).prepare()
+    final.history = [first]
+
+    with pytest.raises(requests.HTTPError, match="not performed"):
+        API._check_redirects(final)
+
+
+@pytest.mark.parametrize("status", [307, 308])
+def test_api_follows_redirect_that_keeps_method(
+    requests_mock: Any, status: int
+) -> None:
+    """Redirects that keep the method and body are followed.
+
+    Args:
+        status: Redirect status code that keeps the method and body.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://example.com/v2/users/"},
+    )
+    created = requests_mock.post(
+        "https://example.com/v2/users/", status_code=201, json={"id": 1}
+    )
+
+    response = api.post("/users/", json={"name": "Ada"})
+
+    assert response.json() == {"id": 1}
+    assert created.last_request.json() == {"name": "Ada"}
+
+
+def test_api_follows_get_redirect(requests_mock: Any) -> None:
+    """A redirected GET is still a GET, so it is followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    requests_mock.get("https://example.com/v1/users/1/", json={"id": 1})
+
+    assert api.get("/users/1").json() == {"id": 1}
+
+
+@pytest.mark.parametrize(
+    ("method", "status", "target"),
+    [
+        ("get", 302, "https://other.example.net/users/1"),
+        ("post", 307, "https://other.example.net/users/"),
+        ("put", 308, "https://example.com:8443/v1/users/"),
+        ("get", 301, "http://example.com/v1/users/1"),
+    ],
+)
+def test_api_refuses_redirect_to_other_origin(
+    requests_mock: Any, method: str, status: int, target: str
+) -> None:
+    """A redirect to another origin raises before anything is sent there.
+
+    requests would send custom credentials and a preserved body along.
+
+    Args:
+        method: Name of the ``API`` method that sends the request.
+        status: Redirect status code that the server returns.
+        target: Redirect destination, with a different scheme, host, or port.
+    """
+    api = API("https://example.com/v1/")
+    api.session.headers["X-API-Key"] = "secret"
+    requests_mock.request(
+        method.upper(),
+        "https://example.com/v1/users/1",
+        status_code=status,
+        headers={"Location": target},
+    )
+    other = requests_mock.request(method.upper(), target, json={})
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins") as info:
+        getattr(api, method)("/users/1", json={"password": "secret"})
+
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+    assert not other.called
+
+
+def test_api_follows_redirect_to_listed_origin(requests_mock: Any) -> None:
+    """``redirect_origins`` admits an origin, whatever the URL's path."""
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://FILES.example.com:443/ignored/path"]
+    requests_mock.get(
+        "https://example.com/v1/files/1",
+        status_code=302,
+        headers={"Location": "https://files.example.com/1"},
+    )
+    requests_mock.get("https://files.example.com/1", json={"id": 1})
+
+    assert api.get("/files/1").json() == {"id": 1}
+
+
+def test_api_follows_redirect_within_absolute_request_origin(
+    requests_mock: Any,
+) -> None:
+    """An absolute request may be redirected within its own origin."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://other.example.com/users/1",
+        status_code=301,
+        headers={"Location": "/users/1/"},
+    )
+    requests_mock.get("https://other.example.com/users/1/", json={"id": 1})
+
+    assert api.get("https://other.example.com/users/1").json() == {"id": 1}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://example.com\\@evil.example.net/steal",
+        "https://example.com:443\\@evil.example.net/steal",
+        "//example.com\\@evil.example.net/steal",
+    ],
+)
+def test_api_refuses_backslash_authority_redirect(
+    requests_mock: Any, target: str
+) -> None:
+    """A backslash in a redirect cannot hide another host from the guard.
+
+    requests percent-encodes the backslash before following the redirect, so
+    the text before ``@`` becomes userinfo and the request goes to the host
+    after it, with every session header.
+
+    Args:
+        target: Redirect target whose host differs once requests encodes it.
+    """
+    api = API("https://example.com/v1/")
+    api.session.headers["X-API-Key"] = "secret"
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=307,
+        headers={"Location": target},
+    )
+    evil = requests_mock.post(
+        re.compile("https://.*evil\\.example\\.net/.*"), json={}
+    )
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        api.post("/users/", json={"password": "secret"})
+
+    assert not evil.called
+
+
+@pytest.mark.parametrize("on_request", [False, True])
+def test_api_redirect_guard_keeps_response_hooks(
+    requests_mock: Any, on_request: bool
+) -> None:
+    """Session or request response hooks still run beside the guard.
+
+    Args:
+        on_request: Whether the hook is passed with the request rather than
+            installed on the session.
+    """
+    api = API("https://example.com/v1/")
+    seen: list[int] = []
+
+    def record(resp: requests.Response, **kwargs: Any) -> None:
+        seen.append(resp.status_code)
+
+    kwargs: dict[str, Any] = {}
+    if on_request:
+        kwargs["hooks"] = {"response": record}
+    else:
+        api.session.hooks["response"].append(record)
+    requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=302,
+        headers={"Location": "https://other.example.net/users/1"},
+    )
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        api.get("/users/1", **kwargs)
+
+    assert seen == [302]
 
 
 def test_api_closes_session_as_context_manager() -> None:
@@ -195,6 +443,63 @@ def test_api_reset_session_can_enable_verification() -> None:
     api.reset_session(verify=True)
 
     assert api.session.verify is True
+
+
+def test_api_accepts_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CA bundle path verifies certificates and keeps warnings."""
+    disabled: list[type[Warning]] = []
+    monkeypatch.setattr(urllib3, "disable_warnings", disabled.append)
+
+    api = API("https://example.com/", verify="/etc/ssl/certs/internal.pem")
+
+    assert api.session.verify == "/etc/ssl/certs/internal.pem"
+    assert disabled == []
+
+
+@pytest.mark.parametrize("verify", ["/etc/ssl/certs/internal.pem", False])
+def test_api_verify_wins_over_environment_ca_bundle(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, verify: bool | str
+) -> None:
+    """A configured ``verify`` is not replaced by an environment CA bundle.
+
+    With ``trust_env``, requests replaces a request's ``verify`` of ``True``
+    with ``REQUESTS_CA_BUNDLE`` and prefers it over the session's setting.
+
+    Args:
+        verify: Configured CA bundle path, or ``False``.
+    """
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/public.pem")
+    monkeypatch.setenv("CURL_CA_BUNDLE", "/etc/ssl/certs/public.pem")
+    api = API("https://example.com/", verify=verify)
+    requests_mock.get("https://example.com/users/1", json={"id": 1})
+
+    api.get("/users/1")
+
+    assert requests_mock.last_request.verify == verify
+
+
+def test_api_default_verify_honors_environment_ca_bundle(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default ``verify=True`` uses requests' environment CA bundle."""
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/corporate.pem")
+    api = API("https://example.com/")
+    requests_mock.get("https://example.com/users/1", json={"id": 1})
+
+    api.get("/users/1")
+
+    assert requests_mock.last_request.verify == "/etc/ssl/certs/corporate.pem"
+
+
+def test_api_mounts_adapter_with_retries() -> None:
+    """Extra keyword arguments configure the base URL's adapter."""
+    api = API("https://example.com/", max_retries=3)
+
+    adapter = cast(
+        requests.adapters.HTTPAdapter,
+        api.session.get_adapter("https://example.com/users/"),
+    )
+    assert adapter.max_retries.total == 3
 
 
 def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:

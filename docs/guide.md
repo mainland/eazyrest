@@ -343,6 +343,7 @@ class PagedObject(JSONObject):
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
+With `allow_other_origins=True`, a redirect is checked as for every other request: it must lead to the origin of the page request or to one of the API's `redirect_origins`.
 
 ## Write modes
 
@@ -381,7 +382,38 @@ Incoming fields are treated as authoritative server state, so queued lazy update
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to `base_url`, applies a default timeout, and raises for HTTP error responses. To customize error handling for a particular API, override `raise_for_response()` in an `API` subclass.
 
-Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`. Pass `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
+Requests follows redirects, but only a 307 or 308 redirect resends a request unchanged. It resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`, and it resends a `PATCH`, `PUT`, or `DELETE` answered with a 301 without its body. The server would then never receive the original request, so a redirect that would change the method or drop the body raises `requests.HTTPError` before it is followed, rather than letting `create()`, `save()`, or `delete()` report success. A lazy update stays pending. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a URL lacks the trailing slash that Django's `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use the URL that the server redirects to. A `GET`, or a `DELETE` without a body, answered with a 301 is followed.
+
+A redirect is followed only to the origin of the request it answers, that is, its scheme, host, and port. Requests drops the `Authorization` header when a redirect leaves the host, but it sends every other header, such as an API key or a CSRF token, and a 307 or 308 resends the request body. A redirect to another origin, including one from `http://` to `https://`, raises `requests.HTTPError` before anything is sent there. The check examines the URL exactly as requests will send it, and it refuses a target that another client could read as a different host, such as one with a backslash before an `@`. For an API that redirects to another server on purpose, such as a download host, list that origin in `redirect_origins`:
+
+```python
+api = API("https://api.example.com/")
+api.redirect_origins = ["https://files.example.com"]
+```
+
+Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`.
+
+A SOCKS proxy, such as the one that `ssh -D` opens, needs the `socks` extra, `pip install "eazyrest[socks]"`. Without it, the first request raises `requests.exceptions.InvalidSchema`. Use the `socks5h` scheme so that the proxy resolves host names. With `socks5`, names are resolved locally, which fails for a host that only the far side of the tunnel can resolve and sends the lookups outside the tunnel:
+
+```python
+# After: ssh -D 1080 gateway.example.com
+api = API(
+    "https://internal.example.com/api/", proxy="socks5h://localhost:1080"
+)
+```
+
+Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process. Either setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
+
+Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
+
+```python
+from urllib3.util import Retry
+
+api = API("https://api.example.com/v1/", max_retries=Retry(total=3))
+api.timeout = 30
+```
+
+urllib3 retries only idempotent methods by default, so a `POST` is not resent. `reset_session()` keeps the session's configuration but not its adapters, so pass the adapter arguments again when you call it.
 
 Use the client as a context manager to ensure the session is closed:
 
