@@ -8,6 +8,7 @@
 
 quickstart
 guide
+drf
 reference
 ```
 
