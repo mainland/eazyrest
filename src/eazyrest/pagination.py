@@ -34,6 +34,90 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
 
 
+class _PageReader:
+    """Request the next pages of a collection, guarding their URLs."""
+
+    def __init__(self, api: API, allow_other_origins: bool) -> None:
+        """Prepare to read pages through ``api``.
+
+        Args:
+            api: Client used to request the next pages.
+            allow_other_origins: Whether to follow next-page URLs and redirects
+                whose origin differs from the API's base URL.
+        """
+        self.api = api
+        self.allow_other_origins = allow_other_origins
+        self.api_origin = _origin(api.base_url)
+        self.read_urls: set[str] = set()
+        """The URLs of the pages read so far."""
+
+    def check_origin(self, url: str) -> None:
+        """Reject a page or redirect URL before credentials can be sent.
+
+        Args:
+            url: Absolute URL of a page or of a redirect target.
+
+        Raises:
+            ValueError: If ``url`` has an origin other than the API's base URL
+                and other origins are not allowed.
+        """
+        if not self.allow_other_origins and _origin(url) != self.api_origin:
+            raise ValueError(
+                f"Next-page URL {url!r} has a different origin from the "
+                f"API's base URL {self.api.base_url!r}. Pass "
+                "allow_other_origins=True to follow it."
+            )
+
+    def read(self, url: str) -> requests.Response:
+        """Request the page at ``url``, a link resolved to an absolute URL.
+
+        Args:
+            url: Absolute URL of the page.
+
+        Returns:
+            Response for the page.
+
+        Raises:
+            ValueError: If ``url`` names a page already read, or if it or a
+                redirect has another origin and other origins are not allowed.
+        """
+        if url in self.read_urls:
+            raise ValueError(
+                f"Next-page URL {url!r} names a page that was already read, "
+                "so following it would never end"
+            )
+        self.check_origin(url)
+
+        def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
+            """Check redirects before requests follows them.
+
+            Args:
+                resp: Response, which may be a redirect.
+                kwargs: Other arguments that requests passes to response hooks,
+                    which are ignored.
+
+            Raises:
+                ValueError: If ``resp`` redirects to an origin other than the
+                    API's base URL and other origins are not allowed. The
+                    response is closed first.
+            """
+            target = self.api.session.get_redirect_target(resp)
+            if target is not None:
+                try:
+                    self.check_origin(urljoin(resp.url, target))
+                except ValueError:
+                    resp.close()
+                    raise
+
+        # Request hooks replace session hooks, so preserve the existing ones.
+        # Run the guard last, after any hook that might change the response.
+        hooks = [*self.api.session.hooks.get("response", []), check_redirect]
+        resp = self.api.get(url, hooks={"response": hooks})
+        # After a redirect, a page's links are relative to its final URL.
+        self.read_urls.update((url, resp.url))
+        return resp
+
+
 def follow_next_links(
     api: API,
     payload: Any,
@@ -91,49 +175,12 @@ def follow_next_links(
             names a page already read, or if a next-page URL or redirect has
             another origin and ``allow_other_origins`` is ``False``.
     """
-    api_origin = _origin(api.base_url)
+    reader = _PageReader(api, allow_other_origins)
     page_url = api.base_url if url is None else api.resolve_url(url)
-    # The URLs of the pages read so far. Without url=, the first page's URL is
-    # unknown, and the base URL is not a page.
-    read_urls: set[str] = set() if url is None else {page_url}
-
-    def check_origin(next_url: str) -> None:
-        """Reject a page or redirect URL before credentials can be sent.
-
-        Args:
-            next_url: Absolute URL of a page or of a redirect target.
-
-        Raises:
-            ValueError: If ``next_url`` has an origin other than the API's base
-                URL and ``allow_other_origins`` is false.
-        """
-        if not allow_other_origins and _origin(next_url) != api_origin:
-            raise ValueError(
-                f"Next-page URL {next_url!r} has a different origin from the "
-                f"API's base URL {api.base_url!r}. Pass "
-                "allow_other_origins=True to follow it."
-            )
-
-    def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
-        """Check redirects before requests follows them.
-
-        Args:
-            resp: Response, which may be a redirect.
-            kwargs: Other arguments that requests passes to response hooks,
-                which are ignored.
-
-        Raises:
-            ValueError: If ``resp`` redirects to an origin other than the API's
-                base URL and ``allow_other_origins`` is false. The response is
-                closed first.
-        """
-        target = api.session.get_redirect_target(resp)
-        if target is not None:
-            try:
-                check_origin(urljoin(resp.url, target))
-            except ValueError:
-                resp.close()
-                raise
+    # Without url=, the first page's URL is unknown, and the base URL is not a
+    # page.
+    if url is not None:
+        reader.read_urls.add(page_url)
 
     while True:
         if isinstance(payload, list):
@@ -157,19 +204,7 @@ def follow_next_links(
         if next_url is None or next_url == "":
             return
 
-        next_url = urljoin(page_url, next_url)
-        if next_url in read_urls:
-            raise ValueError(
-                f"Next-page URL {next_url!r} names a page that was already "
-                "read, so following it would never end"
-            )
-        check_origin(next_url)
-
-        # Request hooks replace session hooks, so preserve the existing ones.
-        # Run the guard last, after any hook that might change the response.
-        hooks = [*api.session.hooks.get("response", []), check_redirect]
-        resp = api.get(next_url, hooks={"response": hooks})
+        resp = reader.read(urljoin(page_url, next_url))
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url
-        read_urls.update((next_url, page_url))
         payload = resp.json()
