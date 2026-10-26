@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime
 import enum
+import sys
+import types
 import typing
 import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
-from typing import Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -17,6 +19,7 @@ import requests
 from hypothesis import given
 from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
+from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
@@ -306,6 +309,46 @@ class Readings(ModelBase):
     id: int
     values: list[int | None]
     rows: list[list[int]]
+
+
+T = TypeVar("T")
+Dates = TypeAliasType("Dates", list[datetime.datetime])
+ListOf = TypeAliasType("ListOf", list[T], type_params=(T,))
+MaybeDates = TypeAliasType("MaybeDates", Dates | None)
+QuotedDates = TypeAliasType("QuotedDates", list["datetime.datetime"])
+# Build list["..."] at run time, since mypy rejects what these aliases test: a
+# quoted self-reference and an unknown name.
+QuotedRecursive = TypeAliasType(
+    "QuotedRecursive",
+    types.GenericAlias(list, ("QuotedRecursive",)),  # type: ignore[valid-type]
+)
+QuotedMissing = TypeAliasType(
+    "QuotedMissing",
+    types.GenericAlias(list, ("NoSuchType",)),  # type: ignore[valid-type]
+)
+
+
+@json_object
+class AliasedTimeline(ModelBase):
+    """Model whose field types are named type aliases."""
+
+    class_url = "/aliased-timelines/"
+
+    id: int
+    starts_at: Dates
+    ends_at: ListOf[datetime.datetime]
+    paused_at: MaybeDates
+
+
+@json_object
+class AnnotatedTimeline(ModelBase):
+    """Model whose field types carry metadata that eazyrest does not use."""
+
+    class_url = "/annotated-timelines/"
+
+    id: int
+    owner: Annotated[User, "owner"] | None
+    starts_at: Annotated[list[Annotated[datetime.datetime, "start"]], "all"]
 
 
 class IssueStatus(str, enum.Enum):
@@ -902,6 +945,35 @@ def test_datetime_list_field_decodes_nested_items() -> None:
     ]
 
 
+def test_annotated_field_types_convert_like_their_types(
+    requests_mock: Any,
+) -> None:
+    """``Annotated[T, ...]`` converts as ``T`` and keeps its metadata."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/annotated-timelines/1/", status_code=204
+    )
+    timeline = AnnotatedTimeline(
+        json={"id": 1, "owner": {"id": 2}, "starts_at": [1711972800]}
+    )
+    start = datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc)
+
+    assert isinstance(timeline.owner, User)
+    assert timeline.owner.id == 2
+    assert timeline.starts_at == [start]
+    assert typing.get_args(vars(AnnotatedTimeline)["starts_at"].ty)[1:] == (
+        "all",
+    )
+
+    timeline.owner = None
+    timeline.starts_at = [start]
+    timeline.save()
+
+    assert patch.last_request.json() == {
+        "owner": None,
+        "starts_at": ["2024-04-01T12:00:00+00:00"],
+    }
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -958,6 +1030,30 @@ def test_naive_datetime_encodes_without_offset(requests_mock: Any) -> None:
     )
 
     assert post.last_request.json() == {"starts_at": "2024-04-01T12:00:00"}
+
+
+def test_datetime_with_sub_minute_offset_is_rejected(
+    requests_mock: Any,
+) -> None:
+    """A UTC offset with seconds raises rather than sending unreadable JSON.
+
+    Python writes such an offset, as ``+00:19:32``, but ISO 8601 has none, so
+    neither the field nor a server would read the value back.
+    """
+    offset = datetime.timezone(datetime.timedelta(minutes=19, seconds=32))
+    value = datetime.datetime(1900, 1, 1, tzinfo=offset)
+    event = Event(json={"id": 1, "starts_at": "2024-04-01T12:00:00Z"})
+
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        event.starts_at = value
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        Event.create(starts_at=value)
+
+    assert event.starts_at == datetime.datetime(
+        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+    )
+    assert event._pending_updates == {}
+    assert requests_mock.call_count == 0
 
 
 @pytest.mark.parametrize("value", [True, {"seconds": 1}])
@@ -3082,6 +3178,32 @@ def test_query_rejects_values_requests_would_change(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_collection_field_reads_and_writes_none(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """A collection field that is not optional still writes ``None``.
+
+    Args:
+        write_mode: Write mode of the object that is assigned.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/timelines/1/",
+        json={"id": 1, "starts_at": None},
+    )
+    assert Timeline(json={"id": 1, "starts_at": None}).starts_at is None
+    timeline = Timeline(json={"id": 1, "starts_at": []})
+    timeline.set_write_mode(write_mode)
+
+    # The annotation rejects None statically, so assign it dynamically to
+    # check the run-time behavior.
+    setattr(timeline, "starts_at", None)  # noqa: B010
+    timeline.save()
+
+    assert patch.last_request.json() == {"starts_at": None}
+    assert timeline.starts_at is None
+
+
 @json_object
 class Secretive(ModelBase):
     """Model whose fields decode with eazyrest's own codecs."""
@@ -3154,6 +3276,112 @@ def test_query_error_names_parameter_without_value(
 
     assert SECRET not in str(info.value)
     assert requests_mock.call_count == 0
+
+
+def test_named_type_aliases_convert_as_their_types() -> None:
+    """A field typed by a named alias converts as the type it names.
+
+    This holds for an alias with type parameters, and for one inside another.
+    """
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    timeline = AliasedTimeline(
+        json={
+            "id": 1,
+            "starts_at": ["2024-01-01T00:00:00Z"],
+            "ends_at": [1704067200],
+            "paused_at": None,
+        }
+    )
+
+    assert timeline.starts_at == [when]
+    assert timeline.ends_at == [when]
+    assert timeline.paused_at is None
+    timeline.paused_at = [when]
+    assert timeline.json["paused_at"] == ["2024-01-01T00:00:00+00:00"]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement needs Python 3.12"
+)
+@pytest.mark.parametrize(
+    ("statement", "match"),
+    [
+        ("type Alias = list[Alias] | int", "refers to itself"),
+        ("type Alias[T] = list[T]", "needs one type argument"),
+    ],
+)
+def test_unsupported_type_aliases_raise(statement: str, match: str) -> None:
+    """A self-referring alias, or a generic one without arguments, raises.
+
+    Args:
+        statement: ``type`` statement that defines ``Alias``.
+        match: Pattern that the error message should match.
+    """
+    namespace: dict[str, Any] = {}
+    exec(statement, namespace)  # noqa: S102
+    model: Any = json_object(
+        type(
+            "Aliased",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "value": namespace["Alias"]},
+                "class_url": "/aliased/",
+            },
+        )
+    )
+
+    with pytest.raises(FieldConversionError, match=match):
+        _ = model(json={"id": 1, "value": [1]}).value
+
+
+def test_quoted_reference_in_alias_resolves_in_its_module() -> None:
+    """A string inside an alias's value names a type, not a string.
+
+    Without resolution, ``list["datetime.datetime"]`` would read its items
+    as unconverted strings.
+    """
+
+    @json_object
+    class Quoted(ModelBase):
+        class_url = "/quoted/"
+
+        id: int
+        dates: QuotedDates
+
+    quoted = Quoted(json={"id": 1, "dates": ["2024-01-01T00:00:00Z"]})
+
+    assert quoted.dates == [
+        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("alias", "match"),
+    [
+        (QuotedRecursive, "refers to itself"),
+        (QuotedMissing, "cannot be resolved"),
+    ],
+)
+def test_unresolvable_quoted_alias_raises(alias: Any, match: str) -> None:
+    """A quoted self-reference or unknown name raises rather than passing.
+
+    Args:
+        alias: Named alias whose value holds the quoted reference.
+        match: Pattern that the error message should match.
+    """
+    model: Any = json_object(
+        type(
+            "Aliased",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "value": alias},
+                "class_url": "/aliased/",
+            },
+        )
+    )
+
+    with pytest.raises(FieldConversionError, match=match):
+        _ = model(json={"id": 1, "value": ["bad"]}).value
 
 
 def test_collection_field_values_must_be_collections(

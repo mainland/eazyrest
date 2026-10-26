@@ -6,4 +6,5 @@
 reference/api
 reference/models
 reference/helpers
+reference/pydantic
 ```

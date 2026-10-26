@@ -8,12 +8,15 @@ enums. JSON scalars need none.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import datetime
 import enum
+import re
 import typing
 import uuid
 import weakref
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple
@@ -21,6 +24,9 @@ from typing import Any, NamedTuple
 import isodate
 
 from .dateparse import parse_datetime, parse_duration
+
+_ONE_MINUTE = datetime.timedelta(minutes=1)
+"""The unit of an ISO 8601 UTC offset."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -87,6 +93,11 @@ def _decode_date(value: Any) -> datetime.date:
         ValueError: If ``value`` is not an ISO 8601 date. The message does not
             quote ``value``.
     """
+    if (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None
+    ):
+        raise ValueError("Date is not in ISO 8601 format (YYYY-MM-DD)")
     try:
         return datetime.date.fromisoformat(value)
     except ValueError as err:
@@ -135,6 +146,29 @@ def _decode_enum_value(value: Any, cls: type[Any]) -> enum.Enum:
     return _decode_enum(cls, value)
 
 
+def _encode_datetime(value: Any) -> Any:
+    """Encode a ``datetime`` as ISO 8601.
+
+    Args:
+        value: Value of a ``datetime`` field.
+
+    Returns:
+        The ISO 8601 text.
+
+    Raises:
+        ValueError: If the UTC offset is not a whole number of minutes.
+    """
+    # isoformat() writes an offset such as +00:19:32, which a zone gives some
+    # old dates, but ISO 8601 offsets are whole minutes, so neither the field
+    # nor a server reads it.
+    offset = value.utcoffset()
+    if offset is not None and offset % _ONE_MINUTE:
+        raise ValueError(
+            "Datetime field values must have a UTC offset of whole minutes"
+        )
+    return value.isoformat()
+
+
 def _encode_date(value: Any) -> Any:
     """Encode a ``date`` as an ISO 8601 date.
 
@@ -171,7 +205,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
             decode=lambda value, _: parse_datetime(value),
-            encode=lambda value, _: value.isoformat(),
+            encode=lambda value, _: _encode_datetime(value),
         ),
         datetime.date: Conversion(
             decode=lambda value, _: _decode_date(value),
@@ -423,3 +457,44 @@ def _is_instance(value: Any, ty: Any) -> bool:
     if supertype is not None:
         return _is_instance(value, supertype)
     return isinstance(ty, type) and isinstance(value, ty)
+
+
+_ACTIVE_TABLE: contextvars.ContextVar[Mapping[Any, Conversion] | None] = (
+    contextvars.ContextVar("eazyrest_active_table", default=None)
+)
+"""The table of the model whose field Pydantic is converting, if any."""
+
+
+@contextlib.contextmanager
+def _active_table(
+    table: Mapping[Any, Conversion],
+) -> Generator[None, None, None]:
+    """Make a model's table the one that ``eazyrest.pydantic`` types use.
+
+    Args:
+        table: Conversion table of the model whose field Pydantic converts.
+
+    Yields:
+        Nothing. The previous table is restored afterward.
+    """
+    token = _ACTIVE_TABLE.set(table)
+    try:
+        yield
+    finally:
+        _ACTIVE_TABLE.reset(token)
+
+
+def _current_conversion(ty: Any) -> _Found:
+    """Return the conversion of a type in the active table, or the default.
+
+    Args:
+        ty: A type with a default conversion, such as ``datetime.datetime``
+            or an enum.
+
+    Returns:
+        The conversion, the type to pass to it, and its key.
+    """
+    table = _ACTIVE_TABLE.get()
+    found = _conversion_of(ty, DEFAULT_CONVERSIONS if table is None else table)
+    assert found is not None, ty
+    return found

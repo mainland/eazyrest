@@ -14,6 +14,13 @@ items in collection annotations such as `list[datetime.datetime]`,
 pip install eazyrest
 ```
 
+To have Pydantic convert fields whose types use it, such as Pydantic models or
+`Annotated[int, pydantic.Field(gt=0)]`, install the `pydantic` extra:
+
+```bash
+pip install "eazyrest[pydantic]"
+```
+
 To send requests through a SOCKS proxy, install the `socks` extra:
 
 ```bash

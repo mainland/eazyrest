@@ -29,8 +29,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
 from typing import (
+    TYPE_CHECKING,
+    Annotated,
     Any,
     ClassVar,
+    Literal,
     TypeAlias,
     TypeVar,
     Union,
@@ -43,6 +46,7 @@ import requests
 
 from ._conversion import (
     Conversion,
+    _active_table,
     _conversion_of,
     _final_supertype,
     _is_instance,
@@ -58,6 +62,9 @@ else:
 
 if sys.version_info >= (3, 14):
     from annotationlib import Format
+
+if TYPE_CHECKING:
+    from pydantic import TypeAdapter
 
 
 class EazyrestError(Exception):
@@ -359,22 +366,341 @@ class CollectionType:
     item_type: AnalyzedType
 
 
+@dataclass(frozen=True)
+class PydanticType:
+    """Leaf type metadata for a type that Pydantic converts.
+
+    A type that mentions Pydantic, such as a Pydantic model or ``Annotated[int,
+    pydantic.Field(gt=0)]``, converts with a Pydantic ``TypeAdapter``.
+    """
+
+    annotation: Any
+    """Declared type, with its ``Annotated`` metadata."""
+
+    @cached_property
+    def adapter(self) -> TypeAdapter[Any]:
+        """Return the ``TypeAdapter`` that converts values of the type.
+
+        The adapter converts ``datetime``, ``date``, ``timedelta``, ``UUID``,
+        and enum types that the annotation names as eazyrest does. Types inside
+        a class that the annotation names, such as the fields of a Pydantic
+        model, follow that class's rules.
+
+        Raises:
+            TypeError: If Pydantic is not installed, or it cannot convert the
+                type.
+        """
+        try:
+            from .pydantic import _type_adapter
+        except ImportError as err:
+            raise TypeError(
+                f"Converting {self.annotation!r} needs Pydantic, which the "
+                "eazyrest[pydantic] extra installs"
+            ) from err
+
+        return _type_adapter(self.annotation)
+
+
 AnalyzedType: TypeAlias = (
-    BaseType | RelatedType | OptionalType | CollectionType
+    BaseType | RelatedType | OptionalType | CollectionType | PydanticType
 )
+
+
+def _is_pydantic_metadata(metadata: Any) -> bool:
+    """Return whether ``Annotated`` metadata is for Pydantic.
+
+    Constraints from ``annotated_types``, which other libraries also use, are
+    not.
+
+    Args:
+        metadata: One item of ``Annotated`` metadata.
+
+    Returns:
+        Whether ``metadata`` has Pydantic's schema hook or its type comes from
+        the ``pydantic`` package.
+    """
+    return (
+        hasattr(metadata, "__get_pydantic_core_schema__")
+        or type(metadata).__module__.partition(".")[0] == "pydantic"
+    )
+
+
+def _mentions_pydantic(ty: Any) -> bool:
+    """Return whether a type, or a type inside it, is for Pydantic.
+
+    A class with Pydantic's schema hook, such as a Pydantic model, a class with
+    a Pydantic config, such as a ``TypedDict`` decorated with
+    ``pydantic.with_config()``, and ``Annotated`` metadata for Pydantic are for
+    Pydantic.
+
+    Args:
+        ty: Type to inspect. The values of a ``Literal`` are not inspected.
+
+    Returns:
+        Whether ``ty``, or any type argument inside it, is for Pydantic.
+    """
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if origin is Annotated:
+        return _mentions_pydantic(args[0]) or any(
+            _is_pydantic_metadata(metadata) for metadata in args[1:]
+        )
+
+    # A generic alias, such as Spec[int], does not forward these attributes to
+    # the generic class.
+    for candidate in (ty, origin):
+        if hasattr(candidate, "__get_pydantic_core_schema__") or hasattr(
+            candidate, "__pydantic_config__"
+        ):
+            return True
+
+    if origin is Literal:
+        return False
+
+    return any(_mentions_pydantic(arg) for arg in args)
+
+
+def _is_named_tuple(ty: Any) -> bool:
+    """Return whether a type is a ``NamedTuple`` class.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a tuple class with named fields.
+    """
+    return (
+        isinstance(ty, type)
+        and issubclass(ty, tuple)
+        and hasattr(ty, "_fields")
+    )
+
+
+def _is_type_alias(ty: Any) -> bool:
+    """Return whether a type is a named type alias.
+
+    A named alias is a ``typing.TypeAliasType``, which the ``type`` statement
+    creates, or its ``typing_extensions`` backport. An ordinary assignment, as
+    in ``Points = list[Point]``, binds the type itself and is not one.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a named type alias.
+    """
+    return type(ty).__name__ == "TypeAliasType" and hasattr(ty, "__value__")
+
+
+def _expand_alias(
+    alias: Any, args: tuple[Any, ...], expanding: tuple[Any, ...]
+) -> Any:
+    """Return the type that a named alias, with type arguments, stands for.
+
+    Args:
+        alias: Named type alias.
+        args: Type arguments for the alias's type parameters, already
+            expanded.
+        expanding: Aliases whose expansion is in progress.
+
+    Returns:
+        The alias's value, with ``args`` in place of its type parameters and
+        every named alias inside it expanded.
+
+    Raises:
+        TypeError: If the alias refers to itself, or its type parameters are
+            not type variables matching ``args``.
+    """
+    if alias in expanding:
+        raise TypeError(
+            f"Type alias {alias.__name__} refers to itself, which eazyrest "
+            "cannot convert"
+        )
+
+    params = alias.__type_params__
+    if len(params) != len(args) or not all(
+        isinstance(param, TypeVar) for param in params
+    ):
+        raise TypeError(
+            f"Type alias {alias.__name__} needs one type argument for each of "
+            "its type parameters, which must be type variables"
+        )
+
+    return _expand_aliases(
+        _resolve_alias_value(alias),
+        dict(zip(params, args, strict=True)),
+        (*expanding, alias),
+    )
+
+
+def _has_forward_refs(ty: Any) -> bool:
+    """Return whether a type names a type by a string, at any depth.
+
+    Args:
+        ty: Type to examine.
+
+    Returns:
+        Whether ``ty``, or a type argument within it, is a string or a
+        ``ForwardRef``.
+    """
+    if isinstance(ty, (str, typing.ForwardRef)):
+        return True
+    if typing.get_origin(ty) is Literal:
+        return False
+    return any(_has_forward_refs(arg) for arg in typing.get_args(ty))
+
+
+def _as_forward_refs(ty: Any) -> Any:
+    """Return a type with each string in it made a ``ForwardRef``.
+
+    Before Python 3.11, ``typing.get_type_hints()`` resolves a string inside a
+    built-in generic, as in ``list["datetime.datetime"]``, only if it is a
+    ``ForwardRef``.
+
+    Args:
+        ty: Type to convert.
+
+    Returns:
+        ``ty`` with each string, also as a type argument, replaced by a
+        ``ForwardRef`` to it.
+    """
+    if isinstance(ty, str):
+        return typing.ForwardRef(ty)
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if not args or origin is Literal:
+        return ty
+
+    new_args = tuple(_as_forward_refs(arg) for arg in args)
+    if all(new is old for new, old in zip(new_args, args, strict=True)):
+        return ty
+    if origin is Annotated:
+        params = new_args
+        return Annotated[params]
+    if origin is types.UnionType:
+        origin = Union
+
+    return origin[new_args]
+
+
+def _resolve_alias_value(alias: Any) -> Any:
+    """Return the value of a named alias with its string references resolved.
+
+    A string inside an alias's value, as in ``list["datetime.datetime"]``,
+    names a type in the module that defines the alias. It is resolved there,
+    as ``typing.get_type_hints()`` resolves an annotation, so that the alias
+    converts as the type it names rather than as an unconverted value.
+
+    Args:
+        alias: Named type alias.
+
+    Returns:
+        The alias's value, with each string reference replaced by the type it
+        names.
+
+    Raises:
+        TypeError: If a string reference names nothing in the alias's module.
+    """
+    value = alias.__value__
+    if not _has_forward_refs(value):
+        return value
+
+    holder = type(
+        alias.__name__,
+        (),
+        {
+            "__module__": alias.__module__,
+            "__annotations__": {"value": _as_forward_refs(value)},
+        },
+    )
+    try:
+        return typing.get_type_hints(holder, include_extras=True)["value"]
+    except Exception as error:
+        raise TypeError(
+            f"Type alias {alias.__name__} names a type by a string that "
+            f"cannot be resolved in module {alias.__module__}"
+        ) from error
+
+
+def _expand_aliases(
+    ty: Any,
+    substitutions: Mapping[Any, Any] | None = None,
+    expanding: tuple[Any, ...] = (),
+) -> Any:
+    """Return a type with every named type alias in it expanded.
+
+    Args:
+        ty: Type to expand.
+        substitutions: Types to put in place of type variables, while the
+            value of a parameterized alias expands.
+        expanding: Aliases whose expansion is in progress.
+
+    Returns:
+        ``ty`` with each named alias, also as a type argument, replaced by the
+        type it stands for, or ``ty`` itself if it has none.
+
+    Raises:
+        TypeError: If an alias cannot be expanded.
+    """
+    if substitutions and isinstance(ty, TypeVar) and ty in substitutions:
+        return substitutions[ty]
+    if _is_type_alias(ty):
+        return _expand_alias(ty, (), expanding)
+
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if _is_type_alias(origin):
+        args = tuple(
+            _expand_aliases(arg, substitutions, expanding) for arg in args
+        )
+        return _expand_alias(origin, args, expanding)
+    if not args or origin is Literal:
+        return ty
+
+    new_args = tuple(
+        _expand_aliases(arg, substitutions, expanding) for arg in args
+    )
+    if all(new is old for new, old in zip(new_args, args, strict=True)):
+        return ty
+    if origin is Annotated:
+        params = new_args
+        return Annotated[params]
+    if origin is types.UnionType:
+        origin = Union
+
+    return origin[new_args]
 
 
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
+
+    ``Annotated[T, ...]`` analyzes as ``T``, unless its metadata is for
+    Pydantic. Then, and for a type below eazyrest's structure of related
+    objects, optional values, and collections that mentions Pydantic, Pydantic
+    converts the whole type.
+
+    A named type alias, such as one that the ``type`` statement creates,
+    analyzes as the type it stands for.
 
     Args:
         ty: Declared field type.
 
     Returns:
         Structured type metadata for ``ty``.
+
+    Raises:
+        TypeError: If ``ty`` holds a named type alias that refers to itself, or
+            whose type parameters cannot be substituted.
     """
+    ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
+
+    if ty_origin is Annotated:
+        if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):
+            return PydanticType(ty)
+
+        return analyze_type(ty_args[0])
 
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
@@ -394,6 +720,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             collection_type=cast(type[Any], ty_origin),
             item_type=analyze_type(ty_args[0]),
         )
+
+    if _mentions_pydantic(ty):
+        return PydanticType(ty)
 
     return BaseType(ty)
 
@@ -1034,7 +1363,10 @@ class JSONProperty:
             if not isinstance(value, JSONProperty)
         }
         localns[self.cls.__name__] = self.cls
-        return typing.get_type_hints(holder, localns=localns)[self.field]
+        # Keep Annotated metadata, which analyze_type() interprets.
+        return typing.get_type_hints(
+            holder, localns=localns, include_extras=True
+        )[self.field]
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
@@ -1078,17 +1410,23 @@ class JSONProperty:
                 self.analyzed_type,
                 field=self.field,
             )
-        obj._field_cache[self.field] = value
         # A related object saves its own changes.
-        if not isinstance(
+        changeable = not isinstance(
             value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
-        ):
+        )
+        if changeable:
             # The caller can change this value in place. Record its encoding,
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
             with _converting(type(obj), self.field):
                 encoded = obj._to_json(value, self.analyzed_type)
+
+        # Cache the value only once its encoding is known, so that a field
+        # whose value cannot be encoded fails on every read, rather than
+        # returning a value whose changes save() would miss.
+        obj._field_cache[self.field] = value
+        if changeable:
             obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
@@ -1520,6 +1858,16 @@ class JSONObject:
                 # object's JSON without recording an update.
                 return _copy_json(value)
 
+            case PydanticType():
+                # Building the adapter reports a missing Pydantic.
+                adapter = conversion.adapter
+                from .pydantic import _decode
+
+                # Pydantic does not copy nested values of type Any, which the
+                # returned value would then share with the JSON.
+                with _active_table(_table_of(type(self))):
+                    return _decode(adapter, _copy_json(value))
+
             case RelatedType(model_type):
                 return self.create_related(
                     value,
@@ -1572,7 +1920,9 @@ class JSONObject:
     def _to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
-        A collection converts to a list.
+        A collection converts to a list. ``None`` converts to ``None``, which
+        JSON writes as ``null``, whatever the type, as ``_from_json()`` reads
+        ``null``.
 
         Args:
             value: Python value to serialize.
@@ -1587,11 +1937,11 @@ class JSONObject:
                 collection of items. Also raised if ``conversion`` is
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
+        if value is None:
+            return None
+
         match conversion:
             case OptionalType(inner_type):
-                if value is None:
-                    return None
-
                 return cls._to_json(value, inner_type)
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
@@ -1620,6 +1970,11 @@ class JSONObject:
                     )
 
                 return [cls._to_json(item, item_type) for item in value]
+            case PydanticType():
+                from .pydantic import _encode
+
+                with _active_table(_table_of(cls)):
+                    return _encode(conversion.adapter, value)
             case _:
                 raise TypeError(
                     f"Unsupported analyzed type {type(conversion).__name__}"

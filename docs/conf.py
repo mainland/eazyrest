@@ -1,6 +1,9 @@
 """Sphinx configuration for the eazyrest documentation."""
 
 from importlib.metadata import version as package_version
+from typing import Any
+
+from docutils import nodes
 
 project = "eazyrest"
 author = "Geoffrey Mainland"
@@ -41,6 +44,7 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "requests": ("https://requests.readthedocs.io/en/latest/", None),
     "dateutil": ("https://dateutil.readthedocs.io/en/stable/", None),
+    "pydantic": ("https://docs.pydantic.dev/latest/", None),
 }
 
 # Warn about every reference that does not resolve.
@@ -48,4 +52,34 @@ nitpicky = True
 nitpick_ignore = [
     # Sphinx cannot link to a type variable.
     ("py:class", "eazyrest.eazyrest.T"),
+    # eazyrest.py imports TypeAdapter only for type checking, so autodoc cannot
+    # qualify the name.
+    ("py:class", "TypeAdapter"),
 ]
+
+
+def _drop_alias_values(app: Any, doctree: Any) -> None:
+    """Drop the "alias of" line of the eazyrest.pydantic types.
+
+    autodoc writes the value of an ``Annotated`` alias even with
+    ``:no-value:``, and the types' metadata are eazyrest's private objects,
+    which would print with their addresses.
+
+    Args:
+        app: The Sphinx application.
+        doctree: A read document.
+    """
+    if app.env.docname != "reference/pydantic":
+        return
+    for paragraph in list(doctree.findall(nodes.paragraph)):
+        if paragraph.astext().startswith("alias of Annotated["):
+            paragraph.parent.remove(paragraph)
+
+
+def setup(app: Any) -> None:
+    """Install the document hooks.
+
+    Args:
+        app: The Sphinx application.
+    """
+    app.connect("doctree-read", _drop_alias_values)
