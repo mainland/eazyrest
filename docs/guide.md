@@ -383,7 +383,18 @@ The `API` class wraps a `requests.Session`, resolves request URLs relative to `b
 
 Requests follows redirects, but it resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`. The server has then not performed the original request, so such a redirect raises `requests.HTTPError` rather than letting `create()`, `save()`, or `delete()` report success. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a `class_url` lacks the trailing slash that Django's `APPEND_SLASH` adds. Use the URL that the server redirects to. Redirects that keep the method, such as 307 and 308, are followed.
 
-Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`. Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
+Pass `proxy=` to send requests through a proxy. The proxy takes precedence over proxy environment variables such as `HTTPS_PROXY`.
+
+A SOCKS proxy, such as the one that `ssh -D` opens, needs the `socks` extra, `pip install "eazyrest[socks]"`. Without it, the first request raises `requests.exceptions.InvalidSchema`. Use the `socks5h` scheme so that the proxy resolves host names. With `socks5`, names are resolved locally, which fails for a host that only the far side of the tunnel can resolve and sends the lookups outside the tunnel:
+
+```python
+# After: ssh -D 1080 gateway.example.com
+api = API(
+    "https://internal.example.com/api/", proxy="socks5h://localhost:1080"
+)
+```
+
+Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process.
 
 Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
 
