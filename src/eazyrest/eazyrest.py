@@ -440,12 +440,121 @@ class RelatedCollection(Iterable[T]):
             )
 
 
+def _declared_fields(
+    cls: type[JSONObject], exclude: AbstractSet[str]
+) -> list[str]:
+    """Return the fields that ``cls`` declares, in declaration order.
+
+    Args:
+        cls: Model class whose annotations are read.
+        exclude: Names to leave out.
+
+    Returns:
+        Names annotated directly on ``cls`` that are not ``ClassVar``
+        annotations and are not in ``exclude``.
+    """
+    return [
+        field
+        for field, annotation in _annotations(cls).items()
+        if field not in exclude and not _is_class_var(annotation)
+    ]
+
+
+def _check_json_keys(
+    cls: type[JSONObject],
+    field_map: Mapping[str, str],
+    exclude: AbstractSet[str],
+) -> None:
+    """Check that no two fields of ``cls`` share a JSON key.
+
+    Each field caches its own converted value, so assigning one of two fields
+    backed by the same key would leave the other reading a stale value.
+
+    Args:
+        cls: Class being decorated.
+        field_map: Mapping from Python attribute name to JSON key.
+        exclude: Annotated attribute names to ignore.
+
+    Raises:
+        ValueError: If two fields, declared or inherited, map to one key.
+    """
+    declared = _declared_fields(cls, exclude)
+    inherited = sorted(
+        field
+        for field in getattr(cls, "_json_fields", ())
+        if field not in declared
+    )
+
+    fields_by_key: dict[str, str] = {}
+    for field in [*inherited, *declared]:
+        if field in declared:
+            json_field = field_map.get(field, field)
+        else:
+            json_field = getattr(cls, field).json_field
+
+        other = fields_by_key.setdefault(json_field, field)
+        if other != field:
+            raise ValueError(
+                f"Fields {cls.__name__}.{other} and {cls.__name__}.{field} "
+                f"both map to the JSON key {json_field!r}"
+            )
+
+
+def _check_options(
+    cls: type[JSONObject],
+    pk: str | None,
+    field_map: Mapping[str, str],
+    exclude: AbstractSet[str],
+) -> None:
+    """Check that ``json_object()`` options name fields of ``cls``.
+
+    A misspelled option would otherwise be ignored, leaving a field mapped to
+    the wrong JSON key or a model without the intended primary key.
+
+    Args:
+        cls: Class being decorated.
+        pk: Explicit primary-key field name, or ``None``.
+        field_map: Mapping from Python attribute name to JSON key.
+        exclude: Annotated attribute names to ignore.
+
+    Raises:
+        ValueError: If an option names no field of ``cls``.
+    """
+    annotations = _annotations(cls)
+    declared = _declared_fields(cls, exclude)
+
+    unknown_excluded = sorted(set(exclude) - set(annotations))
+    if unknown_excluded:
+        raise ValueError(
+            f"json_object(exclude=...) names {unknown_excluded}, which "
+            f"{cls.__name__} does not annotate"
+        )
+
+    unknown_mapped = sorted(set(field_map).difference(declared))
+    if unknown_mapped:
+        raise ValueError(
+            f"json_object(field_map=...) maps {unknown_mapped}, which are not "
+            f"fields declared on {cls.__name__}"
+        )
+
+    inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+    if (
+        pk is not None
+        and pk not in declared
+        and (inherited_pk is None or inherited_pk.field != pk)
+    ):
+        raise ValueError(
+            f"json_object(pk={pk!r}) names no field declared on "
+            f"{cls.__name__} and is not the primary key it inherits"
+        )
+
+
 @overload
 def json_object(
     cls: type[T],
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
@@ -456,7 +565,7 @@ def json_object(
     cls: None = None,
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
@@ -466,7 +575,7 @@ def json_object(
     cls: type[T] | None = None,
     /,
     *,
-    pk: str = "id",
+    pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
 ) -> type[T] | Callable[[type[T]], type[T]]:
@@ -483,7 +592,11 @@ def json_object(
 
     Args:
         cls: Class being decorated when used as ``@json_object``.
-        pk: Name of the primary-key field in the class.
+        pk: Name of the primary-key field. It must be a field declared on the
+            class or the primary key that the class inherits. If omitted, the
+            class keeps the primary key it inherits, even if it redeclares that
+            field. A class that inherits none uses a field named ``id``
+            declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
 
@@ -493,7 +606,11 @@ def json_object(
     Raises:
         ValueError: If a field would replace a ``JSONObject`` attribute, such
             as ``url`` or ``json``. Map such a JSON key to a different
-            attribute name with ``field_map``.
+            attribute name with ``field_map``. Also raised if ``pk`` names no
+            field of the class, if a ``field_map`` key names no field declared
+            on the class, if ``exclude`` names no annotated attribute of the
+            class, or if two fields, declared or inherited, map to the same
+            JSON key.
     """
     if field_map is None:
         field_map = {}
@@ -508,10 +625,24 @@ def json_object(
             The same class after descriptor installation.
 
         Raises:
-            ValueError: If a field would replace a ``JSONObject`` attribute.
+            ValueError: If a field would replace a ``JSONObject`` attribute, if
+                an option names no field of the class, or if two fields map to
+                the same JSON key.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
+        _check_options(cls, pk, field_map, exclude)
+        _check_json_keys(cls, field_map, exclude)
+
+        inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+        if pk is not None:
+            pk_field = pk
+        elif inherited_pk is not None:
+            # A subclass keeps its primary key, also when it redeclares the
+            # field, rather than switching to a new field named id.
+            pk_field = inherited_pk.field
+        else:
+            pk_field = "id"
 
         # We only process annotations for this class *without* any annotations
         # for superclasses, so we don't use typing.get_type_hints. Fields of
@@ -532,7 +663,10 @@ def json_object(
             json_field = field_map.get(field, field)
 
             prop = JSONProperty(
-                cls, json_field, field, is_primary_key=field == pk
+                cls,
+                json_field,
+                field,
+                is_primary_key=field == pk_field,
             )
 
             setattr(cls, field, prop)
@@ -592,7 +726,11 @@ class JSONProperty:
     """Name of JSON field corresponding to this property."""
 
     is_primary_key: bool = False
-    """Is this a primary key?"""
+    """Whether this property is the primary key of the class that owns it.
+
+    A subclass can choose another key, so this does not say whether the
+    property is the key of an instance of a subclass.
+    """
 
     def __init__(
         self,
@@ -620,6 +758,21 @@ class JSONProperty:
         if self.is_primary_key:
             cls._pk = self
             cls._pk_json_field = json_field
+
+    def _is_key_of(self, obj: JSONObject) -> bool:
+        """Return whether this property is the primary key of ``obj``.
+
+        A subclass can choose another field as its key, so a property that is
+        its own class's key need not be the key of an instance of a subclass.
+
+        Args:
+            obj: Instance of the class that owns this property, or of a
+                subclass.
+
+        Returns:
+            Whether this property is the primary key of ``obj``'s class.
+        """
+        return type(obj)._pk is self
 
     @cached_property
     def ty(self) -> Any:
@@ -683,7 +836,7 @@ class JSONProperty:
         if obj is None:
             return self
 
-        if self.is_primary_key and obj._json is None:
+        if self._is_key_of(obj) and obj._json is None:
             return obj._pk_value
 
         json = obj._json_with_field(self.json_field, self.field)
@@ -715,7 +868,7 @@ class JSONProperty:
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
         if (
-            self.is_primary_key
+            self._is_key_of(obj)
             and obj._json is None
             and not hasattr(obj, "_pk_value")
         ):
@@ -837,18 +990,25 @@ class JSONObject:
     """Whether ``_json`` holds only fields from ``update_from_json()``."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Merge and check a class's conversions.
+        """Check a class's conversions and the models it inherits fields from.
 
         The class's conversion table is merged and checked now, so that a
         bad entry fails when the class is defined rather than when a field
         first converts.
+
+        A model inherits its fields through a single chain of decorated
+        classes. Fields from two decorated classes, neither of which is a
+        subclass of the other, would need their field sets and primary keys
+        reconciled, so such a class is an error. Undecorated bases, which
+        declare no fields, may be mixed in freely.
 
         Args:
             **kwargs: Keyword arguments for ``object.__init_subclass__()``.
 
         Raises:
             TypeError: If the class's ``conversions`` or a base's has a bad
-                entry, such as one keyed by a model.
+                entry, such as one keyed by a model, or if two decorated
+                ancestors of the class are not subclasses of one another.
         """
         super().__init_subclass__(**kwargs)
 
@@ -865,6 +1025,21 @@ class JSONObject:
                         "conversion cannot replace."
                     )
         _table_of(cls)
+
+        # A decorated class records its fields in its own namespace.
+        decorated = [
+            base for base in cls.__mro__[1:] if "_json_fields" in vars(base)
+        ]
+        # In a single chain, the MRO lists each decorated ancestor before the
+        # decorated ancestors it inherits from.
+        for derived, base in itertools.pairwise(decorated):
+            if not issubclass(derived, base):
+                raise TypeError(
+                    f"{cls.__name__} inherits fields from both "
+                    f"{derived.__name__} and {base.__name__}, which are not "
+                    "subclasses of one another. Declare the shared fields on "
+                    "one decorated base class instead."
+                )
 
     # pylint: disable=redefined-outer-name
     def __init__(
