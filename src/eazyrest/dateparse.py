@@ -70,7 +70,9 @@ def parse_datetime(value: str | float) -> datetime.datetime:
         to an aware UTC ``datetime``.
 
     Raises:
-        TypeError: If ``value`` is neither a string nor a number.
+        TypeError: If ``value`` is neither a string nor a number. As for every
+            error, the message does not quote ``value``, which a server or a
+            user may have sent.
         ValueError: If a string is not an ISO 8601 datetime, or a timestamp is
             out of the range that ``datetime`` represents.
     """
@@ -78,9 +80,11 @@ def parse_datetime(value: str | float) -> datetime.datetime:
         try:
             dt = dateutil.parser.isoparse(value)
         except ValueError as err:
-            raise ValueError(
-                f"Datetime {value!r} is not in ISO 8601 format"
-            ) from err
+            raise ValueError("Datetime is not in ISO 8601 format") from err
+        except OverflowError as err:
+            # isoparse() reads 24:00 as the next day's midnight, which may be
+            # out of range, as for 9999-12-31T24:00:00.
+            raise ValueError("Datetime is out of range") from err
 
         offset = dt.utcoffset()
         if offset is not None:
@@ -98,7 +102,7 @@ def parse_datetime(value: str | float) -> datetime.datetime:
         except (OverflowError, OSError) as err:
             # The platform's time_t limits the range, so report it as an
             # invalid value like a malformed string.
-            raise ValueError(f"Timestamp {value!r} is out of range") from err
+            raise ValueError("Timestamp is out of range") from err
 
     raise TypeError(
         "Datetime values must be ISO 8601 strings or Unix timestamps, "
@@ -106,17 +110,14 @@ def parse_datetime(value: str | float) -> datetime.datetime:
     )
 
 
-def _calendar_units_error(delta: str) -> ValueError:
+def _calendar_units_error() -> ValueError:
     """Return the error for a duration with years or months.
 
-    Args:
-        delta: Duration string, which the error message quotes.
-
     Returns:
-        ``ValueError`` that says ``delta`` has years or months.
+        ``ValueError`` that says the duration has years or months.
     """
     return ValueError(
-        f"Duration {delta!r} has years or months, which have no fixed length"
+        "Duration has years or months, which have no fixed length"
     )
 
 
@@ -145,11 +146,9 @@ def _parse_terms(text: str) -> datetime.timedelta | None:
 
         unit = match["unit"].lower()
         if unit in _CALENDAR_UNITS:
-            raise _calendar_units_error(text)
+            raise _calendar_units_error()
         if unit not in _UNITS:
-            raise ValueError(
-                f"Duration {text!r} has an unknown unit {match['unit']!r}"
-            )
+            raise ValueError("Duration has an unknown unit")
 
         total += datetime.timedelta(**{_UNITS[unit]: float(match["number"])})
         pos = match.end()
@@ -188,7 +187,9 @@ def parse_duration(delta: str | float) -> datetime.timedelta:
         Parsed ``timedelta``.
 
     Raises:
-        TypeError: If ``delta`` is not a string or a number.
+        TypeError: If ``delta`` is not a string or a number. As for every
+            error, the message does not quote ``delta``, which a server or a
+            user may have sent.
         ValueError: If ``delta`` is not in a supported form, has an unknown
             unit, has years or months, or is out of the range of ``timedelta``.
     """
@@ -203,7 +204,7 @@ def parse_duration(delta: str | float) -> datetime.timedelta:
     except OverflowError as err:
         # timedelta limits the magnitude of each component, so report an
         # oversized duration as an invalid value like a malformed string.
-        raise ValueError(f"Duration {delta!r} is out of range") from err
+        raise ValueError("Duration is out of range") from err
 
 
 def _parse_duration(delta: str | float) -> datetime.timedelta:
@@ -243,10 +244,14 @@ def _parse_duration(delta: str | float) -> datetime.timedelta:
         return duration
 
     if re.fullmatch(r"[+-]?P.*", text):
-        iso_duration = isodate.parse_duration(text)
+        try:
+            iso_duration = isodate.parse_duration(text)
+        except ValueError as err:
+            # isodate's message quotes the duration.
+            raise ValueError("Duration is not in ISO 8601 format") from err
         if not isinstance(iso_duration, datetime.timedelta):
-            raise _calendar_units_error(text)
+            raise _calendar_units_error()
 
         return iso_duration
 
-    raise ValueError(f"Unsupported duration format: {delta!r}")
+    raise ValueError("Duration is not in a supported format")

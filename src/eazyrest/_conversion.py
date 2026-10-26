@@ -30,6 +30,13 @@ class Conversion:
     Each function receives the declared type as well as the value, so that
     one conversion serves a family of types, such as every enum. The fields
     are keyword arguments, so that later versions can add fields.
+
+    ``decode`` and ``encode`` report a value that they cannot convert by
+    raising ``TypeError`` or ``ValueError``, which reaches the caller as a
+    ``FieldConversionError`` that names the field, with the error as its
+    cause. Their messages should not quote the value, which may be a secret,
+    as the default conversions' messages do not. Any other exception is a
+    bug in the conversion, and propagates unchanged.
     """
 
     decode: Callable[[Any, type[Any]], Any]
@@ -66,6 +73,68 @@ def _decode_uuid(value: Any) -> uuid.UUID:
     return uuid.UUID(value)
 
 
+def _decode_date(value: Any) -> datetime.date:
+    """Decode a JSON ISO 8601 date string.
+
+    Args:
+        value: ISO 8601 date, such as ``"2024-04-01"``.
+
+    Returns:
+        Decoded ``date``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not an ISO 8601 date. The message does not
+            quote ``value``.
+    """
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as err:
+        # Python quotes a string that is not ISO 8601, but not one with a field
+        # out of range, as in "month must be in 1..12".
+        if repr(value) in str(err):
+            raise ValueError("Date is not in ISO 8601 format") from err
+
+        raise
+
+
+def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
+    """Decode a JSON value as a member of an enum.
+
+    Args:
+        cls: Enum class to decode to.
+        value: Value of a member of ``cls``.
+
+    Returns:
+        The member of ``cls`` whose value is ``value``.
+
+    Raises:
+        ValueError: If ``cls`` has no such member. The message does not quote
+            ``value``.
+    """
+    try:
+        return cls(value)
+    except ValueError as err:
+        # Python quotes the value that the enum lacks.
+        if repr(value) in str(err):
+            raise ValueError(f"Value is not a valid {cls.__name__}") from err
+
+        raise
+
+
+def _decode_enum_value(value: Any, cls: type[Any]) -> enum.Enum:
+    """Decode a JSON value as a member of the declared enum.
+
+    Args:
+        value: Value of a member of ``cls``.
+        cls: The field's enum type.
+
+    Returns:
+        The member of ``cls`` whose value is ``value``.
+    """
+    return _decode_enum(cls, value)
+
+
 def _encode_date(value: Any) -> Any:
     """Encode a ``date`` as an ISO 8601 date.
 
@@ -84,6 +153,20 @@ def _encode_date(value: Any) -> Any:
     return value.isoformat()
 
 
+def _encode_enum(value: Any, cls: type[Any]) -> Any:
+    """Encode an enum member as its value.
+
+    Args:
+        value: Member of ``cls``.
+        cls: The field's enum type.
+
+    Returns:
+        The member's value.
+    """
+    del cls
+    return value.value
+
+
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
@@ -91,7 +174,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
             encode=lambda value, _: value.isoformat(),
         ),
         datetime.date: Conversion(
-            decode=lambda value, _: datetime.date.fromisoformat(value),
+            decode=lambda value, _: _decode_date(value),
             encode=lambda value, _: _encode_date(value),
         ),
         uuid.UUID: Conversion(
@@ -103,8 +186,8 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
             encode=lambda value, _: isodate.duration_isoformat(value),
         ),
         enum.Enum: Conversion(
-            decode=lambda value, cls: cls(value),
-            encode=lambda value, _: value.value,
+            decode=_decode_enum_value,
+            encode=_encode_enum,
         ),
     }
 )
