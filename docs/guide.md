@@ -35,7 +35,9 @@ class User(JSONObject):
 
 Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=`
 when the Python attribute name should differ from the JSON key. Use `exclude=`
-for annotated attributes that should not become JSON-backed fields.
+for annotated attributes that should not become JSON-backed fields. An
+attribute annotated with `ClassVar`, such as `class_url: ClassVar[str]`, is a
+class attribute and never becomes a field.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`,
 or `save`, and `@json_object` raises `ValueError` for such a field. Use
@@ -107,6 +109,10 @@ If `class_url` is already absolute, `absolute_url` leaves it absolute.
 `url` percent-encodes the primary key, so a key always forms one path segment.
 For example, the key `a/b` becomes `a%2Fb`.
 
+The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
+raises `ValueError` because those keys could address the collection or another
+resource.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to
@@ -117,6 +123,12 @@ Python types are converted automatically:
   `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
   strings. A string without a UTC offset decodes to a naive `datetime`, and a
   naive `datetime` encodes without an offset. See `parse_datetime()`.
+- `datetime.date` values decode from ISO 8601 dates, such as `2024-04-01`, and
+  encode back to them. A date with a time is rejected, and so is a
+  `datetime.datetime` assigned to the field, although it is also a
+  `datetime.date`.
+- `uuid.UUID` values decode from UUID strings and encode to the standard
+  hyphenated form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -127,9 +139,14 @@ Python types are converted automatically:
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
+Related-object writes encode primary keys using the related model's primary-key
+annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
+equivalent UUID spellings identify the same object.
+
 Collection annotations are converted recursively, so item annotations are
-honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields.
-Annotate a tuple of any length as `tuple[T, ...]`:
+honored inside `list`, `tuple`, `set`, `frozenset`, `Sequence`, and `Iterable`
+fields. A `Sequence` field reads as a tuple. Annotate a tuple of any length as
+`tuple[T, ...]`:
 
 ```python
 import datetime
@@ -161,16 +178,17 @@ Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item.
 
-Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not
-converted. Reading such a field returns its JSON value unchanged.
+Other generic annotations, such as `dict[str, T]`, are not converted. Reading
+such a field returns its JSON value unchanged.
 
 ## Custom field conversion
 
 A model converts field values by a table of conversions, keyed by type. The
-default table converts `datetime`, `timedelta`, and enums, as the previous
-section describes, and any other type reads and writes its JSON value as it is.
-To convert another type, or to convert one of these differently, declare
-`conversions` on a shared base model, mapping the type to a `Conversion`:
+default table converts `datetime`, `date`, `timedelta`, `UUID`, and enums, as
+the previous section describes, and any other type reads and writes its JSON
+value as it is. To convert another type, or to convert one of these
+differently, declare `conversions` on a shared base model, mapping the type to
+a `Conversion`:
 
 ```python
 import ipaddress
@@ -252,6 +270,21 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+`filter()` and `get()` encode a keyword argument named after a JSON-backed
+field with the same JSON field name and conversion as `create()`. For example,
+`Todo.filter(user=user)` sends the user's primary key under the field's JSON
+key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean
+is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such
+as `ordering` or `created__gte`, are sent unchanged.
+
+A keyword argument named after a JSON-backed field, or after its JSON key such
+as `userId`, must not be `None` or an empty collection in `filter()`, `get()`,
+or the lookup of `get_or_create()`. A query string has no null value or empty
+list, and requests omits such a parameter, so the query would ignore the field.
+These methods raise `ValueError` instead of sending such a query. Use the API's
+own null filter, such as `parent__isnull=True` in django-filter, to match
+objects whose field is null.
+
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. The lookup query and the creation
 payload use the same JSON field names and conversions as `create()`:
@@ -326,10 +359,11 @@ Todo.prefetch_batch_size = 250
 ```
 
 If you request prefetch for a related model that does not implement
-`bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is
-intentional: prefetch should map to a real API bulk lookup instead of guessing.
-If a prefetch field is not a related-object field, `filter()`, `all()`, and
-`get()` raise `ValueError` before sending a request.
+`bulk_get_by_pks()`, `filter()`, `all()`, and `get()` raise
+`PrefetchNotSupported` before sending a request. This is intentional: prefetch
+should map to a real API bulk lookup instead of guessing. If a prefetch field
+is not a related-object field, they raise `ValueError`, also before sending a
+request.
 
 ## Response-shape hooks
 

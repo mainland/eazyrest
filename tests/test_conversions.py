@@ -194,7 +194,9 @@ def test_default_table_is_public_and_read_only() -> None:
     """The default table lists its types, and cannot be changed."""
     assert set(DEFAULT_CONVERSIONS) == {
         datetime.datetime,
+        datetime.date,
         datetime.timedelta,
+        uuid.UUID,
         enum.Enum,
     }
     with pytest.raises(TypeError):

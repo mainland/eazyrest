@@ -2,8 +2,8 @@
 
 A conversion describes one Python type's JSON form: how to read the type
 from JSON, and how to write it. The default table holds eazyrest's
-conversions for ``datetime``, ``timedelta``, and enums. JSON scalars need
-none.
+conversions for ``datetime``, ``date``, ``timedelta``, ``UUID``, and
+enums. JSON scalars need none.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from __future__ import annotations
 import datetime
 import enum
 import typing
+import uuid
 import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, NamedTuple
@@ -43,11 +44,59 @@ class Conversion:
     ``datetime`` field, is written as it is."""
 
 
+def _decode_uuid(value: Any) -> uuid.UUID:
+    """Decode a JSON UUID string.
+
+    Args:
+        value: UUID in any form that ``uuid.UUID`` accepts, such as
+            ``"6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40"``.
+
+    Returns:
+        Decoded ``UUID``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not a UUID.
+    """
+    if not isinstance(value, str):
+        raise TypeError(
+            f"UUID values must be strings, got {type(value).__name__}"
+        )
+
+    return uuid.UUID(value)
+
+
+def _encode_date(value: Any) -> Any:
+    """Encode a ``date`` as an ISO 8601 date.
+
+    Args:
+        value: Value of a ``date`` field.
+
+    Returns:
+        The ISO 8601 text.
+
+    Raises:
+        TypeError: If ``value`` is a ``datetime``, whose ISO 8601 form has a
+            time, which a date field cannot read back.
+    """
+    if isinstance(value, datetime.datetime):
+        raise TypeError("Date field values must be dates, got datetime")
+    return value.isoformat()
+
+
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
             decode=lambda value, _: parse_datetime(value),
             encode=lambda value, _: value.isoformat(),
+        ),
+        datetime.date: Conversion(
+            decode=lambda value, _: datetime.date.fromisoformat(value),
+            encode=lambda value, _: _encode_date(value),
+        ),
+        uuid.UUID: Conversion(
+            decode=lambda value, _: _decode_uuid(value),
+            encode=lambda value, _: str(value),
         ),
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
@@ -76,6 +125,7 @@ _OWN_TYPES: frozenset[type[Any]] = frozenset(
         set,
         frozenset,
         Iterable,
+        Sequence,
     }
 )
 """Types that eazyrest converts itself, which cannot key a conversion.
