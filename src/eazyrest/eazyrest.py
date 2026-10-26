@@ -2002,6 +2002,27 @@ class JSONObject:
         )
 
     @classmethod
+    def collection_items_from_response(
+        cls, resp: requests.Response
+    ) -> Iterable[Any]:
+        """Iterate the JSON objects of a collection response.
+
+        ``filter()`` calls this hook with the response to its request. The
+        default passes the decoded payload to ``collection_items()``.
+        Override this hook instead when the items or the later pages depend
+        on more than the payload, such as a ``Link`` header or the URL of
+        the response. As in ``collection_items()``, ``cls.api`` is the
+        query's API while ``filter()`` calls this hook.
+
+        Args:
+            resp: Response to the collection request.
+
+        Returns:
+            Iterable of JSON objects used to construct model instances.
+        """
+        return cls.collection_items(resp.json())
+
+    @classmethod
     def collection_items(cls, payload: Any) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
@@ -2011,6 +2032,9 @@ class JSONObject:
         ``cls.api``. When the query passed ``api=``, ``cls.api`` is that API
         while ``filter()`` calls this hook, so read it during the call rather
         than later, while iterating.
+
+        This hook receives only the decoded payload. To read the response's
+        headers or URL, override ``collection_items_from_response()``.
 
         Args:
             payload: Decoded JSON payload returned by a collection request.
@@ -2321,7 +2345,7 @@ class JSONObject:
         resp = client.get(cls.class_url, params=cls._encode_query(kwargs))
         token = _query_api.set((cls, client))
         try:
-            items = cls.collection_items(resp.json())
+            items = cls.collection_items_from_response(resp)
         finally:
             _query_api.reset(token)
 
