@@ -27,7 +27,7 @@ Read the Docs configuration is provided in `.readthedocs.yaml`.
 
 ## Example
 
-The example uses the public REST demo API available at [https://jsonplaceholder.typicode.com/](https://jsonplaceholder.typicode.com/).
+The example uses the public REST demo API available at [https://jsonplaceholder.typicode.com/](https://jsonplaceholder.typicode.com/). JSONPlaceholder accepts write requests for demonstration, but it does not persist those changes.
 
 ```python
 from eazyrest import API, JSONObject, json_object
@@ -85,7 +85,7 @@ with API("https://jsonplaceholder.typicode.com/") as demo_api:
     first = todos_for_user_1[0]
     print(first.id, first.user.id, first.user, first.title)
 
-    # Lazy writes are the default; call save() to persist batched changes
+    # Lazy writes are the default; JSONPlaceholder accepts this but does not persist it
     first.completed = True
     first.save()
 ```
