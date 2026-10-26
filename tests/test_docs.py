@@ -65,3 +65,12 @@ def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
     encoded = timestamp_object.to_json(when, BaseType(datetime.datetime))
     assert encoded == when.timestamp()
     assert timestamp_object.to_json("text", BaseType(str)) == "text"
+
+
+def test_enum_fallback_example_maps_unknown_values() -> None:
+    """The ``_missing_()`` example maps values the enum lacks."""
+    example = run_guide_example("def _missing_")
+    status = example["TicketStatus"]
+
+    assert status("open") is status.OPEN
+    assert status("archived") is status.UNKNOWN

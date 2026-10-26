@@ -115,6 +115,24 @@ Field annotations drive JSON conversion when values are read from or written to 
 
 A value that a field cannot convert, when it is read, assigned, or passed to `create()` or a query, raises `FieldConversionError`. Its message names the model and field, as in `Booking.day: month must be in 1..12`, and the conversion's own error is its `__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches either one keeps working.
 
+A JSON value that an enum lacks, such as a status that the server added after the client was written, raises `FieldConversionError`. Python calls an enum's `_missing_()` classmethod for a value it lacks, so an enum can map such values to a member of its own instead:
+
+```python
+import enum
+
+
+class TicketStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
+```
+
+Reading the field does not change the object's JSON, so saving other fields leaves the server's value alone. Assigning `TicketStatus.UNKNOWN` to the field sends `"unknown"`.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
