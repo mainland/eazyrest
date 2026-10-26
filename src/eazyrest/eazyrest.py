@@ -11,6 +11,7 @@ import types
 import typing
 from collections.abc import (
     Callable,
+    Collection,
     Iterable,
     Iterator,
     Mapping,
@@ -205,6 +206,22 @@ def _is_collection_type(ty: Any) -> bool:
     return ty in (Iterable, Sequence, list, tuple, set, frozenset)
 
 
+def _is_collection_value(value: Any) -> bool:
+    """Return whether a value is a collection of items.
+
+    A string, bytes, or a mapping is iterable but is not a collection of items.
+
+    Args:
+        value: Value to test.
+
+    Returns:
+        Whether ``value`` is iterable and is not a string, bytes, or a mapping.
+    """
+    return isinstance(value, Iterable) and not isinstance(
+        value, (str, bytes, Mapping)
+    )
+
+
 def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
     """Return whether a related collection should stay lazy.
 
@@ -352,6 +369,61 @@ def _query_value(value: Any) -> Any:
         return [_query_value(item) for item in value]
 
     return value
+
+
+def _materialize_query_value(value: Any) -> Any:
+    """Return a query value with any collection read into a list.
+
+    requests iterates every value that is iterable and is not a string or
+    bytes, so an iterator, a ``deque``, a ``range``, or a dictionary view is a
+    collection to it, as a list is. Reading the collection once lets the value
+    be checked and then sent without iterating it again.
+
+    Args:
+        value: Query value, already encoded as JSON where it names a field.
+
+    Returns:
+        A list of the items of a collection that is not a mapping, and
+        ``value`` itself otherwise.
+    """
+    if _is_collection_value(value) and not isinstance(value, list):
+        return list(value)
+    return value
+
+
+def _unsendable_query_value(value: Any) -> str | None:
+    """Return why requests cannot send a value as a query parameter.
+
+    requests omits a parameter whose value is ``None`` or an empty collection,
+    and it omits a ``None`` item of a collection. It sends a mapping as its
+    keys, and it flattens a collection nested in another into the outer one's
+    items. A query that loses or changes a constraint this way matches objects
+    it should not.
+
+    Args:
+        value: Query value, as ``_materialize_query_value()`` returns it.
+
+    Returns:
+        A clause that completes "because its value", or ``None`` if requests
+        sends ``value`` intact.
+    """
+    if value is None:
+        return "is None, and requests omits it"
+    if isinstance(value, Mapping):
+        return "is a mapping, and requests sends only its keys"
+    if not _is_collection_value(value):
+        return None
+    if not value:
+        return "is an empty collection, and requests omits it"
+    if any(item is None for item in value):
+        return "contains None, and requests omits that item"
+    if any(
+        isinstance(item, Mapping) or _is_collection_value(item)
+        for item in value
+    ):
+        return "contains a collection, and requests flattens it"
+
+    return None
 
 
 def _copy_json(value: Any) -> Any:
@@ -1230,8 +1302,7 @@ class JSONObject:
     def _to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
-        A collection converts to a list. A single value for a collection type,
-        such as a string, converts as one item rather than as a collection.
+        A collection converts to a list.
 
         Args:
             value: Python value to serialize.
@@ -1241,8 +1312,10 @@ class JSONObject:
             JSON-serializable representation of ``value``.
 
         Raises:
-            TypeError: If ``conversion`` is ``datetime.date`` and ``value`` is
-                a ``datetime.datetime``.
+            TypeError: If ``conversion`` is a collection type and ``value`` is
+                not a collection. A string, bytes, or a mapping is not a
+                collection of items. Also raised if ``conversion`` is
+                ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
         match conversion:
             case OptionalType(inner_type):
@@ -1266,12 +1339,11 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
-                if not isinstance(value, Iterable) or isinstance(
-                    value, (str, bytes, Mapping)
-                ):
-                    # A single value, such as a query for the objects whose
-                    # collection holds it, converts as one item.
-                    return cls._to_json(value, item_type)
+                if not _is_collection_value(value):
+                    raise TypeError(
+                        "Collection field values must be collections, "
+                        f"got {type(value).__name__}"
+                    )
 
                 return [cls._to_json(item, item_type) for item in value]
             case _:
@@ -1713,10 +1785,35 @@ class JSONObject:
         }
 
     @classmethod
+    def _is_single_collection_item(cls, name: str, value: Any) -> bool:
+        """Return whether a query value is one item of a collection field.
+
+        Args:
+            name: Name of the field the query value is for.
+            value: Query value.
+
+        Returns:
+            Whether ``name`` is a JSON-backed field of a collection type,
+            possibly optional, and ``value`` is neither ``None`` nor a
+            collection of items.
+        """
+        descriptor = getattr(cls, name, None)
+        return (
+            isinstance(descriptor, JSONProperty)
+            and isinstance(
+                _unwrap_optional_type(descriptor.analyzed_type), CollectionType
+            )
+            and value is not None
+            and not _is_collection_value(value)
+        )
+
+    @classmethod
     def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
-        A boolean field value is sent as ``true`` or ``false``, as in JSON.
+        Unlike a field value, a query value for a collection field may be a
+        single item, which matches the objects whose collection holds it. A
+        boolean field value is sent as ``true`` or ``false``, as in JSON.
 
         Args:
             params: Query parameter values keyed as for ``_encode_fields()``.
@@ -1725,46 +1822,45 @@ class JSONObject:
             Query parameters keyed by JSON key.
 
         Raises:
-            ValueError: If a parameter named after a JSON-backed field, or
-                after its JSON key, encodes to ``None`` or to an empty
-                collection. A query string has no null value or empty list, and
-                requests omits such a parameter, so the query would match
-                objects whatever their value for that field.
+            ValueError: If a parameter encodes to a value that requests would
+                not send intact, so the query would ignore or change its
+                constraint.
         """
-        payload = cls._encode_fields(params)
-        json_keys = cls._json_keys()
+        payload = cls._encode_fields(
+            {
+                name: value
+                for name, value in params.items()
+                if not cls._is_single_collection_item(name, value)
+            }
+        )
+        for name, value in params.items():
+            if cls._is_single_collection_item(name, value):
+                # A single value, such as a query for the objects whose
+                # collection holds it, converts as one item.
+                descriptor = getattr(cls, name)
+                collection = _unwrap_optional_type(descriptor.analyzed_type)
+                assert isinstance(collection, CollectionType)
+                payload[descriptor.json_field] = cls._to_json(
+                    value, collection.item_type
+                )
 
         for name, value in params.items():
             descriptor = getattr(cls, name, None)
-            if isinstance(descriptor, JSONProperty):
-                json_field = descriptor.json_field
-            elif name in json_keys:
-                json_field = name
-            else:
-                continue
-
-            encoded = payload[json_field]
-            if encoded is None:
-                omitted = "is None"
-            elif isinstance(encoded, (list, tuple, set, frozenset)) and (
-                len(encoded) == 0
-            ):
-                omitted = "is an empty collection"
-            else:
-                continue
-
-            raise ValueError(
-                f"Query parameter {name}={value!r} for {cls.__name__} cannot "
-                f"be sent, because requests omits parameters whose value "
-                f"{omitted}"
+            json_field = (
+                descriptor.json_field
+                if isinstance(descriptor, JSONProperty)
+                else name
             )
-
-        for name in params:
-            descriptor = getattr(cls, name, None)
-            if isinstance(descriptor, JSONProperty):
-                payload[descriptor.json_field] = _query_value(
-                    payload[descriptor.json_field]
+            value = _materialize_query_value(payload[json_field])
+            problem = _unsendable_query_value(value)
+            if problem is not None:
+                raise ValueError(
+                    f"Query parameter {name}={value!r} for {cls.__name__} "
+                    f"cannot be sent, because its value {problem}"
                 )
+            if isinstance(descriptor, JSONProperty):
+                value = _query_value(value)
+            payload[json_field] = value
 
         return payload
 
@@ -2101,10 +2197,13 @@ class JSONObject:
         ``userId=2`` when ``field_map={"user": "userId"}``. Other parameters
         are sent unchanged.
 
-        A parameter named after a JSON-backed field, or after its JSON key,
-        must not be ``None`` or an empty collection. A query string has no null
-        value or empty list, and requests omits such a parameter, so the query
-        would ignore that field.
+        Every parameter must have a value that requests sends intact. It must
+        not be ``None``, an empty collection, or a mapping, and a collection
+        must not hold ``None`` or another collection. requests omits ``None``
+        and empty collections, sends only a mapping's keys, and flattens nested
+        collections, so the query would ignore or change that constraint. Any
+        iterable other than a string, bytes, or a mapping, such as a generator
+        or a ``deque``, is a collection.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -2117,9 +2216,8 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field, or if a parameter named after a
-                JSON-backed field or its JSON key is ``None`` or an empty
-                collection.
+                related-object field, or if a parameter has a value that
+                requests would not send intact.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
@@ -2173,6 +2271,12 @@ class JSONObject:
 
         Query parameters are encoded as in ``filter()``.
 
+        The server must apply every query parameter. If it ignores one, as
+        django-filter does for a parameter that names no filter, this method
+        can return an object that does not match it. The returned object is not
+        checked against the parameters, because the server decides how they
+        match, for example case-insensitively.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -2186,9 +2290,8 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field, or if a parameter named after a
-                JSON-backed field or its JSON key is ``None`` or an empty
-                collection.
+                related-object field, or if a parameter has a value that
+                requests would not send intact.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
@@ -2215,12 +2318,27 @@ class JSONObject:
         way as ``create()``. JSON-backed fields are renamed by ``field_map``
         and converted to JSON values, so ``user=User(id=2)`` is sent as
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
-        unchanged.
+        unchanged. Every key in ``kwargs`` is sent in the lookup's query
+        string, which servers and proxies may log, so pass a value that only
+        the creation needs, such as a password, in ``defaults``.
 
-        As in ``filter()``, a lookup field must not be ``None`` or an empty
-        collection, because the query would ignore it while the creation
-        payload sends ``null`` or ``[]``. Such a value in ``defaults`` is sent
-        only on creation and is allowed.
+        As in Django, a key that contains ``__`` and does not name a field,
+        such as ``name__iexact`` or ``created__gte``, is a lookup rather than a
+        field value. It is sent in the query but not in the creation payload.
+
+        As in ``get()``, the server must apply every lookup parameter. If it
+        ignores one, this method can return an object that does not match it,
+        with ``created`` false. The lookup and the creation are separate
+        requests, so two clients can both create the object. A uniqueness
+        constraint on the server must prevent that.
+
+        As in ``filter()``, a lookup parameter must have a value that requests
+        sends intact, because the query would otherwise ignore or change it
+        while the creation payload sends it as given. Such a value in
+        ``defaults`` is sent only on creation and is allowed.
+
+        A value that can be iterated only once, such as a generator, is read
+        once, before the lookup, and its items are used for both requests.
 
         Args:
             defaults: Optional fields applied only when creating a new object.
@@ -2232,9 +2350,18 @@ class JSONObject:
 
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
-            ValueError: If a lookup parameter named after a JSON-backed field
-                or its JSON key is ``None`` or an empty collection.
+            ValueError: If a lookup parameter has a value that requests would
+                not send intact.
         """
+        # The lookup and the creation each iterate a collection value, so read
+        # a single-pass iterable, such as a generator, only once.
+        kwargs = {
+            name: list(value)
+            if isinstance(value, Iterable)
+            and not isinstance(value, (Collection, str, bytes, Mapping))
+            else value
+            for name, value in kwargs.items()
+        }
         results = cls.filter(**kwargs)
         first = next(results, None)
         if first is not None:
@@ -2244,7 +2371,12 @@ class JSONObject:
 
             return first, False
 
-        create_kwargs = dict(kwargs)
+        create_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if "__" not in name
+            or isinstance(getattr(cls, name, None), JSONProperty)
+        }
         if defaults is not None:
             create_kwargs.update(defaults)
 

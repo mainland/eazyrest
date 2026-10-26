@@ -6,6 +6,7 @@ import datetime
 import enum
 import typing
 import uuid
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, ClassVar, cast
@@ -291,6 +292,17 @@ class Timeline(ModelBase):
 
     id: int
     starts_at: list[datetime.datetime]
+
+
+@json_object
+class Readings(ModelBase):
+    """Model with a list that may hold nulls and a list of lists."""
+
+    class_url = "/readings/"
+
+    id: int
+    values: list[int | None]
+    rows: list[list[int]]
 
 
 class IssueStatus(str, enum.Enum):
@@ -2673,6 +2685,11 @@ def test_get_or_create_encodes_lookup_like_create(
             {"starts_at": ["2026-01-02"]},
         ),
         (
+            lambda: Readings.filter(values=[1, 2]),
+            "https://example.com/v1/readings/",
+            {"values": ["1", "2"]},
+        ),
+        (
             lambda: Todo.filter(completed=False, archived=True),
             "https://example.com/v1/todos/",
             {"completed": ["false"], "archived": ["True"]},
@@ -2763,13 +2780,144 @@ def test_query_rejects_unsendable_field_constraints(
     assert requests_mock.call_count == 0
 
 
-def test_query_omits_none_for_other_parameters(requests_mock: Any) -> None:
-    """A ``None`` value for another parameter is still left to requests."""
+@pytest.mark.parametrize(
+    ("query", "match"),
+    [
+        (lambda: Profile.filter(settings={"theme": "dark"}), "is a mapping"),
+        (lambda: Profile.get(contacts={"name": "a"}), "is a mapping"),
+        (
+            lambda: Profile.filter(contacts=[{"name": "a"}]),
+            "contains a collection",
+        ),
+        (lambda: Readings.filter(values=[None]), "contains None"),
+        (lambda: Readings.get_or_create(values=[1, None]), "contains None"),
+        (lambda: Readings.get(rows=[[1, 2]]), "contains a collection"),
+    ],
+)
+def test_query_rejects_values_requests_would_change(
+    requests_mock: Any, query: Any, match: str
+) -> None:
+    """A constraint that requests would drop or flatten is not sent.
+
+    requests sends a mapping as its keys, omits a ``None`` item, and flattens a
+    nested collection, so each of these queries would match other objects.
+
+    Args:
+        query: Callable that runs a query with a constraint that requests would
+            change.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+def test_collection_field_values_must_be_collections(
+    requests_mock: Any,
+) -> None:
+    """A field value is not converted as one item of a collection."""
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+    timeline = Timeline(json={"id": 1, "starts_at": []})
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+
+    # The annotations reject these values statically, so assign them
+    # dynamically to check the run-time behavior.
+    with pytest.raises(TypeError, match="must be collections, got dict"):
+        setattr(profile, "contacts", {"n": 1})  # noqa: B010
+    with pytest.raises(TypeError, match="must be collections, got datetime"):
+        setattr(timeline, "starts_at", when)  # noqa: B010
+    with pytest.raises(TypeError, match="must be collections, got User"):
+        Team.create(members=User(id=2))
+
+    assert profile.contacts == []
+    assert profile._pending_updates == {}
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        lambda: Todo.filter(ordering=None),
+        lambda: Todo.get(title__iexact=None),
+        lambda: Todo.get_or_create(title="a", owner__in=iter(())),
+    ],
+)
+def test_query_rejects_unsendable_other_parameters(
+    requests_mock: Any, query: Any
+) -> None:
+    """A parameter that names no field is checked as a field's is.
+
+    requests would omit it, so ``get()`` could return an object that the
+    constraint excludes.
+
+    Args:
+        query: Callable that runs a query with an unsendable parameter.
+    """
+    with pytest.raises(ValueError, match="cannot be sent"):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda: iter(()), "empty collection"),
+        (deque, "empty collection"),
+        (lambda: range(0), "empty collection"),
+        (lambda: {}.keys(), "empty collection"),
+        (lambda: iter([None]), "contains None"),
+        (lambda: deque([1, None]), "contains None"),
+        (lambda: [iter([1])], "contains a collection"),
+        (lambda: (deque([1]),), "contains a collection"),
+    ],
+)
+@pytest.mark.parametrize("name", ["userId", "ordering"])
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+def test_query_rejects_unsendable_iterables(
+    requests_mock: Any, make: Any, match: str, name: str, method: str
+) -> None:
+    """Any iterable is checked as a collection, whatever its type.
+
+    requests iterates every value that is not a string or bytes, so an empty
+    iterator or ``deque`` would be omitted and ``get()`` would return an
+    unrelated object.
+
+    Args:
+        make: Callable that returns a fresh iterable query value.
+        match: Pattern that the ``ValueError`` message should match.
+        name: Parameter name, a JSON key or a name that is not a field.
+        method: Name of the query method.
+    """
+    requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
+
+    # filter() sends its request, and so checks its parameters, when called.
+    with pytest.raises(ValueError, match=match):
+        getattr(Todo, method)(**{name: make()})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "make", [lambda: iter([1, 2]), lambda: deque([1, 2]), lambda: range(1, 3)]
+)
+def test_query_sends_every_item_of_an_iterable(
+    requests_mock: Any, make: Any
+) -> None:
+    """An iterable query value is read once and sent as repeated parameters.
+
+    Args:
+        make: Callable that returns a fresh iterable of two items.
+    """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(ordering=None))
+    list(Todo.filter(userId=make(), id__in=make()))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {}
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["1", "2"],
+        "id__in": ["1", "2"],
+    }
 
 
 def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
@@ -2784,6 +2932,41 @@ def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
     assert created
     assert todo.user is None
     assert post.last_request.json() == {"id": 5, "user": None}
+
+
+def test_get_or_create_reads_a_generator_once(requests_mock: Any) -> None:
+    """A generator's items are used for both the lookup and the creation."""
+    lookup = requests_mock.get("https://example.com/v1/teams/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/teams/", json={"id": 1, "members": [2, 3]}
+    )
+
+    team, created = Team.get_or_create(
+        id=1, members=(User(id=pk) for pk in (2, 3))
+    )
+
+    assert created
+    assert lookup.last_request.qs["members"] == ["2", "3"]
+    assert post.last_request.json() == {"id": 1, "members": [2, 3]}
+    assert [member.pk for member in team.members] == [2, 3]
+
+
+def test_get_or_create_sends_lookups_only_in_query(requests_mock: Any) -> None:
+    """A ``__`` lookup constrains the query but is not a field value."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/",
+        json={"id": 5, "userId": 2, "title": "Docs", "completed": False},
+    )
+
+    Todo.get_or_create(title__iexact="docs", title="Docs", user=User(id=2))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "title__iexact": ["docs"],
+        "title": ["Docs"],
+        "userId": ["2"],
+    }
+    assert post.last_request.json() == {"title": "Docs", "userId": 2}
 
 
 def test_get_raises_does_not_exist(requests_mock: Any) -> None:
