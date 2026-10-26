@@ -63,4 +63,7 @@ def parse_duration(delta: str) -> datetime.timedelta:
         assert isinstance(timedelta, datetime.timedelta)
         return timedelta
 
-    return isodate.parse_duration(delta)
+    # isodate is untyped. It returns an isodate.Duration, which is not a
+    # timedelta, for a duration with years or months.
+    duration: datetime.timedelta = isodate.parse_duration(delta)
+    return duration
