@@ -32,6 +32,27 @@ jobs:
       - name: Run Tests
         run: tox -e py
 
+  pydantic-min:
+    name: Test (Oldest Pydantic)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install tox
+        run: python -m pip install --upgrade pip tox
+
+      - name: Run Tests
+        run: tox -e pydantic-min
+
   lint:
     runs-on: ubuntu-latest
 

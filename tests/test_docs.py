@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from eazyrest import BaseType
+from eazyrest import API, BaseType
 
 GUIDE = Path(__file__).resolve().parents[1] / "docs" / "guide.md"
 
@@ -74,3 +74,44 @@ def test_enum_fallback_example_maps_unknown_values() -> None:
 
     assert status("open") is status.OPEN
     assert status("archived") is status.UNKNOWN
+
+
+def test_pydantic_example_converts_fields(requests_mock: Any) -> None:
+    """The Pydantic example reads, writes, and saves changes in place."""
+    example = run_guide_example("class Logo")
+    logo_type = example["Logo"]
+    logo_type.register_api(API("https://api.example.com/"))
+    patch = requests_mock.patch(
+        "https://api.example.com/logos/1/", status_code=204
+    )
+    logo = logo_type(
+        json={
+            "id": 1,
+            "image": "aGVsbG8=",
+            "rendering": {
+                "width": 640,
+                "height": 480,
+                "timeout": "0 00:01:30",
+                "dpi": 300,
+            },
+            "anchors": [{"x": 0, "y": 0, "label": "a"}],
+            "shape": "round",
+            "published": 1711972800,
+        }
+    )
+
+    assert logo.image == b"hello"
+    assert logo.rendering["timeout"] == datetime.timedelta(seconds=90)
+    assert logo.rendering["dpi"] == 300
+    assert logo.published == datetime.datetime(
+        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+    )
+
+    logo.anchors[0].x = 2
+    logo.image = b"bye"
+    logo.save()
+
+    assert patch.last_request.json() == {
+        "image": "Ynll",
+        "anchors": [{"x": 2.0, "y": 0.0, "label": "a"}],
+    }

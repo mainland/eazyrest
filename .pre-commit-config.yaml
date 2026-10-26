@@ -24,6 +24,7 @@ repos:
       - id: mypy
         additional_dependencies:
           - hypothesis
+          - pydantic>=2.12
           - pytest
           - requests-mock
           - requests[socks]

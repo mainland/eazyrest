@@ -166,7 +166,7 @@ An `Iterable` field of related objects, such as `members: Iterable[User]`, is la
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item. The same holds for values assigned to collection fields or passed to `create()`, which raise `TypeError` unless they are collections. In `filter()` and `get()`, a single value for a collection field, such as `Team.filter(members=user)`, is sent as one item and matches the objects whose collection holds it.
 
-Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value.
+Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Pydantic can convert such types instead, as [Pydantic conversion](#pydantic-conversion) describes.
 
 A field's value is cached when it is first read, so later reads return the same value. If you change that value in place, `save()` sends the change, as it does for an assignment:
 
@@ -177,9 +177,86 @@ profile.save()
 
 The object detects such a change by comparing the value's encoding with its encoding when it was read. It does so only when `save()` runs, when an eager assignment sends a `PATCH`, or before the object loads missing fields, so `json` does not show the change before then. In eager mode, a change made in place is therefore sent by the next `save()` or eager assignment, not immediately. Assigning the field, `refresh()`, and an `update_from_json()` payload that holds the field each discard a change made in place that has not been sent.
 
+## Pydantic conversion
+
+Pydantic converts a field's value when the field's type mentions Pydantic. Such a type is, or contains, one of the following:
+
+- A class with Pydantic's schema hook, such as a Pydantic model, `pydantic.Base64Bytes`, or a type from `pydantic-extra-types`.
+- A class with a Pydantic config, such as a Pydantic dataclass or a `TypedDict` decorated with `pydantic.with_config()`.
+- `Annotated` metadata from Pydantic, such as `pydantic.Field()`, `pydantic.Strict()`, or `pydantic.AfterValidator()`.
+
+Every other type converts as [Field conversion](#field-conversion) describes, so a plain `TypedDict`, a standard library dataclass, or a `Literal` passes through unchecked. To have Pydantic check such a type, annotate it with `Annotated[T, pydantic.Field()]`. Constraints from `annotated_types` alone, such as `Annotated[int, Gt(0)]`, do not mention Pydantic, because other libraries use them too.
+
+Pydantic conversion requires the `pydantic` extra, which installs Pydantic 2.12 or later:
+
+```bash
+pip install "eazyrest[pydantic]"
+```
+
+```python
+import datetime
+from typing import Annotated, Literal
+
+from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, with_config
+from typing_extensions import TypedDict
+
+from eazyrest import JSONObject, json_object
+from eazyrest.pydantic import Duration
+
+
+@with_config(ConfigDict(extra="allow"))
+class Rendering(TypedDict):
+    width: int
+    height: int
+    timeout: Duration
+
+
+class Point(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    x: float
+    y: float
+
+
+@json_object
+class Logo(JSONObject):
+    class_url = "/logos/"
+
+    id: int
+    image: Base64Bytes
+    rendering: Rendering
+    anchors: list[Point]
+    shape: Annotated[Literal["square", "round"], Field()]
+    published: Annotated[datetime.datetime, Field(description="First shown")]
+```
+
+Reading `Logo.image` decodes the base64 JSON string to `bytes`, and reading `Logo.rendering` checks the mapping against `Rendering`. A value that Pydantic rejects raises `FieldConversionError`. Pydantic on Python before 3.12 requires `TypedDict` from `typing_extensions`.
+
+eazyrest still handles related objects, `T | None`, and collections around a type that Pydantic converts, so `Logo.anchors` converts each item to a `Point`. Pydantic converts the whole of any other type, such as `dict[str, Point]`, which therefore cannot contain an eazyrest model.
+
+Assigning a value, or passing it to `create()` or a query, writes the JSON value that Pydantic serializes. A value of another type, such as a `dict` assigned to a field typed as a Pydantic model, is validated first. A field typed as `Base64Bytes` therefore writes both `b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not read back raises `FieldConversionError` and sends nothing. This includes a value that breaks a constraint, such as `0` for a field typed as `Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as `null`.
+
+`Annotated[T, ...]` converts as `T` does, and the metadata refines that conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`, `datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's conversion reads and writes the value and Pydantic applies the metadata. `Logo.published` therefore reads as a plain `datetime.datetime` field would, a constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value, and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every type that the annotation names, such as the items of `Annotated[list[datetime.datetime], Field(max_length=3)]`.
+
+Inside a class that the annotation names, such as a Pydantic model or a `TypedDict`, Pydantic's own rules apply, and they differ from eazyrest's:
+
+| Type | eazyrest | Pydantic |
+| --- | --- | --- |
+| `datetime.datetime` | Reads a number as seconds, and rejects `1.7e12` as out of range | Reads `1.7e12` as milliseconds |
+| `datetime.datetime` | A UTC offset becomes `datetime.timezone` | Uses its own `TzInfo` class |
+| `datetime.date` | Rejects numbers | Reads a number as a timestamp |
+| `datetime.timedelta` | Reads Django's `DurationField` format, such as `1 02:03:04`, and rejects years and months | Rejects Django's format, and reads `P1Y` as 365 days |
+| Enums | Reads only the members' values | Also reads `"1"` for a member whose value is `1` |
+
+To convert a value inside such a class as an eazyrest field would, annotate it with `Datetime`, `Date`, `Duration`, or `UUID` from `eazyrest.pydantic`, as `Rendering.timeout` is above. Pydantic's own types, such as `AwareDatetime`, keep Pydantic's rules.
+
+A server may send keys that a `TypedDict` or a Pydantic model does not declare, and saving a value that dropped them would delete them on the server. A `PATCH` leaves the fields that it omits alone, but it replaces the whole value of each field that it sends, so a key missing from that value is deleted. Under Pydantic's default config, both a `TypedDict` and a Pydantic model drop such keys. A `TypedDict` that a field type names must therefore set `extra="allow"`, or `extra="forbid"` to reject such keys, or using the field raises `FieldConversionError`. A `TypedDict` nested inside it follows its config. A Pydantic model follows its own config, so give it `extra="allow"`, as `Point` has. A Pydantic dataclass never writes undeclared keys, even under `extra="allow"`, so a Pydantic dataclass that a field type names must set `extra="forbid"`, or using the field raises `FieldConversionError`.
+
+A value that Pydantic converts can be changed in place, as [Field conversion](#field-conversion) describes. For example, `logo.anchors[0].x = 2` followed by `logo.save()` sends the changed `anchors`.
+
 ## Custom field conversion
 
-Override `from_json()` and `to_json()` on a shared base model when an API needs conversion rules beyond the built-in `datetime`, `date`, `timedelta`, `UUID`, `Enum`, and related-object handling.
+Override `from_json()` and `to_json()` on a shared base model when an API needs conversion rules beyond the built-in `datetime`, `date`, `timedelta`, `UUID`, `Enum`, and related-object handling, or [Pydantic conversion](#pydantic-conversion).
 
 Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metadata derived from the field annotation:
 
@@ -187,6 +264,7 @@ Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metada
 - `RelatedType` describes a related `JSONObject` subclass.
 - `OptionalType` wraps the analyzed type for `T | None`.
 - `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T, ...]`, `set[T]`, `frozenset[T]`, `Sequence[T]`, and `Iterable[T]`.
+- `PydanticType` describes a type that Pydantic converts. Its `adapter` is the `pydantic.TypeAdapter` that converts it.
 
 Most custom conversions only need to handle one metadata case and delegate everything else to `super()`. Pattern matching works well for this because `AnalyzedType` is a union of small metadata classes. Because collection conversion is recursive, a custom scalar conversion also applies inside typed collections.
 
@@ -232,6 +310,8 @@ class Invoice(APIObject):
 ```
 
 The `Invoice.total` field converts through the `Decimal` branch directly. The `Invoice.line_totals` field is a `CollectionType`, so the default collection handling recurses into each item and calls the same `Decimal` branch for every value. When overriding `from_json()`, keep forwarding `field=field` to `super()` so related-object prefetch lookups continue to work.
+
+Pydantic conversion can replace this override: a field typed as `Annotated[Decimal, pydantic.Field()]` reads JSON numbers and strings as `Decimal` values and writes them as strings.
 
 Name the type in a class pattern with a dotted name, such as `decimal.Decimal`. A bare name such as `Decimal` is a capture pattern. It matches every `BaseType` and binds the name to the field's type, so the branch above would convert every scalar field.
 
