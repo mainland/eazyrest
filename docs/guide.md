@@ -62,6 +62,8 @@ Other keyword arguments to the constructor are assignments, made after the prima
 
 Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
 
+`repr()` shows an object's class and primary key, as in `<User id=1>`, without loading it.
+
 Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
 
 ```python
@@ -110,6 +112,8 @@ Field annotations drive JSON conversion when values are read from or written to 
 - `datetime.timedelta` values decode from duration strings and encode to ISO 8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's `DurationField` format, the format of `str(timedelta)`, unit forms such as `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations with years or months are rejected in every format, because those units have no fixed length. See `parse_duration()`.
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
+
+A value that a field cannot convert, when it is read, assigned, or passed to `create()` or a query, raises `FieldConversionError`. Its message names the model and field, as in `Booking.day: month must be in 1..12`, and the conversion's own error is its `__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches either one keeps working.
 
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
@@ -254,6 +258,8 @@ todo, created = Todo.get_or_create(user=user, title="Write docs")
 ```
 
 `get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
+
+`get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup, as in `No Todo title='a' exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 

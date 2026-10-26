@@ -17,6 +17,8 @@ import requests
 from eazyrest import (
     API,
     DoesNotExist,
+    EazyrestError,
+    FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -1187,6 +1189,27 @@ def test_date_and_uuid_fields_encode(requests_mock: Any) -> None:
     }
 
 
+def test_conversion_errors_name_the_field(requests_mock: Any) -> None:
+    """A conversion error names the model and field and keeps its cause."""
+    booking = Booking(json={"id": 1, "day": "2026-13-01", "token": "x"})
+    when = datetime.datetime(2026, 1, 3, tzinfo=datetime.timezone.utc)
+
+    with pytest.raises(FieldConversionError, match=r"^Booking\.day: ") as info:
+        _ = booking.day
+    with pytest.raises(TypeError, match=r"^Booking\.day: "):
+        Booking.create(day=when)
+    with pytest.raises(ValueError, match=r"^UUIDUser\.key: "):
+        UUIDUser(key="not-a-uuid")
+
+    error = info.value
+    assert (error.model, error.field) == (Booking, "day")
+    assert isinstance(error, TypeError)
+    assert isinstance(error, ValueError)
+    assert isinstance(error, EazyrestError)
+    assert isinstance(error.__cause__, ValueError)
+    assert requests_mock.call_count == 0
+
+
 def test_date_field_rejects_datetime() -> None:
     """A ``datetime`` is not written to a ``date`` field."""
     booking = Booking(
@@ -1711,8 +1734,26 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         ],
     )
 
-    with pytest.raises(MultipleObjectsReturned):
+    match = "More than one Todo userId=2 exists"
+    with pytest.raises(MultipleObjectsReturned, match=match):
         Todo.get(userId=2)
+    with pytest.raises(EazyrestError, match=match):
+        Todo.get_or_create(userId=2)
+
+
+def test_repr_shows_primary_key_without_a_request(
+    requests_mock: Any,
+) -> None:
+    """``repr()`` names the class and key and never loads the object."""
+    key = uuid.UUID(int=1)
+
+    assert repr(User(id=1)) == "<User id=1>"
+    assert repr(User(json={"id": 2, "name": "Ada"})) == "<User id=2>"
+    assert repr(User()) == "<User id=None>"
+    assert repr(UUIDUser(key=key)) == f"<UUIDUser key={str(key)!r}>"
+    assert repr(UUIDUser(json={"ID": str(key)})) == repr(UUIDUser(key=key))
+    assert repr(ModelBase()) == "<ModelBase>"
+    assert requests_mock.call_count == 0
 
 
 def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
@@ -2972,8 +3013,10 @@ def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    with pytest.raises(DoesNotExist):
+    with pytest.raises(DoesNotExist, match="No Todo title='missing' exists"):
         Todo.get(title="missing")
+    with pytest.raises(EazyrestError, match=r"^No Todo exists$"):
+        Todo.get()
 
 
 def test_delete_sends_delete_request(requests_mock: Any) -> None:

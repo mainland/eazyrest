@@ -1,6 +1,10 @@
 # Model Reference
 
 ```{eval-rst}
+.. autoexception:: eazyrest.EazyrestError
+```
+
+```{eval-rst}
 .. autoexception:: eazyrest.DoesNotExist
 ```
 
@@ -10,6 +14,11 @@
 
 ```{eval-rst}
 .. autoexception:: eazyrest.PrefetchNotSupported
+```
+
+```{eval-rst}
+.. autoexception:: eazyrest.FieldConversionError
+   :members:
 ```
 
 ```{eval-rst}
