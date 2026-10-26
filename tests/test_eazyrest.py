@@ -18,6 +18,7 @@ from eazyrest import (
     API,
     DoesNotExist,
     EazyrestError,
+    FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -1186,6 +1187,27 @@ def test_date_and_uuid_fields_encode(requests_mock: Any) -> None:
         "day": "2026-01-03",
         "token": "6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40",
     }
+
+
+def test_conversion_errors_name_the_field(requests_mock: Any) -> None:
+    """A conversion error names the model and field and keeps its cause."""
+    booking = Booking(json={"id": 1, "day": "2026-13-01", "token": "x"})
+    when = datetime.datetime(2026, 1, 3, tzinfo=datetime.timezone.utc)
+
+    with pytest.raises(FieldConversionError, match=r"^Booking\.day: ") as info:
+        _ = booking.day
+    with pytest.raises(TypeError, match=r"^Booking\.day: "):
+        Booking.create(day=when)
+    with pytest.raises(ValueError, match=r"^UUIDUser\.key: "):
+        UUIDUser(key="not-a-uuid")
+
+    error = info.value
+    assert (error.model, error.field) == (Booking, "day")
+    assert isinstance(error, TypeError)
+    assert isinstance(error, ValueError)
+    assert isinstance(error, EazyrestError)
+    assert isinstance(error.__cause__, ValueError)
+    assert requests_mock.call_count == 0
 
 
 def test_date_field_rejects_datetime() -> None:

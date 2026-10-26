@@ -68,6 +68,58 @@ class PrefetchNotSupported(EazyrestError):
     """Raised when explicit prefetch is requested for an unsupported model."""
 
 
+class FieldConversionError(EazyrestError, TypeError, ValueError):
+    """Raised when a field's value cannot be converted to or from JSON.
+
+    The message names the model and field, and the conversion's own error is
+    the ``__cause__``. It is both a ``TypeError`` and a ``ValueError``, the
+    errors that conversion raises, so code that catches either one still
+    catches it.
+    """
+
+    model: type
+    """Model whose field failed to convert."""
+
+    field: str
+    """Python attribute name of the field."""
+
+    def __init__(self, model: type, field: str, error: Exception) -> None:
+        """Describe a conversion error of a field.
+
+        Args:
+            model: Model whose field failed to convert.
+            field: Python attribute name of the field.
+            error: Error that the conversion raised.
+        """
+        super().__init__(f"{model.__name__}.{field}: {error}")
+        self.model = model
+        self.field = field
+
+
+@contextlib.contextmanager
+def _converting(model: type, field: str) -> Iterator[None]:
+    """Report a conversion error of ``field`` as a FieldConversionError.
+
+    Args:
+        model: Model class that owns the field.
+        field: Name of the field being converted.
+
+    Yields:
+        ``None``, while the conversion runs.
+
+    Raises:
+        FieldConversionError: If the conversion raises a ``TypeError`` or a
+            ``ValueError``. A ``FieldConversionError`` that the conversion
+            raises propagates unchanged.
+    """
+    try:
+        yield
+    except FieldConversionError:
+        raise
+    except (TypeError, ValueError) as err:
+        raise FieldConversionError(model, field, err) from err
+
+
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
     """Describe a lookup for an error message, as in ``Todo title='a'``.
 
@@ -948,11 +1000,12 @@ class JSONProperty:
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
 
-        value = obj.from_json(
-            json[self.json_field],
-            self.analyzed_type,
-            field=self.field,
-        )
+        with _converting(type(obj), self.field):
+            value = obj.from_json(
+                json[self.json_field],
+                self.analyzed_type,
+                field=self.field,
+            )
         obj._field_cache[self.field] = value
         # A related object saves its own changes.
         if not isinstance(
@@ -962,9 +1015,9 @@ class JSONProperty:
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
-            obj._field_snapshots[self.field] = _copy_json(
-                obj.to_json(value, self.analyzed_type)
-            )
+            with _converting(type(obj), self.field):
+                encoded = obj.to_json(value, self.analyzed_type)
+            obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
 
@@ -977,10 +1030,9 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the backing JSON does not contain this field.
-            TypeError: If a primary key that initializes an unloaded object
-                cannot be converted to the field's type.
-            ValueError: If such a primary key is not a valid value of the
-                field's type.
+            FieldConversionError: If the value cannot be converted to the
+                field's JSON value, or a primary key that initializes an
+                unloaded object is not a valid value of the field's type.
         """
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
@@ -994,15 +1046,17 @@ class JSONProperty:
             # as the key is kept as is.
             if not isinstance(value, JSONObject):
                 conversion = self.analyzed_type
-                value = obj.from_json(
-                    obj.to_json(value, conversion), conversion
-                )
+                with _converting(type(obj), self.field):
+                    value = obj.from_json(
+                        obj.to_json(value, conversion), conversion
+                    )
 
             obj._pk_value = value
             return
 
         json = obj._json_with_field(self.json_field, self.field)
-        new_value = obj.to_json(value, self.analyzed_type)
+        with _converting(type(obj), self.field):
+            new_value = obj.to_json(value, self.analyzed_type)
 
         if not _json_equal(json[self.json_field], new_value):
             # Store a copy, so that changing the assigned value in place later
@@ -1503,9 +1557,10 @@ class JSONObject:
         """Queue updates for cached values that were changed in place."""
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
-            encoded = self.to_json(
-                self._field_cache[field], descriptor.analyzed_type
-            )
+            with _converting(type(self), field):
+                encoded = self.to_json(
+                    self._field_cache[field], descriptor.analyzed_type
+                )
             if not _json_equal(encoded, snapshot):
                 self._queue_update(descriptor.json_field, _copy_json(encoded))
                 self._field_snapshots[field] = _copy_json(encoded)
@@ -1890,10 +1945,11 @@ class JSONObject:
         for field, value in fields.items():
             descriptor = getattr(cls, field, None)
             if isinstance(descriptor, JSONProperty):
-                payload[descriptor.json_field] = cls.to_json(
-                    value,
-                    descriptor.analyzed_type,
-                )
+                with _converting(cls, field):
+                    payload[descriptor.json_field] = cls.to_json(
+                        value,
+                        descriptor.analyzed_type,
+                    )
             else:
                 payload[field] = value
 
@@ -1971,9 +2027,10 @@ class JSONObject:
                 descriptor = getattr(cls, name)
                 collection = _unwrap_optional_type(descriptor.analyzed_type)
                 assert isinstance(collection, CollectionType)
-                payload[descriptor.json_field] = cls.to_json(
-                    value, collection.item_type
-                )
+                with _converting(cls, name):
+                    payload[descriptor.json_field] = cls.to_json(
+                        value, collection.item_type
+                    )
 
         for name, value in params.items():
             descriptor = getattr(cls, name, None)

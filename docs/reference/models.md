@@ -17,6 +17,11 @@
 ```
 
 ```{eval-rst}
+.. autoexception:: eazyrest.FieldConversionError
+   :members:
+```
+
+```{eval-rst}
 .. autofunction:: eazyrest.json_object
 ```
 
