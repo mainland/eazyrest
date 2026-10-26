@@ -1571,12 +1571,14 @@ class JSONObject:
         the full object.
 
         Args:
-            json: Full or partial JSON object for this instance.
+            json: Full or partial JSON object for this instance. The object
+                keeps a deep copy, so changing the mapping or its nested values
+                later does not change the object.
 
         Raises:
             ValueError: If the payload refers to a different primary key.
         """
-        payload = dict(json)
+        payload = copy.deepcopy(dict(json))
 
         existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)

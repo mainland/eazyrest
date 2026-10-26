@@ -2361,6 +2361,18 @@ def test_reassigning_value_changed_after_save_sends_patch(
     ]
 
 
+def test_update_from_json_copies_nested_payload_values() -> None:
+    """A later change to the message does not reach the object."""
+    settings = {"theme": "blue"}
+    message = {"id": 1, "settings": settings}
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+
+    profile.update_from_json(message)
+    settings["theme"] = "red"
+
+    assert profile.settings == {"theme": "blue"}
+
+
 def test_update_from_json_merges_partial_payload_and_invalidates_cache(
     requests_mock: Any,
 ) -> None:
