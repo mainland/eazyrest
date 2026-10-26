@@ -6,9 +6,11 @@ import datetime
 import enum
 import inspect
 import itertools
+import re
 import sys
 import types
 import typing
+import uuid
 from collections.abc import (
     Callable,
     Iterable,
@@ -122,24 +124,42 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 
-def _annotation_names(cls: type) -> list[str]:
-    """Return the names annotated directly on a class.
+def _annotations(cls: type) -> dict[str, Any]:
+    """Return the annotations made directly on a class.
 
     The annotations are not evaluated. A field type may refer to a class
     that is not defined yet, including the class being decorated, so
-    ``JSONProperty`` resolves field types when they are first used.
+    ``JSONProperty`` resolves field types when they are first used. An
+    annotation may therefore be a string or a ``typing.ForwardRef``.
     """
     if sys.version_info >= (3, 14):
         # Python 3.14 evaluates annotations on demand, and the default VALUE
         # format raises NameError for a forward reference.
-        return list(inspect.get_annotations(cls, format=Format.FORWARDREF))
+        return inspect.get_annotations(cls, format=Format.FORWARDREF)
 
-    return list(inspect.get_annotations(cls))
+    return inspect.get_annotations(cls)
+
+
+# An unevaluated ClassVar annotation, such as "ClassVar[int]" or
+# "typing.ClassVar[int]". Like dataclasses, this recognizes ClassVar by name
+# instead of evaluating the annotation.
+_CLASS_VAR_RE = re.compile(r"\s*(?:\w+\s*\.\s*)*ClassVar\b")
+
+
+def _is_class_var(annotation: Any) -> bool:
+    """Return whether an annotation, evaluated or not, is a ``ClassVar``."""
+    if isinstance(annotation, typing.ForwardRef):
+        annotation = annotation.__forward_arg__
+
+    if isinstance(annotation, str):
+        return _CLASS_VAR_RE.match(annotation) is not None
+
+    return annotation is ClassVar or typing.get_origin(annotation) is ClassVar
 
 
 def _is_collection_type(ty: Any) -> bool:
     """Return whether a type represents a collection."""
-    return ty in (Iterable, list, tuple, set, frozenset)
+    return ty in (Iterable, Sequence, list, tuple, set, frozenset)
 
 
 def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
@@ -264,6 +284,43 @@ def _decode_datetime(value: Any) -> datetime.datetime:
     )
 
 
+def _decode_uuid(value: Any) -> uuid.UUID:
+    """Decode a JSON UUID string.
+
+    Args:
+        value: UUID in any form that ``uuid.UUID`` accepts, such as
+            ``"6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40"``.
+
+    Returns:
+        Decoded ``UUID``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not a UUID.
+    """
+    if not isinstance(value, str):
+        raise TypeError(
+            f"UUID values must be strings, got {type(value).__name__}"
+        )
+
+    return uuid.UUID(value)
+
+
+def _query_value(value: Any) -> Any:
+    """Return an encoded field value as a query string should send it.
+
+    requests converts a query value with ``str()``, which writes
+    Python's ``True`` and ``False``. Send JSON's ``true`` and ``false``
+    instead, as the field's value would be written in a request body.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return [_query_value(item) for item in value]
+
+    return value
+
+
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
     """Return prefetch field names as a tuple."""
     if prefetch is None:
@@ -352,7 +409,9 @@ def json_object(
     Python values.
 
     Fields declared on a decorated base class remain fields of a decorated
-    subclass.
+    subclass. An attribute annotated with ``ClassVar``, such as
+    ``class_url: ClassVar[str] = "/users/"``, is a class attribute rather
+    than a field.
 
     Args:
         cls: Class being decorated when used as ``@json_object``.
@@ -383,7 +442,7 @@ def json_object(
         Raises:
             ValueError: If a field would replace a ``JSONObject`` attribute.
         """
-        reserved = set(dir(JSONObject)).union(_annotation_names(JSONObject))
+        reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
 
         # We only process annotations for this class *without* any annotations
@@ -391,8 +450,8 @@ def json_object(
         # decorated superclasses already have descriptors. We also want to
         # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
-        for field in _annotation_names(cls):
-            if field in exclude:
+        for field, annotation in _annotations(cls).items():
+            if field in exclude or _is_class_var(annotation):
                 continue
 
             if field in reserved:
@@ -557,17 +616,25 @@ class JSONProperty:
         Raises:
             AttributeError: If the backing JSON does not contain this field.
         """
-        if self.is_primary_key and obj._json is None:
+        # Only the first key assignment initializes a lazy object's identity.
+        # Later assignments must update the resource at its saved key.
+        if (
+            self.is_primary_key
+            and obj._json is None
+            and not hasattr(obj, "_pk_value")
+        ):
             obj._pk_value = value
             return
 
         json = obj._json_with_field(self.json_field, self.field)
-        obj._field_cache.pop(self.field, None)
-        obj._prefetched_related.pop(self.field, None)
         new_value = obj.to_json(value, self.analyzed_type)
 
         if json[self.json_field] != new_value:
             obj._update_json_field(self.json_field, new_value)
+
+        # Drop cached values only now, because the update may read this field.
+        obj._field_cache.pop(self.field, None)
+        obj._prefetched_related.pop(self.field, None)
 
 
 class JSONObject:
@@ -605,6 +672,13 @@ class JSONObject:
     """Value of the primary key.
 
     If None, look in JSON
+    """
+
+    _saved_pk: Any
+    """Primary key of the saved object while a primary-key change is pending.
+
+    Set only while ``_pending_updates`` holds the primary-key JSON
+    field.
     """
 
     _api_override: API | None
@@ -707,21 +781,20 @@ class JSONObject:
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
             return arg
-        if (
-            field is not None
-            and not isinstance(arg, dict)
-            and field in self._prefetched_related
-            and arg in self._prefetched_related[field]
-        ):
-            return cast(T, self._prefetched_related[field][arg])
         # Pass on only an instance override. Without one, the related object
         # uses the API registered for its own class.
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
             return ty(json=arg, api=api, write_mode=self.write_mode)
-        else:
-            return ty(pk=arg, api=api, write_mode=self.write_mode)
+
+        related = ty(pk=arg, api=api, write_mode=self.write_mode)
+        if field is not None and field in self._prefetched_related:
+            pk = related._normalize_pk(arg)
+            if pk in self._prefetched_related[field]:
+                return cast(T, self._prefetched_related[field][pk])
+
+        return related
 
     def from_json(
         self,
@@ -750,6 +823,10 @@ class JSONObject:
             case BaseType(base_type):
                 if base_type is datetime.datetime:
                     return _decode_datetime(value)
+                if base_type is datetime.date:
+                    return datetime.date.fromisoformat(value)
+                if base_type is uuid.UUID:
+                    return _decode_uuid(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
@@ -794,7 +871,8 @@ class JSONObject:
                     for item in value
                 )
 
-                if collection_type is Iterable:
+                # Abstract collection types read as tuples.
+                if collection_type in (Iterable, Sequence):
                     return tuple(converted_items)
 
                 return collection_type(converted_items)
@@ -808,12 +886,20 @@ class JSONObject:
     def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
+        A collection converts to a list. A single value for a collection
+        type, such as a string, converts as one item rather than as a
+        collection.
+
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
 
         Returns:
             JSON-serializable representation of ``value``.
+
+        Raises:
+            TypeError: If ``conversion`` is ``datetime.date`` and ``value`` is
+                a ``datetime.datetime``.
         """
         match conversion:
             case OptionalType(inner_type):
@@ -821,18 +907,30 @@ class JSONObject:
                     return None
 
                 return cls.to_json(value, inner_type)
-            case RelatedType():
-                # Any value other than a model instance is already a primary
-                # key.
+            case RelatedType(model_type):
                 if isinstance(value, JSONObject):
-                    return value.pk
+                    model_type = type(value)
+                    value = value.pk
 
-                return value
+                return model_type.to_json(value, model_type._pk.analyzed_type)
             case BaseType(base_type):
                 if base_type is datetime.datetime and isinstance(
                     value, datetime.datetime
                 ):
                     return value.isoformat()
+                if base_type is datetime.date and isinstance(
+                    value, datetime.date
+                ):
+                    if isinstance(value, datetime.datetime):
+                        # A datetime is a date, but its ISO 8601 form has a
+                        # time, which a date field cannot read back.
+                        raise TypeError(
+                            "Date field values must be dates, got datetime"
+                        )
+
+                    return value.isoformat()
+                if base_type is uuid.UUID and isinstance(value, uuid.UUID):
+                    return str(value)
                 if base_type is datetime.timedelta and isinstance(
                     value, datetime.timedelta
                 ):
@@ -845,6 +943,13 @@ class JSONObject:
 
                 return value
             case CollectionType(_, item_type):
+                if not isinstance(value, Iterable) or isinstance(
+                    value, (str, bytes, Mapping)
+                ):
+                    # A single value, such as a query for the objects whose
+                    # collection holds it, converts as one item.
+                    return cls.to_json(value, item_type)
+
                 return [cls.to_json(item, item_type) for item in value]
             case _:
                 raise TypeError(
@@ -887,6 +992,14 @@ class JSONObject:
             resp = self.api.patch(self.url, json=payload)
             self._apply_patch_response(resp, payload)
             return
+
+        if (
+            json_field == getattr(type(self), "_pk_json_field", None)
+            and json_field not in self._pending_updates
+        ):
+            # Until save() sends the new primary key, the object is still
+            # saved under the old one.
+            self._saved_pk = self.pk
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
@@ -954,15 +1067,19 @@ class JSONObject:
         """
         payload = dict(json)
 
-        existing_pk = self.pk
+        existing_pk = self._persisted_pk()
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
-        if incoming_pk != existing_pk:
+        if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
             raise ValueError(
                 "Incoming JSON primary key does not match this object"
             )
 
         if self._json is None:
-            self._json = {self._pk_json_field: existing_pk}
+            self._json = {
+                self._pk_json_field: self.to_json(
+                    existing_pk, type(self)._pk.analyzed_type
+                )
+            }
             self._json_is_partial = True
 
         self._json.update(payload)
@@ -982,7 +1099,7 @@ class JSONObject:
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
         # Store value of primary key
-        self._pk_value = self.pk
+        self._pk_value = self._persisted_pk()
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -1017,17 +1134,52 @@ class JSONObject:
         # class variable on this instance.
         type(self)._pk.__set__(self, value)
 
+    def _persisted_pk(self) -> Any:
+        """Return the primary key under which the object is saved.
+
+        This differs from ``pk`` while a lazy primary-key change waits
+        for ``save()``.
+        """
+        if self._pk_json_field in self._pending_updates:
+            return self._saved_pk
+
+        return self.pk
+
+    def _normalize_pk(self, value: Any) -> Any:
+        """Return a decoded scalar primary key from a Python or JSON value."""
+        conversion = type(self)._pk.analyzed_type
+        value = self.from_json(self.to_json(value, conversion), conversion)
+        if isinstance(value, JSONObject):
+            return value._normalize_pk(value.pk)
+
+        return value
+
     @property
     def url(self) -> str:
         """Return the resource URL for this object.
 
         The primary key is percent-encoded, so it always forms a single path
-        segment.
+        segment. While a primary-key change waits for ``save()``, the URL
+        uses the saved primary key, so ``save()`` sends the change to the
+        saved object.
 
         Returns:
             Relative URL for this object, always ending with ``/``.
+
+        Raises:
+            ValueError: If the primary key is ``None``, empty, or a dot
+                segment. The URL would name another resource, such as the
+                collection.
         """
-        url = f"{self.class_url.rstrip('/')}/{quote(str(self.pk), safe='')}"
+        pk = self._persisted_pk()
+        pk_text = str(pk)
+        if pk is None or pk_text in ("", ".", ".."):
+            raise ValueError(
+                f"{type(self).__name__} object has primary key {pk!r}, "
+                "so it has no URL"
+            )
+
+        url = f"{self.class_url.rstrip('/')}/{quote(pk_text, safe='')}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
@@ -1124,6 +1276,65 @@ class JSONObject:
                 )
             else:
                 payload[field] = value
+
+        return payload
+
+    @classmethod
+    def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+        """Encode query parameters as ``_encode_fields()`` encodes fields.
+
+        A boolean field value is sent as ``true`` or ``false``, as in JSON.
+
+        Args:
+            params: Query parameter values keyed as for ``_encode_fields()``.
+
+        Returns:
+            Query parameters keyed by JSON key.
+
+        Raises:
+            ValueError: If a parameter named after a JSON-backed field, or
+                after its JSON key, encodes to ``None`` or to an empty
+                collection. A query string has no null value or empty list,
+                and requests omits such a parameter, so the query would match
+                objects whatever their value for that field.
+        """
+        payload = cls._encode_fields(params)
+        json_keys = {
+            getattr(cls, field).json_field
+            for field in getattr(cls, "_json_fields", ())
+        }
+
+        for name, value in params.items():
+            descriptor = getattr(cls, name, None)
+            if isinstance(descriptor, JSONProperty):
+                json_field = descriptor.json_field
+            elif name in json_keys:
+                json_field = name
+            else:
+                continue
+
+            encoded = payload[json_field]
+            if encoded is None:
+                omitted = "is None"
+            elif isinstance(encoded, (list, tuple, set, frozenset)) and (
+                len(encoded) == 0
+            ):
+                omitted = "is an empty collection"
+            else:
+                continue
+
+            raise ValueError(
+                f"Query parameter {name}={value!r} for {cls.__name__} cannot "
+                f"be sent, because requests omits parameters whose value "
+                f"{omitted}"
+            )
+
+        for name in params:
+            descriptor = getattr(cls, name, None)
+            if isinstance(descriptor, JSONProperty):
+                payload[descriptor.json_field] = _query_value(
+                    payload[descriptor.json_field]
+                )
 
         return payload
 
@@ -1240,6 +1451,8 @@ class JSONObject:
         Raises:
             ValueError: If ``field`` is not a JSON-backed related-object
                 field.
+            PrefetchNotSupported: If the related model does not override
+                ``bulk_get_by_pks()``.
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
@@ -1250,21 +1463,33 @@ class JSONObject:
             )
 
         analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
-        if isinstance(analyzed_type, RelatedType):
-            return descriptor, analyzed_type, None
-
+        collection_type = None
         if isinstance(analyzed_type, CollectionType):
-            item_type = _unwrap_optional_type(analyzed_type.item_type)
-            if isinstance(item_type, RelatedType):
-                return (
-                    descriptor,
-                    item_type,
-                    analyzed_type.collection_type,
-                )
+            collection_type = analyzed_type.collection_type
+            analyzed_type = _unwrap_optional_type(analyzed_type.item_type)
 
-        raise ValueError(
-            f"{cls.__name__}.{field} is not a related-object field"
+        if not isinstance(analyzed_type, RelatedType):
+            # As above, the field name is the invalid value.
+            raise ValueError(  # noqa: TRY004
+                f"{cls.__name__}.{field} is not a related-object field"
+            )
+
+        model_type = analyzed_type.model_type
+        if not model_type._supports_bulk_get():
+            raise PrefetchNotSupported(
+                f"{cls.__name__}.{field} cannot be prefetched, because "
+                f"{model_type.__name__} does not implement bulk_get_by_pks()"
+            )
+
+        return descriptor, analyzed_type, collection_type
+
+    @classmethod
+    def _supports_bulk_get(cls) -> bool:
+        """Return whether this class overrides ``bulk_get_by_pks()``."""
+        owner = next(
+            base for base in cls.__mro__ if "bulk_get_by_pks" in vars(base)
         )
+        return owner is not JSONObject
 
     @classmethod
     def _apply_prefetch(
@@ -1326,9 +1551,11 @@ class JSONObject:
                 continue
 
             # The related model loads through its own registered API.
-            prefetched_related[field] = (
-                related_type.model_type.bulk_get_by_pks(pks)
-            )
+            related_objects = related_type.model_type.bulk_get_by_pks(pks)
+            prefetched_related[field] = {
+                obj._normalize_pk(pk): obj
+                for pk, obj in related_objects.items()
+            }
 
         return prefetched_related
 
@@ -1379,6 +1606,17 @@ class JSONObject:
         The request is sent when ``filter()`` is called. Objects are created
         as the returned iterator advances.
 
+        Query parameters are encoded the same way as a ``create()`` payload.
+        Parameters named after JSON-backed fields are renamed by
+        ``field_map`` and converted to JSON values, so ``user=User(id=2)`` is
+        sent as ``userId=2`` when ``field_map={"user": "userId"}``. Other
+        parameters are sent unchanged.
+
+        A parameter named after a JSON-backed field, or after its JSON key,
+        must not be ``None`` or an empty collection. A query string has no
+        null value or empty list, and requests omits such a parameter, so the
+        query would ignore that field.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -1390,15 +1628,19 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field.
+                related-object field, or if a parameter named after a
+                JSON-backed field or its JSON key is ``None`` or an empty
+                collection.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         prefetch_fields = _normalize_prefetch(prefetch)
-        # Check the fields before the request, so a misspelled field fails even
-        # when the query matches nothing.
+        # Check the fields before the request, so a misspelled field or a
+        # model without bulk lookup fails even when the query matches nothing.
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
-        resp = cls.api.get(cls.class_url, params=kwargs)
+        resp = cls.api.get(cls.class_url, params=cls._encode_query(kwargs))
         items = cls.collection_items(resp.json())
 
         # Treat an empty prefetch list the same as no prefetch at all.
@@ -1426,6 +1668,8 @@ class JSONObject:
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         return cls.filter(prefetch=prefetch)
 
@@ -1437,6 +1681,8 @@ class JSONObject:
         **kwargs: Any,
     ) -> Self:
         """Fetch exactly one object matching query parameters.
+
+        Query parameters are encoded as in ``filter()``.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -1451,7 +1697,11 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field.
+                related-object field, or if a parameter named after a
+                JSON-backed field or its JSON key is ``None`` or an empty
+                collection.
+            PrefetchNotSupported: If the related model of a ``prefetch``
+                field does not implement ``bulk_get_by_pks()``.
         """
         results = iter(cls.filter(prefetch=prefetch, **kwargs))
         first = next(results, None)
@@ -1478,6 +1728,11 @@ class JSONObject:
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are
         sent unchanged.
 
+        As in ``filter()``, a lookup field must not be ``None`` or an empty
+        collection, because the query would ignore it while the creation
+        payload sends ``null`` or ``[]``. Such a value in ``defaults`` is sent
+        only on creation and is allowed.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             **kwargs: Fields used for lookup and included in creation.
@@ -1488,8 +1743,10 @@ class JSONObject:
 
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
+            ValueError: If a lookup parameter named after a JSON-backed field
+                or its JSON key is ``None`` or an empty collection.
         """
-        results = cls.filter(**cls._encode_fields(kwargs))
+        results = cls.filter(**kwargs)
         first = next(results, None)
         if first is not None:
             second = next(results, None)

@@ -6,6 +6,7 @@ tests.
 """
 
 import sys
+from typing import ClassVar
 
 import pytest
 
@@ -34,3 +35,18 @@ def test_field_annotation_can_refer_to_decorated_class() -> None:
 
     assert node.parent is not None
     assert node.parent.id == 1
+
+
+def test_evaluated_class_var_annotation_is_not_a_field() -> None:
+    """An evaluated ``ClassVar`` annotation declares a class attribute."""
+
+    @json_object
+    class Widget(JSONObject):
+        """Model with an annotated class attribute."""
+
+        class_url: ClassVar[str] = "/widgets/"
+
+        id: int
+
+    assert Widget._json_fields == {"id"}
+    assert Widget(json={"id": 1}).url == "/widgets/1/"
