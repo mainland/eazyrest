@@ -34,12 +34,16 @@ dependencies = [
     "tzlocal"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
+  "docformatter[tomli]==1.7.8",
+  "mypy==2.4.0",
+  "pre-commit==4.6.0",
+  "ruff==0.16.10",
   "types-dateparser",
   "types-python-dateutil",
   "types-requests",
-  "types-urllib3"
+  "types-urllib3",
 ]
 
 [tool.setuptools]
@@ -53,3 +57,52 @@ eazyrest = ["py.typed"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+extend-select = [
+  "UP",   # pyupgrade
+  "D",    # pydocstyle
+  "E501", # line too long
+  "E",    # pycodestyle
+  "F",    # Pyflakes
+  "B",    # flake8-bugbear
+  "SIM",  # flake8-simplify
+  "I",    # isort
+  "C4",   # flake8-comprehensions
+  "PT",   # flake8-pytest-style
+  "RUF",  # Ruff-specific rules
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.docformatter]
+in-place = true
+recursive = true
+wrap-summaries = 79
+wrap-descriptions = 79
+close-quotes-on-newline = true
+
+[tool.mypy]
+files = ["src"]
+strict = true
+warn_unreachable = true
+enable_error_code = [
+  "ignore-without-code",
+  "redundant-expr",
+  "truthy-bool",
+]
+pretty = true
+
+# isodate and pytimeparse2 ship no type information.
+[[tool.mypy.overrides]]
+module = ["isodate", "pytimeparse2"]
+ignore_missing_imports = true
+
+[tool.rumdl]
+flavor = "myst"
+# The Markdown files keep each paragraph on one line.
+disable = ["MD013"]
