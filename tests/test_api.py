@@ -44,6 +44,74 @@ def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
     assert response.json() == {"id": 1}
 
 
+@pytest.mark.parametrize(
+    ("method", "status"),
+    [("post", 301), ("post", 302), ("patch", 302), ("delete", 303)],
+)
+def test_api_rejects_redirect_that_changes_method(
+    requests_mock: Any, method: str, status: int
+) -> None:
+    """A write that a redirect would resend as a GET raises.
+
+    Args:
+        method: Name of the ``API`` method that sends the write, such as
+            ``"post"``.
+        status: Redirect status code that the server returns for the write.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.request(
+        method.upper(),
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://example.com/v2/users/"},
+    )
+    requests_mock.get("https://example.com/v2/users/", json=[{"id": 1}])
+
+    with pytest.raises(requests.HTTPError, match="was not performed") as info:
+        getattr(api, method)("/users/", json={"name": "Ada"})
+
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+
+
+@pytest.mark.parametrize("status", [307, 308])
+def test_api_follows_redirect_that_keeps_method(
+    requests_mock: Any, status: int
+) -> None:
+    """Redirects that keep the method and body are followed.
+
+    Args:
+        status: Redirect status code that keeps the method and body.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://example.com/v2/users/"},
+    )
+    created = requests_mock.post(
+        "https://example.com/v2/users/", status_code=201, json={"id": 1}
+    )
+
+    response = api.post("/users/", json={"name": "Ada"})
+
+    assert response.json() == {"id": 1}
+    assert created.last_request.json() == {"name": "Ada"}
+
+
+def test_api_follows_get_redirect(requests_mock: Any) -> None:
+    """A redirected GET is still a GET, so it is followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    requests_mock.get("https://example.com/v1/users/1/", json={"id": 1})
+
+    assert api.get("/users/1").json() == {"id": 1}
+
+
 def test_api_closes_session_as_context_manager() -> None:
     """The API client should close its session on context exit."""
     api = API("https://example.com/")
@@ -195,6 +263,28 @@ def test_api_reset_session_can_enable_verification() -> None:
     api.reset_session(verify=True)
 
     assert api.session.verify is True
+
+
+def test_api_accepts_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CA bundle path verifies certificates and keeps warnings."""
+    disabled: list[type[Warning]] = []
+    monkeypatch.setattr(urllib3, "disable_warnings", disabled.append)
+
+    api = API("https://example.com/", verify="/etc/ssl/certs/internal.pem")
+
+    assert api.session.verify == "/etc/ssl/certs/internal.pem"
+    assert disabled == []
+
+
+def test_api_mounts_adapter_with_retries() -> None:
+    """Extra keyword arguments configure the base URL's adapter."""
+    api = API("https://example.com/", max_retries=3)
+
+    adapter = cast(
+        requests.adapters.HTTPAdapter,
+        api.session.get_adapter("https://example.com/users/"),
+    )
+    assert adapter.max_retries.total == 3
 
 
 def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
