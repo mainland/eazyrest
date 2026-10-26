@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Typing :: Typed",
 ]
 dependencies = [
@@ -65,7 +66,6 @@ dev = [
   "twine",
   "types-python-dateutil",
   "types-requests",
-  "types-urllib3",
 ]
 
 # Sphinx 9.1 requires Python 3.12, so the docs group does, and so does the dev
