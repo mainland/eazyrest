@@ -241,10 +241,12 @@ class DRFObject(JSONObject):
 This also applies inside typed collections such as `list[datetime.datetime]`,
 because a conversion applies wherever its type appears.
 
-DRF `DurationField` can emit either ISO 8601 durations or Django-style duration
-strings depending on serializer settings. `eazyrest` can parse common duration
-strings into `datetime.timedelta`, but you should replace the `timedelta`
-conversion too if your API requires one exact wire format.
+DRF `DurationField` emits Django's duration format, such as `1 02:03:04`,
+unless it is configured to emit ISO 8601. `eazyrest` parses both formats into
+`datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations,
+which DRF accepts as input. If your API requires another wire format, replace
+the `timedelta` conversion in a model's `conversions`, as the guide's Custom
+field conversion section shows.
 
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and
 `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]`
