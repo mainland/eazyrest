@@ -45,3 +45,7 @@
    :members:
    :show-inheritance:
 ```
+
+```{eval-rst}
+.. autodata:: eazyrest.WriteMode
+```
