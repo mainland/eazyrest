@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 from decimal import Decimal
 from pathlib import Path
@@ -53,3 +54,14 @@ def test_decimal_example_converts_only_decimal_fields() -> None:
     total = invoice.to_json(Decimal("1.1"), BaseType(Decimal))
     assert total == "1.1"
     assert invoice.to_json(5, BaseType(int)) == 5
+
+
+def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
+    """The ``TimestampObject`` override encodes only datetimes."""
+    example = run_guide_example("class TimestampObject")
+    timestamp_object = example["TimestampObject"]
+    when = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+
+    encoded = timestamp_object.to_json(when, BaseType(datetime.datetime))
+    assert encoded == when.timestamp()
+    assert timestamp_object.to_json("text", BaseType(str)) == "text"

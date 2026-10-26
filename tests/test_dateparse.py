@@ -10,18 +10,76 @@ import pytest
 
 from eazyrest import parse_datetime, parse_duration
 
+UTC = datetime.timezone.utc
 
-def test_parse_datetime_respects_explicit_tzinfo() -> None:
-    """Naive datetimes should use the caller-provided timezone."""
-    tzinfo = datetime.timezone.utc
 
-    parsed = parse_datetime(
-        "2024-01-02 03:04:05",
-        use_dateparser=False,
-        tzinfo=tzinfo,
-    )
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "2024-01-02T03:04:05Z",
+            datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC),
+        ),
+        (
+            "2024-01-02T03:04:05+02:00",
+            datetime.datetime(
+                2024,
+                1,
+                2,
+                3,
+                4,
+                5,
+                tzinfo=datetime.timezone(datetime.timedelta(hours=2)),
+            ),
+        ),
+        # A string without an offset parses to a naive datetime.
+        ("2024-01-02 03:04", datetime.datetime(2024, 1, 2, 3, 4)),  # noqa: DTZ001
+        ("2024-01-02", datetime.datetime(2024, 1, 2)),  # noqa: DTZ001
+        (1704164645, datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)),
+        (
+            1704164645.5,
+            datetime.datetime(2024, 1, 2, 3, 4, 5, 500000, tzinfo=UTC),
+        ),
+    ],
+)
+def test_parse_datetime_reads_iso_8601_and_timestamps(
+    value: Any, expected: datetime.datetime
+) -> None:
+    """ISO 8601 strings and timestamps parse as datetime fields read them.
 
-    assert parsed.tzinfo is tzinfo
+    Args:
+        value: ISO 8601 string, or Unix timestamp, to parse.
+        expected: Datetime that ``value`` should parse to. The parsed
+            ``tzinfo`` must also have the same type as its ``tzinfo``.
+    """
+    parsed = parse_datetime(value)
+
+    assert parsed == expected
+    assert type(parsed.tzinfo) is type(expected.tzinfo)
+
+
+@pytest.mark.parametrize(
+    ("value", "error", "message"),
+    [
+        ("April 1, 2024", ValueError, "not in ISO 8601 format"),
+        ("tomorrow", ValueError, "not in ISO 8601 format"),
+        (1e20, ValueError, "out of range"),
+        (True, TypeError, "got bool"),
+        (None, TypeError, "got NoneType"),
+    ],
+)
+def test_parse_datetime_rejects_other_values(
+    value: Any, error: type[Exception], message: str
+) -> None:
+    """Natural language, huge timestamps, and other types are rejected.
+
+    Args:
+        value: Value that is not a datetime that eazyrest reads.
+        error: Exception type that parsing ``value`` should raise.
+        message: Pattern that the error message should match.
+    """
+    with pytest.raises(error, match=message):
+        parse_datetime(value)
 
 
 def test_parse_duration_returns_timedelta() -> None:
@@ -29,19 +87,6 @@ def test_parse_duration_returns_timedelta() -> None:
     parsed = parse_duration("1h 30m")
 
     assert parsed == datetime.timedelta(hours=1, minutes=30)
-
-
-def test_parse_datetime_date_only_uses_midnight() -> None:
-    """Missing time components should not come from the current time."""
-    parsed = parse_datetime(
-        "2024-01-02",
-        use_dateparser=False,
-        tzinfo=datetime.timezone.utc,
-    )
-
-    assert parsed == datetime.datetime(
-        2024, 1, 2, tzinfo=datetime.timezone.utc
-    )
 
 
 @pytest.mark.parametrize(
