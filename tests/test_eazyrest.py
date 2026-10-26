@@ -637,6 +637,37 @@ def test_related_collection_is_loaded_lazily(
     assert requests_mock.call_count == 3
 
 
+def test_lazy_related_collection_is_single_pass() -> None:
+    """A second traversal raises instead of creating new members."""
+    team = Team(json={"id": 1, "members": [2, 3]})
+
+    members = iter(team.members)
+    first = next(members)
+    rest = list(members)
+
+    assert first.pk == 2
+    assert [member.pk for member in rest] == [3]
+    with pytest.raises(RuntimeError, match="Team.members is a lazy related"):
+        iter(team.members)
+
+
+def test_encoding_lazy_related_collection_keeps_its_traversal(
+    requests_mock: Any,
+) -> None:
+    """Assigning or creating from the field does not use it up."""
+    post = requests_mock.post(
+        "https://example.com/v1/teams/", json={"id": 2, "members": [2, 3]}
+    )
+    team = Team(json={"id": 1, "members": [2, 3]})
+
+    team.members = team.members
+    Team.create(members=team.members)
+
+    assert post.last_request.json() == {"members": [2, 3]}
+    assert team._pending_updates == {}
+    assert [member.pk for member in team.members] == [2, 3]
+
+
 def test_related_tuple_is_materialized(
     requests_mock: Any,
 ) -> None:
@@ -1592,6 +1623,40 @@ def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+def test_object_without_primary_key_reports_missing_url(
+    requests_mock: Any,
+) -> None:
+    """An object created without a key cannot load, and says why."""
+    user = User()
+
+    assert user.pk is None
+    with pytest.raises(ValueError, match="primary key None, so it has no URL"):
+        _ = user.name
+    with pytest.raises(ValueError, match="no URL"):
+        User(name="Ada")
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_constructor_field_arguments_are_assignments(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """Fields other than the key are assigned after the key is set."""
+    get = requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+
+    user = User(id=1, name="Grace", write_mode=write_mode)
+
+    assert get.call_count == 1
+    assert patch.call_count == (1 if write_mode == "eager" else 0)
+    user.save()
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
 def test_lazy_write_mode_batches_updates_until_save(
     requests_mock: Any,
 ) -> None:
@@ -2009,25 +2074,121 @@ def test_assigning_value_changed_in_place_sends_patch(
     assert profile.json["settings"] == {"theme": "dark"}
 
 
-def test_changing_read_value_in_place_leaves_object_unchanged(
-    requests_mock: Any,
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_value_changed_in_place_is_saved(
+    requests_mock: Any, write_mode: WriteMode
 ) -> None:
-    """A read value is a copy of the JSON, not a view of it."""
+    """A value read and then changed in place is sent by ``save()``."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
     payload = {"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]}
-    profile = Profile(json=payload)
+    profile = Profile(json=payload, write_mode=write_mode)
 
     profile.settings["theme"] = "dark"
     profile.contacts[0]["n"] = 2
+
+    # The change is a copy until save() detects it.
+    assert profile.json["settings"] == {"theme": "light"}
+    assert patch.call_count == 0
+    profile.save()
     profile.save()
 
-    assert profile.json["settings"] == {"theme": "light"}
-    assert profile.json["contacts"] == [{"n": 1}]
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {
+        "settings": {"theme": "dark"},
+        "contacts": [{"n": 2}],
+    }
+    assert profile.json["settings"] == {"theme": "dark"}
     assert payload == {
         "id": 1,
         "settings": {"theme": "light"},
         "contacts": [{"n": 1}],
     }
-    assert requests_mock.call_count == 0
+
+
+def test_in_place_change_compares_encodings(requests_mock: Any) -> None:
+    """Another spelling of an unchanged value is not a change."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/timelines/1/", status_code=204
+    )
+    timeline = Timeline(json={"id": 1, "starts_at": ["2026-01-02T03:04:05Z"]})
+    later = datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc)
+
+    assert len(timeline.starts_at) == 1
+    timeline.save()
+    assert patch.call_count == 0
+
+    timeline.starts_at.append(later)
+    timeline.save()
+
+    assert patch.last_request.json() == {
+        "starts_at": ["2026-01-02T03:04:05+00:00", later.isoformat()]
+    }
+
+
+def test_eager_assignment_sends_in_place_changes(
+    requests_mock: Any,
+) -> None:
+    """An eager PATCH includes values changed in place."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {}, "contacts": []}, write_mode="eager"
+    )
+
+    profile.contacts.append({"n": 1})
+    profile.settings = {"theme": "dark"}
+
+    assert patch.last_request.json() == {
+        "contacts": [{"n": 1}],
+        "settings": {"theme": "dark"},
+    }
+
+
+def test_assignment_and_refresh_discard_in_place_changes(
+    requests_mock: Any,
+) -> None:
+    """An assignment or a refresh wins over a change made in place."""
+    requests_mock.get(
+        "https://example.com/v1/profiles/1/",
+        json={"id": 1, "settings": {}, "contacts": []},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+
+    profile.contacts.append({"n": 1})
+    profile.contacts = []
+    profile.settings["theme"] = "dark"
+    profile.refresh()
+    profile.save()
+
+    assert patch.call_count == 0
+    assert profile.contacts == []
+    assert profile.settings == {}
+
+
+def test_reload_keeps_in_place_changes(requests_mock: Any) -> None:
+    """Loading the rest of a partial object keeps changes made in place."""
+    requests_mock.get(
+        "https://example.com/v1/profiles/1/",
+        json={"id": 1, "settings": {}, "contacts": []},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(id=1)
+    profile.update_from_json({"contacts": []})
+
+    profile.contacts.append({"n": 1})
+    assert profile.settings == {}
+    profile.save()
+
+    assert profile.contacts == [{"n": 1}]
+    assert patch.last_request.json() == {"contacts": [{"n": 1}]}
 
 
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
@@ -2053,6 +2214,18 @@ def test_reassigning_value_changed_after_save_sends_patch(
         {"settings": {"theme": "dark"}},
         {"settings": {"theme": "dark", "font": "mono"}},
     ]
+
+
+def test_update_from_json_copies_nested_payload_values() -> None:
+    """A later change to the message does not reach the object."""
+    settings = {"theme": "blue"}
+    message = {"id": 1, "settings": settings}
+    profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
+
+    profile.update_from_json(message)
+    settings["theme"] = "red"
+
+    assert profile.settings == {"theme": "blue"}
 
 
 def test_update_from_json_merges_partial_payload_and_invalidates_cache(
@@ -2707,6 +2880,23 @@ def test_json_payload_is_copied() -> None:
 
     assert payload == {"id": 1, "name": "Ada"}
     assert user.name == "Grace"
+
+
+def test_nested_json_payload_is_copied(requests_mock: Any) -> None:
+    """A later change to a nested payload value does not reach the object."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    settings = {"theme": "light"}
+    payload = {"id": 1, "settings": settings, "contacts": []}
+    profile = Profile(json=payload)
+
+    settings["theme"] = "dark"
+    assert profile.settings == {"theme": "light"}
+    profile.settings = settings
+    profile.save()
+
+    assert patch.last_request.json() == {"settings": {"theme": "dark"}}
 
 
 def test_embedded_related_object_does_not_share_parent_json() -> None:
