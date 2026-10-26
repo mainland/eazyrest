@@ -73,6 +73,15 @@ def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
     assert timestamp_object.to_json("text", BaseType(str)) == "text"
 
 
+def test_enum_fallback_example_maps_unknown_values() -> None:
+    """The ``_missing_()`` example maps values the enum lacks."""
+    example = run_guide_example("def _missing_")
+    status = example["TicketStatus"]
+
+    assert status("open") is status.OPEN
+    assert status("archived") is status.UNKNOWN
+
+
 def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
     """The DRF bulk lookup loads users through the API it is given."""
 
