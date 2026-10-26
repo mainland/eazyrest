@@ -2380,6 +2380,136 @@ def test_pk_and_exclude_options() -> None:
         thing.display = "label"
 
 
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"pk": "uid"}, "pk='uid'"),
+        ({"pk": "name", "exclude": {"name"}}, "pk='name'"),
+        ({"field_map": {"emial": "emailAddress"}}, "'emial'"),
+        ({"field_map": {"label": "Label"}}, "'label'"),
+        ({"exclude": {"dispaly"}}, "'dispaly'"),  # codespell:ignore dispaly
+    ],
+)
+def test_json_object_rejects_options_that_name_no_field(
+    options: dict[str, Any], match: str
+) -> None:
+    """A misspelled option is an error, not silently ignored.
+
+    Args:
+        options: Keyword arguments to ``json_object()``, one of which names no
+            field.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+
+    class Thing(ModelBase):
+        """Model whose decoration fails."""
+
+        class_url = "/things/"
+        label: ClassVar[str] = "Thing"
+
+        id: int
+        name: str
+
+    with pytest.raises(ValueError, match=match):
+        json_object(**options)(Thing)
+
+
+def test_json_object_rejects_fields_that_share_a_json_key() -> None:
+    """Two attributes backed by one JSON key are rejected."""
+
+    class Alias(ModelBase):
+        """Model mapping a second attribute to the key of the first."""
+
+        class_url = "/aliases/"
+
+        id: int
+        name: str
+        label: str
+
+    class Renamed(Org):
+        """Subclass mapping a new attribute to an inherited key."""
+
+        title: str
+
+    with pytest.raises(ValueError, match=r"Alias\.name and Alias\.label"):
+        json_object(field_map={"label": "name"})(Alias)
+    with pytest.raises(ValueError, match=r"Renamed\.name and Renamed\.title"):
+        json_object(field_map={"title": "name"})(Renamed)
+
+
+def test_json_object_accepts_inherited_primary_key() -> None:
+    """A subclass may name the primary key that it inherits."""
+
+    @json_object(pk="slug")
+    class Department(Org):
+        """Subclass that restates its inherited primary key."""
+
+        size: int
+
+    assert Department(slug="core").url == "/orgs/core/"
+
+
+def test_subclass_keeps_inherited_primary_key(requests_mock: Any) -> None:
+    """Without ``pk=``, a subclass keeps the primary key it inherits."""
+
+    @json_object
+    class Renamed(Org):
+        """Subclass that redeclares its inherited primary key."""
+
+        slug: str
+
+    @json_object
+    class Numbered(Org):
+        """Subclass that declares a field named ``id``."""
+
+        id: int
+
+    assert Renamed(slug="core").url == "/orgs/core/"
+    assert Numbered(slug="core").url == "/orgs/core/"
+    assert Numbered._pk.field == "slug"
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class Dated(ModelBase):
+    """Model with a creation time, used to test mixed inheritance."""
+
+    class_url = "/dated/"
+
+    id: int
+    created: str
+
+
+def test_mixed_model_inheritance_is_rejected() -> None:
+    """A class cannot inherit fields from two separate models."""
+    # The class is rejected when it is created, before any decorator runs.
+    with pytest.raises(TypeError, match="both User and Dated"):
+        type("Both", (User, Dated), {})
+
+
+def test_undecorated_mixins_and_chains_are_accepted() -> None:
+    """Bases without fields mix in, and decorated chains are allowed."""
+
+    class Hooks(JSONObject):
+        """Mixin that declares no fields."""
+
+        prefetch_batch_size = 10
+
+    @json_object
+    class Member(User, Hooks):
+        """Model with a mixin."""
+
+        role: str
+
+    @json_object
+    class Admin(Member):
+        """Model two decorated classes below ``User``."""
+
+        level: int
+
+    assert Admin._json_fields == {"id", "name", "role", "level"}
+
+
 def test_subclass_accepts_inherited_and_own_fields(
     requests_mock: Any,
 ) -> None:

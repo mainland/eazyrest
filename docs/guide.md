@@ -32,7 +32,7 @@ class User(JSONObject):
     display_label: str
 ```
 
-Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields. An attribute annotated with `ClassVar`, such as `class_url: ClassVar[str]`, is a class attribute and never becomes a field.
+Use `pk=` when the primary-key attribute is not named `id`. A decorated subclass keeps the primary key it inherits, even if it redeclares that field, unless it passes `pk=`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields. An attribute annotated with `ClassVar`, such as `class_url: ClassVar[str]`, is a class attribute and never becomes a field. `@json_object` raises `ValueError` if `pk=` names no field of the class, if a `field_map=` key names no field declared on the class, or if `exclude=` names an attribute that the class does not annotate, so a misspelled option does not go unnoticed. It also raises `ValueError` if two fields, including inherited ones, map to the same JSON key, because each field caches its own value and assigning one would leave the other stale.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`, or `save`, and `@json_object` raises `ValueError` for such a field. Use `field_map=` to give the JSON key another attribute name:
 
@@ -45,7 +45,7 @@ class User(JSONObject):
     resource_url: str
 ```
 
-A decorated subclass of a decorated model keeps the fields of its base class and adds its own.
+A decorated subclass of a decorated model keeps the fields of its base class and adds its own. A model inherits fields through a single chain of decorated classes. A class whose decorated ancestors are not subclasses of one another, such as `class Both(Named, Dated)` for two decorated models, raises `TypeError` when it is defined. Put shared fields on one decorated base class instead. Undecorated base classes, which declare no fields, can be mixed in freely, for example to share hooks such as `collection_items()`.
 
 ## Loading and caching
 
