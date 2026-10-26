@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import datetime
 import inspect
+import types
 import typing
 from collections.abc import (
     Callable,
     Iterable,
+    Iterator,
     Mapping,
     MutableSet,
 )
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from functools import cached_property
 from typing import (
     Any,
     ClassVar,
+    Literal,
     TypeVar,
     Union,
     cast,
@@ -108,7 +112,159 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, class_or_tuple)
 
 
+def _is_collection_type(ty: Any) -> bool:
+    """Return whether a type represents a collection.
+
+    Args:
+        ty: Declared type to test.
+
+    Returns:
+        Whether ``ty`` is ``Iterable``, ``list``, ``tuple``, ``set``, or
+        ``frozenset``.
+    """
+    return ty in (Iterable, list, tuple, set, frozenset)
+
+
+def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
+    """Return whether a related collection should stay lazy.
+
+    Args:
+        collection_type: Collection type declared for the related field, or
+            ``None``.
+
+    Returns:
+        Whether ``collection_type`` is ``Iterable``.
+    """
+    return collection_type is Iterable
+
+
+@dataclass(frozen=True)
+class TypeClassification:
+    """Classify a declared field type for JSON conversion.
+
+    ``value_type`` captures the Python type used for general conversion logic,
+    including plain scalar fields such as ``datetime`` and ``timedelta``.
+
+    ``related_type`` is narrower: it is only populated for relationship fields
+    and identifies the ``JSONObject`` subclass to instantiate. For related
+    fields the two currently match, but for non-related fields only
+    ``value_type`` is set.
+    """
+
+    kind: Literal["plain", "related_object", "related_collection"] = "plain"
+    """High-level conversion category for the declared field type."""
+
+    collection_type: type[Any] | None = None
+    """Declared collection class for related collections.
+
+    ``Iterable`` preserves lazy loading. Concrete collection types such as
+    ``list`` or ``tuple`` are materialized during JSON conversion.
+    """
+
+    is_optional: bool = False
+    """Whether the declared field type allows ``None`` values."""
+
+    related_type: type[JSONObject] | None = None
+    """Related ``JSONObject`` subclass for relationship fields only."""
+
+    value_type: type[Any] | None = None
+    """Python type used by the JSON conversion rules for this field."""
+
+
+def classify_type(ty: type[Any]) -> TypeClassification:
+    """Classify a declared field type.
+
+    Args:
+        ty: Declared field type.
+
+    Returns:
+        Structured classification of ``ty``.
+    """
+    ty_origin = typing.get_origin(ty)
+    ty_args = typing.get_args(ty)
+
+    if ty_origin in (Union, types.UnionType):
+        non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
+        if len(non_none_args) == 1 and len(non_none_args) != len(ty_args):
+            classification = classify_type(non_none_args[0])
+            return TypeClassification(
+                kind=classification.kind,
+                is_optional=True,
+                collection_type=classification.collection_type,
+                related_type=classification.related_type,
+                value_type=classification.value_type,
+            )
+
+    if ty is datetime.datetime:
+        return TypeClassification(value_type=ty)
+
+    if ty is datetime.timedelta:
+        return TypeClassification(value_type=ty)
+
+    if lenient_issubclass(ty, JSONObject):
+        assert issubclass(ty, JSONObject)
+        return TypeClassification(
+            kind="related_object",
+            related_type=ty,
+            value_type=ty,
+        )
+
+    if (
+        _is_collection_type(ty_origin)
+        and len(ty_args) == 1
+        and lenient_issubclass(ty_args[0], JSONObject)
+    ):
+        related_type = cast(type[JSONObject], ty_args[0])
+        return TypeClassification(
+            kind="related_collection",
+            collection_type=cast(type[Any], ty_origin),
+            related_type=related_type,
+            value_type=related_type,
+        )
+
+    return TypeClassification(value_type=ty)
+
+
 T = TypeVar("T", bound="JSONObject")
+
+
+class RelatedCollection(Iterable[T]):
+    """Lazy iterable view over related objects backed by JSON values."""
+
+    _owner: JSONObject
+    """Object that owns the related field."""
+
+    _values: tuple[Any, ...]
+    """Raw JSON values for the related objects."""
+
+    _related_type: type[T]
+    """Model type for each related object."""
+
+    def __init__(
+        self,
+        owner: JSONObject,
+        values: Iterable[Any],
+        related_type: type[T],
+    ) -> None:
+        """Initialize a lazy related-object collection.
+
+        Args:
+            owner: Object that owns the related field.
+            values: Raw JSON values of the related objects.
+            related_type: Model class of the related objects.
+        """
+        self._owner = owner
+        self._values = tuple(values)
+        self._related_type = related_type
+
+    def __iter__(self) -> Iterator[T]:
+        """Yield related objects lazily as iteration advances.
+
+        Yields:
+            Each related object, created from the next raw JSON value.
+        """
+        for value in self._values:
+            yield self._owner.create_related(value, self._related_type)
 
 
 @overload
@@ -312,8 +468,12 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            if self.field in obj._field_cache:
+                return obj._field_cache[self.field]
             assert self.ty is not None
-            return obj.from_json(obj.json[self.json_field], self.ty)
+            value = obj.from_json(obj.json[self.json_field], self.ty)
+            obj._field_cache[self.field] = value
+            return value
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -330,6 +490,7 @@ class JSONProperty:
         elif self.json_field not in obj.json:
             raise AttributeError
         else:
+            obj._field_cache.pop(self.field, None)
             assert self.ty is not None
             new_value = obj.to_json(value, self.ty)
 
@@ -377,6 +538,9 @@ class JSONObject:
     _pending_updates: dict[str, Any]
     """JSON field updates queued for the next ``save()``."""
 
+    _field_cache: dict[str, Any]
+    """Converted field values cached by Python attribute name."""
+
     _json: Any
     """Object's JSON representation."""
 
@@ -409,6 +573,7 @@ class JSONObject:
                 write_mode = "lazy"
         self._write_mode = validate_write_mode(write_mode)
         self._pending_updates = {}
+        self._field_cache = {}
         self._json = json
 
         # Set all attributes passed in as keyword arguments
@@ -434,6 +599,51 @@ class JSONObject:
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
             return ty(api=self.api, write_mode=self.write_mode, **kwargs)
 
+    @classmethod
+    def related_from_json(
+        _cls,
+        owner: JSONObject,
+        value: Any,
+        classification: TypeClassification,
+    ) -> Any:
+        """Convert a related JSON value using overridable default rules.
+
+        Args:
+            owner: Object that owns the related field being converted.
+            value: Raw JSON value for the related field.
+            classification: Classified declared field type.
+
+        Returns:
+            Converted related object or collection of related objects.
+
+        Raises:
+            TypeError: If ``classification`` is not for a related field, or a
+                related collection value is not iterable.
+        """
+        assert classification.related_type is not None
+
+        if classification.kind == "related_object":
+            return owner.create_related(value, classification.related_type)
+
+        if classification.kind != "related_collection":
+            raise TypeError("related_from_json() requires a related field")
+
+        if not isinstance(value, Iterable):
+            raise TypeError(
+                "Related collection values must be iterable, "
+                f"got {type(value).__name__}"
+            )
+
+        related_values = RelatedCollection(
+            owner, value, classification.related_type
+        )
+
+        if _is_lazy_collection_type(classification.collection_type):
+            return related_values
+
+        assert classification.collection_type is not None
+        return classification.collection_type(related_values)
+
     def from_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a raw JSON value to a typed Python value.
 
@@ -444,34 +654,18 @@ class JSONObject:
         Returns:
             Converted Python value.
         """
-        ty_origin = typing.get_origin(ty)
-        ty_args = typing.get_args(ty)
+        classification = classify_type(ty)
 
         if value is None:
             return value
-        elif ty is datetime.datetime:
+        elif classification.value_type is datetime.datetime:
             return datetime.datetime.fromtimestamp(
                 value, datetime.timezone.utc
             )
-        elif ty is datetime.timedelta:
+        elif classification.value_type is datetime.timedelta:
             return parse_duration(value)
-        elif lenient_issubclass(ty, JSONObject):
-            assert issubclass(ty, JSONObject)
-            return self.create_related(value, ty)
-        # List[T]
-        elif (
-            ty_origin is list
-            and len(ty_args) == 1
-            and lenient_issubclass(ty_args[0], JSONObject)
-        ):
-            return [self.create_related(arg, ty_args[0]) for arg in value]
-        # Optional[T]
-        elif (
-            ty_origin is Union
-            and len(ty_args) == 2
-            and ty_args[1] is type(None)
-        ):
-            return self.from_json(value, ty_args[0])
+        elif classification.kind in ("related_object", "related_collection"):
+            return self.related_from_json(self, value, classification)
         else:
             return value
 
@@ -485,33 +679,20 @@ class JSONObject:
         Returns:
             JSON-serializable representation of ``value``.
         """
-        ty_origin = typing.get_origin(ty)
-        ty_args = typing.get_args(ty)
+        classification = classify_type(ty)
 
-        if lenient_issubclass(ty, JSONObject):
+        if classification.kind == "related_object":
             # If value is an int, assume it is a primary key already
             if isinstance(value, int):
                 return value
             else:
                 return value.pk
-        elif ty is datetime.datetime:
+        elif classification.value_type is datetime.datetime:
             return value.timestamp()
-        elif ty is datetime.timedelta:
+        elif classification.value_type is datetime.timedelta:
             return str(value)
-        # List[T]
-        elif (
-            ty_origin is list
-            and len(ty_args) == 1
-            and lenient_issubclass(ty_args[0], JSONObject)
-        ):
-            return [arg.pk for arg in value]
-        # Optional[T]
-        elif (
-            ty_origin is Union
-            and len(ty_args) == 2
-            and ty_args[1] is type(None)
-        ):
-            return self.to_json(value, ty_args[0])
+        elif classification.kind == "related_collection":
+            return [arg if isinstance(arg, int) else arg.pk for arg in value]
         else:
             return value
 
@@ -551,6 +732,7 @@ class JSONObject:
             resp = self.api.patch(self.url, json=payload)
             self._json = self.object_json(resp.json())
             self._pending_updates.clear()
+            self._field_cache.clear()
             return
 
         self.json[json_field] = value
@@ -570,6 +752,7 @@ class JSONObject:
         resp = self.api.patch(self.url, json=self._pending_updates)
         self._json = self.object_json(resp.json())
         self._pending_updates.clear()
+        self._field_cache.clear()
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
@@ -577,6 +760,7 @@ class JSONObject:
         self._pk_value = self.pk
         # Discard unsaved local changes
         self._pending_updates.clear()
+        self._field_cache.clear()
         # Clear JSON
         self._json = None
 
@@ -637,6 +821,7 @@ class JSONObject:
         """
         if self._json is None:
             self._json = self.object_json(self.api.get(self.url).json())
+            self._field_cache.clear()
 
             # Have have JSON now, so delete _pk_value
             del self._pk_value

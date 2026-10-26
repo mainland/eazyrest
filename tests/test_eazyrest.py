@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+from collections.abc import Iterable
 from typing import Any
 
 import pytest
@@ -105,6 +107,56 @@ class PaginatedSearchResult(ModelBase):
             if next_url is None:
                 return
             payload = cls.api.get(next_url).json()
+
+
+@json_object
+class MaybeTodo(ModelBase):
+    """Model with an optional related user field."""
+
+    class_url = "/maybe-todos/"
+
+    id: int
+    user: User | None
+
+
+@json_object
+class Team(ModelBase):
+    """Model with a lazy collection of related users."""
+
+    class_url = "/teams/"
+
+    id: int
+    members: Iterable[User]
+
+
+@json_object
+class TupleTeam(ModelBase):
+    """Model with a tuple of related users."""
+
+    class_url = "/tuple-teams/"
+
+    id: int
+    members: tuple[User]
+
+
+@json_object
+class SetTeam(ModelBase):
+    """Model with a set of related users."""
+
+    class_url = "/set-teams/"
+
+    id: int
+    members: set[User]
+
+
+@json_object
+class Event(ModelBase):
+    """Model with a datetime field used to verify caching."""
+
+    class_url = "/events/"
+
+    id: int
+    starts_at: datetime.datetime
 
 
 def test_object_json_raises_for_empty_list_response(
@@ -224,6 +276,167 @@ def test_get_or_create_returns_existing_object_without_patch(
     assert not created
     assert obj.id == 1
     assert requests_mock.call_count == 1
+
+
+def test_related_collection_is_loaded_lazily(
+    requests_mock: Any,
+) -> None:
+    """Iterable relations should not fetch nested objects until iterated."""
+    requests_mock.get(
+        "https://example.com/v1/teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = Team(id=1)
+    members = team.members
+
+    assert requests_mock.call_count == 1
+    assert isinstance(members, Iterable)
+
+    loaded = list(members)
+
+    assert [member.name for member in loaded] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 3
+
+
+def test_related_tuple_is_materialized(
+    requests_mock: Any,
+) -> None:
+    """Concrete tuple annotations should materialize related collections."""
+    requests_mock.get(
+        "https://example.com/v1/tuple-teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = TupleTeam(id=1)
+    members = team.members
+
+    assert isinstance(members, tuple)
+    assert [member.name for member in members] == ["Ada", "Grace"]
+    assert requests_mock.call_count == 3
+
+
+def test_related_set_is_materialized(
+    requests_mock: Any,
+) -> None:
+    """Concrete set annotations should materialize related collections."""
+    requests_mock.get(
+        "https://example.com/v1/set-teams/1/",
+        json={"id": 1, "members": [2, 3]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/3/",
+        json={"id": 3, "name": "Grace"},
+    )
+
+    team = SetTeam(id=1)
+    members = team.members
+
+    assert isinstance(members, set)
+    assert {member.name for member in members} == {"Ada", "Grace"}
+    assert requests_mock.call_count == 3
+
+
+def test_optional_pep604_related_object_is_converted(
+    requests_mock: Any,
+) -> None:
+    """``User | None`` fields should still use related-object conversion."""
+    requests_mock.get(
+        "https://example.com/v1/maybe-todos/1/",
+        json={"id": 1, "user": 2},
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/2/",
+        json={"id": 2, "name": "Ada"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/maybe-todos/2/",
+        json={"id": 2, "user": None},
+    )
+
+    with_user = MaybeTodo(id=1)
+    without_user = MaybeTodo(id=2)
+
+    assert with_user.user is not None
+    assert with_user.user.name == "Ada"
+    assert without_user.user is None
+
+
+def test_repeated_related_field_access_returns_cached_instance(
+    requests_mock: Any,
+) -> None:
+    """Repeated reads of a related field should reuse one instance."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1)
+
+    first = todo.user
+    second = todo.user
+
+    assert first is second
+    assert requests_mock.call_count == 1
+
+
+def test_repeated_datetime_access_returns_cached_instance(
+    requests_mock: Any,
+) -> None:
+    """Parsed datetime fields should be cached after first access."""
+    requests_mock.get(
+        "https://example.com/v1/events/1/",
+        json={"id": 1, "starts_at": 1711972800.0},
+    )
+
+    event = Event(id=1)
+
+    first = event.starts_at
+    second = event.starts_at
+
+    assert first is second
+    assert first == datetime.datetime(
+        2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc
+    )
+
+
+def test_assigning_field_invalidates_cached_related_value(
+    requests_mock: Any,
+) -> None:
+    """Setting a related field should replace the cached converted value."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+
+    todo = Todo(id=1)
+    original = todo.user
+
+    todo.user = User(id=3)
+    updated = todo.user
+
+    assert original.pk == 2
+    assert updated.pk == 3
+    assert updated is not original
 
 
 def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
