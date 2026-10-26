@@ -49,3 +49,21 @@ def test_evaluated_class_var_annotation_is_not_a_field() -> None:
 
     assert Widget._json_fields == {"id"}
     assert Widget(json={"id": 1}).url == "/widgets/1/"
+
+
+def test_quoted_annotation_can_refer_to_local_class() -> None:
+    """Quoted self-references resolve without a module-level class name."""
+
+    @json_object
+    class Node(JSONObject):
+        """Local model with a quoted reference to itself."""
+
+        id: int
+        parent: "Node | None"
+
+    node = Node(json={"id": 2, "parent": {"id": 1, "parent": None}})
+
+    assert node.id == 2
+    assert node.parent is not None
+    assert node.parent.id == 1
+    assert node.parent.parent is None

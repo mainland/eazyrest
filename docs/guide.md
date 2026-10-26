@@ -69,8 +69,10 @@ An object constructed from a primary key is lazy. The first access to `json` or
 a JSON-backed field other than the primary key performs a `GET` against the
 object's `url`, caches the payload, and caches converted field values as they
 are read. Reading the primary key returns the value given to the constructor
-without a request. An object constructed from `json=` starts with that payload
-already loaded.
+without a request, converted as if it were read from JSON. A `uuid.UUID` key
+given as a string therefore reads as a `UUID`, before and after the object
+loads, and the constructor raises `ValueError` for a key that is not a UUID. An
+object constructed from `json=` starts with that payload already loaded.
 
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or
@@ -106,8 +108,9 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
-`url` percent-encodes the primary key, so a key always forms one path segment.
-For example, the key `a/b` becomes `a%2Fb`.
+`url` converts the primary key to its JSON value before percent-encoding it, so
+an enum key uses its value and a key always forms one path segment. For
+example, the key `a/b` becomes `a%2Fb`.
 
 The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
 raises `ValueError` because those keys could address the collection or another
@@ -179,7 +182,15 @@ Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item.
 
 Other generic annotations, such as `dict[str, T]`, are not converted. Reading
-such a field returns its JSON value unchanged.
+such a field returns a copy of its JSON value. Changing that copy in place does
+not change the object, so assign the changed value to the field to update it:
+
+```python
+settings = profile.settings
+settings["theme"] = "dark"
+profile.settings = settings
+profile.save()
+```
 
 ## Custom field conversion
 
@@ -349,6 +360,13 @@ Embedded related objects do not need prefetching, because `eazyrest` only
 bulk-loads primary-key-style values. When the same related primary key appears
 more than once in a prefetch batch, parent objects share the same related
 instance.
+
+Related objects inherit their parent's write mode, including when they are
+prefetched. Enabling prefetch preserves when assignments are saved, even if the
+related model's API has a different default write mode. A prefetched object is
+shared by the parents in its batch, so it takes the write mode that they have
+when the batch is loaded. Changing one parent's write mode afterward does not
+change the mode of its prefetched related objects.
 
 Prefetching is batched so collection iteration can stay lazy.
 `prefetch_batch_size` controls how many parent JSON objects are scanned before
