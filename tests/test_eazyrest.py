@@ -7,6 +7,7 @@ import enum
 import typing
 import uuid
 from collections.abc import Iterable, Sequence
+from copy import deepcopy
 from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -22,6 +23,10 @@ from eazyrest import (
     WriteMode,
     json_object,
 )
+
+if typing.TYPE_CHECKING:
+    # Imported only for type checkers, so the name is unbound at run time.
+    from fractions import Fraction
 
 
 class ModelBase(JSONObject):
@@ -97,6 +102,34 @@ def test_absolute_url_keeps_absolute_class_url() -> None:
 
     assert todo.url == "https://other.example.com/todos/1/"
     assert todo.absolute_url == "https://other.example.com/todos/1/"
+
+
+def test_object_with_overridden_url_loads_without_primary_key(
+    requests_mock: Any,
+) -> None:
+    """A singleton resource that needs no key loads on first read."""
+
+    @json_object
+    class CurrentUser(ModelBase):
+        """Resource addressed by a fixed URL."""
+
+        id: int
+        name: str
+
+        @property
+        def url(self) -> str:
+            """Return the fixed resource URL."""
+            return "/me/"
+
+    requests_mock.get(
+        "https://example.com/v1/me/", json={"id": 7, "name": "Ada"}
+    )
+
+    me = CurrentUser()
+
+    assert me.name == "Ada"
+    assert me.pk == 7
+    assert requests_mock.call_count == 1
 
 
 @json_object
@@ -991,6 +1024,50 @@ def test_partial_update_seeds_uuid_primary_key_as_json(
     assert requests_mock.call_count == 0
 
 
+def test_lazy_related_uuid_primary_keys_are_decoded(
+    requests_mock: Any,
+) -> None:
+    """A related key read from JSON has the key field's type before loading."""
+    team = UUIDTeam(
+        json={
+            "id": 1,
+            "owner": str(BOOKING_TOKEN),
+            "members": [BOOKING_TOKEN.hex.upper()],
+        }
+    )
+
+    assert team.owner.key == BOOKING_TOKEN
+    assert team.owner.pk == BOOKING_TOKEN
+    assert [member.pk for member in team.members] == [BOOKING_TOKEN]
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "key", [BOOKING_TOKEN, str(BOOKING_TOKEN), BOOKING_TOKEN.hex]
+)
+def test_constructor_decodes_uuid_primary_key(
+    requests_mock: Any, key: Any
+) -> None:
+    """Any accepted spelling of a key reads back as the decoded value.
+
+    Args:
+        key: Primary key given to the constructor, as a UUID or one of its
+            string spellings.
+    """
+    user = UUIDUser(key=key)
+
+    assert isinstance(user.key, uuid.UUID)
+    assert user.pk == BOOKING_TOKEN
+    assert user.url == f"/uuid-users/{BOOKING_TOKEN}/"
+    assert requests_mock.call_count == 0
+
+
+def test_constructor_rejects_invalid_uuid_primary_key() -> None:
+    """A key that the field cannot decode fails when the object is made."""
+    with pytest.raises(ValueError, match="badly formed hexadecimal UUID"):
+        UUIDUser(key="not-a-uuid")
+
+
 def test_update_from_json_rejects_different_uuid_primary_key() -> None:
     """Normalizing UUIDs must still reject updates for another object."""
     user = UUIDUser(json={"ID": str(BOOKING_TOKEN), "name": "Ada"})
@@ -1359,6 +1436,88 @@ def test_prefetch_reuses_related_instances_within_a_batch(
     assert first.user is second.user
 
 
+def test_reading_shared_prefetched_relation_keeps_its_write_mode(
+    requests_mock: Any,
+) -> None:
+    """One parent's write mode does not change a relation it shares."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "userId": 2, "title": "a", "completed": False},
+            {"id": 2, "userId": 2, "title": "b", "completed": True},
+        ],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/2/", status_code=204
+    )
+
+    first, second = list(Todo.filter(prefetch="user"))
+    first.user.name = "Grace"
+    second.set_write_mode("eager")
+    _ = second.user
+    first.user.name = "Hopper"
+
+    assert first.user.write_mode == "lazy"
+    assert patch.call_count == 0
+    first.user.save()
+    assert patch.last_request.json() == {"name": "Hopper"}
+
+
+@pytest.mark.parametrize(
+    ("parent_mode", "related_mode"), [("lazy", "eager"), ("eager", "lazy")]
+)
+@pytest.mark.parametrize("prefetch", [False, True])
+def test_prefetch_preserves_related_write_mode(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    parent_mode: WriteMode,
+    related_mode: WriteMode,
+    prefetch: bool,
+) -> None:
+    """Prefetch must preserve a relation's inherited persistence behavior.
+
+    Args:
+        parent_mode: Default write mode of the API that serves todos.
+        related_mode: Default write mode of the API that serves users.
+        prefetch: Whether the todos are listed with the ``user`` relation
+            prefetched.
+    """
+    parent_api = API(
+        "https://parents.example.com/", default_write_mode=parent_mode
+    )
+    related_api = API(
+        "https://users.example.com/", default_write_mode=related_mode
+    )
+    monkeypatch.setattr(Todo, "api", parent_api)
+    monkeypatch.setattr(User, "api", related_api)
+    requests_mock.get(
+        "https://parents.example.com/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+    requests_mock.get(
+        "https://users.example.com/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    requests_mock.get(
+        "https://users.example.com/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://users.example.com/users/2/", status_code=204
+    )
+
+    todo = next(Todo.filter(prefetch="user" if prefetch else None))
+    todo.user.name = "Grace"
+
+    assert todo.user.write_mode == parent_mode
+    assert todo.user.api is related_api
+    assert patch.call_count == (1 if parent_mode == "eager" else 0)
+    todo.user.save()
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"name": "Grace"}
+
+
 def test_prefetches_related_collections_via_bulk_get(
     requests_mock: Any,
 ) -> None:
@@ -1402,6 +1561,62 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
     assert [member.name for member in team.members] == ["Ada", "Grace"]
     assert requests_mock.call_count == 2
     assert users.last_request.qs == {"id": ["3"]}
+
+
+@pytest.mark.parametrize(
+    ("members", "expected_names", "expected_ids"),
+    [
+        ([None], [None], []),
+        (
+            [2, None, {"id": 3, "name": "Grace"}, 2],
+            ["Ada", None, "Grace", "Ada"],
+            ["2"],
+        ),
+    ],
+)
+def test_prefetch_skips_null_collection_members(
+    requests_mock: Any,
+    members: list[Any],
+    expected_names: list[str | None],
+    expected_ids: list[str],
+) -> None:
+    """Null and embedded members need no primary-key lookup.
+
+    Args:
+        members: JSON value of the team's ``members`` collection.
+        expected_names: Names of the loaded members, with ``None`` for a null
+            member.
+        expected_ids: Primary keys that the prefetch request should ask for, as
+            query-string values.
+    """
+
+    @json_object
+    class MaybeTeam(ModelBase):
+        """Model with nullable members in a related collection."""
+
+        class_url = "/maybe-teams/"
+
+        id: int
+        members: list[User | None]
+
+    requests_mock.get(
+        "https://example.com/v1/maybe-teams/",
+        json=[{"id": 1, "members": members}],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    team = next(MaybeTeam.filter(prefetch="members"))
+
+    assert [
+        member.name if member is not None else None for member in team.members
+    ] == expected_names
+    assert users.call_count == bool(expected_ids)
+    if expected_ids:
+        assert users.last_request.qs == {"id": expected_ids}
+        assert team.members[0] is team.members[-1]
+    assert requests_mock.call_count == 1 + bool(expected_ids)
 
 
 def test_prefetch_requires_explicit_bulk_support(
@@ -1767,6 +1982,177 @@ def test_switching_to_eager_flushes_pending_lazy_changes(
     assert patch.last_request.json() == {"title": "new", "completed": True}
 
 
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        (False, 0),
+        (1, True),
+        ({"nested": [False]}, {"nested": [0]}),
+    ],
+)
+def test_assignments_distinguish_booleans_from_numbers(
+    requests_mock: Any, write_mode: WriteMode, old: Any, new: Any
+) -> None:
+    """Assignments must distinguish JSON booleans from numbers.
+
+    Args:
+        write_mode: Write mode of the setting.
+        old: Value the setting starts with.
+        new: Assigned value, equal to ``old`` in Python but of a different JSON
+            type.
+    """
+
+    @json_object
+    class Setting(ModelBase):
+        """Model with an arbitrary JSON value."""
+
+        class_url = "/settings/"
+
+        id: int
+        value: Any
+
+    patch = requests_mock.patch(
+        "https://example.com/v1/settings/1/", status_code=204
+    )
+    setting = Setting(json={"id": 1, "value": old}, write_mode=write_mode)
+
+    setting.value = new
+    setting.save()
+
+    assert patch.call_count == 1
+    # Inspect the serialized types as well as their values.
+    assert type(patch.last_request.json()["value"]) is type(new)
+    if isinstance(new, dict):
+        assert type(patch.last_request.json()["value"]["nested"][0]) is int
+    assert patch.last_request.json() == {"value": new}
+    assert type(setting.value) is type(new)
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_equal_json_assignment_sends_no_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """An equal nested JSON value still leaves the object unchanged.
+
+    Args:
+        write_mode: Write mode of the setting.
+    """
+
+    @json_object
+    class Setting(ModelBase):
+        """Model with a nested JSON value."""
+
+        id: int
+        value: dict[str, Any]
+
+    value = {"nested": [False, 0, {"enabled": True}]}
+    setting = Setting(json={"id": 1, "value": value}, write_mode=write_mode)
+    setting.value = deepcopy(value)
+    setting.save()
+
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class Profile(ModelBase):
+    """Model with JSON values that are not converted."""
+
+    class_url = "/profiles/"
+
+    id: int
+    settings: dict[str, Any]
+    contacts: list[dict[str, Any]]
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_assigning_value_changed_in_place_sends_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """A value read from a field, changed, and assigned back is saved.
+
+    Args:
+        write_mode: Write mode of the profile.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]},
+        write_mode=write_mode,
+    )
+
+    settings = profile.settings
+    settings["theme"] = "dark"
+    profile.settings = settings
+    contacts = profile.contacts
+    contacts[0]["n"] = 2
+    profile.contacts = contacts
+    profile.save()
+
+    sent = [request.json() for request in patch.request_history]
+    if write_mode == "eager":
+        assert sent == [
+            {"settings": {"theme": "dark"}},
+            {"contacts": [{"n": 2}]},
+        ]
+    else:
+        assert sent == [
+            {"settings": {"theme": "dark"}, "contacts": [{"n": 2}]},
+        ]
+    assert profile.json["settings"] == {"theme": "dark"}
+
+
+def test_changing_read_value_in_place_leaves_object_unchanged(
+    requests_mock: Any,
+) -> None:
+    """A read value is a copy of the JSON, not a view of it."""
+    payload = {"id": 1, "settings": {"theme": "light"}, "contacts": [{"n": 1}]}
+    profile = Profile(json=payload)
+
+    profile.settings["theme"] = "dark"
+    profile.contacts[0]["n"] = 2
+    profile.save()
+
+    assert profile.json["settings"] == {"theme": "light"}
+    assert profile.json["contacts"] == [{"n": 1}]
+    assert payload == {
+        "id": 1,
+        "settings": {"theme": "light"},
+        "contacts": [{"n": 1}],
+    }
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_reassigning_value_changed_after_save_sends_patch(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """Saving an assigned value does not keep a reference to it.
+
+    Args:
+        write_mode: Write mode of the profile.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    profile = Profile(
+        json={"id": 1, "settings": {}, "contacts": []}, write_mode=write_mode
+    )
+
+    settings = {"theme": "dark"}
+    profile.settings = settings
+    profile.save()
+    settings["font"] = "mono"
+    profile.settings = settings
+    profile.save()
+
+    assert [request.json() for request in patch.request_history] == [
+        {"settings": {"theme": "dark"}},
+        {"settings": {"theme": "dark", "font": "mono"}},
+    ]
+
+
 def test_update_from_json_merges_partial_payload_and_invalidates_cache(
     requests_mock: Any,
 ) -> None:
@@ -1866,6 +2252,52 @@ def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
 
     assert obj.resource_url == "https://example.com/v1/hyperlinked/1/"
     assert obj.url == "/hyperlinked/1/"
+
+
+def test_postponed_annotations_resolve_local_self_and_nested_types() -> None:
+    """A local model resolves both its own name and class-local field types."""
+
+    @json_object
+    class Node(JSONObject):
+        """Local model with postponed annotations."""
+
+        class Kind(str, enum.Enum):
+            """Type declared in the model's own namespace."""
+
+            ROOT = "root"
+
+        id: int
+        parent: Node | None
+        kind: Kind
+
+    node = Node(json={"id": 1, "parent": None, "kind": "root"})
+
+    assert node.id == 1
+    assert node.parent is None
+    assert node.kind is Node.Kind.ROOT
+
+
+def test_type_checking_only_annotations_leave_other_fields_readable() -> None:
+    """Only a field's own annotation must resolve when the field is read."""
+
+    @json_object(exclude={"excluded_ratio"})
+    class Measurement(ModelBase):
+        """Model with annotations that name a type-checking-only import."""
+
+        class_url = "/measurements/"
+        default_ratio: ClassVar[Fraction]
+
+        id: int
+        name: str
+        excluded_ratio: Fraction
+        ratio: Fraction
+
+    measurement = Measurement(json={"id": 1, "name": "x", "ratio": "1/2"})
+
+    assert measurement.id == 1
+    assert measurement.name == "x"
+    with pytest.raises(NameError, match="Fraction"):
+        _ = measurement.ratio
 
 
 def test_class_var_annotations_are_not_fields() -> None:
@@ -2296,6 +2728,92 @@ def test_url_percent_encodes_primary_key() -> None:
     org = Org(slug="a/b?c")
 
     assert org.url == "/orgs/a%2Fb%3Fc/"
+
+
+@pytest.mark.parametrize("initialization", ["raw", "typed", "json"])
+def test_enum_primary_key_urls_use_serialized_values(
+    requests_mock: Any, initialization: str
+) -> None:
+    """Loading and saving enum keys must keep their wire values in URLs.
+
+    Args:
+        initialization: How the workflow is constructed: ``"json"`` from its
+            JSON, ``"typed"`` from an enum key, or ``"raw"`` from the key's
+            wire value.
+    """
+
+    @json_object(pk="status", field_map={"status": "state"})
+    class Workflow(ModelBase):
+        """Resource addressed by an enum key."""
+
+        class_url = "/workflows/"
+
+        status: IssueStatus
+        label: str
+
+    requests_mock.get(
+        "https://example.com/v1/workflows/open/",
+        json={"state": "open", "label": "Active"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/workflows/open/", status_code=204
+    )
+    delete = requests_mock.delete(
+        "https://example.com/v1/workflows/closed/", status_code=204
+    )
+    if initialization == "json":
+        workflow = Workflow(json={"state": "open", "label": "Active"})
+    elif initialization == "typed":
+        workflow = Workflow(status=IssueStatus.OPEN)
+    else:
+        workflow = Workflow(status="open")
+
+    assert workflow.url == "/workflows/open/"
+    assert requests_mock.call_count == 0
+    assert workflow.label == "Active"
+    assert workflow.pk is IssueStatus.OPEN
+    assert workflow.url == "/workflows/open/"
+    workflow.status = IssueStatus.CLOSED
+    assert workflow.url == "/workflows/open/"
+    workflow.save()
+
+    assert patch.last_request.json() == {"state": "closed"}
+    assert workflow.url == "/workflows/closed/"
+    workflow.delete()
+    assert delete.called
+
+
+@pytest.mark.parametrize("value", [None, "", ".", ".."])
+def test_invalid_serialized_enum_key_has_no_url(
+    requests_mock: Any, value: str | None
+) -> None:
+    """Validate the serialized key before it becomes a URL segment.
+
+    Args:
+        value: Wire value of an enum key that has no URL.
+    """
+
+    @json_object
+    class InvalidKey(ModelBase):
+        """Model whose enum values cannot address resources."""
+
+        class Kind(enum.Enum):
+            """Keys whose wire values have no resource URL."""
+
+            MISSING = None
+            EMPTY = ""
+            DOT = "."
+            PARENT = ".."
+
+        class_url = "/invalid-keys/"
+
+        id: Kind
+
+    obj = InvalidKey(id=InvalidKey.Kind(value))
+    with pytest.raises(ValueError, match="no URL"):
+        obj.delete()
+
+    assert requests_mock.call_count == 0
 
 
 @pytest.mark.parametrize("slug", [None, "", ".", ".."])

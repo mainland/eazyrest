@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import enum
 import inspect
@@ -317,6 +318,33 @@ def _decode_uuid(value: Any) -> uuid.UUID:
     return uuid.UUID(value)
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without equating booleans with numbers.
+
+    Args:
+        left: First JSON value.
+        right: Second JSON value.
+
+    Returns:
+        Whether the values are equal. A boolean equals only the same boolean,
+        and dicts, lists, and tuples are compared item by item.
+    """
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_equal(value, right[key]) for key, value in left.items()
+        )
+
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            _json_equal(a, b) for a, b in zip(left, right, strict=True)
+        )
+
+    return bool(left == right)
+
+
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
 
@@ -335,6 +363,21 @@ def _query_value(value: Any) -> Any:
         return "true" if value else "false"
     if isinstance(value, list):
         return [_query_value(item) for item in value]
+
+    return value
+
+
+def _copy_json(value: Any) -> Any:
+    """Return a copy of a JSON value that shares no mutable containers.
+
+    Args:
+        value: JSON value to copy.
+
+    Returns:
+        A deep copy of a dict or list, and ``value`` itself otherwise.
+    """
+    if isinstance(value, (dict, list)):
+        return copy.deepcopy(value)
 
     return value
 
@@ -598,8 +641,24 @@ class JSONProperty:
         Returns:
             Resolved Python type for the owning class attribute.
         """
-        # Resolve type using typing.get_type_hints
-        return typing.get_type_hints(self.cls)[self.field]
+        # Evaluate only this field's annotation. Another annotation, such as a
+        # ClassVar or an excluded field, may name a type that exists only for
+        # type checkers, and it must not make this field unreadable.
+        holder = type(
+            self.cls.__name__,
+            (),
+            {
+                "__module__": self.cls.__module__,
+                "__annotations__": {
+                    self.field: _annotations(self.cls)[self.field]
+                },
+            },
+        )
+        # A class defined inside a function is absent from its module's
+        # globals. Keep its own namespace when resolving self-references.
+        localns = dict(vars(self.cls))
+        localns[self.cls.__name__] = self.cls
+        return typing.get_type_hints(holder, localns=localns)[self.field]
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
@@ -653,6 +712,10 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the backing JSON does not contain this field.
+            TypeError: If a primary key that initializes an unloaded object
+                cannot be converted to the field's type.
+            ValueError: If such a primary key is not a valid value of the
+                field's type.
         """
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
@@ -661,14 +724,25 @@ class JSONProperty:
             and obj._json is None
             and not hasattr(obj, "_pk_value")
         ):
+            # Convert the key as if it were read from JSON, so it has the same
+            # type before and after the object loads. A related object passed
+            # as the key is kept as is.
+            if not isinstance(value, JSONObject):
+                conversion = self.analyzed_type
+                value = obj.from_json(
+                    obj.to_json(value, conversion), conversion
+                )
+
             obj._pk_value = value
             return
 
         json = obj._json_with_field(self.json_field, self.field)
         new_value = obj.to_json(value, self.analyzed_type)
 
-        if json[self.json_field] != new_value:
-            obj._update_json_field(self.json_field, new_value)
+        if not _json_equal(json[self.json_field], new_value):
+            # Store a copy, so that changing the assigned value in place later
+            # cannot match the stored JSON and suppress the next update.
+            obj._update_json_field(self.json_field, _copy_json(new_value))
 
         # Drop cached values only now, because the update may read this field.
         obj._field_cache.pop(self.field, None)
@@ -879,7 +953,9 @@ class JSONObject:
                 if lenient_issubclass(base_type, enum.Enum):
                     return base_type(value)
 
-                return value
+                # Changing the returned value in place must not change the
+                # object's JSON without recording an update.
+                return _copy_json(value)
 
             case RelatedType(model_type):
                 return self.create_related(
@@ -1220,10 +1296,10 @@ class JSONObject:
     def url(self) -> str:
         """Return the resource URL for this object.
 
-        The primary key is percent-encoded, so it always forms a single path
-        segment. While a primary-key change waits for ``save()``, the URL uses
-        the saved primary key, so ``save()`` sends the change to the saved
-        object.
+        The primary key is converted to its JSON value and percent-encoded, so
+        it always forms a single path segment. While a primary-key change waits
+        for ``save()``, the URL uses the saved primary key, so ``save()`` sends
+        the change to the saved object.
 
         Returns:
             Relative URL for this object, always ending with ``/``.
@@ -1233,7 +1309,7 @@ class JSONObject:
                 segment. The URL would name another resource, such as the
                 collection.
         """
-        pk = self._persisted_pk()
+        pk = self.to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
             raise ValueError(
@@ -1271,8 +1347,9 @@ class JSONObject:
         if self._json is None:
             self._load_json()
 
-            # We have JSON now, so delete _pk_value
-            del self._pk_value
+            # The JSON now holds the primary key. An object whose subclass
+            # overrides url may have loaded without one.
+            vars(self).pop("_pk_value", None)
 
         return self._json
 
@@ -1607,7 +1684,9 @@ class JSONObject:
                 # Explicit prefetch only bulk-loads foreign-key style entries.
                 # Embedded related JSON objects do not need to be prefetched.
                 pks.update(
-                    item for item in raw_items if not isinstance(item, dict)
+                    item
+                    for item in raw_items
+                    if item is not None and not isinstance(item, dict)
                 )
 
             if len(pks) == 0:
@@ -1651,8 +1730,18 @@ class JSONObject:
                 return
 
             prefetched_related = cls._apply_prefetch(batch_items, fields)
-            for item in batch_items:
-                obj = cls(json=item)
+            parents = [cls(json=item) for item in batch_items]
+
+            # Related objects inherit their parent's write mode. A prefetched
+            # object is shared by every parent in the batch, so set its mode
+            # once, from the mode the parents are created with, rather than
+            # when a parent reads it. Reading a relation through one parent
+            # must not change how it saves through another.
+            for related_objects in prefetched_related.values():
+                for related in related_objects.values():
+                    related.set_write_mode(parents[0].write_mode)
+
+            for obj in parents:
                 obj._set_prefetched_related(prefetched_related)
                 yield obj
 
