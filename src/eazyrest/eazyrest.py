@@ -16,8 +16,8 @@ from collections.abc import (
     Mapping,
     MutableSet,
     Sequence,
-    Set,
 )
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -64,7 +64,6 @@ PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
 
 PrefetchFields: TypeAlias = str | Sequence[str] | None
 """Related field names requested for explicit prefetch."""
-
 
 _api_registry: dict[type[JSONObject], API] = {}
 
@@ -125,8 +124,8 @@ def lenient_issubclass(cls: Any, class_or_tuple: Any) -> bool:
 def _annotation_names(cls: type) -> list[str]:
     """Return the names annotated directly on a class.
 
-    The annotations are not evaluated. A field type may refer to a class that
-    is not defined yet, including the class being decorated, so
+    The annotations are not evaluated. A field type may refer to a class
+    that is not defined yet, including the class being decorated, so
     ``JSONProperty`` resolves field types when they are first used.
     """
     if sys.version_info >= (3, 14):
@@ -281,7 +280,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
 
 
@@ -292,7 +291,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -302,7 +301,7 @@ def json_object(
     *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
-    exclude: Set[str] = frozenset(),
+    exclude: AbstractSet[str] = frozenset(),
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -554,7 +553,7 @@ class JSONObject:
     key.
     """
 
-    _json_fields: ClassVar[Set[str]]
+    _json_fields: ClassVar[AbstractSet[str]]
     """All JSON fields."""
 
     prefetch_batch_size: ClassVar[int] = 100
@@ -762,8 +761,7 @@ class JSONObject:
 
             case _:
                 raise TypeError(
-                    "Unsupported analyzed type "
-                    f"{type(conversion).__name__}"
+                    f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
     @classmethod
@@ -808,8 +806,7 @@ class JSONObject:
                 return [cls.to_json(item, item_type) for item in value]
             case _:
                 raise TypeError(
-                    "Unsupported analyzed type "
-                    f"{type(conversion).__name__}"
+                    f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
     def delete(self, *args: Any, **kwargs: Any) -> None:
@@ -878,14 +875,16 @@ class JSONObject:
     def save(self) -> None:
         """Persist all pending lazy field updates.
 
-        In ``"lazy"`` mode, field assignments are accumulated locally and sent
-        in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
-        mode, assignments are patched immediately and ``save()`` is a no-op
-        unless pending updates remain from an earlier lazy mode.
+        In ``"lazy"`` mode, field assignments are accumulated locally
+        and sent in one ``PATCH`` request when ``save()`` is called. In
+        ``"eager"`` mode, assignments are patched immediately and
+        ``save()`` is a no-op unless pending updates remain from an
+        earlier lazy mode.
 
-        When the ``PATCH`` response has a body, it replaces the object's JSON.
-        When it has no body, as with ``204 No Content``, the object keeps its
-        local JSON, which already includes the saved updates.
+        When the ``PATCH`` response has a body, it replaces the object's
+        JSON. When it has no body, as with ``204 No Content``, the
+        object keeps its local JSON, which already includes the saved
+        updates.
         """
         if len(self._pending_updates) == 0:
             return
@@ -1202,7 +1201,9 @@ class JSONObject:
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
-            raise ValueError(
+            # The field name is the invalid value, so this is a ValueError
+            # even though the check is on the descriptor's type.
+            raise ValueError(  # noqa: TRY004
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 

@@ -34,9 +34,9 @@ from eazyrest import API, JSONObject, json_object
 
 
 with API("https://jsonplaceholder.typicode.com/") as demo_api:
+
     class JSONPlaceholderObject(JSONObject):
         """A JSON object from the JSONPlaceholder API."""
-
 
     # Register the API instance for this model hierarchy
     JSONPlaceholderObject.register_api(demo_api)
@@ -104,7 +104,7 @@ python3 -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-Install the Git pre-commit hook so `ruff check`, `docformatter --check`, and `mypy` run automatically on every commit:
+Install the Git pre-commit hook so `ruff check`, `ruff format --check`, `docformatter --check`, and `mypy` run automatically on every commit:
 
 ```bash
 pre-commit install
@@ -128,13 +128,19 @@ Run the multi-environment test matrix locally with:
 tox
 ```
 
-Run the lint and type-check environment with:
+Run the pre-commit hooks across the whole tree, as CI does, with:
 
 ```bash
 tox -e lint
 ```
 
-GitHub Actions runs `ruff`, `mypy`, and `pytest` for Python 3.10, 3.11, and 3.12 on every push and pull request.
+Build the documentation with warnings treated as errors:
+
+```bash
+tox -e docs
+```
+
+On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15, runs the lint and documentation environments, and checks that the built wheel imports without optional dependencies. The test environments install only the runtime dependencies and the `test` extra, so a runtime dependency missing from `pyproject.toml` fails the tests.
 
 To build and validate a distribution:
 
