@@ -6,7 +6,7 @@ import datetime
 import enum
 import typing
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, ClassVar, cast
 from urllib.parse import parse_qs, urlparse
@@ -94,6 +94,23 @@ def test_absolute_url_keeps_absolute_class_url() -> None:
 
     assert todo.url == "https://other.example.com/todos/1/"
     assert todo.absolute_url == "https://other.example.com/todos/1/"
+
+
+def test_detail_response_without_primary_key_keeps_identity(
+    requests_mock: Any,
+) -> None:
+    """A loaded object keeps the key it was loaded by."""
+    requests_mock.get("https://example.com/v1/users/3/", json={"name": "Ada"})
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/3/", status_code=204
+    )
+    user = User(id=3)
+
+    assert user.name == "Ada"
+    assert user.pk == 3
+    user.name = "Grace"
+    user.save()
+    assert patch.last_request.json() == {"name": "Grace"}
 
 
 def test_object_with_overridden_url_loads_without_primary_key(
@@ -1224,6 +1241,28 @@ def test_assigning_field_invalidates_cached_related_value(
     assert original.pk == 2
     assert updated.pk == 3
     assert updated is not original
+
+
+def test_reassigning_related_object_keeps_its_unsaved_changes(
+    requests_mock: Any,
+) -> None:
+    """Assigning a related object keeps that object, edits and all."""
+    requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/2/", status_code=204
+    )
+    todo = Todo(json={"id": 1, "userId": 2, "title": "a", "completed": False})
+    grace = User(json={"id": 3, "name": "Grace"})
+
+    todo.user.name = "Hopper"
+    todo.user = todo.user
+    todo.user.save()
+    todo.user = grace
+
+    assert patch.last_request.json() == {"name": "Hopper"}
+    assert todo.user is grace
 
 
 def test_filter_prefetches_related_objects_via_bulk_get(
@@ -2701,6 +2740,145 @@ def test_save_accepts_empty_patch_response(requests_mock: Any) -> None:
     assert todo.title == "new"
 
 
+TODO_JSON = {"id": 1, "userId": 2, "title": "old", "completed": False}
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"title": "New"},
+        {"id": 1, "title": "New"},
+        {"status": "ok", "title": "New"},
+    ],
+)
+def test_write_merges_partial_response_body(
+    requests_mock: Any, write_mode: WriteMode, body: dict[str, Any]
+) -> None:
+    """A body without some fields leaves them as they were."""
+    patch = requests_mock.patch("https://example.com/v1/todos/1/", json=body)
+    todo = Todo(json=TODO_JSON, write_mode=write_mode)
+    completed = todo.completed
+
+    todo.title = "new"
+    todo.save()
+
+    assert patch.last_request.json() == {"title": "new"}
+    assert todo.title == "New"
+    assert todo.completed is completed
+    assert todo.pk == 1
+    assert todo.url == "/todos/1/"
+    assert todo.json == {**TODO_JSON, **body}
+
+
+def test_write_response_updates_fields_it_holds(requests_mock: Any) -> None:
+    """A field that the body changes is read again from the new JSON."""
+    requests_mock.patch(
+        "https://example.com/v1/todos/1/",
+        json={**TODO_JSON, "title": "new", "completed": True},
+    )
+    todo = Todo(json=TODO_JSON)
+    grace = User(json={"id": 3, "name": "Grace"})
+    assert todo.completed is False
+
+    todo.title = "new"
+    todo.user = grace
+    todo.save()
+
+    assert todo.completed is True
+    assert todo.user is not grace
+    assert todo.user.pk == 2
+
+
+def test_save_keeps_assigned_related_object(requests_mock: Any) -> None:
+    """A related object that the write did not change stays the value."""
+    requests_mock.patch(
+        "https://example.com/v1/todos/1/", json={**TODO_JSON, "userId": 3}
+    )
+    todo = Todo(json=TODO_JSON)
+    grace = User(json={"id": 3, "name": "Grace"})
+
+    todo.user = grace
+    todo.save()
+
+    assert todo.user is grace
+
+
+def test_create_merges_sent_fields_and_loads_missing_ones(
+    requests_mock: Any,
+) -> None:
+    """A creation body with only the key keeps what was sent."""
+    post = requests_mock.post(
+        "https://example.com/v1/todos/", status_code=201, json={"id": 9}
+    )
+    get = requests_mock.get(
+        "https://example.com/v1/todos/9/",
+        json={"id": 9, "userId": 2, "title": "t", "completed": False},
+    )
+
+    todo = Todo.create(title="t", user=User(id=2), password="secret")
+
+    assert post.last_request.json() == {
+        "title": "t",
+        "userId": 2,
+        "password": "secret",
+    }
+    assert todo.json == {"id": 9, "title": "t", "userId": 2}
+    assert get.call_count == 0
+    assert todo.completed is False
+    assert get.call_count == 1
+    assert "password" not in todo.json
+
+
+def test_create_with_full_body_is_not_partial(requests_mock: Any) -> None:
+    """A creation body with every field needs no further request."""
+    requests_mock.post(
+        "https://example.com/v1/todos/", status_code=201, json=TODO_JSON
+    )
+
+    todo = Todo.create(title="old", user=User(id=2))
+
+    assert todo.completed is False
+    assert requests_mock.call_count == 1
+
+
+def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
+    """An API with status bodies can ignore them."""
+
+    class StatusModel(ModelBase):
+        """Base model for an API whose writes answer with a status."""
+
+        def merge_response(
+            self,
+            resp: requests.Response,
+            current: Mapping[str, Any],
+            sent: Mapping[str, Any],
+        ) -> dict[str, Any]:
+            """Ignore the status body."""
+            assert resp.json() == {"status": "ok"}
+            return {**current, **sent}
+
+    @json_object
+    class Note(StatusModel):
+        """Model whose writes answer with a status."""
+
+        class_url = "/notes/"
+
+        id: int
+        text: str
+
+    requests_mock.post("https://example.com/v1/notes/", json={"status": "ok"})
+    requests_mock.patch(
+        "https://example.com/v1/notes/1/", json={"status": "ok"}
+    )
+
+    note = Note.create(id=1, text="a")
+    note.text = "b"
+    note.save()
+
+    assert note.json == {"id": 1, "text": "b"}
+
+
 def test_redirected_save_keeps_pending_updates(requests_mock: Any) -> None:
     """A PATCH that a redirect turns into a GET is not reported as saved."""
     requests_mock.patch(
@@ -2722,6 +2900,40 @@ def test_redirected_save_keeps_pending_updates(requests_mock: Any) -> None:
 
     assert todo.title == "new"
     assert todo._pending_updates == {"title": "new"}
+
+
+_NON_OBJECT_BODIES = ["null", '"ok"', "3", "[3]"]
+
+
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+def test_save_rejects_patch_response_without_object(
+    requests_mock: Any, body: str
+) -> None:
+    """A body that holds no object leaves the object's state unchanged."""
+    requests_mock.patch("https://example.com/v1/users/1/", text=body)
+    user = User(json={"id": 1, "name": "Ada"})
+
+    user.name = "Grace"
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        user.save()
+
+    assert user.json == {"id": 1, "name": "Grace"}
+    assert user._pending_updates == {"name": "Grace"}
+    assert user.url == "/users/1/"
+
+
+@pytest.mark.parametrize("body", _NON_OBJECT_BODIES)
+def test_create_and_load_reject_response_without_object(
+    requests_mock: Any, body: str
+) -> None:
+    """Creating or loading an object requires a JSON object."""
+    requests_mock.post("https://example.com/v1/users/", text=body)
+    requests_mock.get("https://example.com/v1/users/1/", text=body)
+
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        User.create(name="Ada")
+    with pytest.raises(TypeError, match="must hold a JSON object"):
+        _ = User(id=1).name
 
 
 def test_eager_write_accepts_empty_patch_response(
