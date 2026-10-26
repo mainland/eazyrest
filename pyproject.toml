@@ -44,6 +44,7 @@ socks = [
 [dependency-groups]
 test = [
   "coverage",
+  "hypothesis",
   "pytest",
   "requests-mock",
 ]
