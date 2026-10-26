@@ -484,6 +484,108 @@ def test_pydantic_type_without_pydantic_raises(
         _ = located.point
 
 
+@with_config(ConfigDict(str_strip_whitespace=True))
+class StrippedSpec(TypedDict):
+    """Configuration whose Pydantic config drops undeclared keys."""
+
+    name: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class StrictSpec(TypedDict):
+    """Configuration whose Pydantic config rejects undeclared keys."""
+
+    name: str
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="allow"))
+class AllowingPair:
+    """Pydantic dataclass that keeps undeclared keys but never writes them."""
+
+    first: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class StrictPair:
+    """Pydantic dataclass that rejects undeclared keys."""
+
+    first: int
+
+
+@json_object
+class Settings(PydanticBase):
+    """Model with ``TypedDict`` and dataclass fields under several configs."""
+
+    class_url = "/settings/"
+
+    id: int
+    stripped: StrippedSpec
+    plain: Annotated[dict[str, PlainSpec], Field()]
+    strict: StrictSpec
+    pair: PydanticPair
+    allowing_pair: AllowingPair
+    strict_pair: StrictPair
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("stripped", "with_config"),
+        ("plain", "with_config"),
+        ("pair", "dataclass never writes"),
+        ("allowing_pair", "dataclass never writes"),
+    ],
+)
+def test_types_that_drop_keys_are_rejected(
+    requests_mock: Any, field: str, message: str
+) -> None:
+    """A type that would drop undeclared keys cannot be a field.
+
+    Args:
+        field: Name of a ``Settings`` field whose type would drop undeclared
+            keys.
+        message: Pattern that the error message should match.
+    """
+    settings = Settings(
+        json={
+            "id": 1,
+            "stripped": {"name": "a"},
+            "plain": {"k": {"name": "a"}},
+            "pair": {"first": 1, "second": 2},
+            "allowing_pair": {"first": 1},
+        }
+    )
+
+    with pytest.raises(FieldConversionError, match=message):
+        getattr(settings, field)
+    with pytest.raises(FieldConversionError, match=message):
+        Settings.create(**{field: cast(Any, {})})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("strict", {"name": "a"}), ("strict_pair", {"first": 1})],
+)
+def test_types_may_reject_undeclared_keys(field: str, value: Any) -> None:
+    """A type that forbids undeclared keys reads values without them.
+
+    Args:
+        field: Name of a ``Settings`` field whose type forbids undeclared keys.
+        value: JSON value for the field with only declared keys.
+    """
+    settings = Settings(json={"id": 1, field: value})
+    extended = Settings(json={"id": 1, field: {**value, "x": 1}})
+
+    assert (
+        TypeAdapter(Any).dump_python(getattr(settings, field), mode="json")
+        == value
+    )
+    with pytest.raises(FieldConversionError, match=f"^Settings.{field}: "):
+        getattr(extended, field)
+
+
 def _require_aware(value: datetime.datetime) -> datetime.datetime:
     if value.tzinfo is None:
         raise ValueError("A time zone is required")
