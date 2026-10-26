@@ -102,6 +102,9 @@ same exceptions as one, such as `requests.HTTPError` or
 `hasattr()` also loads the object, and it propagates request errors instead of
 returning `False`.
 
+`repr()` shows an object's class and primary key, as in `<User id=1>`, without
+loading it.
+
 Call `refresh()` to discard cached JSON, converted field values, prefetched
 related objects, and pending lazy updates. The next field read reloads the
 object from the API.
