@@ -29,7 +29,6 @@ dependencies = [
     "dateparser",
     "isodate",
     "python-dateutil",
-    "pytimeparse2",
     "requests[socks]",
     "typing_extensions; python_version < '3.11'",
     "tzlocal",
@@ -127,9 +126,9 @@ enable_error_code = [
 ]
 pretty = true
 
-# isodate and pytimeparse2 ship no type information.
+# isodate ships no type information.
 [[tool.mypy.overrides]]
-module = ["isodate", "pytimeparse2"]
+module = ["isodate"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
