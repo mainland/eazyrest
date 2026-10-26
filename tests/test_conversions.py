@@ -25,23 +25,25 @@ ADDRESS = Conversion(
 )
 
 
-def _isoformat(value: Any, cls: type[Any]) -> str:
-    """Encode a datetime as ISO 8601.
+def _timestamp(value: Any, cls: type[Any]) -> float:
+    """Encode a datetime as a Unix timestamp.
 
     Args:
         value: The datetime.
         cls: The declared type.
 
     Returns:
-        The ISO 8601 text.
+        Seconds since the epoch.
     """
     del cls
-    return str(value.isoformat())
+    return float(value.timestamp())
 
 
-ISO_DATETIME = Conversion(
-    decode=lambda value, cls: datetime.datetime.fromisoformat(value),
-    encode=_isoformat,
+TIMESTAMP = Conversion(
+    decode=lambda value, cls: datetime.datetime.fromtimestamp(
+        value, datetime.timezone.utc
+    ),
+    encode=_timestamp,
 )
 
 
@@ -90,17 +92,17 @@ class Host(TableBase):
     start: Start
 
 
-class IsoBase(TableBase):
+class TimestampBase(TableBase):
     """Base that replaces the default ``datetime`` conversion."""
 
     conversions: ClassVar[Mapping[Any, Conversion]] = {
-        datetime.datetime: ISO_DATETIME
+        datetime.datetime: TIMESTAMP
     }
 
 
 @json_object
-class Event(IsoBase):
-    """Model whose datetimes are ISO 8601, and addresses still convert."""
+class Event(TimestampBase):
+    """Model whose datetimes are timestamps, and addresses still convert."""
 
     class_url = "/events/"
 
@@ -116,12 +118,12 @@ HOST_JSON: dict[str, Any] = {
     "address": "10.0.0.1",
     "allowed": ["10.0.0.2"],
     "alias": "10.0.0.5",
-    "when": WHEN.timestamp(),
-    "stamp": WHEN.timestamp(),
-    "stamps": [WHEN.timestamp()],
+    "when": "2026-01-02T03:04:05Z",
+    "stamp": "2026-01-02T03:04:05Z",
+    "stamps": ["2026-01-02T03:04:05Z"],
     "level": 1,
     "user": 7,
-    "start": WHEN.timestamp(),
+    "start": "2026-01-02T03:04:05Z",
 }
 
 
@@ -160,19 +162,17 @@ def test_a_subclass_reads_values_that_write_back() -> None:
     host.stamp = host.stamp
     host.stamps = [*host.stamps, host.stamps[0]]
 
-    assert host.json["stamp"] == WHEN.timestamp()
-    assert host.json["stamps"] == [WHEN.timestamp()] * 2
+    assert host.json["stamp"] == "2026-01-02T03:04:05+00:00"
+    assert host.json["stamps"] == ["2026-01-02T03:04:05+00:00"] * 2
 
 
 def test_subclass_entries_replace_their_bases() -> None:
     """A subclass's entry replaces the default, and keeps its bases' others."""
-    event = Event(
-        json={"id": 1, "when": "2026-01-02T03:04:05+00:00", "address": "::"}
-    )
+    event = Event(json={"id": 1, "when": WHEN.timestamp(), "address": "::"})
 
     assert event.when == WHEN
     event.when = WHEN
-    assert event.json["when"] == "2026-01-02T03:04:05+00:00"
+    assert event.json["when"] == WHEN.timestamp()
     event.address = ipaddress.IPv4Address("10.0.0.7")
     assert event.json["address"] == "10.0.0.7"
     # The base class keeps the default datetime conversion.

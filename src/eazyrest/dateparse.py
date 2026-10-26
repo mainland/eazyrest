@@ -3,10 +3,8 @@
 import datetime
 import re
 
-import dateparser
 import dateutil.parser
 import isodate
-import tzlocal
 
 # A number of seconds, such as "90", "-90", or "1.5".
 _SECONDS_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
@@ -56,40 +54,56 @@ _CALENDAR_UNITS = frozenset(
 )
 
 
-def parse_datetime(
-    date: str,
-    use_dateparser: bool = True,
-    tzinfo: datetime.tzinfo | None = None,
-) -> datetime.datetime:
-    """Parse a date/time string.
+def parse_datetime(value: str | float) -> datetime.datetime:
+    """Parse a datetime as eazyrest's ``datetime`` fields read it.
+
+    A string is an ISO 8601 datetime or date, such as
+    ``"2024-04-01T12:00:00Z"`` or ``"2024-04-01"``. A number is a Unix
+    timestamp, in seconds.
 
     Args:
-        date: Date/time string to parse.
-        use_dateparser: If ``True``, parse with ``dateparser``. Otherwise, use
-            ``dateutil.parser.parse``.
-        tzinfo: Time zone to apply when the parsed datetime is naive. If
-            omitted, the local time zone is used.
+        value: ISO 8601 string, or number of seconds since the Unix epoch.
 
     Returns:
-        Parsed timezone-aware ``datetime``.
+        Parsed ``datetime``. A UTC offset becomes a ``datetime.timezone``, and
+        a string without one parses to a naive ``datetime``. A timestamp parses
+        to an aware UTC ``datetime``.
 
     Raises:
-        dateutil.parser.ParserError: If parsing fails.
+        TypeError: If ``value`` is neither a string nor a number.
+        ValueError: If a string is not an ISO 8601 datetime, or a timestamp is
+            out of the range that ``datetime`` represents.
     """
-    if use_dateparser:
-        dt = dateparser.parse(date)
-        if dt is None:
-            raise dateutil.parser.ParserError(f"Could not parse '{date}'")
-    else:
-        dt = dateutil.parser.parse(date)
+    if isinstance(value, str):
+        try:
+            dt = dateutil.parser.isoparse(value)
+        except ValueError as err:
+            raise ValueError(
+                f"Datetime {value!r} is not in ISO 8601 format"
+            ) from err
 
-    if dt.tzinfo is None:
-        if tzinfo is None:
-            tzinfo = tzlocal.get_localzone()
+        offset = dt.utcoffset()
+        if offset is not None:
+            # isoparse() returns dateutil time zones. Use the standard
+            # library's fixed-offset time zone, as timestamps do.
+            dt = dt.replace(tzinfo=datetime.timezone(offset))
 
-        dt = dt.replace(tzinfo=tzinfo)
+        return dt
 
-    return dt
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        try:
+            return datetime.datetime.fromtimestamp(
+                value, datetime.timezone.utc
+            )
+        except (OverflowError, OSError) as err:
+            # The platform's time_t limits the range, so report it as an
+            # invalid value like a malformed string.
+            raise ValueError(f"Timestamp {value!r} is out of range") from err
+
+    raise TypeError(
+        "Datetime values must be ISO 8601 strings or Unix timestamps, "
+        f"got {type(value).__name__}"
+    )
 
 
 def _calendar_units_error(delta: str) -> ValueError:

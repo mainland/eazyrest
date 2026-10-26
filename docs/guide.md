@@ -113,8 +113,10 @@ Field annotations drive JSON conversion when values are read from or written to
 model instances. Scalar fields preserve normal JSON values, while a few common
 Python types are converted automatically:
 
-- `datetime.datetime` values decode from Unix timestamps and encode back to
-  timestamps.
+- `datetime.datetime` values decode from ISO 8601 strings, such as
+  `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
+  strings. A string without a UTC offset decodes to a naive `datetime`, and a
+  naive `datetime` encodes without an offset. See `parse_datetime()`.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -150,10 +152,10 @@ class Timeline(JSONObject):
     statuses: tuple[IssueStatus, ...]
 ```
 
-In this example, JSON timestamp values in `starts_at` become
-`datetime.datetime` objects, and JSON strings in `statuses` become
-`IssueStatus` values. Assigning or creating objects with those typed values
-encodes the nested items back to JSON.
+In this example, ISO 8601 strings in `starts_at` become `datetime.datetime`
+objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning
+or creating objects with those typed values encodes the nested items back to
+JSON.
 
 Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
@@ -218,6 +220,25 @@ such as `Cents = NewType("Cents", int)`. Declare `conversions` in the class
 body, because a class merges and checks its table when it is defined, and
 raises `TypeError` for a bad entry. `DEFAULT_CONVERSIONS` holds the default
 table, so an entry can reuse a default's `decode` or `encode`.
+
+Decoding accepts Unix timestamps for `datetime.datetime` fields, but encoding
+writes ISO 8601 strings. For an API that requires timestamps in requests,
+replace the `datetime` conversion:
+
+```python
+import datetime
+
+from eazyrest import Conversion, JSONObject, parse_datetime
+
+
+class TimestampObject(JSONObject):
+    conversions = {
+        datetime.datetime: Conversion(
+            decode=lambda value, cls: parse_datetime(value),
+            encode=lambda value, cls: value.timestamp(),
+        ),
+    }
+```
 
 ## Collections
 

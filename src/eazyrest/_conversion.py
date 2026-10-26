@@ -19,7 +19,7 @@ from typing import Any, NamedTuple
 
 import isodate
 
-from .dateparse import parse_duration
+from .dateparse import parse_datetime, parse_duration
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -46,10 +46,8 @@ class Conversion:
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
-            decode=lambda value, _: datetime.datetime.fromtimestamp(
-                value, datetime.timezone.utc
-            ),
-            encode=lambda value, _: value.timestamp(),
+            decode=lambda value, _: parse_datetime(value),
+            encode=lambda value, _: value.isoformat(),
         ),
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
