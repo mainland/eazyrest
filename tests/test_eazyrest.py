@@ -1715,6 +1715,21 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         Todo.get(userId=2)
 
 
+def test_repr_shows_primary_key_without_a_request(
+    requests_mock: Any,
+) -> None:
+    """``repr()`` names the class and key and never loads the object."""
+    key = uuid.UUID(int=1)
+
+    assert repr(User(id=1)) == "<User id=1>"
+    assert repr(User(json={"id": 2, "name": "Ada"})) == "<User id=2>"
+    assert repr(User()) == "<User id=None>"
+    assert repr(UUIDUser(key=key)) == f"<UUIDUser key={str(key)!r}>"
+    assert repr(UUIDUser(json={"ID": str(key)})) == repr(UUIDUser(key=key))
+    assert repr(ModelBase()) == "<ModelBase>"
+    assert requests_mock.call_count == 0
+
+
 def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
     """A lazy object's primary key and URL are known without a ``GET``."""
     user = User(id=1)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import copy
 import datetime
@@ -1168,6 +1169,33 @@ class JSONObject:
 
         for name in sorted(kwargs, key=lambda name: name not in pk_names):
             setattr(self, name, kwargs[name])
+
+    def __repr__(self) -> str:
+        """Return the class and primary key without sending a request.
+
+        The key is shown as its JSON value, whether or not the object has
+        loaded, as in ``<User id=1>``.
+
+        Returns:
+            The class name and primary key in angle brackets, or the class name
+            alone, as in ``<User>``, if the class has no primary key.
+        """
+        name = type(self).__name__
+        pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
+        if pk_property is None:
+            return f"<{name}>"
+
+        state = vars(self)
+        json = state.get("_json")
+        if json is not None:
+            value = json.get(pk_property.json_field)
+        else:
+            value = state.get("_pk_value")
+            # A repr must not fail, so show a key that cannot be encoded as is.
+            with contextlib.suppress(TypeError, ValueError):
+                value = self.to_json(value, pk_property.analyzed_type)
+
+        return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(
         self,
