@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+import requests
 
 from eazyrest import API
 
@@ -65,3 +66,67 @@ def test_api_rejects_invalid_default_write_mode() -> None:
             "https://example.com/",
             default_write_mode=cast(Any, "later"),
         )
+
+
+def test_api_raise_for_response_allows_success_statuses() -> None:
+    """The public hook should not raise for successful responses."""
+    api = API("https://example.com/")
+    response = requests.Response()
+    response.status_code = 204
+    response.url = "https://example.com/items/1"
+    response.reason = "No Content"
+
+    api.raise_for_response(response)
+
+
+def test_api_raise_for_response_raises_http_error_for_failures() -> None:
+    """The public hook should preserve default requests error behavior."""
+    api = API("https://example.com/")
+    response = requests.Response()
+    response.status_code = 404
+    response.url = "https://example.com/items/1"
+    response.reason = "Not Found"
+    response.request = requests.Request(
+        "GET", "https://example.com/items/1"
+    ).prepare()
+
+    with pytest.raises(requests.HTTPError):
+        api.raise_for_response(response)
+
+
+def test_api_uses_raise_for_response_hook_in_requests(
+    requests_mock: Any,
+) -> None:
+    """Request methods should route response validation through the hook."""
+
+    class HookedAPI(API):
+        def raise_for_response(self, resp: requests.Response) -> None:
+            if resp.status_code == 418:
+                raise RuntimeError("teapot")
+
+            super().raise_for_response(resp)
+
+    api = HookedAPI("https://example.com/")
+    requests_mock.get("https://example.com/brew", status_code=418)
+
+    with pytest.raises(RuntimeError, match="teapot"):
+        api.get("/brew")
+
+
+def test_api_skips_raise_for_response_hook_for_successes(
+    requests_mock: Any,
+) -> None:
+    """Successful request paths should return before calling the hook."""
+
+    class HookedAPI(API):
+        def raise_for_response(self, resp: requests.Response) -> None:
+            raise AssertionError("raise_for_response() should not be called")
+
+    api = HookedAPI("https://example.com/")
+    requests_mock.get(
+        "https://example.com/ok", status_code=200, json={"ok": True}
+    )
+
+    response = api.get("/ok")
+
+    assert response.json() == {"ok": True}

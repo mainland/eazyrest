@@ -132,8 +132,26 @@ class API:
         Raises:
             requests.HTTPError: If the response status indicates failure.
         """
-        resp.raise_for_status()
+        if resp.ok:
+            return resp
+
+        self.raise_for_response(resp)
         return resp
+
+    def raise_for_response(self, resp: requests.Response) -> None:
+        """Raise an exception if ``resp`` represents a failed request.
+
+        Subclasses can override this hook to translate API-specific error
+        payloads into richer exception types while preserving the default
+        ``requests`` behavior for successful responses.
+
+        Args:
+            resp: Response object to validate.
+
+        Raises:
+            requests.HTTPError: If the response status indicates failure.
+        """
+        resp.raise_for_status()
 
     def _resolve_url(self, uri: str) -> str:
         """Resolve a request URI against ``base_url``.
