@@ -131,7 +131,7 @@ class Timeline(JSONObject):
 
 In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
-Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
+Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item. The same holds for values assigned to collection fields or passed to `create()`, which raise `TypeError` unless they are collections. In `filter()` and `get()`, a single value for a collection field, such as `Team.filter(members=user)`, is sent as one item and matches the objects whose collection holds it.
 
 Other generic annotations, such as `dict[str, T]`, are not converted. Reading such a field returns a copy of its JSON value. Changing that copy in place does not change the object, so assign the changed value to the field to update it:
 
@@ -232,13 +232,17 @@ admins = list(User.filter(role="admin"))
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
 
-A keyword argument named after a JSON-backed field, or after its JSON key such as `userId`, must not be `None` or an empty collection in `filter()`, `get()`, or the lookup of `get_or_create()`. A query string has no null value or empty list, and requests omits such a parameter, so the query would ignore the field. These methods raise `ValueError` instead of sending such a query. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
+Every keyword argument to `filter()`, `get()`, or the lookup of `get_or_create()` must have a value that requests sends intact. It must not be `None`, an empty collection, or a mapping, and a collection must not hold `None` or another collection. requests omits `None` and empty collections, sends only a mapping's keys, and flattens nested collections, so the query would ignore or change the constraint, and `get()` could return an object that does not match. These methods raise `ValueError` instead of sending such a query. Any iterable other than a string, bytes, or a mapping, such as a generator, a `deque`, or a `range`, counts as a collection, and is read once. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
 
-`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`:
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")
 ```
+
+`get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
+
+`get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field names as a sequence. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
 
