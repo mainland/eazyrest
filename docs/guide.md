@@ -368,6 +368,18 @@ class PagedObject(JSONObject):
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
 
+Some APIs, such as GitHub's, return each page as a JSON list and name the next page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from `collection_items_from_response()` for such an API. It resolves links and checks origins as `follow_next_links()` does:
+
+```python
+from eazyrest import JSONObject, follow_link_headers
+
+
+class GitHubObject(JSONObject):
+    @classmethod
+    def collection_items_from_response(cls, resp):
+        return follow_link_headers(cls.api, resp)
+```
+
 ## Write modes
 
 APIs use lazy writes by default. Assignments update local state and queue a pending patch until `save()` is called.

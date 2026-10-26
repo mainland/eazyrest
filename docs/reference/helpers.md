@@ -11,3 +11,7 @@
 ```{eval-rst}
 .. autofunction:: eazyrest.follow_next_links
 ```
+
+```{eval-rst}
+.. autofunction:: eazyrest.follow_link_headers
+```
