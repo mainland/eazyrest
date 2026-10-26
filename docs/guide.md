@@ -16,6 +16,58 @@ class User(JSONObject):
     name: str
 ```
 
+The decorator also accepts options for common API naming differences:
+
+```python
+@json_object(
+    pk="uuid",
+    field_map={"created_at": "createdAt"},
+    exclude={"display_label"},
+)
+class User(JSONObject):
+    class_url = "/users/"
+
+    uuid: str
+    created_at: str
+    display_label: str
+```
+
+Use `pk=` when the primary-key attribute is not named `id`. Use `field_map=` when the Python attribute name should differ from the JSON key. Use `exclude=` for annotated attributes that should not become JSON-backed fields.
+
+## Loading and caching
+
+You can construct an object from a primary key or from an already-loaded JSON payload:
+
+```python
+lazy_user = User(id=1)
+loaded_user = User(json={"id": 1, "name": "Ada"})
+```
+
+An object constructed from a primary key is lazy. The first access to `json` or a JSON-backed field other than the primary key performs a `GET` against the object's `url`, caches the payload, and caches converted field values as they are read. Reading the primary key returns the value given to the constructor without a request. An object constructed from `json=` starts with that payload already loaded.
+
+Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
+
+```python
+user.refresh()
+print(user.name)
+```
+
+## Resource URLs
+
+`url` returns the model resource path built from `class_url` and the primary key. `absolute_url` resolves that path against the registered API base URL using the same URL resolution as request methods:
+
+```python
+user = User(id=1)
+
+print(user.url)
+# /users/1/
+
+print(user.absolute_url)
+# https://api.example.com/users/1/
+```
+
+If `class_url` is already absolute, `absolute_url` leaves it absolute.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
@@ -120,6 +172,51 @@ admins = list(User.filter(role="admin"))
 ```
 
 `filter()` and `get()` also accept `prefetch=[...]` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
+
+## Prefetching related objects
+
+Related fields are lazy by default. If a JSON payload stores a related object as a primary key, `eazyrest` creates a lazy related object and fetches it when you first read one of its fields. That keeps initial collection queries small, but it can produce one HTTP request per related object.
+
+Use `prefetch=[...]` when you know you will access a related field for many objects:
+
+```python
+todos = Todo.filter(userId=1, prefetch=["user"])
+
+for todo in todos:
+    print(todo.title, todo.user.name)
+```
+
+Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads and must return related objects keyed by primary key:
+
+```python
+@json_object
+class User(JSONObject):
+    class_url = "/users/"
+
+    id: int
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(cls, pks, *, api=None):
+        api = cls.api if api is None else api
+        resp = api.get(cls.class_url, params={"id": sorted(pks)})
+        return {
+            user.pk: user
+            for user in (cls(json=item, api=api) for item in resp.json())
+        }
+```
+
+The exact implementation depends on the API. Some APIs accept repeated parameters such as `?id=1&id=2`, and others use a comma-separated parameter such as `?id__in=1,2` or a dedicated bulk endpoint. Put that API-specific shape in `bulk_get_by_pks()`.
+
+Prefetch works for single related-object fields and typed related collections. Embedded related objects do not need prefetching, because `eazyrest` only bulk-loads primary-key-style values. When the same related primary key appears more than once in a prefetch batch, parent objects share the same related instance.
+
+Prefetching is batched so collection iteration can stay lazy. `prefetch_batch_size` controls how many parent JSON objects are scanned before each related bulk lookup:
+
+```python
+Todo.prefetch_batch_size = 250
+```
+
+If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing.
 
 ## Response-shape hooks
 
