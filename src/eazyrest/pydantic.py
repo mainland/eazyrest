@@ -13,6 +13,7 @@ Importing this module requires Pydantic, which the ``pydantic`` extra installs.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import enum
 import types
@@ -30,6 +31,7 @@ from pydantic import (
     WithJsonSchema,
 )
 from pydantic_core import PydanticSerializationError
+from typing_extensions import is_typeddict
 
 from ._conversion import _current_conversion, _final_supertype
 from .eazyrest import JSONObject, lenient_issubclass
@@ -266,6 +268,53 @@ _EAZYREST_TYPES: dict[Any, Any] = {
 }
 
 
+def _is_dataclass_class(cls: Any) -> bool:
+    """Return whether a type is a dataclass class.
+
+    Args:
+        cls: Type to test.
+
+    Returns:
+        Whether ``cls`` is a dataclass, of Pydantic or the standard library,
+        and a class, not an instance.
+    """
+    return isinstance(cls, type) and dataclasses.is_dataclass(cls)
+
+
+def _check_undeclared_keys(cls: Any) -> None:
+    """Check that a class keeps or rejects the keys it does not declare.
+
+    Under Pydantic's default config, validating and serializing a ``TypedDict``
+    or a dataclass drop the keys it does not declare. Saving such a value
+    would then delete those keys on the server. A ``TypedDict`` keeps them
+    under ``extra="allow"``, but Pydantic never writes them for a dataclass,
+    of Pydantic or the standard library, so only ``extra="forbid"``, which
+    rejects them, is safe for it.
+
+    Args:
+        cls: ``TypedDict`` or dataclass to check.
+
+    Raises:
+        TypeError: If the class's config would drop undeclared keys.
+    """
+    extra = getattr(cls, "__pydantic_config__", {}).get("extra")
+    if _is_dataclass_class(cls):
+        if extra != "forbid":
+            raise TypeError(
+                f"{cls.__name__} would drop the keys it does not declare, "
+                "because Pydantic never writes them for a dataclass. Give it "
+                'extra="forbid", as with @pydantic.with_config(pydantic.'
+                'ConfigDict(extra="forbid")), or use a Pydantic model or a '
+                'TypedDict with extra="allow".'
+            )
+    elif extra not in ("allow", "forbid"):
+        raise TypeError(
+            f"{cls.__name__} would drop the keys it does not declare. "
+            "Decorate it with "
+            '@pydantic.with_config(pydantic.ConfigDict(extra="allow")).'
+        )
+
+
 def _eazyrest_types(ty: Any) -> Any:
     """Return a type with eazyrest's conversions for the types it names.
 
@@ -283,7 +332,8 @@ def _eazyrest_types(ty: Any) -> Any:
 
     Raises:
         TypeError: If ``ty`` names an eazyrest model, which Pydantic cannot
-            convert.
+            convert, or a ``TypedDict`` or Pydantic dataclass that would drop
+            the keys it does not declare.
     """
     if lenient_issubclass(ty, JSONObject):
         raise TypeError(
@@ -309,6 +359,10 @@ def _eazyrest_types(ty: Any) -> Any:
 
     origin = typing.get_origin(ty)
     args = typing.get_args(ty)
+    if is_typeddict(ty) or is_typeddict(origin):
+        _check_undeclared_keys(origin or ty)
+    if _is_dataclass_class(ty):
+        _check_undeclared_keys(ty)
     if not args or origin is Literal:
         return ty
     if origin is Annotated:

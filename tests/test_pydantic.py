@@ -489,6 +489,108 @@ def test_pydantic_type_without_pydantic_raises(
         _ = located.point
 
 
+@with_config(ConfigDict(str_strip_whitespace=True))
+class StrippedSpec(TypedDict):
+    """Configuration whose Pydantic config drops undeclared keys."""
+
+    name: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class StrictSpec(TypedDict):
+    """Configuration whose Pydantic config rejects undeclared keys."""
+
+    name: str
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="allow"))
+class AllowingPair:
+    """Pydantic dataclass that keeps undeclared keys but never writes them."""
+
+    first: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class StrictPair:
+    """Pydantic dataclass that rejects undeclared keys."""
+
+    first: int
+
+
+@json_object
+class Settings(PydanticBase):
+    """Model with ``TypedDict`` and dataclass fields under several configs."""
+
+    class_url = "/settings/"
+
+    id: int
+    stripped: StrippedSpec
+    plain: Annotated[dict[str, PlainSpec], Field()]
+    strict: StrictSpec
+    pair: PydanticPair
+    allowing_pair: AllowingPair
+    strict_pair: StrictPair
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("stripped", "with_config"),
+        ("plain", "with_config"),
+        ("pair", "never writes them for a dataclass"),
+        ("allowing_pair", "never writes them for a dataclass"),
+    ],
+)
+def test_types_that_drop_keys_are_rejected(
+    requests_mock: Any, field: str, message: str
+) -> None:
+    """A type that would drop undeclared keys cannot be a field.
+
+    Args:
+        field: Name of a ``Settings`` field whose type would drop undeclared
+            keys.
+        message: Pattern that the error message should match.
+    """
+    settings = Settings(
+        json={
+            "id": 1,
+            "stripped": {"name": "a"},
+            "plain": {"k": {"name": "a"}},
+            "pair": {"first": 1, "second": 2},
+            "allowing_pair": {"first": 1},
+        }
+    )
+
+    with pytest.raises(FieldConversionError, match=message):
+        getattr(settings, field)
+    with pytest.raises(FieldConversionError, match=message):
+        Settings.create(**{field: cast(Any, {})})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("strict", {"name": "a"}), ("strict_pair", {"first": 1})],
+)
+def test_types_may_reject_undeclared_keys(field: str, value: Any) -> None:
+    """A type that forbids undeclared keys reads values without them.
+
+    Args:
+        field: Name of a ``Settings`` field whose type forbids undeclared keys.
+        value: JSON value for the field with only declared keys.
+    """
+    settings = Settings(json={"id": 1, field: value})
+    extended = Settings(json={"id": 1, field: {**value, "x": 1}})
+
+    assert (
+        TypeAdapter(Any).dump_python(getattr(settings, field), mode="json")
+        == value
+    )
+    with pytest.raises(FieldConversionError, match=f"^Settings.{field}: "):
+        getattr(extended, field)
+
+
 def _require_aware(value: datetime.datetime) -> datetime.datetime:
     if value.tzinfo is None:
         raise ValueError("A time zone is required")
@@ -822,3 +924,44 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
     assert mark.json["annotated"] == 1577836800000.0
     assert mark.json["listed"] == [1577836800000.0]
     assert mark.json["other"] == "2020-01-01T00:00:00+00:00"
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class _Base:
+    """Standard library dataclass that rejects undeclared keys."""
+
+    a: int
+
+
+@dataclasses.dataclass
+class _Loose:
+    """Standard library dataclass without a config, which would drop keys."""
+
+    a: int
+
+
+def test_dataclasses_must_reject_keys_that_pydantic_would_drop() -> None:
+    """A dataclass that a Pydantic field names must set ``extra="forbid"``.
+
+    Pydantic never writes undeclared keys for a dataclass of the standard
+    library either, so one that would drop a server's key on a read is
+    refused, and one that rejects such keys reads only what it declares.
+    """
+
+    @json_object
+    class Holder(PydanticBase):
+        class_url = "/holders/"
+
+        id: int
+        loose: Annotated[_Loose, Field()]
+        strict: Annotated[_Base, Field()]
+
+    holder = Holder(
+        json={"id": 1, "loose": {"a": 1}, "strict": {"a": 1, "b": 2}}
+    )
+    with pytest.raises(FieldConversionError, match="for a dataclass"):
+        _ = holder.loose
+    with pytest.raises(FieldConversionError, match=r"^Holder\.strict: "):
+        _ = holder.strict
+    assert Holder(json={"id": 1, "strict": {"a": 3}}).strict == _Base(3)
