@@ -113,6 +113,8 @@ Field annotations drive JSON conversion when values are read from or written to 
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
+A value that a field cannot convert, when it is read, assigned, or passed to `create()` or a query, raises `FieldConversionError`. Its message names the model and field, as in `Booking.day: month must be in 1..12`, and the conversion's own error is its `__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches either one keeps working.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
