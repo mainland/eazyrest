@@ -41,6 +41,7 @@ intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "requests": ("https://requests.readthedocs.io/en/latest/", None),
     "dateutil": ("https://dateutil.readthedocs.io/en/stable/", None),
+    "pydantic": ("https://docs.pydantic.dev/latest/", None),
 }
 
 # Warn about every reference that does not resolve.
@@ -48,4 +49,9 @@ nitpicky = True
 nitpick_ignore = [
     # Sphinx cannot link to a type variable.
     ("py:class", "eazyrest.eazyrest.T"),
+]
+# The Pydantic metadata of the documented types names functions local to
+# eazyrest.pydantic.
+nitpick_ignore_regex = [
+    ("py:class", r"eazyrest\.pydantic\._\w+\.<locals>\..*"),
 ]

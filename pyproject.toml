@@ -37,6 +37,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pydantic 2.12 is the first release that writes the undeclared keys of a
+# TypedDict whose config allows them.
+pydantic = [
+  "pydantic>=2.12",
+]
 socks = [
   "requests[socks]",
 ]
@@ -45,12 +50,14 @@ socks = [
 test = [
   "coverage",
   "hypothesis",
+  "pydantic>=2.12",
   "pytest",
   "requests-mock",
 ]
 docs = [
   "furo",
   "myst-parser",
+  "pydantic>=2.12",
   "sphinx==9.1.0",
 ]
 dev = [
@@ -163,6 +170,7 @@ env_list = [
   "py313",
   "py314",
   "py315",
+  "pydantic-min",
   "lint",
   "docs",
 ]
@@ -176,6 +184,10 @@ commands = [
   ["coverage", "run", "-m", "pytest", "-q"],
   ["coverage", "report"],
 ]
+
+# Test against the oldest Pydantic release that the pydantic extra allows.
+[tool.tox.env.pydantic-min]
+deps = ["pydantic==2.12.0"]
 
 # The hooks run the checkers from .venv, at the versions that uv.lock pins, so
 # the lint environment first brings .venv up to date.
