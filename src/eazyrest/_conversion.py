@@ -30,6 +30,12 @@ class Conversion:
     Each function receives the declared type as well as the value, so that
     one conversion serves a family of types, such as every enum. The fields
     are keyword arguments, so that later versions can add fields.
+
+    ``decode`` and ``encode`` report a value that they cannot convert by
+    raising ``TypeError`` or ``ValueError``, which reaches the caller as a
+    ``FieldConversionError`` that names the field, with the error as its
+    cause. Any other exception is a bug in the conversion, and propagates
+    unchanged.
     """
 
     decode: Callable[[Any, type[Any]], Any]

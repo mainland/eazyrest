@@ -15,6 +15,7 @@ from eazyrest import (
     API,
     DEFAULT_CONVERSIONS,
     Conversion,
+    FieldConversionError,
     JSONObject,
     json_object,
 )
@@ -207,6 +208,39 @@ def test_conversion_fields_are_keywords() -> None:
     """``Conversion`` takes no positional arguments, so it can gain fields."""
     with pytest.raises(TypeError, match="positional"):
         Conversion(ADDRESS.decode, ADDRESS.encode)  # type: ignore[call-arg]
+
+
+def test_entry_errors_name_the_field() -> None:
+    """An entry that cannot decode a value raises ``FieldConversionError``."""
+    host = Host(json={**HOST_JSON, "address": "not an address"})
+
+    with pytest.raises(FieldConversionError, match=r"^Host\.address: "):
+        _ = host.address
+
+
+def test_other_errors_of_an_entry_propagate() -> None:
+    """An exception other than ``TypeError`` or ``ValueError`` is a bug.
+
+    It reaches the caller unchanged, rather than as a conversion error.
+    """
+
+    class BuggyBase(JSONObject):
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            ipaddress.IPv4Address: Conversion(
+                decode=lambda value, cls: value["missing"],
+                encode=lambda value, cls: str(value),
+            )
+        }
+
+    @json_object
+    class Buggy(BuggyBase):
+        class_url = "/buggy/"
+
+        id: int
+        address: ipaddress.IPv4Address
+
+    with pytest.raises(KeyError):
+        _ = Buggy(json={"id": 1, "address": {}}).address
 
 
 class _Sized(Protocol):

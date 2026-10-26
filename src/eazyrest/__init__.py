@@ -6,6 +6,7 @@ from .dateparse import parse_datetime, parse_duration
 from .eazyrest import (
     DoesNotExist,
     EazyrestError,
+    FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -20,6 +21,7 @@ __all__ = [
     "Conversion",
     "DoesNotExist",
     "EazyrestError",
+    "FieldConversionError",
     "JSONObject",
     "MultipleObjectsReturned",
     "PrefetchNotSupported",

@@ -175,6 +175,12 @@ Python types are converted automatically:
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
+A value that a field cannot convert, when it is read, assigned, or passed to
+`create()` or a query, raises `FieldConversionError`. Its message names the
+model and field, as in `Booking.day: month must be in 1..12`, and the
+conversion's own error is its `__cause__`. It is both a `TypeError` and a
+`ValueError`, so code that catches either one keeps working.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
@@ -294,6 +300,10 @@ applies wherever its type appears, so `Host.allowed` converts each item. `null`
 reads as `None` and `None` writes as `null` without a conversion, and `encode`
 is called only for instances of the type that the entry is keyed by: any other
 value, such as a string assigned to `Host.address`, is written as it is.
+`decode` and `encode` report a value that they cannot convert by raising
+`TypeError` or `ValueError`, which reaches the caller as a
+`FieldConversionError` that names the field, with the error as its cause. Any
+other exception is a bug in the conversion, and propagates unchanged.
 
 A class's `conversions` are merged over those of its bases, and theirs over the
 default table, so a subclass can add conversions or replace its bases'. A field
