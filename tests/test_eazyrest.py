@@ -2327,6 +2327,46 @@ def test_subclass_keeps_inherited_primary_key(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+@json_object
+class Dated(ModelBase):
+    """Model with a creation time, used to test mixed inheritance."""
+
+    class_url = "/dated/"
+
+    id: int
+    created: str
+
+
+def test_mixed_model_inheritance_is_rejected() -> None:
+    """A class cannot inherit fields from two separate models."""
+    # The class is rejected when it is created, before any decorator runs.
+    with pytest.raises(TypeError, match="both User and Dated"):
+        type("Both", (User, Dated), {})
+
+
+def test_undecorated_mixins_and_chains_are_accepted() -> None:
+    """Bases without fields mix in, and decorated chains are allowed."""
+
+    class Hooks(JSONObject):
+        """Mixin that declares no fields."""
+
+        prefetch_batch_size = 10
+
+    @json_object
+    class Member(User, Hooks):
+        """Model with a mixin."""
+
+        role: str
+
+    @json_object
+    class Admin(Member):
+        """Model two decorated classes below ``User``."""
+
+        level: int
+
+    assert Admin._json_fields == {"id", "name", "role", "level"}
+
+
 def test_subclass_accepts_inherited_and_own_fields(
     requests_mock: Any,
 ) -> None:
