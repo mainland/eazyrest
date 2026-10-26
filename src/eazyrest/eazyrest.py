@@ -5,8 +5,12 @@ from __future__ import annotations
 import datetime
 import inspect
 import typing
-import urllib.parse
-from collections.abc import Callable, Mapping, MutableSet, Sequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableSet,
+)
 from collections.abc import Set as AbstractSet
 from functools import cached_property
 from typing import (
@@ -292,19 +296,29 @@ class JSONProperty:
         # Resolve type using typing.get_type_hints
         return typing.get_type_hints(self.cls)[self.field]
 
-    def __get__(self, obj: JSONObject, objtype: type[JSONObject]) -> Any:
-        """Read a value from the backing JSON and convert it to Python.
+    def __get__(
+        self,
+        obj: JSONObject | None,
+        objtype: type[JSONObject] | None = None,
+    ) -> Any:
+        """Read a value from the backing JSON or return the descriptor.
 
         Args:
-            obj: ``JSONObject`` instance being accessed.
+            obj: ``JSONObject`` instance being accessed, or ``None`` for class
+                access.
             objtype: Owner class.
 
         Returns:
-            Converted Python value for the field.
+            Converted Python value for the field, or the descriptor itself when
+            accessed on the class.
 
         Raises:
-            AttributeError: If the backing JSON does not contain this field.
+            AttributeError: If instance access targets a field missing from the
+                backing JSON.
         """
+        if obj is None:
+            return self
+
         if self.is_primary_key and obj._json is None:
             return obj._pk_value
         elif self.json_field not in obj.json:
@@ -549,7 +563,7 @@ class JSONObject:
         Returns:
             Relative URL for this object, always ending with ``/``.
         """
-        url = urllib.parse.urljoin(self.class_url, str(self.pk))
+        url = f"{self.class_url.rstrip('/')}/{self.pk}"
 
         # Ensure url has a trailing slash
         if url[-1] != "/":
@@ -568,12 +582,7 @@ class JSONObject:
             DoesNotExist: If the API returns an empty list for this object.
         """
         if self._json is None:
-            data = self.api.get(self.url).json()
-            # If results are returned as a list, get first result
-            if isinstance(data, list):
-                self._json = data[0]
-            else:
-                self._json = data
+            self._json = self.object_json(self.api.get(self.url).json())
 
             # Have have JSON now, so delete _pk_value
             del self._pk_value
@@ -594,9 +603,66 @@ class JSONObject:
         return cls(json=resp.json())
 
     @classmethod
+    def collection_items(cls, payload: Any) -> Iterable[Any]:
+        """Iterate JSON objects for a collection query.
+
+        The default implementation yields items from a list response directly.
+        Subclasses can override this hook to unwrap envelope responses or
+        follow pagination links by issuing additional requests through
+        ``cls.api``.
+
+        Args:
+            payload: Decoded JSON payload returned by a collection request.
+
+        Returns:
+            Iterable of JSON objects used to construct model instances.
+
+        Raises:
+            TypeError: If the payload is not a supported collection response.
+        """
+        if isinstance(payload, list):
+            return payload
+
+        raise TypeError(
+            f"{cls.__name__}.collection_items() expected a list response, "
+            f"got {type(payload).__name__}"
+        )
+
+    @classmethod
+    def object_json(cls, payload: Any) -> Any:
+        """Return the JSON object contained in a single-object response.
+
+        Subclasses can override this hook when an API wraps single-object
+        responses in an envelope or returns singleton lists.
+
+        Args:
+            payload: Decoded JSON payload returned by the object endpoint.
+
+        Returns:
+            JSON object used to populate a model instance.
+
+        Raises:
+            DoesNotExist: If the payload is an empty list.
+            MultipleObjectsReturned: If the payload is a list of more than one
+                item.
+        """
+        if isinstance(payload, list):
+            if len(payload) == 0:
+                raise DoesNotExist
+            if len(payload) > 1:
+                raise MultipleObjectsReturned(
+                    f"{cls.__name__} response is a list of {len(payload)} "
+                    "items, not one object"
+                )
+
+            return payload[0]
+
+        return payload
+
+    @classmethod
     def filter(
         cls: type[Self], url: str | None = None, **kwargs: Any
-    ) -> Sequence[Self]:
+    ) -> Iterable[Self]:
         """Query objects matching request parameters.
 
         Args:
@@ -604,20 +670,20 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Sequence of objects built from the response payload.
+            Iterable of objects built from the response payload.
         """
         if url is None:
             url = cls.class_url
 
         resp = cls.api.get(url, params=kwargs)
-        return [cls(json=json) for json in resp.json()]
+        return (cls(json=item) for item in cls.collection_items(resp.json()))
 
     @classmethod
-    def all(cls: type[Self]) -> Sequence[Self]:
+    def all(cls: type[Self]) -> Iterable[Self]:
         """Return all objects for this resource type.
 
         Returns:
-            Sequence of all objects.
+            Iterable of all objects.
         """
         return cls.filter()
 
@@ -635,20 +701,28 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
         """
-        results = cls.filter(**kwargs)
-        if len(results) == 0:
+        results = iter(cls.filter(**kwargs))
+        first = next(results, None)
+        if first is None:
             raise DoesNotExist
-        elif len(results) != 1:
+
+        second = next(results, None)
+        if second is not None:
             raise MultipleObjectsReturned
-        else:
-            return results[0]
+
+        return first
 
     @classmethod
-    def get_or_create(cls: type[Self], **kwargs: Any) -> tuple[Self, bool]:
+    def get_or_create(
+        cls: type[Self],
+        defaults: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
         Args:
-            **kwargs: Fields used both for lookup and creation.
+            defaults: Optional fields applied only when creating a new object.
+            **kwargs: Fields used for lookup and included in creation.
 
         Returns:
             Tuple ``(obj, created)`` where ``created`` indicates whether a new
@@ -657,17 +731,18 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
         """
-        results = cls.filter(**kwargs)
-        if len(results) == 1:
-            obj = results[0]
+        results = iter(cls.filter(**kwargs))
+        first = next(results, None)
+        if first is not None:
+            second = next(results, None)
+            if second is not None:
+                raise MultipleObjectsReturned
 
-            # Update fields
-            for key, val in kwargs.items():
-                setattr(obj, key, val)
+            return first, False
 
-            return obj, False
-        elif len(results) > 1:
-            raise MultipleObjectsReturned
+        create_kwargs = dict(kwargs)
+        if defaults is not None:
+            create_kwargs.update(defaults)
 
-        obj = cls.create(**kwargs)
+        obj = cls.create(**create_kwargs)
         return obj, True
