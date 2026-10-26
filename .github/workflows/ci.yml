@@ -34,6 +34,22 @@ jobs:
       - name: Run Tests
         run: uvx --with tox-uv tox -e ${{ matrix.env }}
 
+  pydantic-min:
+    name: Test (Oldest Pydantic)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Run Tests
+        run: uvx --with tox-uv tox -e pydantic-min
+
   lint:
     runs-on: ubuntu-latest
 
