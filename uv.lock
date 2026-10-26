@@ -780,7 +780,6 @@ wheels = [
 name = "eazyrest"
 source = { editable = "." }
 dependencies = [
-    { name = "certifi" },
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
@@ -788,6 +787,7 @@ dependencies = [
     { name = "requests", extra = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -833,7 +833,6 @@ docs = ">=3.12"
 
 [package.metadata]
 requires-dist = [
-    { name = "certifi" },
     { name = "dateparser" },
     { name = "isodate" },
     { name = "python-dateutil" },
@@ -841,6 +840,7 @@ requires-dist = [
     { name = "requests", extras = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "tzlocal" },
+    { name = "urllib3" },
 ]
 
 [package.metadata.requires-dev]
