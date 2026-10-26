@@ -212,10 +212,10 @@ profile.save()
 
 A model converts field values by a table of conversions, keyed by type. The
 default table converts `datetime`, `date`, `timedelta`, `UUID`, and enums, as
-the previous section describes, and any other type reads and writes its JSON
-value as it is. To convert another type, or to convert one of these
-differently, declare `conversions` on a shared base model, mapping the type to
-a `Conversion`:
+[Field conversion](#field-conversion) describes, and any other type reads and
+writes its JSON value as it is. To convert another type, or to convert one of
+these differently, declare `conversions` on a shared base model, mapping the
+type to a `Conversion`:
 
 ```python
 import ipaddress
@@ -329,8 +329,8 @@ return an object that does not match, and `get_or_create()` can return one with
 `created=False` instead of creating an object. `eazyrest` does not check the
 returned objects, because it cannot know how the server matches a parameter,
 for example case-insensitively. Make sure that the API filters on each field
-you look up by. The [Django REST Framework guide](drf.md) shows a filter
-backend that rejects unknown parameters.
+you look up by. The Django REST Framework guide shows
+[a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched,
 a `POST`, so two clients can both create the object. Rely on a uniqueness

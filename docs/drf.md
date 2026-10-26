@@ -203,8 +203,8 @@ DRF `DurationField` emits Django's duration format, such as `1 02:03:04`,
 unless it is configured to emit ISO 8601. `eazyrest` parses both formats into
 `datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations,
 which DRF accepts as input. If your API requires another wire format, replace
-the `timedelta` conversion in a model's `conversions`, as the guide's Custom
-field conversion section shows.
+the `timedelta` conversion in a model's `conversions`, as the guide's
+[Custom field conversion](guide.md#custom-field-conversion) section shows.
 
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and
 `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]`

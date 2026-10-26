@@ -30,6 +30,9 @@ myst_enable_extensions = [
     "colon_fence",
 ]
 
+# Give ## and ### headings anchors, so links can name a section.
+myst_heading_anchors = 3
+
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
 autoclass_content = "both"
