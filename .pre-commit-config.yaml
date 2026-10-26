@@ -23,7 +23,9 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
+          - hypothesis
           - pytest
+          - requests-mock
           - requests[socks]
           - tzlocal
           - types-dateparser

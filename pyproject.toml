@@ -46,6 +46,7 @@ socks = [
 ]
 test = [
   "dateparser",
+  "hypothesis",
   "pytest",
   "requests-mock",
 ]
@@ -53,6 +54,7 @@ dev = [
   "build",
   "dateparser",
   "docformatter",
+  "hypothesis",
   "mypy",
   "pre-commit",
   "pytest",
