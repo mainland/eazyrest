@@ -187,6 +187,29 @@ the code assigned. The error that eazyrest replaced remains the `__cause__`,
 and it can quote the value, so a logged traceback can still expose it. A
 message that your own conversion code or validator writes appears as written.
 
+A JSON value that an enum lacks, such as a status that the server added after
+the client was written, raises `FieldConversionError`. Python calls an enum's
+`_missing_()` classmethod for a value it lacks, so an enum can map such values
+to a member of its own instead:
+
+```python
+import enum
+
+
+class TicketStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNKNOWN
+```
+
+Reading the field does not change the object's JSON, so saving other fields
+leaves the server's value alone. Assigning `TicketStatus.UNKNOWN` to the field
+sends `"unknown"`.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
