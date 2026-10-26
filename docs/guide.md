@@ -62,6 +62,8 @@ Other keyword arguments to the constructor are assignments, made after the prima
 
 Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
 
+`repr()` shows an object's class and primary key, as in `<User id=1>`, without loading it.
+
 Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
 
 ```python
