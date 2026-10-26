@@ -494,6 +494,8 @@ request.
 Override these hooks if an API wraps responses in envelopes:
 
 - `collection_items()` for collection endpoints
+- `collection_items_from_response()` for collection endpoints whose items or
+  later pages depend on the response itself, such as its headers or URL
 - `object_json()` for single-object endpoints
 
 For example, an API that returns singleton responses in a "result" field and
@@ -541,15 +543,16 @@ A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
 sends, is used as is. A path such as `/v1/items/?page=2` is resolved against
 the server's origin, and a query such as `?page=2` against the page's path.
-`collection_items()` does not receive the URL of the first page, so links in
-the first page are resolved against `base_url` unless you pass `url=`. For an
-API that sends query-only links, pass the collection's path:
+`collection_items()` receives only the payload, so links in the first page are
+resolved against `base_url` unless you pass `url=`. For an API that sends
+query-only links, override `collection_items_from_response()`, which receives
+the response, and pass the URL of the first page:
 
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload, url=cls.class_url)
+    def collection_items_from_response(cls, resp):
+        return follow_next_links(cls.api, resp.json(), url=resp.url)
 ```
 
 `follow_next_links()` raises `ValueError` for a next-page URL whose scheme,
@@ -564,6 +567,21 @@ before the redirect is followed. Existing session response hooks still run.
 With `allow_other_origins=True`, a redirect is checked as for every other
 request: it must lead to the origin of the page request or to one of the API's
 `redirect_origins`.
+
+Some APIs, such as GitHub's, return each page as a JSON list and name the next
+page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from
+`collection_items_from_response()` for such an API. It resolves links and
+checks origins as `follow_next_links()` does:
+
+```python
+from eazyrest import JSONObject, follow_link_headers
+
+
+class GitHubObject(JSONObject):
+    @classmethod
+    def collection_items_from_response(cls, resp):
+        return follow_link_headers(cls.api, resp)
+```
 
 ## Write modes
 

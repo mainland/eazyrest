@@ -8,7 +8,13 @@ from typing import Any
 import pytest
 import requests
 
-from eazyrest import API, JSONObject, follow_next_links, json_object
+from eazyrest import (
+    API,
+    JSONObject,
+    follow_link_headers,
+    follow_next_links,
+    json_object,
+)
 
 
 class PagedBase(JSONObject):
@@ -37,6 +43,66 @@ class Item(PagedBase):
     class_url = "/items/"
 
     id: int
+
+
+class ResponsePagedBase(JSONObject):
+    """Base object whose collection hook reads the response."""
+
+    @classmethod
+    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+        """Read every page, resolving links against the first page's URL.
+
+        Args:
+            resp: Response for the collection's first page.
+
+        Returns:
+            An iterator over the items of every page, following next links.
+        """
+        return follow_next_links(cls.api, resp.json(), url=resp.url)
+
+
+ResponsePagedBase.register_api(API("https://example.com/v1/"))
+
+
+@json_object
+class Entry(ResponsePagedBase):
+    """Model whose collection pages link to each other by query only."""
+
+    class_url = "/entries/"
+
+    id: int
+
+
+class LinkPagedBase(JSONObject):
+    """Base object whose collection pages are linked by Link headers."""
+
+    @classmethod
+    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+        """Read every page named by a Link header.
+
+        Args:
+            resp: Response for the collection's first page.
+
+        Returns:
+            An iterator over the items of every page, following ``Link``
+            headers.
+        """
+        return follow_link_headers(cls.api, resp)
+
+
+LinkPagedBase.register_api(API("https://example.com/v1/"))
+
+
+@json_object
+class LinkedItem(LinkPagedBase):
+    """Model whose collection endpoint names its next page in a header."""
+
+    class_url = "/linked/"
+
+    id: int
+
+
+LINKED = "https://example.com/v1/linked/"
 
 
 @json_object
@@ -300,6 +366,19 @@ def test_page_without_results_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="'results'"):
         list(follow_next_links(api, {"next": None}))
+
+
+@pytest.mark.parametrize("results", ["abc", {"name": 1}, None, 3])
+def test_page_results_must_be_a_list(results: Any) -> None:
+    """A page whose results are not a list raises before yielding items.
+
+    Args:
+        results: Malformed value of the page's ``results`` member.
+    """
+    api = API("https://example.com/v1/")
+
+    with pytest.raises(TypeError, match="'results' member"):
+        list(follow_next_links(api, {"next": None, "results": results}))
 
 
 def test_other_payload_raises_type_error() -> None:
@@ -567,6 +646,108 @@ def test_filter_with_api_reads_every_page_with_it(requests_mock: Any) -> None:
         "tenant.example.com"
     }
     assert Item.api is not tenant
+
+
+def test_collection_hook_receives_the_response(requests_mock: Any) -> None:
+    """A query-only next link resolves against the first page's URL."""
+    requests_mock.get(
+        "https://example.com/v1/entries/?kind=a",
+        json={"results": [{"id": 1}], "next": "?kind=a&page=2"},
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/entries/?kind=a&page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    entries = list(Entry.filter(kind="a"))
+
+    assert [entry.id for entry in entries] == [1, 2]
+    assert second.call_count == 1
+
+
+def test_link_headers_are_followed_lazily(requests_mock: Any) -> None:
+    """Absolute and relative next links are followed only when reached."""
+    requests_mock.get(
+        LINKED,
+        json=[{"id": 1}],
+        headers={
+            "Link": f'<{LINKED}?page=2>; rel="next", '
+            f'<{LINKED}?page=3>; rel="last"'
+        },
+    )
+    requests_mock.get(
+        LINKED + "?page=2",
+        json=[{"id": 2}],
+        headers={"Link": '</v1/linked/?page=3>; rel="next"'},
+    )
+    requests_mock.get(LINKED + "?page=3", json=[{"id": 3}])
+
+    items = LinkedItem.filter()
+    first = next(items)
+
+    assert first.id == 1
+    assert requests_mock.call_count == 1
+    assert [item.id for item in items] == [2, 3]
+    assert requests_mock.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "rel", ['"next last"', '"last next"', "next", '"NEXT"', '"Next prev"']
+)
+def test_link_headers_find_next_among_relation_types(
+    requests_mock: Any, rel: str
+) -> None:
+    """A link is followed when ``next`` is one of its relation types.
+
+    Args:
+        rel: Value of the link's ``rel`` parameter.
+    """
+    requests_mock.get(
+        LINKED,
+        json=[{"id": 1}],
+        headers={"Link": f"<{LINKED}?page=2>; rel={rel}"},
+    )
+    requests_mock.get(LINKED + "?page=2", json=[{"id": 2}])
+
+    assert [item.id for item in LinkedItem.filter()] == [1, 2]
+    assert requests_mock.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("link", "error", "match"),
+    [
+        (
+            '<https://other.example.com/linked/?page=2>; rel="next"',
+            ValueError,
+            "different origin",
+        ),
+        (f'<{LINKED}>; rel="next"', ValueError, "already read"),
+    ],
+)
+def test_link_headers_reject_unsafe_links(
+    requests_mock: Any, link: str, error: type[Exception], match: str
+) -> None:
+    """A link to another origin or to a page already read raises.
+
+    Args:
+        link: ``Link`` header of the first page.
+        error: Exception type that reading the collection raises.
+        match: Pattern that the exception's message matches.
+    """
+    requests_mock.get(LINKED, json=[{"id": 1}], headers={"Link": link})
+
+    with pytest.raises(error, match=match):
+        list(LinkedItem.filter())
+
+    assert requests_mock.call_count == 1
+
+
+def test_link_header_pages_must_be_lists(requests_mock: Any) -> None:
+    """A page body that is not a list raises ``TypeError``."""
+    requests_mock.get(LINKED, json={"results": []})
+
+    with pytest.raises(TypeError, match="must be JSON lists"):
+        list(LinkedItem.filter())
 
 
 def test_prefetch_reads_ahead_across_pages(requests_mock: Any) -> None:
