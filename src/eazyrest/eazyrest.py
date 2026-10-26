@@ -1620,7 +1620,8 @@ class JSONObject:
         the change to the saved object.
 
         Returns:
-            Relative URL for this object, always ending with ``/``.
+            Relative URL for this object. It ends with ``/`` unless the API's
+            ``trailing_slash`` is ``False``.
 
         Raises:
             ValueError: If the primary key is ``None``, empty, or a dot
@@ -1637,11 +1638,13 @@ class JSONObject:
 
         url = f"{self.class_url.rstrip('/')}/{quote(pk_text, safe='')}"
 
-        # Ensure url has a trailing slash
-        if url[-1] != "/":
-            url += "/"
+        try:
+            trailing_slash = self.api.trailing_slash
+        except RuntimeError:
+            # A model without an API still has a URL, in the default form.
+            trailing_slash = True
 
-        return url
+        return url + "/" if trailing_slash else url
 
     @property
     def absolute_url(self) -> str:

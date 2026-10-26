@@ -85,6 +85,13 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
+`url` ends with a slash, as Django REST Framework's routers expect. For an API whose object URLs have no trailing slash, set the API's `trailing_slash` attribute to `False`, and `url` becomes `/users/1`:
+
+```python
+api = API("https://api.example.com/")
+api.trailing_slash = False
+```
+
 `url` converts the primary key to its JSON value before percent-encoding it, so
 an enum key uses its value and a key always forms one path segment. For example,
 the key `a/b` becomes `a%2Fb`.

@@ -65,6 +65,14 @@ class API:
     precedence.
     """
 
+    trailing_slash: bool = True
+    """Whether object URLs end with a slash, as in ``/users/1/``.
+
+    Django REST Framework's routers use a trailing slash. Set this to
+    ``False``, on an instance or in a subclass, for an API whose object
+    URLs have none, as in ``/users/1``.
+    """
+
     default_write_mode: WriteMode
     """Default write mode inherited by newly created model instances."""
 
