@@ -84,7 +84,9 @@ are read. Reading the primary key returns the value given to the constructor
 without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
 loads, and the constructor raises `ValueError` for a key that is not a UUID. An
-object constructed from `json=` starts with that payload already loaded.
+object constructed from `json=` starts with that payload already loaded. It
+keeps a deep copy of the payload, as `update_from_json()` does, so changing the
+payload or its nested values afterward does not change the object.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
