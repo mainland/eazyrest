@@ -208,3 +208,62 @@ def follow_next_links(
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url
         payload = resp.json()
+
+
+def follow_link_headers(
+    api: API,
+    resp: requests.Response,
+    *,
+    allow_other_origins: bool = False,
+) -> Iterator[Any]:
+    """Yield the items of a collection response, following Link headers.
+
+    Each page's body is a JSON list of items, and its ``Link`` header names the
+    next page with ``rel="next"``, as RFC 8288 defines and as APIs such as
+    GitHub's send. A page without such a link is the last page. The next page
+    is requested only after the items of the current page have been consumed. A
+    link to a page already read raises ``ValueError``, because following it
+    would never end.
+
+    A link is resolved against the URL of the page that holds it. As in
+    ``follow_next_links()``, a next-page URL and every redirect destination
+    must have the same scheme, host, and port as the API's base URL, because
+    the session sends its headers and credentials with every request.
+
+    Return the iterator from ``collection_items_from_response()`` to read every
+    page of a collection.
+
+    Args:
+        api: Client used to request the next pages.
+        resp: Response to the first page.
+        allow_other_origins: Whether to follow next-page URLs and redirects
+            whose origin differs from the API's base URL.
+
+    Yields:
+        JSON items from every page, in order.
+
+    Raises:
+        TypeError: If a page's body is not a JSON list.
+        ValueError: If a next-page URL names a page already read, or if a
+            next-page URL or redirect has another origin and
+            ``allow_other_origins`` is ``False``.
+    """
+    reader = _PageReader(api, allow_other_origins)
+    reader.read_urls.add(resp.url)
+
+    while True:
+        payload = resp.json()
+        if not isinstance(payload, list):
+            raise TypeError(
+                "Pages linked by Link headers must be JSON lists, "
+                f"got {type(payload).__name__}"
+            )
+
+        yield from payload
+
+        # requests parses the Link header into resp.links.
+        next_url = resp.links.get("next", {}).get("url")
+        if not next_url:
+            return
+
+        resp = reader.read(urljoin(resp.url, next_url))
