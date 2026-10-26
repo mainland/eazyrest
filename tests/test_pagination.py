@@ -463,6 +463,32 @@ def test_redirect_to_other_origin_is_rejected_before_sending_credentials(
     assert not other_origin.called
 
 
+def test_filter_with_api_reads_every_page_with_it(requests_mock: Any) -> None:
+    """``collection_items()`` sees the query's API as ``cls.api``."""
+    tenant = API("https://tenant.example.com/v1/")
+    requests_mock.get(
+        "https://tenant.example.com/v1/items/",
+        json={
+            "results": [{"id": 1}],
+            "next": "https://tenant.example.com/v1/items/?page=2",
+        },
+    )
+    requests_mock.get(
+        "https://tenant.example.com/v1/items/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    items = list(Item.filter(api=tenant))
+
+    assert [item.id for item in items] == [1, 2]
+    assert all(item.api is tenant for item in items)
+    assert requests_mock.call_count == 2
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example.com"
+    }
+    assert Item.api is not tenant
+
+
 def test_prefetch_reads_ahead_across_pages(requests_mock: Any) -> None:
     """A prefetch batch fills from later pages before the first object."""
     requests_mock.get(

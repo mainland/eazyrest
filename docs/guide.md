@@ -460,7 +460,13 @@ An `API` instance can be bound to a model hierarchy with `register_api()`:
 BaseModel.register_api(api)
 ```
 
-Registering the API on a shared base class is the cleanest pattern. The API can be overridden per instance by passing `api=` when creating an object.
+Registering the API on a shared base class is the cleanest pattern. The API can be overridden per instance by passing `api=` when creating an object, and per query by passing `api=` to `filter()`, `all()`, `get()`, `create()`, or `get_or_create()`. Objects that a query returns keep its API, so their later requests, such as loading or saving, use it too. This suits an application that sends requests with different credentials, for example one `API` per user:
+
+```python
+todos = Todo.filter(api=user_api, completed=False)
+```
+
+Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`. While `filter()` calls `collection_items()`, `cls.api` is the query's API, so a hook such as `follow_next_links(cls.api, payload)` reads later pages with it.
 
 A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
 
@@ -472,4 +478,4 @@ A model instance caches its JSON, converted field values, and pending updates wi
 
 `register_api()` updates a registry shared by the whole process. Register APIs during startup, before other threads use the models.
 
-Each `API` wraps one `requests.Session`, and requests does not promise that a `Session` is safe to share between threads. Class-level queries such as `filter()`, `get()`, and `create()` always use the API registered for the class, so threads that call them share its session. An instance created with `api=` uses that API instead.
+Each `API` wraps one `requests.Session`, and requests does not promise that a `Session` is safe to share between threads. Class-level queries such as `filter()`, `get()`, and `create()` use the API registered for the class, so threads that call them share its session, unless they pass `api=`. An instance created with `api=`, or returned by a query that passed it, uses that API instead.
