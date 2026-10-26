@@ -12,8 +12,11 @@ from typing import (
     ClassVar,
     TypeVar,
     Union,
+    cast,
     overload,
 )
+
+from typing_extensions import Self
 
 from .api import API
 from .dateparse import parse_duration
@@ -22,13 +25,9 @@ from .dateparse import parse_duration
 class DoesNotExist(Exception):
     """Raised when no object matches a query that expects one result."""
 
-    pass
-
 
 class MultipleObjectsReturned(Exception):
     """Raised when a query expected one object but got multiple results."""
-
-    pass
 
 
 #
@@ -68,6 +67,8 @@ T = TypeVar("T", bound="JSONObject")
 @overload
 def json_object(
     cls: type[T],
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
@@ -77,6 +78,8 @@ def json_object(
 @overload
 def json_object(
     cls: None = None,
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
@@ -85,6 +88,8 @@ def json_object(
 
 def json_object(
     cls: type[T] | None = None,
+    /,
+    *,
     pk: str = "id",
     field_map: Mapping[str, str] | None = None,
     exclude: Set[str] = frozenset(),
@@ -292,30 +297,30 @@ class JSONObject:
     api: ClassVar[API]
     """The API associated with this object."""
 
-    _pk: JSONProperty
+    _pk: ClassVar[JSONProperty]
     """The JSONProperty that is the primary key."""
 
-    _pk_value: Any | None
+    _pk_json_field: ClassVar[str]
+    """The field of the object's JSON representation that holds the primary
+    key.
+    """
+
+    _json_fields: ClassVar[Set[str]]
+    """All JSON fields."""
+
+    _pk_value: Any
     """Value of the primary key.
 
     If None, look in JSON
     """
 
-    _pk_json_field: str
-    """The field of the object's JSON representation that holds the primary
-    key.
-    """
-
-    _json_fields: Set[str]
-    """All JSON fields."""
-
-    _json: Any | None
+    _json: Any
     """Object's JSON representation."""
 
     # pylint: disable=redefined-outer-name
     def __init__(
         self,
-        json: Any | None = None,
+        json: Any = None,
         api: API | None = None,
         **kwargs: Any,
     ) -> None:
@@ -356,7 +361,7 @@ class JSONObject:
             kwargs = {ty._pk_json_field: arg}  # pylint: disable=protected-access
             return ty(**kwargs)
 
-    def from_json(self, value: Any, ty: type) -> Any:
+    def from_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a raw JSON value to a typed Python value.
 
         Args:
@@ -397,7 +402,7 @@ class JSONObject:
         else:
             return value
 
-    def to_json(self, value: Any, ty: type) -> Any:
+    def to_json(self, value: Any, ty: type[Any]) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
         Args:
@@ -469,7 +474,9 @@ class JSONObject:
         Args:
             value: Primary-key value or nested ``JSONObject`` used as key.
         """
-        self._pk = value
+        # Delegate to the class-installed descriptor instead of shadowing the
+        # class variable on this instance.
+        cast(JSONProperty, vars(type(self))["_pk"]).__set__(self, value)
 
     @property
     def url(self) -> str:
@@ -507,7 +514,7 @@ class JSONObject:
         return self._json
 
     @classmethod
-    def create(cls: type[T], **kwargs: Any) -> T:
+    def create(cls: type[Self], **kwargs: Any) -> Self:
         """Create and return a new remote object.
 
         Args:
@@ -521,8 +528,8 @@ class JSONObject:
 
     @classmethod
     def filter(
-        cls: type[T], url: str | None = None, **kwargs: Any
-    ) -> Sequence[T]:
+        cls: type[Self], url: str | None = None, **kwargs: Any
+    ) -> Sequence[Self]:
         """Query objects matching request parameters.
 
         Args:
@@ -539,7 +546,7 @@ class JSONObject:
         return [cls(json=json) for json in resp.json()]
 
     @classmethod
-    def all(cls: type[T]) -> Sequence[T]:
+    def all(cls: type[Self]) -> Sequence[Self]:
         """Return all objects for this resource type.
 
         Returns:
@@ -548,7 +555,7 @@ class JSONObject:
         return cls.filter()
 
     @classmethod
-    def get(cls: type[T], **kwargs: Any) -> T:
+    def get(cls: type[Self], **kwargs: Any) -> Self:
         """Fetch exactly one object matching query parameters.
 
         Args:
@@ -570,7 +577,7 @@ class JSONObject:
             return results[0]
 
     @classmethod
-    def get_or_create(cls: type[T], **kwargs: Any) -> tuple[T, bool]:
+    def get_or_create(cls: type[Self], **kwargs: Any) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
 
         Args:
