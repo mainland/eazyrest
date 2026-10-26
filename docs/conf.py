@@ -45,6 +45,4 @@ nitpicky = True
 nitpick_ignore = [
     # Sphinx cannot link to a type variable.
     ("py:class", "eazyrest.eazyrest.T"),
-    # An internal type that documented signatures name.
-    ("py:class", "eazyrest.eazyrest.TypeClassification"),
 ]
