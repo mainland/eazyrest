@@ -2096,6 +2096,12 @@ class JSONObject:
 
         Query parameters are encoded as in ``filter()``.
 
+        The server must apply every query parameter. If it ignores one, as
+        django-filter does for a parameter that names no filter, this method
+        can return an object that does not match it. The returned object is
+        not checked against the parameters, because the server decides how
+        they match, for example case-insensitively.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -2144,6 +2150,12 @@ class JSONObject:
         such as ``name__iexact`` or ``created__gte``, is a lookup rather than
         a field value. It is sent in the query but not in the creation
         payload.
+
+        As in ``get()``, the server must apply every lookup parameter. If it
+        ignores one, this method can return an object that does not match
+        it, with ``created`` false. The lookup and the creation are separate
+        requests, so two clients can both create the object. A uniqueness
+        constraint on the server must prevent that.
 
         As in ``filter()``, a lookup field must not be ``None`` or an empty
         collection, because the query would ignore it while the creation
