@@ -81,6 +81,8 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
+`url` percent-encodes the primary key, so a key always forms one path segment. For example, the key `a/b` becomes `a%2Fb`.
+
 ## Field conversion
 
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
@@ -90,7 +92,7 @@ Field annotations drive JSON conversion when values are read from or written to 
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
-Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields:
+Collection annotations are converted recursively, so item annotations are honored inside `list`, `tuple`, `set`, `frozenset`, and `Iterable` fields. Annotate a tuple of any length as `tuple[T, ...]`:
 
 ```python
 import datetime
@@ -110,12 +112,14 @@ class Timeline(JSONObject):
 
     id: int
     starts_at: list[datetime.datetime]
-    statuses: tuple[IssueStatus]
+    statuses: tuple[IssueStatus, ...]
 ```
 
 In this example, JSON timestamp values in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
 Collection payloads must be JSON arrays or another iterable collection shape. Strings, bytes, and dictionaries are rejected for collection fields so malformed payloads fail before they can be interpreted item by item.
+
+Other generic annotations, such as `dict[str, T]` or `Sequence[T]`, are not converted. Reading such a field returns its JSON value unchanged.
 
 ## Custom field conversion
 
@@ -126,7 +130,7 @@ Both methods receive an `AnalyzedType` value. `AnalyzedType` is recursive metada
 - `BaseType` describes a non-related Python type such as `str`, `int`, or `decimal.Decimal`.
 - `RelatedType` describes a related `JSONObject` subclass.
 - `OptionalType` wraps the analyzed type for `T | None`.
-- `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T]`, `set[T]`, `frozenset[T]`, and `Iterable[T]`.
+- `CollectionType` wraps the analyzed item type for `list[T]`, `tuple[T, ...]`, `set[T]`, `frozenset[T]`, and `Iterable[T]`.
 
 Most custom conversions only need to handle one metadata case and delegate everything else to `super()`. Pattern matching works well for this because `AnalyzedType` is a union of small metadata classes. Because collection conversion is recursive, a custom scalar conversion also applies inside typed collections.
 
@@ -177,11 +181,17 @@ Name the type in a class pattern with a dotted name, such as `decimal.Decimal`. 
 
 ## Collections
 
-`filter()` and `all()` return iterables of model instances:
+`filter()` and `all()` return iterators over model instances. The request is sent when `filter()` or `all()` is called, and model instances are created as the iterator advances. An iterator can be consumed only once, so convert it to a list to iterate more than once:
 
 ```python
 users = list(User.all())
 admins = list(User.filter(role="admin"))
+```
+
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`:
+
+```python
+todo, created = Todo.get_or_create(user=user, title="Write docs")
 ```
 
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit bulk-loading of related fields when the related model implements `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field names as a sequence. Prefetched related objects may be shared by identity across parent objects in the same batch, similar to Django's `prefetch_related()`.
@@ -229,7 +239,7 @@ Prefetching is batched so collection iteration can stay lazy. `prefetch_batch_si
 Todo.prefetch_batch_size = 250
 ```
 
-If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing.
+If you request prefetch for a related model that does not implement `bulk_get_by_pks()`, `eazyrest` raises `PrefetchNotSupported`. This is intentional: prefetch should map to a real API bulk lookup instead of guessing. If a prefetch field is not a related-object field, `filter()`, `all()`, and `get()` raise `ValueError` before sending a request.
 
 ## Response-shape hooks
 
@@ -281,7 +291,7 @@ For out-of-band updates, such as a websocket message carrying a full or partial 
 todo.update_from_json({"id": 1, "completed": True})
 ```
 
-Incoming fields are treated as authoritative server state, so queued lazy updates for those same JSON fields are discarded.
+Incoming fields are treated as authoritative server state, so queued lazy updates for those same JSON fields are discarded. If the object has not been loaded, the payload becomes its JSON without a request. Reading a field that the payload lacks then loads the full object.
 
 ## API client
 
@@ -313,3 +323,5 @@ BaseModel.register_api(api)
 ```
 
 Registering the API on a shared base class is the cleanest pattern. The API can be overridden per instance by passing `api=` when creating an object.
+
+A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
