@@ -240,7 +240,7 @@ A keyword argument named after a JSON-backed field, or after its JSON key such a
 todo, created = Todo.get_or_create(user=user, title="Write docs")
 ```
 
-`get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The [Django REST Framework guide](drf.md) shows a filter backend that rejects unknown parameters.
+`get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 
