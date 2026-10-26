@@ -767,9 +767,14 @@ source = { editable = "." }
 dependencies = [
     { name = "isodate" },
     { name = "python-dateutil" },
-    { name = "requests", extra = ["socks"] },
+    { name = "requests" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "urllib3" },
+]
+
+[package.optional-dependencies]
+socks = [
+    { name = "requests", extra = ["socks"] },
 ]
 
 [package.dev-dependencies]
@@ -816,10 +821,12 @@ docs = ">=3.12"
 requires-dist = [
     { name = "isodate" },
     { name = "python-dateutil" },
-    { name = "requests", extras = ["socks"] },
+    { name = "requests" },
+    { name = "requests", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
     { name = "urllib3" },
 ]
+provides-extras = ["socks"]
 
 [package.metadata.requires-dev]
 dev = [

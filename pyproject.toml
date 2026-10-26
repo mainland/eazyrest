@@ -30,9 +30,14 @@ classifiers = [
 dependencies = [
     "isodate",
     "python-dateutil",
-    "requests[socks]",
+    "requests",
     "typing_extensions; python_version < '3.11'",
     "urllib3",
+]
+
+[project.optional-dependencies]
+socks = [
+  "requests[socks]",
 ]
 
 [dependency-groups]
