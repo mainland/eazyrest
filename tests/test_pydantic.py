@@ -553,6 +553,25 @@ def test_strict_metadata_on_eazyrest_types_is_rejected(
         _ = strict.value
 
 
+def test_pydantic_errors_do_not_quote_the_value() -> None:
+    """A Pydantic error says where and why, without the input.
+
+    Pydantic's own message, which is the cause, quotes the input.
+    """
+    asset = Asset(json={**deepcopy(ASSET_JSON), "rating": -9876})
+
+    with pytest.raises(FieldConversionError) as read:
+        _ = asset.rating
+    with pytest.raises(FieldConversionError) as write:
+        asset.rating = -5432
+
+    assert str(read.value) == "Asset.rating: Input should be greater than 0"
+    assert str(write.value) == "Asset.rating: Input should be greater than 0"
+    cause = read.value.__cause__
+    assert cause is not None
+    assert "-9876" in str(cause.__cause__)
+
+
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
     asset = Asset(json=deepcopy(ASSET_JSON))
