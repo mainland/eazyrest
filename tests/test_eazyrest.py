@@ -293,6 +293,17 @@ class Timeline(ModelBase):
     starts_at: list[datetime.datetime]
 
 
+@json_object
+class Readings(ModelBase):
+    """Model with a list that may hold nulls and a list of lists."""
+
+    class_url = "/readings/"
+
+    id: int
+    values: list[int | None]
+    rows: list[list[int]]
+
+
 class IssueStatus(str, enum.Enum):
     """Status values for enum conversion tests."""
 
@@ -2673,6 +2684,11 @@ def test_get_or_create_encodes_lookup_like_create(
             {"starts_at": ["2026-01-02"]},
         ),
         (
+            lambda: Readings.filter(values=[1, 2]),
+            "https://example.com/v1/readings/",
+            {"values": ["1", "2"]},
+        ),
+        (
             lambda: Todo.filter(completed=False, archived=True),
             "https://example.com/v1/todos/",
             {"completed": ["false"], "archived": ["True"]},
@@ -2755,6 +2771,39 @@ def test_query_rejects_unsendable_field_constraints(
     Args:
         query: Callable that runs a query with a constraint that cannot be
             sent.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("query", "match"),
+    [
+        (lambda: Profile.filter(settings={"theme": "dark"}), "is a mapping"),
+        (lambda: Profile.get(contacts={"name": "a"}), "is a mapping"),
+        (
+            lambda: Profile.filter(contacts=[{"name": "a"}]),
+            "contains a collection",
+        ),
+        (lambda: Readings.filter(values=[None]), "contains None"),
+        (lambda: Readings.get_or_create(values=[1, None]), "contains None"),
+        (lambda: Readings.get(rows=[[1, 2]]), "contains a collection"),
+    ],
+)
+def test_query_rejects_values_requests_would_change(
+    requests_mock: Any, query: Any, match: str
+) -> None:
+    """A constraint that requests would drop or flatten is not sent.
+
+    requests sends a mapping as its keys, omits a ``None`` item, and flattens a
+    nested collection, so each of these queries would match other objects.
+
+    Args:
+        query: Callable that runs a query with a constraint that requests would
+            change.
         match: Pattern that the ``ValueError`` message should match.
     """
     with pytest.raises(ValueError, match=match):
