@@ -726,7 +726,11 @@ class JSONProperty:
     """Name of JSON field corresponding to this property."""
 
     is_primary_key: bool = False
-    """Is this a primary key?"""
+    """Whether this property is the primary key of the class that owns it.
+
+    A subclass can choose another key, so this does not say whether the
+    property is the key of an instance of a subclass.
+    """
 
     def __init__(
         self,
@@ -754,6 +758,21 @@ class JSONProperty:
         if self.is_primary_key:
             cls._pk = self
             cls._pk_json_field = json_field
+
+    def _is_key_of(self, obj: JSONObject) -> bool:
+        """Return whether this property is the primary key of ``obj``.
+
+        A subclass can choose another field as its key, so a property that is
+        its own class's key need not be the key of an instance of a subclass.
+
+        Args:
+            obj: Instance of the class that owns this property, or of a
+                subclass.
+
+        Returns:
+            Whether this property is the primary key of ``obj``'s class.
+        """
+        return type(obj)._pk is self
 
     @cached_property
     def ty(self) -> Any:
@@ -817,7 +836,7 @@ class JSONProperty:
         if obj is None:
             return self
 
-        if self.is_primary_key and obj._json is None:
+        if self._is_key_of(obj) and obj._json is None:
             return obj._pk_value
 
         json = obj._json_with_field(self.json_field, self.field)
@@ -849,7 +868,7 @@ class JSONProperty:
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
         if (
-            self.is_primary_key
+            self._is_key_of(obj)
             and obj._json is None
             and not hasattr(obj, "_pk_value")
         ):

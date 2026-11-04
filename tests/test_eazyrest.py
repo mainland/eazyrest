@@ -2471,6 +2471,44 @@ def test_subclass_keeps_inherited_primary_key(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+def test_subclass_with_another_key_reads_the_old_key_as_a_field(
+    requests_mock: Any,
+) -> None:
+    """A field that is the base class's key is a plain field of the subclass.
+
+    The subclass's change must not change the base class either.
+    """
+
+    @json_object
+    class Thing(ModelBase):
+        """Model keyed by ``id``."""
+
+        class_url = "/things/"
+
+        id: int
+
+    @json_object(pk="slug")
+    class Slugged(Thing):
+        """Subclass keyed by ``slug``."""
+
+        slug: str
+
+    requests_mock.get(
+        "https://example.com/v1/things/abc/", json={"id": 7, "slug": "abc"}
+    )
+
+    slugged = Slugged(slug="abc")
+
+    assert slugged.pk == "abc"
+    assert requests_mock.call_count == 0
+    assert slugged.id == 7
+    assert slugged.slug == "abc"
+    assert requests_mock.call_count == 1
+    assert Thing(id=3).id == 3
+    assert Thing._pk is Thing.id
+    assert requests_mock.call_count == 1
+
+
 @json_object
 class Dated(ModelBase):
     """Model with a creation time, used to test mixed inheritance."""
