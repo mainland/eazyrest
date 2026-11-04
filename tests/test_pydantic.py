@@ -301,6 +301,14 @@ NUMBER_OR_TEXT: Any = int | str
         (PlainSpec, BaseType(PlainSpec)),
         (Pair, BaseType(Pair)),
         (Annotated[int, Gt(0)], BaseType(int)),
+        (pydantic.PositiveInt, BaseType(int)),
+        (pydantic.conint(gt=0), BaseType(int)),
+        (
+            Annotated[pydantic.PositiveInt, FIELD],
+            PydanticType(Annotated[pydantic.PositiveInt, FIELD]),
+        ),
+        (pydantic.StrictInt, PydanticType(pydantic.StrictInt)),
+        (pydantic.FiniteFloat, PydanticType(pydantic.FiniteFloat)),
         (CHOICE, BaseType(CHOICE)),
         (NUMBER_OR_TEXT, BaseType(NUMBER_OR_TEXT)),
     ],
@@ -482,6 +490,30 @@ def test_query_rejects_pydantic_values_encoded_as_mappings(
         query()
 
     assert requests_mock.call_count == 0
+
+
+def test_field_opts_pydantic_aliases_in_to_conversion() -> None:
+    """``Field()`` makes Pydantic check an alias of ``annotated_types`` only.
+
+    ``PositiveInt`` is ``Annotated[int, Gt(0)]``, which does not mention
+    Pydantic, so a field of that type reads any integer.
+    """
+
+    @json_object
+    class Counter(PydanticBase):
+        """Model with a plain and a checked positive integer."""
+
+        class_url = "/counters/"
+
+        id: int
+        plain: pydantic.PositiveInt
+        checked: Annotated[pydantic.PositiveInt, Field()]
+
+    counter = Counter(json={"id": 1, "plain": -1, "checked": -1})
+
+    assert counter.plain == -1
+    with pytest.raises(FieldConversionError, match=r"^Counter\.checked: "):
+        _ = counter.checked
 
 
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
