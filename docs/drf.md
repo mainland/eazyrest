@@ -441,9 +441,13 @@ class User(DRFObject):
 
     @classmethod
     def bulk_get_by_pks(cls, pks, *, api=None):
-        users = list(cls.filter(id=sorted(pks)))
+        users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
+
+Pass `api` on to `filter()`. A query that was given `api=` passes its API here,
+so that the related objects load from the same server, such as the same
+tenant's, and keep that API.
 
 That works well when the DRF endpoint accepts requests like:
 

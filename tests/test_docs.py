@@ -8,35 +8,41 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any
 
-from eazyrest import json_object
+from eazyrest import API, JSONObject, json_object
 
-GUIDE = Path(__file__).resolve().parents[1] / "docs" / "guide.md"
+DOCS = Path(__file__).resolve().parents[1] / "docs"
+GUIDE = DOCS / "guide.md"
+DRF = DOCS / "drf.md"
 
 _PYTHON_BLOCK_RE = re.compile(
     r"^```python\n(.*?)^```$", re.MULTILINE | re.DOTALL
 )
 
 
-def run_guide_example(marker: str) -> dict[str, Any]:
-    """Run the one Python block in the guide that contains ``marker``.
+def run_guide_example(
+    marker: str, *, doc: Path = GUIDE, **names: Any
+) -> dict[str, Any]:
+    """Run the one Python block in a document that contains ``marker``.
 
     Args:
         marker: Text that identifies the block, such as a class statement.
+        doc: Markdown document that holds the block.
+        **names: Names that the block uses but an earlier block defines.
 
     Returns:
         The global namespace of the block after it runs.
     """
     blocks = [
         block
-        for block in _PYTHON_BLOCK_RE.findall(GUIDE.read_text())
+        for block in _PYTHON_BLOCK_RE.findall(doc.read_text())
         if marker in block
     ]
     assert len(blocks) == 1, f"expected one block with {marker!r}"
 
     # Do not inherit this module's __future__ imports, so the block runs as it
     # would in a reader's module. The code is this repository's own guide.
-    code = compile(blocks[0], str(GUIDE), "exec", dont_inherit=True)
-    namespace: dict[str, Any] = {"__name__": "guide_example"}
+    code = compile(blocks[0], str(doc), "exec", dont_inherit=True)
+    namespace: dict[str, Any] = {"__name__": "guide_example", **names}
     exec(code, namespace)  # noqa: S102
     return namespace
 
@@ -75,3 +81,28 @@ def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
     event.when = when
     assert event.json["when"] == when.timestamp()
     assert event.note == "a"
+
+
+def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
+    """The DRF bulk lookup loads users through the API it is given."""
+
+    class DRFObject(JSONObject):
+        """Base model registered with an API other than the override."""
+
+    DRFObject.register_api(API("https://registered.example.com/"))
+    example = run_guide_example(
+        "cls.filter(id=sorted(pks)",
+        doc=DRF,
+        json_object=json_object,
+        DRFObject=DRFObject,
+    )
+    override = API("https://override.example.com/")
+    lookup = requests_mock.get(
+        "https://override.example.com/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    users = example["User"].bulk_get_by_pks({2}, api=override)
+
+    assert lookup.last_request.qs == {"id": ["2"]}
+    assert users[2].name == "Ada"
+    assert users[2].api is override

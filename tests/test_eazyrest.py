@@ -59,13 +59,12 @@ class User(ModelBase):
 
         Args:
             pks: Primary keys of the users to load.
-            api: Unused. The users load through the model's own API.
+            api: API to load the users with, or ``None`` for the model's own.
 
         Returns:
             The loaded users, keyed by primary key.
         """
-        del api
-        users = list(cls.filter(id=sorted(pks)))
+        users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 
 
@@ -3415,6 +3414,102 @@ def test_related_object_inherits_instance_api_override(
     todo = Todo(id=1, api=override)
 
     assert todo.user.api is override
+
+
+TENANT_TODO = {"id": 1, "userId": 2, "title": "a", "completed": False}
+
+
+def test_queries_use_the_api_passed_to_them(requests_mock: Any) -> None:
+    """A query's ``api=`` sends it, and later requests, to that API."""
+    tenant = API("https://tenant.example.com/v2/")
+    requests_mock.get(
+        "https://tenant.example.com/v2/todos/", json=[TENANT_TODO]
+    )
+    user = requests_mock.get(
+        "https://tenant.example.com/v2/users/2/", json={"id": 2, "name": "Ada"}
+    )
+
+    todos = [
+        *Todo.filter(api=tenant, title="a"),
+        *Todo.all(api=tenant),
+        Todo.get(api=tenant, title="a"),
+    ]
+
+    assert all(todo.api is tenant for todo in todos)
+    assert todos[0].user.name == "Ada"
+    assert user.call_count == 1
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example.com"
+    }
+    assert Todo.api is test_api
+
+
+def test_creation_uses_the_api_passed_to_it(requests_mock: Any) -> None:
+    """``create()`` and ``get_or_create()`` accept ``api=`` too."""
+    tenant = API("https://tenant.example.com/v2/")
+    requests_mock.get("https://tenant.example.com/v2/todos/", json=[])
+    post = requests_mock.post(
+        "https://tenant.example.com/v2/todos/", json=TENANT_TODO
+    )
+
+    created = Todo.create(api=tenant, title="a")
+    todo, was_created = Todo.get_or_create(api=tenant, title="a")
+
+    assert created.api is tenant
+    assert todo.api is tenant
+    assert was_created
+    assert post.call_count == 2
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example.com"
+    }
+
+
+def test_prefetch_passes_the_query_api_to_bulk_lookup(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bulk lookup receives the query's API only when it passed one."""
+    tenant = API("https://tenant.example.com/v2/")
+    seen: list[API | None] = []
+
+    def bulk_get_by_pks(
+        cls: type[User], pks: set[Any], *, api: API | None = None
+    ) -> dict[Any, User]:
+        seen.append(api)
+        return {pk: cls(json={"id": pk, "name": "Ada"}, api=api) for pk in pks}
+
+    monkeypatch.setattr(User, "bulk_get_by_pks", classmethod(bulk_get_by_pks))
+    requests_mock.get(
+        "https://tenant.example.com/v2/todos/", json=[TENANT_TODO]
+    )
+    requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
+
+    (todo,) = Todo.filter(api=tenant, prefetch="user")
+    list(Todo.filter(prefetch="user"))
+
+    assert seen == [tenant, None]
+    assert todo.user.api is tenant
+
+
+def test_prefetch_loads_related_objects_from_the_query_api(
+    requests_mock: Any,
+) -> None:
+    """A bulk lookup that passes its ``api`` on loads from the query's API."""
+    tenant = API("https://tenant.example.com/v2/")
+    requests_mock.get(
+        "https://tenant.example.com/v2/todos/", json=[TENANT_TODO]
+    )
+    users = requests_mock.get(
+        "https://tenant.example.com/v2/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    (todo,) = Todo.filter(api=tenant, prefetch="user")
+
+    assert users.last_request.qs == {"id": ["2"]}
+    assert todo.user.api is tenant
+    assert todo.user.name == "Ada"
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example.com"
+    }
 
 
 def test_tuple_ellipsis_annotation_converts_items() -> None:
