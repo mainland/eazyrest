@@ -2857,6 +2857,23 @@ def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
     assert post.last_request.json() == {"id": 5, "user": None}
 
 
+def test_get_or_create_reads_a_generator_once(requests_mock: Any) -> None:
+    """A generator's items are used for both the lookup and the creation."""
+    lookup = requests_mock.get("https://example.com/v1/teams/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/teams/", json={"id": 1, "members": [2, 3]}
+    )
+
+    team, created = Team.get_or_create(
+        id=1, members=(User(id=pk) for pk in (2, 3))
+    )
+
+    assert created
+    assert lookup.last_request.qs["members"] == ["2", "3"]
+    assert post.last_request.json() == {"id": 1, "members": [2, 3]}
+    assert [member.pk for member in team.members] == [2, 3]
+
+
 def test_get_or_create_sends_lookups_only_in_query(requests_mock: Any) -> None:
     """A ``__`` lookup constrains the query but is not a field value."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
