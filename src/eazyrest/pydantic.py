@@ -294,7 +294,8 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
         types it names.
 
     Raises:
-        TypeError: If Pydantic cannot convert the type.
+        TypeError: If Pydantic cannot convert the type, or cannot apply its
+            metadata, such as ``strict``, to a type that eazyrest converts.
     """
     try:
         return TypeAdapter(_eazyrest_types(annotation))
@@ -302,6 +303,17 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
         # A PydanticUserError is a TypeError in some Pydantic releases and a
         # RuntimeError in others.
         raise TypeError(str(err)) from err
+    except RuntimeError as err:
+        # Pydantic raises a plain RuntimeError for a constraint that it cannot
+        # apply to a type with a custom validator, as eazyrest's are.
+        if not str(err).startswith("Unable to apply constraint"):
+            raise
+
+        raise TypeError(
+            f"{err}. eazyrest converts datetime, date, timedelta, UUID, and "
+            "enum values itself, so Pydantic metadata that changes how "
+            "Pydantic would read them, such as strict, does not apply"
+        ) from err
 
 
 def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
