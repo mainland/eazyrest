@@ -206,6 +206,13 @@ iteration raises `RuntimeError`. To iterate more than once, call `list()` on
 the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create
 the related objects when the field is first read and keep them.
 
+A related object that a field returns keeps your unsaved changes for as long as
+the field's JSON is unchanged. Loading the missing fields of an object keeps
+the related objects whose JSON the load left unchanged, and assigning a related
+object, or a `list`, `tuple`, or `set` of them, keeps the objects you assigned.
+When the server changes a relation, the field reads new related objects, and an
+object that you still hold keeps its own changes, which its `save()` sends.
+
 Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item. The same

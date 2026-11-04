@@ -1042,25 +1042,71 @@ class JSONProperty:
             obj._update_json_field(self.json_field, _copy_json(new_value))
 
         # Drop cached values only now, because the update may read this field.
+        # An assignment also replaces any change made in place to the old
+        # value.
         obj._prefetched_related.pop(self.field, None)
-        final = (obj._json or {}).get(self.json_field, _MISSING)
-        if (
-            isinstance(value, JSONObject)
-            and isinstance(
-                _unwrap_optional_type(self.analyzed_type), RelatedType
-            )
-            and _json_equal(final, new_value)
-        ):
-            # Keep the assigned object, so that reading the field returns it.
-            # Assigning the object the field already holds must not discard
-            # that object's unsaved changes. An eager write's response can
-            # name another object, which then replaces it, as after save().
-            obj._field_cache[self.field] = value
-        else:
-            obj._field_cache.pop(self.field, None)
-
-        # An assignment replaces any change made in place to the old value.
+        obj._field_cache.pop(self.field, None)
         obj._field_snapshots.pop(self.field, None)
+
+        # An eager write's response can name other related objects, which
+        # then replace the assigned ones, as after save().
+        final = (obj._json or {}).get(self.json_field, _MISSING)
+        if not _json_equal(final, new_value):
+            return
+
+        kept = self._assigned_related(value)
+        if kept is not _MISSING:
+            # Keep the assigned related objects, so that reading the field
+            # returns them. Assigning the objects the field already holds
+            # must not discard their unsaved changes.
+            obj._field_cache[self.field] = kept
+            if not isinstance(kept, JSONObject):
+                # The caller can change a collection in place, as one read
+                # from JSON.
+                obj._field_snapshots[self.field] = _copy_json(new_value)
+
+    def _assigned_related(self, value: Any) -> Any:
+        """Return the field value that keeps assigned related objects.
+
+        Args:
+            value: Value assigned to this field.
+
+        Returns:
+            ``value``, if it is a related object for a related field. For a
+            collection of related objects that is not read lazily, a new
+            collection of the field's type that holds the same objects.
+            ``_MISSING`` for any other value, which the field reads from its
+            JSON instead.
+        """
+        conversion = _unwrap_optional_type(self.analyzed_type)
+        if isinstance(conversion, RelatedType):
+            return value if isinstance(value, JSONObject) else _MISSING
+
+        if not isinstance(conversion, CollectionType):
+            return _MISSING
+
+        collection_type = conversion.collection_type
+        item_type = conversion.item_type
+        if (
+            not isinstance(_unwrap_optional_type(item_type), RelatedType)
+            or (
+                _is_lazy_collection_type(collection_type)
+                and isinstance(item_type, RelatedType)
+            )
+            # A one-shot iterable was used up by encoding it.
+            or not isinstance(value, Collection)
+            or isinstance(value, (str, bytes, Mapping, RelatedCollection))
+            or not all(
+                item is None or isinstance(item, JSONObject) for item in value
+            )
+        ):
+            return _MISSING
+
+        # Abstract collection types read as tuples, as in _from_json().
+        if collection_type in (Iterable, Sequence):
+            return tuple(value)
+
+        return collection_type(value)
 
 
 class JSONObject:
@@ -1546,11 +1592,12 @@ class JSONObject:
         self._pending_updates.clear()
 
     def _replace_json(self, json: dict[str, Any]) -> None:
-        """Replace this object's JSON after a write.
+        """Replace this object's JSON after a write or a load.
 
-        Cached values stay valid for the fields whose JSON the write left
-        unchanged, so only the others are dropped. In particular, a related
-        object assigned before ``save()`` stays the field's value.
+        Cached values stay valid for the fields whose JSON is unchanged, so
+        only the others are dropped. In particular, a related object assigned
+        before ``save()`` stays the field's value, and so does a related
+        object with unsaved changes when a load does not change it.
 
         Args:
             json: The object's new JSON.
@@ -1853,10 +1900,10 @@ class JSONObject:
 
         # Unsaved lazy updates still take precedence over server state.
         json.update(self._pending_updates)
-        self._json = json
+        # Keep the values of fields that the load left unchanged, such as a
+        # related object with unsaved changes of its own.
+        self._replace_json(json)
         self._json_is_partial = False
-        self._field_cache.clear()
-        self._field_snapshots.clear()
 
     def _json_with_field(self, json_field: str, field: str) -> Any:
         """Return this object's JSON after checking that it has a field.
