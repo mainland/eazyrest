@@ -27,7 +27,7 @@ from pydantic import (
     with_config,
 )
 from pydantic_core import PydanticSerializationError
-from typing_extensions import TypedDict
+from typing_extensions import TypeAliasType, TypedDict
 
 from eazyrest import (
     API,
@@ -284,6 +284,8 @@ ASSET_JSON: dict[str, Any] = {
 ASSET_URL = "https://pydantic.example.com/assets/1/"
 
 FIELD = Field(gt=0)
+POINTS = TypeAliasType("POINTS", list[Point])
+POSITIVE = TypeAliasType("POSITIVE", Annotated[int, FIELD])
 CHOICE: Any = Literal["a", "b"]
 NUMBER_OR_TEXT: Any = int | str
 
@@ -301,6 +303,8 @@ NUMBER_OR_TEXT: Any = int | str
         (PlainSpec, BaseType(PlainSpec)),
         (Pair, BaseType(Pair)),
         (Annotated[int, Gt(0)], BaseType(int)),
+        (POINTS, CollectionType(list, PydanticType(Point))),
+        (POSITIVE, PydanticType(Annotated[int, FIELD])),
         (pydantic.PositiveInt, BaseType(int)),
         (pydantic.conint(gt=0), BaseType(int)),
         (

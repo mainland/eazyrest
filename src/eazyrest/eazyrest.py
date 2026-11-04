@@ -460,6 +460,112 @@ def _mentions_pydantic(ty: Any) -> bool:
     return any(_mentions_pydantic(arg) for arg in args)
 
 
+def _is_type_alias(ty: Any) -> bool:
+    """Return whether a type is a named type alias.
+
+    A named alias is a ``typing.TypeAliasType``, which the ``type`` statement
+    creates, or its ``typing_extensions`` backport. An ordinary assignment, as
+    in ``Points = list[Point]``, binds the type itself and is not one.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a named type alias.
+    """
+    return type(ty).__name__ == "TypeAliasType" and hasattr(ty, "__value__")
+
+
+def _expand_alias(
+    alias: Any, args: tuple[Any, ...], expanding: tuple[Any, ...]
+) -> Any:
+    """Return the type that a named alias, with type arguments, stands for.
+
+    Args:
+        alias: Named type alias.
+        args: Type arguments for the alias's type parameters, already
+            expanded.
+        expanding: Aliases whose expansion is in progress.
+
+    Returns:
+        The alias's value, with ``args`` in place of its type parameters and
+        every named alias inside it expanded.
+
+    Raises:
+        TypeError: If the alias refers to itself, or its type parameters are
+            not type variables matching ``args``.
+    """
+    if alias in expanding:
+        raise TypeError(
+            f"Type alias {alias.__name__} refers to itself, which eazyrest "
+            "cannot convert"
+        )
+
+    params = alias.__type_params__
+    if len(params) != len(args) or not all(
+        isinstance(param, TypeVar) for param in params
+    ):
+        raise TypeError(
+            f"Type alias {alias.__name__} needs one type argument for each of "
+            "its type parameters, which must be type variables"
+        )
+
+    return _expand_aliases(
+        alias.__value__,
+        dict(zip(params, args, strict=True)),
+        (*expanding, alias),
+    )
+
+
+def _expand_aliases(
+    ty: Any,
+    substitutions: Mapping[Any, Any] | None = None,
+    expanding: tuple[Any, ...] = (),
+) -> Any:
+    """Return a type with every named type alias in it expanded.
+
+    Args:
+        ty: Type to expand.
+        substitutions: Types to put in place of type variables, while the
+            value of a parameterized alias expands.
+        expanding: Aliases whose expansion is in progress.
+
+    Returns:
+        ``ty`` with each named alias, also as a type argument, replaced by the
+        type it stands for, or ``ty`` itself if it has none.
+
+    Raises:
+        TypeError: If an alias cannot be expanded.
+    """
+    if substitutions and isinstance(ty, TypeVar) and ty in substitutions:
+        return substitutions[ty]
+    if _is_type_alias(ty):
+        return _expand_alias(ty, (), expanding)
+
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if _is_type_alias(origin):
+        args = tuple(
+            _expand_aliases(arg, substitutions, expanding) for arg in args
+        )
+        return _expand_alias(origin, args, expanding)
+    if not args or origin is Literal:
+        return ty
+
+    new_args = tuple(
+        _expand_aliases(arg, substitutions, expanding) for arg in args
+    )
+    if all(new is old for new, old in zip(new_args, args, strict=True)):
+        return ty
+    if origin is Annotated:
+        params = new_args
+        return Annotated[params]
+    if origin is types.UnionType:
+        origin = Union
+
+    return origin[new_args]
+
+
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
@@ -468,12 +574,20 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     objects, optional values, and collections that mentions Pydantic, Pydantic
     converts the whole type.
 
+    A named type alias, such as one that the ``type`` statement creates,
+    analyzes as the type it stands for.
+
     Args:
         ty: Declared field type.
 
     Returns:
         Structured type metadata for ``ty``.
+
+    Raises:
+        TypeError: If ``ty`` holds a named type alias that refers to itself, or
+            whose type parameters cannot be substituted.
     """
+    ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
 

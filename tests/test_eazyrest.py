@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import datetime
 import enum
+import sys
 import typing
 import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
-from typing import Annotated, Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -17,6 +18,7 @@ import requests
 from hypothesis import given
 from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
+from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
@@ -306,6 +308,24 @@ class Readings(ModelBase):
     id: int
     values: list[int | None]
     rows: list[list[int]]
+
+
+T = TypeVar("T")
+Dates = TypeAliasType("Dates", list[datetime.datetime])
+ListOf = TypeAliasType("ListOf", list[T], type_params=(T,))
+MaybeDates = TypeAliasType("MaybeDates", Dates | None)
+
+
+@json_object
+class AliasedTimeline(ModelBase):
+    """Model whose field types are named type aliases."""
+
+    class_url = "/aliased-timelines/"
+
+    id: int
+    starts_at: Dates
+    ends_at: ListOf[datetime.datetime]
+    paused_at: MaybeDates
 
 
 @json_object
@@ -3220,6 +3240,62 @@ def test_query_error_names_parameter_without_value(
 
     assert SECRET not in str(info.value)
     assert requests_mock.call_count == 0
+
+
+def test_named_type_aliases_convert_as_their_types() -> None:
+    """A field typed by a named alias converts as the type it names.
+
+    This holds for an alias with type parameters, and for one inside another.
+    """
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    timeline = AliasedTimeline(
+        json={
+            "id": 1,
+            "starts_at": ["2024-01-01T00:00:00Z"],
+            "ends_at": [1704067200],
+            "paused_at": None,
+        }
+    )
+
+    assert timeline.starts_at == [when]
+    assert timeline.ends_at == [when]
+    assert timeline.paused_at is None
+    timeline.paused_at = [when]
+    assert timeline.json["paused_at"] == ["2024-01-01T00:00:00+00:00"]
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement needs Python 3.12"
+)
+@pytest.mark.parametrize(
+    ("statement", "match"),
+    [
+        ("type Alias = list[Alias] | int", "refers to itself"),
+        ("type Alias[T] = list[T]", "needs one type argument"),
+    ],
+)
+def test_unsupported_type_aliases_raise(statement: str, match: str) -> None:
+    """A self-referring alias, or a generic one without arguments, raises.
+
+    Args:
+        statement: ``type`` statement that defines ``Alias``.
+        match: Pattern that the error message should match.
+    """
+    namespace: dict[str, Any] = {}
+    exec(statement, namespace)  # noqa: S102
+    model: Any = json_object(
+        type(
+            "Aliased",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "value": namespace["Alias"]},
+                "class_url": "/aliased/",
+            },
+        )
+    )
+
+    with pytest.raises(FieldConversionError, match=match):
+        _ = model(json={"id": 1, "value": [1]}).value
 
 
 def test_collection_field_values_must_be_collections(

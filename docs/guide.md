@@ -180,6 +180,11 @@ its type, so `T | None` does not change conversion. A server that sends `null`
 for a field typed `list[int]` therefore reads as `None`, and assigning `None`
 to that field writes `null`.
 
+A named type alias, such as `type Dates = list[datetime.datetime]` or a
+`typing_extensions.TypeAliasType`, converts as the type it stands for, also
+with type arguments, as in `ListOf[datetime.datetime]`. An alias that refers to
+itself raises `FieldConversionError`.
+
 A value that a field cannot convert, when it is read, assigned, or passed to
 `create()` or a query, raises `FieldConversionError`. Its message names the
 model and field, as in `Booking.day: month must be in 1..12`, and the
