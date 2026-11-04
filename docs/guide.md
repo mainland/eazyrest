@@ -181,6 +181,12 @@ model and field, as in `Booking.day: month must be in 1..12`, and the
 conversion's own error is its `__cause__`. It is both a `TypeError` and a
 `ValueError`, so code that catches either one keeps working.
 
+The messages of eazyrest's errors name models, fields, and query parameters,
+but they do not quote values, which can be secrets that the server sent or that
+the code assigned. The error that eazyrest replaced remains the `__cause__`,
+and it can quote the value, so a logged traceback can still expose it. A
+message that your own conversion code or validator writes appears as written.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
@@ -302,8 +308,9 @@ is called only for instances of the type that the entry is keyed by: any other
 value, such as a string assigned to `Host.address`, is written as it is.
 `decode` and `encode` report a value that they cannot convert by raising
 `TypeError` or `ValueError`, which reaches the caller as a
-`FieldConversionError` that names the field, with the error as its cause. Any
-other exception is a bug in the conversion, and propagates unchanged.
+`FieldConversionError` that names the field, with the error as its cause. Their
+messages should not quote the value, which may be a secret. Any other exception
+is a bug in the conversion, and propagates unchanged.
 
 A class's `conversions` are merged over those of its bases, and theirs over the
 default table, so a subclass can add conversions or replace its bases'. A field
@@ -394,10 +401,10 @@ you look up by. The Django REST Framework guide shows
 
 `get()` raises `DoesNotExist` when nothing matches and
 `MultipleObjectsReturned` when more than one object does, and `get_or_create()`
-raises the latter too. Their messages name the model and the lookup, as in
-`No Todo title='a' exists`. These exceptions and `PrefetchNotSupported` derive
-from `EazyrestError`, so one `except` clause catches every error that eazyrest
-itself defines.
+raises the latter too. Their messages name the model and the lookup parameters,
+but not their values, as in `No Todo matching title exists`. These exceptions
+and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause
+catches every error that eazyrest itself defines.
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched,
 a `POST`, so two clients can both create the object. Rely on a uniqueness

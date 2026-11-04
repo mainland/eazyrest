@@ -129,21 +129,23 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
 
 
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
-    """Describe a lookup for an error message, as in ``Todo title='a'``.
+    """Describe a lookup for an error message, as in ``Todo matching title``.
+
+    The description names the parameters but not their values, which may be
+    secrets such as a password or a token.
 
     Args:
         model: Model class the lookup is for.
         params: Lookup parameters, by name.
 
     Returns:
-        The model's name, followed by each parameter as ``name=value`` with the
-        value's ``repr()``, or the name alone if there are no parameters.
+        The model's name, followed by the parameter names, or the model's name
+        alone if there are no parameters.
     """
     if not params:
         return model.__name__
 
-    terms = ", ".join(f"{name}={value!r}" for name, value in params.items())
-    return f"{model.__name__} {terms}"
+    return f"{model.__name__} matching {', '.join(params)}"
 
 
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
@@ -2158,7 +2160,7 @@ class JSONObject:
                         value, collection.item_type
                     )
 
-        for name, value in params.items():
+        for name in params:
             descriptor = getattr(cls, name, None)
             json_field = (
                 descriptor.json_field
@@ -2169,8 +2171,8 @@ class JSONObject:
             problem = _unsendable_query_value(value)
             if problem is not None:
                 raise ValueError(
-                    f"Query parameter {name}={value!r} for {cls.__name__} "
-                    f"cannot be sent, because its value {problem}"
+                    f"Query parameter {name} for {cls.__name__} cannot be "
+                    f"sent, because its value {problem}"
                 )
             if isinstance(descriptor, JSONProperty):
                 value = _query_value(value)
