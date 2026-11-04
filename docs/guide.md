@@ -381,13 +381,15 @@ Pydantic converts the whole of any other type, such as `dict[str, Point]`,
 which therefore cannot contain an eazyrest model.
 
 Assigning a value, or passing it to `create()` or a query, writes the JSON
-value that Pydantic serializes. A value of another type, such as a `dict`
-assigned to a field typed as a Pydantic model, is validated first. A field
-typed as `Base64Bytes` therefore writes both `b"hello"` and `"aGVsbG8="` as
-`"aGVsbG8="`. A value that the field could not read back raises
-`FieldConversionError` and sends nothing. This includes a value that breaks a
-constraint, such as `0` for a field typed as `Annotated[int, Field(gt=0)]`. As
-for every field, `None` reads and writes as `null`.
+value that Pydantic serializes for a round trip, so a field typed as
+`pydantic.Json[dict[str, int]]` writes JSON text, as it reads. A value of
+another type, such as a `dict` assigned to a field typed as a Pydantic model,
+is validated first. A field typed as `Base64Bytes` therefore writes both
+`b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not
+read back raises `FieldConversionError` and sends nothing. This includes a
+value that breaks a constraint, such as `0` for a field typed as
+`Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as
+`null`.
 
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that
 conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,

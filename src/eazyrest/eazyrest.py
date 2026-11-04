@@ -1191,17 +1191,23 @@ class JSONProperty:
                 self.analyzed_type,
                 field=self.field,
             )
-        obj._field_cache[self.field] = value
         # A related object saves its own changes.
-        if not isinstance(
+        changeable = not isinstance(
             value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
-        ):
+        )
+        if changeable:
             # The caller can change this value in place. Record its encoding,
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
             with _converting(type(obj), self.field):
                 encoded = obj._to_json(value, self.analyzed_type)
+
+        # Cache the value only once its encoding is known, so that a field
+        # whose value cannot be encoded fails on every read, rather than
+        # returning a value whose changes save() would miss.
+        obj._field_cache[self.field] = value
+        if changeable:
             obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value

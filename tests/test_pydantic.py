@@ -577,6 +577,51 @@ def test_pydantic_errors_do_not_quote_the_value() -> None:
     assert "-9876" in str(cause.__cause__)
 
 
+@json_object
+class Document(PydanticBase):
+    """Model whose fields Pydantic writes differently from their values."""
+
+    class_url = "/documents/"
+
+    id: int
+    body: pydantic.Json[dict[str, int]]
+    joined: Annotated[
+        list[int],
+        PlainSerializer(lambda v: ",".join(map(str, v)), return_type=str),
+    ]
+
+
+def test_json_field_reads_and_saves_changes(requests_mock: Any) -> None:
+    """A ``Json`` field reads its JSON text and writes changes back as text."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/documents/1/",
+        json={"id": 1, "body": '{"a":1,"b":2}'},
+    )
+    document = Document(json={"id": 1, "body": '{"a": 1}'})
+
+    assert document.body == {"a": 1}
+    document.body["b"] = 2
+    document.save()
+
+    assert patch.last_request.json() == {"body": '{"a":1,"b":2}'}
+    assert document.body == {"a": 1, "b": 2}
+
+
+def test_field_that_cannot_be_written_fails_on_every_read() -> None:
+    """A value whose encoding cannot be read back is never cached.
+
+    The serializer writes a string that the field cannot read as a list, so
+    ``save()`` could not detect a change made in place.
+    """
+    document = Document(json={"id": 1, "joined": [1, 2]})
+
+    for _ in range(2):
+        with pytest.raises(FieldConversionError, match=r"^Document\.joined: "):
+            _ = document.joined
+
+    assert "joined" not in document._field_cache
+
+
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
     asset = Asset(json=deepcopy(ASSET_JSON))

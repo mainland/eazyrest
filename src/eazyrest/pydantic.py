@@ -481,15 +481,24 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             breaks a constraint that only validation checks. The message does
             not quote the value.
     """
+    # A round trip writes a value that validation reads back, such as the
+    # JSON text of a pydantic.Json field rather than the value it holds.
     try:
         # A failure here, of a serializer given a value that is not yet
         # valid, means the value must be validated first. A bug in a
         # conversion propagates.
         encoded = _dump(
-            adapter, value, unvalidated=True, mode="json", warnings="error"
+            adapter,
+            value,
+            unvalidated=True,
+            mode="json",
+            round_trip=True,
+            warnings="error",
         )
     except PydanticSerializationError:
-        encoded = _dump(adapter, _decode(adapter, value), mode="json")
+        encoded = _dump(
+            adapter, _decode(adapter, value), mode="json", round_trip=True
+        )
 
     _decode(adapter, encoded)
     return encoded
