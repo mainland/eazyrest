@@ -122,21 +122,23 @@ def _converting(model: type, field: str) -> Iterator[None]:
 
 
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
-    """Describe a lookup for an error message, as in ``Todo title='a'``.
+    """Describe a lookup for an error message, as in ``Todo matching title``.
+
+    The description names the parameters but not their values, which may be
+    secrets such as a password or a token.
 
     Args:
         model: Model class the lookup is for.
         params: Lookup parameters, by name.
 
     Returns:
-        The model's name, followed by each parameter as ``name=value`` with the
-        value's ``repr()``, or the name alone if there are no parameters.
+        The model's name, followed by the parameter names, or the model's name
+        alone if there are no parameters.
     """
     if not params:
         return model.__name__
 
-    terms = ", ".join(f"{name}={value!r}" for name, value in params.items())
-    return f"{model.__name__} {terms}"
+    return f"{model.__name__} matching {', '.join(params)}"
 
 
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
@@ -424,6 +426,55 @@ def _decode_uuid(value: Any) -> uuid.UUID:
         )
 
     return uuid.UUID(value)
+
+
+def _decode_date(value: Any) -> datetime.date:
+    """Decode a JSON ISO 8601 date string.
+
+    Args:
+        value: ISO 8601 date, such as ``"2024-04-01"``.
+
+    Returns:
+        Decoded ``date``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not an ISO 8601 date. The message does not
+            quote ``value``.
+    """
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError as err:
+        # Python quotes a string that is not ISO 8601, but not one with a field
+        # out of range, as in "month must be in 1..12".
+        if repr(value) in str(err):
+            raise ValueError("Date is not in ISO 8601 format") from err
+
+        raise
+
+
+def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
+    """Decode a JSON value as a member of an enum.
+
+    Args:
+        cls: Enum class to decode to.
+        value: Value of a member of ``cls``.
+
+    Returns:
+        The member of ``cls`` whose value is ``value``.
+
+    Raises:
+        ValueError: If ``cls`` has no such member. The message does not quote
+            ``value``.
+    """
+    try:
+        return cls(value)
+    except ValueError as err:
+        # Python quotes the value that the enum lacks.
+        if repr(value) in str(err):
+            raise ValueError(f"Value is not a valid {cls.__name__}") from err
+
+        raise
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -1495,13 +1546,13 @@ class JSONObject:
                 if base_type is datetime.datetime:
                     return parse_datetime(value)
                 if base_type is datetime.date:
-                    return datetime.date.fromisoformat(value)
+                    return _decode_date(value)
                 if base_type is uuid.UUID:
                     return _decode_uuid(value)
                 if base_type is datetime.timedelta:
                     return parse_duration(value)
                 if lenient_issubclass(base_type, enum.Enum):
-                    return base_type(value)
+                    return _decode_enum(base_type, value)
 
                 # Changing the returned value in place must not change the
                 # object's JSON without recording an update.
@@ -2167,7 +2218,7 @@ class JSONObject:
                         value, collection.item_type
                     )
 
-        for name, value in params.items():
+        for name in params:
             descriptor = getattr(cls, name, None)
             json_field = (
                 descriptor.json_field
@@ -2178,8 +2229,8 @@ class JSONObject:
             problem = _unsendable_query_value(value)
             if problem is not None:
                 raise ValueError(
-                    f"Query parameter {name}={value!r} for {cls.__name__} "
-                    f"cannot be sent, because its value {problem}"
+                    f"Query parameter {name} for {cls.__name__} cannot be "
+                    f"sent, because its value {problem}"
                 )
             if isinstance(descriptor, JSONProperty):
                 value = _query_value(value)

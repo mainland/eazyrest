@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import re
 from typing import Any, cast
 
 import pytest
@@ -177,13 +176,15 @@ def test_parse_duration_inverts_str(delta: datetime.timedelta) -> None:
     ],
 )
 def test_parse_duration_rejects_unsupported_durations(text: str) -> None:
-    """Strings in no supported form raise ``ValueError``.
+    """Strings in no supported form raise ``ValueError`` without quoting them.
 
     Args:
         text: String that is not a supported duration.
     """
-    with pytest.raises(ValueError, match=re.escape(repr(text))):
+    with pytest.raises(ValueError, match="not in a supported format") as info:
         parse_duration(text)
+
+    assert repr(text) not in str(info.value)
 
 
 @pytest.mark.parametrize(
@@ -212,7 +213,7 @@ def test_parse_duration_rejects_out_of_range_durations(
 
 def test_parse_duration_names_unknown_unit() -> None:
     """An unknown unit is named in the error."""
-    with pytest.raises(ValueError, match="unknown unit 'fortnight'"):
+    with pytest.raises(ValueError, match="unknown unit"):
         parse_duration("1 fortnight")
 
 

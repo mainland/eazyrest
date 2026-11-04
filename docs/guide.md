@@ -115,6 +115,8 @@ Field annotations drive JSON conversion when values are read from or written to 
 
 A value that a field cannot convert, when it is read, assigned, or passed to `create()` or a query, raises `FieldConversionError`. Its message names the model and field, as in `Booking.day: month must be in 1..12`, and the conversion's own error is its `__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches either one keeps working.
 
+The messages of eazyrest's errors name models, fields, and query parameters, but they do not quote values, which can be secrets that the server sent or that the code assigned. The error that eazyrest replaced remains the `__cause__`, and it can quote the value, so a logged traceback can still expose it. A message that your own conversion code or validator writes appears as written.
+
 Related-object writes encode primary keys using the related model's primary-key
 annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
 equivalent UUID spellings identify the same object.
@@ -261,7 +263,7 @@ todo, created = Todo.get_or_create(user=user, title="Write docs")
 
 `get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
-`get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup, as in `No Todo title='a' exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
+`get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup parameters, but not their values, as in `No Todo matching title exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 

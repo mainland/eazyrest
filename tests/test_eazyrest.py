@@ -1746,7 +1746,7 @@ def test_get_raises_multiple_objects_returned(requests_mock: Any) -> None:
         ],
     )
 
-    match = "More than one Todo userId=2 exists"
+    match = r"^More than one Todo matching userId exists$"
     with pytest.raises(MultipleObjectsReturned, match=match):
         Todo.get(userId=2)
     with pytest.raises(EazyrestError, match=match):
@@ -2968,7 +2968,7 @@ def test_query_rejects_none_for_json_backed_field(
     Args:
         query: Callable that runs a query constraining a field to ``None``.
     """
-    with pytest.raises(ValueError, match="user=None"):
+    with pytest.raises(ValueError, match="parameter user for"):
         query()
 
     assert requests_mock.call_count == 0
@@ -2977,10 +2977,10 @@ def test_query_rejects_none_for_json_backed_field(
 @pytest.mark.parametrize(
     ("query", "match"),
     [
-        (lambda: Todo.filter(userId=None), "userId=None"),
-        (lambda: Todo.get_or_create(userId=None), "userId=None"),
+        (lambda: Todo.filter(userId=None), "parameter userId for"),
+        (lambda: Todo.get_or_create(userId=None), "parameter userId for"),
         (lambda: MaybeTodo.get(user=User(pk=None)), "is None"),
-        (lambda: Team.filter(members=[]), "members=\\[\\]"),
+        (lambda: Team.filter(members=[]), "parameter members for"),
         (lambda: SetTeam.get(members=set()), "empty collection"),
         (lambda: Team.get_or_create(members=()), "empty collection"),
     ],
@@ -3031,6 +3031,80 @@ def test_query_rejects_values_requests_would_change(
     with pytest.raises(ValueError, match=match):
         query()
 
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class Secretive(ModelBase):
+    """Model whose fields decode with eazyrest's own codecs."""
+
+    class_url = "/secretive/"
+
+    id: int
+    when: datetime.datetime
+    day: datetime.date
+    length: datetime.timedelta
+    status: IssueStatus
+
+
+SECRET = "TOP-SECRET-1234"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("when", SECRET, "not in ISO 8601 format"),
+        ("when", 1e300, "out of range"),
+        ("day", SECRET, "not in ISO 8601 format"),
+        ("day", "2024-13-01", "month must be in 1..12"),
+        ("length", SECRET, "not in a supported format"),
+        ("length", f"P{SECRET}", "not in ISO 8601 format"),
+        ("status", SECRET, "not a valid IssueStatus"),
+    ],
+)
+def test_field_conversion_error_does_not_quote_the_value(
+    field: str, value: Any, reason: str
+) -> None:
+    """A message names the field and the reason but not the value.
+
+    The value can be a secret that the server sent. The error that eazyrest
+    replaced is still the cause.
+
+    Args:
+        field: Field whose JSON value is invalid.
+        value: Invalid JSON value.
+        reason: Text that the message gives as the reason.
+    """
+    obj = Secretive(json={"id": 1, field: value})
+
+    with pytest.raises(FieldConversionError, match=reason) as info:
+        getattr(obj, field)
+
+    assert str(info.value).startswith(f"Secretive.{field}: ")
+    assert SECRET not in str(info.value)
+    assert repr(value) not in str(info.value)
+
+
+def test_lookup_errors_name_parameters_without_values(
+    requests_mock: Any,
+) -> None:
+    """``get()`` names the lookup parameters but not their values."""
+    requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(DoesNotExist) as info:
+        Todo.get(title="a", password=SECRET)
+
+    assert str(info.value) == "No Todo matching title, password exists"
+
+
+def test_query_error_names_parameter_without_value(
+    requests_mock: Any,
+) -> None:
+    """A query value that cannot be sent is not quoted."""
+    with pytest.raises(ValueError, match="parameter settings for") as info:
+        Profile.filter(settings={"token": SECRET})
+
+    assert SECRET not in str(info.value)
     assert requests_mock.call_count == 0
 
 
@@ -3194,7 +3268,7 @@ def test_get_raises_does_not_exist(requests_mock: Any) -> None:
     """``get()`` should raise when no object matches."""
     requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    with pytest.raises(DoesNotExist, match="No Todo title='missing' exists"):
+    with pytest.raises(DoesNotExist, match=r"^No Todo matching title exists$"):
         Todo.get(title="missing")
     with pytest.raises(EazyrestError, match=r"^No Todo exists$"):
         Todo.get()
