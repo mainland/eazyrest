@@ -3326,6 +3326,82 @@ def test_related_assignment_kept_when_the_response_agrees(
     assert todo.user is assigned
 
 
+@json_object
+class Crew(ModelBase):
+    """Model with embedded related objects and a field to load later."""
+
+    class_url = "/crews/"
+
+    id: int
+    lead: User
+    members: list[User]
+    name: str
+
+
+CREW_JSON = {
+    "id": 1,
+    "lead": {"id": 2, "name": "old"},
+    "members": [{"id": 3, "name": "old"}],
+}
+
+
+@pytest.mark.parametrize("server_name", ["old", "new"])
+def test_load_keeps_unchanged_related_objects(
+    requests_mock: Any, server_name: str
+) -> None:
+    """Loading a missing field keeps the related objects it leaves unchanged.
+
+    Their unsaved changes then stay reachable through the parent. Related
+    objects that the server changed are read anew.
+
+    Args:
+        server_name: Name that the loaded JSON gives the related objects.
+    """
+    loaded = {
+        "id": 1,
+        "name": "loaded",
+        "lead": {"id": 2, "name": server_name},
+        "members": [{"id": 3, "name": server_name}],
+    }
+    requests_mock.get("https://example.com/v1/crews/1/", json=loaded)
+    crew = Crew(id=1)
+    crew.update_from_json({k: v for k, v in CREW_JSON.items() if k != "id"})
+    lead = crew.lead
+    member = crew.members[0]
+    lead.name = "local"
+    member.name = "local"
+
+    assert crew.name == "loaded"
+
+    unchanged = server_name == "old"
+    assert (crew.lead is lead) == unchanged
+    assert (crew.members[0] is member) == unchanged
+    assert crew.lead.name == ("local" if unchanged else "new")
+    assert lead._pending_updates == {"name": "local"}
+
+
+def test_assigning_a_related_list_keeps_its_objects(
+    requests_mock: Any,
+) -> None:
+    """``crew.members = crew.members`` keeps the members and their changes.
+
+    The list is still checked for changes made in place.
+    """
+    patch = requests_mock.patch("https://example.com/v1/crews/1/", json={})
+    crew = Crew(json=deepcopy(CREW_JSON))
+    member = crew.members[0]
+    member.name = "local"
+
+    crew.members = crew.members
+
+    assert crew.members[0] is member
+    assert member._pending_updates == {"name": "local"}
+    assert requests_mock.call_count == 0
+    crew.members.append(User(json={"id": 4, "name": "new"}))
+    crew.save()
+    assert patch.last_request.json() == {"members": [3, 4]}
+
+
 def test_related_object_inherits_instance_api_override(
     requests_mock: Any,
 ) -> None:
