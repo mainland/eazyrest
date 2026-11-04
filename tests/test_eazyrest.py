@@ -2731,6 +2731,52 @@ def test_related_object_uses_its_own_registered_api(
     assert invoice.account.name == "Acme"
 
 
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_related_assignment_follows_a_response_that_changes_it(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """A response that names another related object replaces the assigned one.
+
+    Args:
+        write_mode: Write mode of the object that is assigned.
+    """
+    requests_mock.patch(
+        "https://example.com/v1/todos/1/", json={**TODO_JSON, "userId": 3}
+    )
+    todo = Todo(json=dict(TODO_JSON))
+    todo.set_write_mode(write_mode)
+    assigned = User(json={"id": 4, "name": "Ada"})
+
+    todo.user = assigned
+    todo.save()
+
+    assert todo.json["userId"] == 3
+    assert todo.user is not assigned
+    assert todo.user.pk == 3
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_related_assignment_kept_when_the_response_agrees(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """The assigned related object stays the field's value after the write.
+
+    Args:
+        write_mode: Write mode of the object that is assigned.
+    """
+    requests_mock.patch(
+        "https://example.com/v1/todos/1/", json={**TODO_JSON, "userId": 4}
+    )
+    todo = Todo(json=dict(TODO_JSON))
+    todo.set_write_mode(write_mode)
+    assigned = User(json={"id": 4, "name": "Ada"})
+
+    todo.user = assigned
+    todo.save()
+
+    assert todo.user is assigned
+
+
 def test_related_object_inherits_instance_api_override(
     requests_mock: Any,
 ) -> None:
