@@ -679,6 +679,28 @@ def test_link_headers_are_followed_lazily(requests_mock: Any) -> None:
 
 
 @pytest.mark.parametrize(
+    "rel", ['"next last"', '"last next"', "next", '"NEXT"', '"Next prev"']
+)
+def test_link_headers_find_next_among_relation_types(
+    requests_mock: Any, rel: str
+) -> None:
+    """A link is followed when ``next`` is one of its relation types.
+
+    Args:
+        rel: Value of the link's ``rel`` parameter.
+    """
+    requests_mock.get(
+        LINKED,
+        json=[{"id": 1}],
+        headers={"Link": f"<{LINKED}?page=2>; rel={rel}"},
+    )
+    requests_mock.get(LINKED + "?page=2", json=[{"id": 2}])
+
+    assert [item.id for item in LinkedItem.filter()] == [1, 2]
+    assert requests_mock.call_count == 2
+
+
+@pytest.mark.parametrize(
     ("link", "error", "match"),
     [
         (
