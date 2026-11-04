@@ -14,6 +14,7 @@ import typing
 import uuid
 from collections.abc import (
     Callable,
+    Collection,
     Iterable,
     Iterator,
     Mapping,
@@ -2336,6 +2337,9 @@ class JSONObject:
         while the creation payload sends it as given. Such a value in
         ``defaults`` is sent only on creation and is allowed.
 
+        A value that can be iterated only once, such as a generator, is read
+        once, before the lookup, and its items are used for both requests.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             **kwargs: Fields used for lookup and included in creation.
@@ -2350,6 +2354,15 @@ class JSONObject:
                 or its JSON key has a value that requests would not send
                 intact.
         """
+        # The lookup and the creation each iterate a collection value, so read
+        # a single-pass iterable, such as a generator, only once.
+        kwargs = {
+            name: list(value)
+            if isinstance(value, Iterable)
+            and not isinstance(value, (Collection, str, bytes, Mapping))
+            else value
+            for name, value in kwargs.items()
+        }
         results = cls.filter(**kwargs)
         first = next(results, None)
         if first is not None:
