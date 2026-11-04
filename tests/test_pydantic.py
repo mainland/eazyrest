@@ -516,6 +516,48 @@ def test_field_opts_pydantic_aliases_in_to_conversion() -> None:
         _ = counter.checked
 
 
+@pytest.mark.parametrize(
+    ("ty", "value"),
+    [
+        (datetime.datetime, "2024-01-01T00:00:00Z"),
+        (datetime.date, "2024-01-01"),
+        (datetime.timedelta, "PT1H"),
+        (uuid.UUID, "12345678-1234-5678-1234-567812345678"),
+        (Level, 1),
+    ],
+)
+def test_strict_metadata_on_eazyrest_types_is_rejected(
+    ty: Any, value: Any
+) -> None:
+    """``strict`` on a type that eazyrest converts names the field.
+
+    Args:
+        ty: Type that eazyrest converts in place of Pydantic.
+        value: Valid JSON value of ``ty``.
+    """
+    # This module defers annotations, so a class statement could not name
+    # ty, a local.
+    strict_model: Any = json_object(
+        type(
+            "Strict",
+            (PydanticBase,),
+            {
+                "__annotations__": {
+                    "id": int,
+                    "value": Annotated[ty, Field(strict=True)],
+                },
+                "class_url": "/strict/",
+            },
+        )
+    )
+    strict = strict_model(json={"id": 1, "value": value})
+
+    with pytest.raises(
+        FieldConversionError, match=r"^Strict\.value: .*strict"
+    ):
+        _ = strict.value
+
+
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
     asset = Asset(json=deepcopy(ASSET_JSON))
