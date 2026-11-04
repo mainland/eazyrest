@@ -462,6 +462,28 @@ def test_create_and_filter_encode_pydantic_fields(requests_mock: Any) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        lambda: Asset.filter(origin=Point(x=1, y=2)),
+        lambda: Asset.get(specs={"name": "b", "size": 2}),
+    ],
+)
+def test_query_rejects_pydantic_values_encoded_as_mappings(
+    requests_mock: Any, query: Any
+) -> None:
+    """A value that Pydantic encodes as a JSON object is not sent.
+
+    Args:
+        query: Callable that runs a query with a Pydantic value that encodes as
+            a mapping.
+    """
+    with pytest.raises(ValueError, match="is a mapping"):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
     asset = Asset(json=deepcopy(ASSET_JSON))
