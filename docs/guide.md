@@ -455,6 +455,9 @@ API that serves pages from another host.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
+With `allow_other_origins=True`, a redirect is checked as for every other
+request: it must lead to the origin of the page request or to one of the API's
+`redirect_origins`.
 
 ## Write modes
 
@@ -512,6 +515,20 @@ report success. This happens, for example, when `base_url` uses `http://` and
 the server redirects to HTTPS, or when a `class_url` lacks the trailing slash
 that Django's `APPEND_SLASH` adds. Use the URL that the server redirects to.
 Redirects that keep the method, such as 307 and 308, are followed.
+
+A redirect is followed only to the origin of the request it answers, that is,
+its scheme, host, and port. Requests drops the `Authorization` header when a
+redirect leaves the host, but it sends every other header, such as an API key
+or a CSRF token, and a 307 or 308 resends the request body. A redirect to
+another origin, including one from `http://` to `https://`, raises
+`requests.HTTPError` before anything is sent there. For an API that redirects
+to another server on purpose, such as a download host, list that origin in
+`redirect_origins`:
+
+```python
+api = API("https://api.example.com/")
+api.redirect_origins = ["https://files.example.com"]
+```
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.

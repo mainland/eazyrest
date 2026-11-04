@@ -112,6 +112,107 @@ def test_api_follows_get_redirect(requests_mock: Any) -> None:
     assert api.get("/users/1").json() == {"id": 1}
 
 
+@pytest.mark.parametrize(
+    ("method", "status", "target"),
+    [
+        ("get", 302, "https://other.example.net/users/1"),
+        ("post", 307, "https://other.example.net/users/"),
+        ("put", 308, "https://example.com:8443/v1/users/"),
+        ("get", 301, "http://example.com/v1/users/1"),
+    ],
+)
+def test_api_refuses_redirect_to_other_origin(
+    requests_mock: Any, method: str, status: int, target: str
+) -> None:
+    """A redirect to another origin raises before anything is sent there.
+
+    requests would send custom credentials and a preserved body along.
+
+    Args:
+        method: Name of the ``API`` method that sends the request.
+        status: Redirect status code that the server returns.
+        target: Redirect destination, with a different scheme, host, or port.
+    """
+    api = API("https://example.com/v1/")
+    api.session.headers["X-API-Key"] = "secret"
+    requests_mock.request(
+        method.upper(),
+        "https://example.com/v1/users/1",
+        status_code=status,
+        headers={"Location": target},
+    )
+    other = requests_mock.request(method.upper(), target, json={})
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins") as info:
+        getattr(api, method)("/users/1", json={"password": "secret"})
+
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+    assert not other.called
+
+
+def test_api_follows_redirect_to_listed_origin(requests_mock: Any) -> None:
+    """``redirect_origins`` admits an origin, whatever the URL's path."""
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://FILES.example.com:443/ignored/path"]
+    requests_mock.get(
+        "https://example.com/v1/files/1",
+        status_code=302,
+        headers={"Location": "https://files.example.com/1"},
+    )
+    requests_mock.get("https://files.example.com/1", json={"id": 1})
+
+    assert api.get("/files/1").json() == {"id": 1}
+
+
+def test_api_follows_redirect_within_absolute_request_origin(
+    requests_mock: Any,
+) -> None:
+    """An absolute request may be redirected within its own origin."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://other.example.com/users/1",
+        status_code=301,
+        headers={"Location": "/users/1/"},
+    )
+    requests_mock.get("https://other.example.com/users/1/", json={"id": 1})
+
+    assert api.get("https://other.example.com/users/1").json() == {"id": 1}
+
+
+@pytest.mark.parametrize("on_request", [False, True])
+def test_api_redirect_guard_keeps_response_hooks(
+    requests_mock: Any, on_request: bool
+) -> None:
+    """Session or request response hooks still run beside the guard.
+
+    Args:
+        on_request: Whether the hook is passed with the request rather than
+            installed on the session.
+    """
+    api = API("https://example.com/v1/")
+    seen: list[int] = []
+
+    def record(resp: requests.Response, **kwargs: Any) -> None:
+        seen.append(resp.status_code)
+
+    kwargs: dict[str, Any] = {}
+    if on_request:
+        kwargs["hooks"] = {"response": record}
+    else:
+        api.session.hooks["response"].append(record)
+    requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=302,
+        headers={"Location": "https://other.example.net/users/1"},
+    )
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        api.get("/users/1", **kwargs)
+
+    assert seen == [302]
+
+
 def test_api_closes_session_as_context_manager() -> None:
     """The API client should close its session on context exit."""
     api = API("https://example.com/")

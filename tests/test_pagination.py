@@ -435,6 +435,8 @@ def test_allow_other_origins_follows_next_link(
 ) -> None:
     """The opt-in permits both links and redirects to another server.
 
+    A redirect also needs the API to allow its origin, as every redirect does.
+
     Args:
         redirect: Whether the other server is reached by a redirect from a
             same-origin page rather than by the next link itself.
@@ -442,6 +444,7 @@ def test_allow_other_origins_follows_next_link(
     api = API("https://example.com/v1/")
     next_url = "https://cdn.example.net/items/?page=2"
     if redirect:
+        api.redirect_origins = ["https://cdn.example.net"]
         requests_mock.get(
             "https://example.com/v1/items/?page=2",
             status_code=302,
@@ -465,6 +468,36 @@ def test_allow_other_origins_follows_next_link(
     )
 
     assert items == [{"id": 1}, {"id": 2}]
+
+
+def test_allow_other_origins_still_checks_redirects(
+    requests_mock: Any,
+) -> None:
+    """The opt-in does not admit a redirect to an origin the API refuses."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        status_code=302,
+        headers={"Location": "https://cdn.example.net/items/?page=2"},
+    )
+    cdn = requests_mock.get(
+        "https://cdn.example.net/items/?page=2",
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = follow_next_links(
+        api,
+        {
+            "next": "https://example.com/v1/items/?page=2",
+            "results": [{"id": 1}],
+        },
+        allow_other_origins=True,
+    )
+
+    assert next(items) == {"id": 1}
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        next(items)
+    assert not cdn.called
 
 
 @pytest.mark.parametrize(

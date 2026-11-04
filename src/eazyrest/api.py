@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from http.cookiejar import CookieJar
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 import urllib3
@@ -35,6 +35,29 @@ _SESSION_SETTINGS = (
     "max_redirects",
 )
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    """Return the scheme, host, and port of an absolute URL.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        Lowercased scheme, host, and port of ``url`` as Requests would send it.
+        If ``url`` names no port, the port is the scheme's default port, or
+        ``None`` if the scheme has no known default.
+    """
+    # Requests and urlsplit disagree about backslashes in an authority. Check
+    # the URL Requests would send, before attaching session credentials.
+    request = requests.PreparedRequest()
+    request.prepare_url(url, None)
+    assert request.url is not None
+    parts = urlsplit(request.url)
+    scheme = parts.scheme.lower()
+    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+
 
 class API:
     """HTTP client wrapper for REST APIs.
@@ -48,6 +71,13 @@ class API:
     method a redirect changes raises ``requests.HTTPError`` instead of
     returning the response to the ``GET``. Redirects that keep the method, such
     as 307 and 308, are followed.
+
+    A redirect is followed only to the origin of the request it answers, or to
+    an origin in ``redirect_origins``. Requests drops an ``Authorization``
+    header when a redirect leaves the host, but it sends every other header,
+    such as an API key or a CSRF token, and a 307 or 308 resends the body. A
+    redirect to another origin raises ``requests.HTTPError`` before anything is
+    sent there.
     """
 
     base_url: str
@@ -61,6 +91,17 @@ class API:
 
     A pair gives the connect and read timeouts separately, and ``None`` waits
     forever. A request's own ``timeout`` argument takes precedence.
+    """
+
+    redirect_origins: Collection[str] = ()
+    """Other origins to which a redirect may lead, as URLs.
+
+    By default, a redirect must lead to the scheme, host, and port of the
+    request it answers, so a redirect from ``http`` to ``https`` is refused
+    too. Add an origin here, such as ``"https://cdn.example.com"``, on an
+    instance or in a subclass, to follow redirects to it. Only the scheme,
+    host, and port of each URL count. Every header and any body of the
+    redirected request is sent to these origins.
     """
 
     default_write_mode: WriteMode
@@ -264,7 +305,8 @@ class API:
             Validated HTTP response.
 
         Raises:
-            requests.HTTPError: If a redirect changed the request method, or if
+            requests.HTTPError: If a redirect leads to an origin that is not
+                allowed, if a redirect changed the request method, or if
                 ``raise_for_response()`` raises it for the response.
         """
         kwargs.setdefault("timeout", self.timeout)
@@ -274,9 +316,66 @@ class API:
             # environment proxies to the dict it receives, so pass a copy.
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
-        resp = send(self.resolve_url(uri), *args, **kwargs)
+        url = self.resolve_url(uri)
+        kwargs["hooks"] = self._guard_redirects(url, kwargs.get("hooks"))
+        resp = send(url, *args, **kwargs)
         self._check_redirects(resp)
         return self._check_response(resp)
+
+    def _guard_redirects(
+        self, url: str, hooks: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return request hooks that refuse redirects to other origins.
+
+        Args:
+            url: Absolute URL of the request.
+            hooks: Hooks passed with the request, if any.
+
+        Returns:
+            ``hooks``, or the session's hooks if ``hooks`` has no response
+            hooks, with a final response hook that checks each redirect before
+            requests follows it.
+        """
+        allowed = {_origin(url), *map(_origin, self.redirect_origins)}
+
+        def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
+            """Refuse a redirect to an origin that is not allowed.
+
+            Args:
+                resp: Response, which may be a redirect.
+                kwargs: Other arguments that requests passes to response hooks,
+                    which are ignored.
+
+            Raises:
+                requests.HTTPError: If ``resp`` redirects to an origin that is
+                    not allowed. The response is closed first.
+            """
+            target = self.session.get_redirect_target(resp)
+            if target is None:
+                return
+
+            destination = urljoin(resp.url, target)
+            if _origin(destination) in allowed:
+                return
+
+            resp.close()
+            raise requests.HTTPError(
+                f"{resp.request.method} {resp.url} was redirected with status "
+                f"{resp.status_code} to {destination}, whose origin differs "
+                "from the request's, so it was not followed. Add the origin "
+                "to API.redirect_origins to follow it.",
+                response=resp,
+            )
+
+        # requests uses a request's response hooks instead of the session's, so
+        # keep the session's when the request has none. Run the guard last,
+        # after any hook that might change the response.
+        merged = dict(hooks or {})
+        response = merged.get("response") or self.session.hooks.get("response")
+        if callable(response):
+            response = [response]
+        merged["response"] = [*(response or []), check_redirect]
+        return merged
 
     @staticmethod
     def _check_redirects(resp: requests.Response) -> None:
