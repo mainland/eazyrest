@@ -389,6 +389,41 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+def _unsendable_query_value(value: Any) -> str | None:
+    """Return why requests cannot send a value as a query parameter.
+
+    requests omits a parameter whose value is ``None`` or an empty collection,
+    and it omits a ``None`` item of a collection. It sends a mapping as its
+    keys, and it flattens a collection nested in another into the outer one's
+    items. A query that loses or changes a constraint this way matches objects
+    it should not.
+
+    Args:
+        value: Field value, already encoded as JSON.
+
+    Returns:
+        A clause that completes "because its value", or ``None`` if requests
+        sends ``value`` intact.
+    """
+    if value is None:
+        return "is None, and requests omits it"
+    if isinstance(value, Mapping):
+        return "is a mapping, and requests sends only its keys"
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return None
+    if not value:
+        return "is an empty collection, and requests omits it"
+    if any(item is None for item in value):
+        return "contains None, and requests omits that item"
+    if any(
+        isinstance(item, (Mapping, list, tuple, set, frozenset))
+        for item in value
+    ):
+        return "contains a collection, and requests flattens it"
+
+    return None
+
+
 def _copy_json(value: Any) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
 
@@ -1780,10 +1815,9 @@ class JSONObject:
 
         Raises:
             ValueError: If a parameter named after a JSON-backed field, or
-                after its JSON key, encodes to ``None`` or to an empty
-                collection. A query string has no null value or empty list, and
-                requests omits such a parameter, so the query would match
-                objects whatever their value for that field.
+                after its JSON key, encodes to a value that requests would not
+                send intact, so the query would ignore or change that field's
+                constraint.
         """
         payload = cls._encode_fields(
             {
@@ -1813,21 +1847,12 @@ class JSONObject:
             else:
                 continue
 
-            encoded = payload[json_field]
-            if encoded is None:
-                omitted = "is None"
-            elif isinstance(encoded, (list, tuple, set, frozenset)) and (
-                len(encoded) == 0
-            ):
-                omitted = "is an empty collection"
-            else:
-                continue
-
-            raise ValueError(
-                f"Query parameter {name}={value!r} for {cls.__name__} cannot "
-                f"be sent, because requests omits parameters whose value "
-                f"{omitted}"
-            )
+            problem = _unsendable_query_value(payload[json_field])
+            if problem is not None:
+                raise ValueError(
+                    f"Query parameter {name}={value!r} for {cls.__name__} "
+                    f"cannot be sent, because its value {problem}"
+                )
 
         for name in params:
             descriptor = getattr(cls, name, None)
@@ -2172,9 +2197,12 @@ class JSONObject:
         are sent unchanged.
 
         A parameter named after a JSON-backed field, or after its JSON key,
-        must not be ``None`` or an empty collection. A query string has no null
-        value or empty list, and requests omits such a parameter, so the query
-        would ignore that field.
+        must have a value that requests sends intact. It must not be ``None``,
+        an empty collection, or a mapping, and a collection must not hold
+        ``None`` or another collection. requests omits ``None`` and empty
+        collections, sends only a mapping's keys, and flattens nested
+        collections, so the query would ignore or change that field's
+        constraint.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -2188,8 +2216,8 @@ class JSONObject:
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter named after a
-                JSON-backed field or its JSON key is ``None`` or an empty
-                collection.
+                JSON-backed field or its JSON key has a value that requests
+                would not send intact.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
@@ -2263,8 +2291,8 @@ class JSONObject:
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter named after a
-                JSON-backed field or its JSON key is ``None`` or an empty
-                collection.
+                JSON-backed field or its JSON key has a value that requests
+                would not send intact.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
@@ -2303,10 +2331,10 @@ class JSONObject:
         requests, so two clients can both create the object. A uniqueness
         constraint on the server must prevent that.
 
-        As in ``filter()``, a lookup field must not be ``None`` or an empty
-        collection, because the query would ignore it while the creation
-        payload sends ``null`` or ``[]``. Such a value in ``defaults`` is sent
-        only on creation and is allowed.
+        As in ``filter()``, a lookup field must have a value that requests
+        sends intact, because the query would otherwise ignore or change it
+        while the creation payload sends it as given. Such a value in
+        ``defaults`` is sent only on creation and is allowed.
 
         Args:
             defaults: Optional fields applied only when creating a new object.
@@ -2319,7 +2347,8 @@ class JSONObject:
         Raises:
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter named after a JSON-backed field
-                or its JSON key is ``None`` or an empty collection.
+                or its JSON key has a value that requests would not send
+                intact.
         """
         results = cls.filter(**kwargs)
         first = next(results, None)
