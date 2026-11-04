@@ -817,7 +817,7 @@ docs = ">=3.12"
 requires-dist = [
     { name = "dateparser" },
     { name = "isodate" },
-    { name = "python-dateutil" },
+    { name = "python-dateutil", specifier = ">=2.7" },
     { name = "pytimeparse2" },
     { name = "requests", extras = ["socks"] },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },

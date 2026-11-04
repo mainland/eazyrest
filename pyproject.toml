@@ -28,7 +28,8 @@ classifiers = [
 dependencies = [
     "dateparser",
     "isodate",
-    "python-dateutil",
+    # python-dateutil 2.7.0 is the first release with isoparse().
+    "python-dateutil>=2.7",
     "pytimeparse2",
     "requests[socks]",
     "typing_extensions; python_version < '3.11'",
