@@ -17,6 +17,29 @@ from .api import (
 )
 
 
+def _next_link(resp: requests.Response) -> str | None:
+    """Return the URL of the ``rel="next"`` link in a response's Link header.
+
+    A link may have several relation types, as in ``rel="next last"``, and
+    registered relation types compare case-insensitively, as RFC 8288 says.
+
+    Args:
+        resp: Response whose Link header is read.
+
+    Returns:
+        The URL of the first link whose relation types include ``next``, or
+        ``None`` if there is none.
+    """
+    # requests parses the Link header into resp.links, keyed by the whole rel
+    # value.
+    for link in resp.links.values():
+        if "next" in link.get("rel", "").lower().split():
+            url: str | None = link.get("url")
+            return url
+
+    return None
+
+
 class _PageReader:
     """Request the next pages of a collection, guarding their URLs."""
 
@@ -218,11 +241,11 @@ def follow_link_headers(
     """Yield the items of a collection response, following Link headers.
 
     Each page's body is a JSON list of items, and its ``Link`` header names the
-    next page with ``rel="next"``, as RFC 8288 defines and as APIs such as
-    GitHub's send. A page without such a link is the last page. The next page
-    is requested only after the items of the current page have been consumed. A
-    link to a page already read raises ``ValueError``, because following it
-    would never end.
+    next page with a ``next`` relation, as in ``rel="next"`` or ``rel="next
+    last"``, as RFC 8288 defines and as APIs such as GitHub's send. A page
+    without such a link is the last page. The next page is requested only after
+    the items of the current page have been consumed. A link to a page already
+    read raises ``ValueError``, because following it would never end.
 
     A link is resolved against the URL of the page that holds it. As in
     ``follow_next_links()``, a next-page URL and every redirect destination
@@ -261,8 +284,7 @@ def follow_link_headers(
 
         yield from payload
 
-        # requests parses the Link header into resp.links.
-        next_url = resp.links.get("next", {}).get("url")
+        next_url = _next_link(resp)
         if not next_url:
             return
 
