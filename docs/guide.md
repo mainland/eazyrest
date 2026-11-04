@@ -191,6 +191,8 @@ Pydantic converts a field's value when the field's type mentions Pydantic. Such 
 
 Every other type converts as [Field conversion](#field-conversion) describes, so a plain `TypedDict`, a standard library dataclass, or a `Literal` passes through unchecked. To have Pydantic check such a type, annotate it with `Annotated[T, pydantic.Field()]`. Constraints from `annotated_types` alone, such as `Annotated[int, Gt(0)]`, do not mention Pydantic, because other libraries use them too.
 
+Some of Pydantic's own types are made only of such constraints, so they do not mention Pydantic either. `pydantic.PositiveInt`, for example, is `Annotated[int, Gt(0)]`, and the same holds for `NegativeInt`, `NonNegativeInt`, `PositiveFloat`, their relatives, and the result of `conint()` or `confloat()` with only bounds. A field of such a type reads and writes any value of the underlying type unchecked. Annotate it as `Annotated[PositiveInt, pydantic.Field()]` to have Pydantic check it. Types that carry Pydantic's own metadata, such as `StrictInt` and `FiniteFloat`, mention Pydantic and are checked.
+
 Pydantic conversion requires the `pydantic` extra, which installs Pydantic 2.12 or later:
 
 ```bash
