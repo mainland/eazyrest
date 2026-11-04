@@ -4,34 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 import requests
 
-from .api import API
-
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def _origin(url: str) -> tuple[str, str | None, int | None]:
-    """Return the scheme, host, and port of an absolute URL.
-
-    Args:
-        url: Absolute URL.
-
-    Returns:
-        Lowercased scheme, host, and port of ``url`` as Requests would send it.
-        If ``url`` names no port, the port is the scheme's default port, or
-        ``None`` if the scheme has no known default.
-    """
-    # Requests and urlsplit disagree about backslashes in an authority. Check
-    # the URL Requests would send, before attaching session credentials.
-    request = requests.PreparedRequest()
-    request.prepare_url(url, None)
-    assert request.url is not None
-    parts = urlsplit(request.url)
-    scheme = parts.scheme.lower()
-    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+from .api import API, _origin
 
 
 def follow_next_links(
@@ -63,7 +40,9 @@ def follow_next_links(
     headers and credentials with every request, so following a link to another
     origin could send them to another server, or over plain HTTP. A server
     behind a misconfigured reverse proxy can produce such links by naming its
-    internal address or the wrong scheme.
+    internal address or the wrong scheme. With ``allow_other_origins``, a
+    redirect must still lead to the origin of the page request it answers, or
+    to one of the API's ``redirect_origins``, as for every request.
 
     The defaults match the responses of Django REST Framework's
     ``PageNumberPagination``, ``LimitOffsetPagination``, and
@@ -79,8 +58,9 @@ def follow_next_links(
             from.
         results_key: Member of a page that holds the page's items.
         next_key: Member of a page that holds the next page's URL.
-        allow_other_origins: Whether to follow next-page URLs and redirects
-            whose origin differs from the API's base URL.
+        allow_other_origins: Whether to follow next-page URLs, and redirects
+            from page requests, whose origin differs from the API's base URL. A
+            redirect must still lead to an origin that the API allows.
 
     Yields:
         JSON items from every page, in order.
