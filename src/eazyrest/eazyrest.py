@@ -1634,12 +1634,14 @@ class JSONObject:
                 return _copy_json(value)
 
             case PydanticType():
+                # Building the adapter reports a missing Pydantic.
+                adapter = conversion.adapter
+                from .pydantic import _decode
+
                 # Pydantic does not copy nested values of type Any, which the
                 # returned value would then share with the JSON.
                 with _active_table(_table_of(type(self))):
-                    return conversion.adapter.validate_python(
-                        _copy_json(value)
-                    )
+                    return _decode(adapter, _copy_json(value))
 
             case RelatedType(model_type):
                 return self.create_related(

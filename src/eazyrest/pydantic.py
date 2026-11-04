@@ -28,6 +28,7 @@ from pydantic import (
     PlainValidator,
     PydanticUserError,
     TypeAdapter,
+    ValidationError,
     WithJsonSchema,
 )
 from pydantic_core import PydanticSerializationError
@@ -414,6 +415,50 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
         ) from err
 
 
+def _validation_error(err: ValidationError) -> ValueError:
+    """Return a ``ValueError`` that describes a validation error.
+
+    Pydantic's own message quotes the input, which may be a secret that the
+    server sent or the caller assigned. The returned error's message gives only
+    where and why each value is invalid.
+
+    Args:
+        err: Validation error that Pydantic raised.
+
+    Returns:
+        ``ValueError`` whose message lists the location and reason of each of
+        ``err``'s errors, without the input.
+    """
+    reasons = []
+    for error in err.errors(include_url=False, include_input=False):
+        location = ".".join(str(part) for part in error["loc"])
+        reasons.append(
+            f"{location}: {error['msg']}" if location else error["msg"]
+        )
+
+    return ValueError("; ".join(reasons))
+
+
+def _decode(adapter: TypeAdapter[Any], value: Any) -> Any:
+    """Return the field value of a JSON value.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        value: JSON value to decode.
+
+    Returns:
+        Field value of ``value``.
+
+    Raises:
+        ValueError: If the value is not valid for the field. The message does
+            not quote the value.
+    """
+    try:
+        return adapter.validate_python(value)
+    except ValidationError as err:
+        raise _validation_error(err) from err
+
+
 def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
     """Return the JSON value of a field value.
 
@@ -433,7 +478,8 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
     Raises:
         ValueError: If the value is not valid input for the field, or the field
             could not read its JSON value back, for example because the value
-            breaks a constraint that only validation checks.
+            breaks a constraint that only validation checks. The message does
+            not quote the value.
     """
     try:
         # A failure here, of a serializer given a value that is not yet
@@ -443,9 +489,9 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             adapter, value, unvalidated=True, mode="json", warnings="error"
         )
     except PydanticSerializationError:
-        encoded = _dump(adapter, adapter.validate_python(value), mode="json")
+        encoded = _dump(adapter, _decode(adapter, value), mode="json")
 
-    adapter.validate_python(encoded)
+    _decode(adapter, encoded)
     return encoded
 
 

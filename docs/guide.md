@@ -188,9 +188,11 @@ conversion's own error is its `__cause__`. It is both a `TypeError` and a
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
-the code assigned. The error that eazyrest replaced remains the `__cause__`,
-and it can quote the value, so a logged traceback can still expose it. A
-message that your own conversion code or validator writes appears as written.
+the code assigned. A Pydantic error says where and why a value is invalid, as
+in `Asset.rating: Input should be greater than 0`, without the input. The error
+that eazyrest replaced remains the `__cause__`, and it can quote the value, so
+a logged traceback can still expose it. A message that your own conversion code
+or validator writes appears as written.
 
 A JSON value that an enum lacks, such as a status that the server added after
 the client was written, raises `FieldConversionError`. Python calls an enum's
