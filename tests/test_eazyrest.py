@@ -59,13 +59,12 @@ class User(ModelBase):
 
         Args:
             pks: Primary keys of the users to load.
-            api: Unused. The users load through the model's own API.
+            api: API to load the users with, or ``None`` for the model's own.
 
         Returns:
             The loaded users, keyed by primary key.
         """
-        del api
-        users = list(cls.filter(id=sorted(pks)))
+        users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 
 
@@ -3489,6 +3488,28 @@ def test_prefetch_passes_the_query_api_to_bulk_lookup(
 
     assert seen == [tenant, None]
     assert todo.user.api is tenant
+
+
+def test_prefetch_loads_related_objects_from_the_query_api(
+    requests_mock: Any,
+) -> None:
+    """A bulk lookup that passes its ``api`` on loads from the query's API."""
+    tenant = API("https://tenant.example.com/v2/")
+    requests_mock.get(
+        "https://tenant.example.com/v2/todos/", json=[TENANT_TODO]
+    )
+    users = requests_mock.get(
+        "https://tenant.example.com/v2/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    (todo,) = Todo.filter(api=tenant, prefetch="user")
+
+    assert users.last_request.qs == {"id": ["2"]}
+    assert todo.user.api is tenant
+    assert todo.user.name == "Ada"
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example.com"
+    }
 
 
 def test_tuple_ellipsis_annotation_converts_items() -> None:
