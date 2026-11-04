@@ -3122,6 +3122,32 @@ def test_query_rejects_values_requests_would_change(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_collection_field_reads_and_writes_none(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """A collection field that is not optional still writes ``None``.
+
+    Args:
+        write_mode: Write mode of the object that is assigned.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/timelines/1/",
+        json={"id": 1, "starts_at": None},
+    )
+    assert Timeline(json={"id": 1, "starts_at": None}).starts_at is None
+    timeline = Timeline(json={"id": 1, "starts_at": []})
+    timeline.set_write_mode(write_mode)
+
+    # The annotation rejects None statically, so assign it dynamically to
+    # check the run-time behavior.
+    setattr(timeline, "starts_at", None)  # noqa: B010
+    timeline.save()
+
+    assert patch.last_request.json() == {"starts_at": None}
+    assert timeline.starts_at is None
+
+
 @json_object
 class Secretive(ModelBase):
     """Model whose fields decode with eazyrest's own codecs."""

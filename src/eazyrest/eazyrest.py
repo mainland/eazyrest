@@ -1727,7 +1727,9 @@ class JSONObject:
     def to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
-        A collection converts to a list.
+        A collection converts to a list. ``None`` converts to ``None``, which
+        JSON writes as ``null``, whatever the type, as ``from_json()`` reads
+        ``null``.
 
         Args:
             value: Python value to serialize.
@@ -1742,11 +1744,11 @@ class JSONObject:
                 collection of items. Also raised if ``conversion`` is
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
+        if value is None:
+            return None
+
         match conversion:
             case OptionalType(inner_type):
-                if value is None:
-                    return None
-
                 return cls.to_json(value, inner_type)
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
@@ -1796,9 +1798,6 @@ class JSONObject:
 
                 return [cls.to_json(item, item_type) for item in value]
             case PydanticType():
-                if value is None:
-                    return None
-
                 from .pydantic import _encode
 
                 return _encode(conversion.adapter, value)
