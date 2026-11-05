@@ -3261,3 +3261,34 @@ def test_string_annotation_naming_its_field_resolves_to_the_type() -> None:
         2024, 4, 1, 12, tzinfo=datetime.timezone.utc
     )
     assert obj.uuid == uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+
+@pytest.mark.parametrize(
+    "response", [{"id": 1}, {}, {"id": 1, "settings": {"nested": {"x": 1}}}]
+)
+def test_create_does_not_keep_caller_containers(
+    requests_mock: Any, response: dict[str, Any]
+) -> None:
+    """Changing a value passed to ``create()`` does not change saved state.
+
+    When the response omits a field, the new object holds the value that was
+    sent. It must be a copy, or a later change to the caller's value would
+    change what the object believes the server holds, and assigning that
+    value back would send nothing.
+
+    Args:
+        response: Body of the creation response.
+    """
+    requests_mock.post("https://example.com/v1/profiles/", json=response)
+    patch = requests_mock.patch(
+        "https://example.com/v1/profiles/1/", status_code=204
+    )
+    settings: dict[str, Any] = {"nested": {"x": 1}}
+
+    profile = Profile.create(id=1, settings=settings)
+    settings["nested"]["x"] = 2
+
+    assert profile.settings == {"nested": {"x": 1}}
+    profile.settings = settings
+    profile.save()
+    assert patch.last_request.json() == {"settings": {"nested": {"x": 2}}}
