@@ -52,6 +52,12 @@ from ._conversion import (
     _is_instance,
     _table_of,
 )
+from ._errors import (
+    EazyrestError,
+    ResponseShapeError,
+    UsageError,
+    _response_json,
+)
 from .api import API
 from .write_mode import WriteMode, validate_write_mode
 
@@ -65,10 +71,6 @@ if sys.version_info >= (3, 14):
 
 if TYPE_CHECKING:
     from pydantic import TypeAdapter
-
-
-class EazyrestError(Exception):
-    """Base class of the exceptions that eazyrest defines."""
 
 
 class DoesNotExist(EazyrestError):
@@ -200,7 +202,7 @@ class APIDescriptor:
             registered for the nearest class in the MRO of ``objtype``.
 
         Raises:
-            RuntimeError: If both ``obj`` and ``objtype`` are ``None``, or no
+            UsageError: If both ``obj`` and ``objtype`` are ``None``, or no
                 API is registered for ``objtype`` or any of its bases.
         """
         if obj is not None and obj._api_override is not None:
@@ -216,7 +218,7 @@ class APIDescriptor:
 
         if objtype is None:
             if obj is None:
-                raise RuntimeError("Could not resolve API owner class")
+                raise UsageError("Could not resolve API owner class")
 
             objtype = type(obj)
 
@@ -224,7 +226,7 @@ class APIDescriptor:
             if cls in _api_registry:
                 return _api_registry[cls]
 
-        raise RuntimeError(f"No API registered for {objtype.__name__}")
+        raise UsageError(f"No API registered for {objtype.__name__}")
 
 
 #
@@ -823,6 +825,38 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+def _query_params(
+    params: Mapping[str, Any] | None,
+    kwargs: Mapping[str, Any],
+    kind: str = "Query parameter",
+    argument: str = "params",
+) -> dict[str, Any]:
+    """Return the parameters given as a mapping and as keywords.
+
+    Args:
+        params: Parameters passed as a mapping, whose names may be anything,
+            including the names that the methods reserve.
+        kwargs: Parameters passed as keyword arguments.
+        kind: What a parameter is, for the error message.
+        argument: Name of the mapping argument, for the error message.
+
+    Returns:
+        Every parameter, keyed by name.
+
+    Raises:
+        TypeError: If a name is given both ways.
+    """
+    if params is None:
+        return dict(kwargs)
+    both = sorted(set(params) & set(kwargs))
+    if both:
+        raise TypeError(
+            f"{kind} {both[0]} is given both as a keyword argument and in "
+            f"{argument}"
+        )
+    return {**params, **kwargs}
+
+
 def _materialize_query_value(value: Any) -> Any:
     """Return a query value with any collection read into a list.
 
@@ -966,14 +1000,14 @@ class RelatedCollection(Iterable[T]):
             Iterator over the related objects.
 
         Raises:
-            RuntimeError: If the collection has already been iterated.
+            UsageError: If the collection has already been iterated.
         """
         if self._iterated:
             name = type(self._owner).__name__
             if self._field is not None:
                 name = f"{name}.{self._field}"
 
-            raise RuntimeError(
+            raise UsageError(
                 f"{name} is a lazy related collection, which can be iterated "
                 "only once. Call list() on it to iterate more than once, or "
                 "annotate the field as list[...] or tuple[..., ...] to keep "
@@ -990,7 +1024,7 @@ class RelatedCollection(Iterable[T]):
             Each related object, created from the next raw JSON value.
         """
         for value in self._values:
-            yield self._owner.create_related(
+            yield self._owner._create_related(
                 value,
                 self._related_type,
                 field=self._field,
@@ -1782,7 +1816,7 @@ class JSONObject:
         # field cache independently while still sharing the related objects.
         self._prefetched_related = dict(prefetched_related)
 
-    def create_related(
+    def _create_related(
         self,
         arg: Any,
         ty: type[T],
@@ -1869,7 +1903,7 @@ class JSONObject:
                     return _decode(adapter, _copy_json(value))
 
             case RelatedType(model_type):
-                return self.create_related(
+                return self._create_related(
                     value,
                     model_type,
                     field=field,
@@ -2062,8 +2096,9 @@ class JSONObject:
             payload: JSON fields sent in the request.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object. The
-                object's state, including its pending updates, is unchanged.
+            ResponseShapeError: If the response body does not hold a JSON
+                object. The object's state, including its pending updates, is
+                unchanged.
         """
         self._replace_json(self.merge_response(resp, self.json, payload))
         self._pending_updates.clear()
@@ -2107,7 +2142,9 @@ class JSONObject:
         is a body. A body that omits fields, or no body at all, as with
         ``204 No Content``, therefore keeps their values. A field that the
         server computes, such as a modification time, keeps its old value
-        unless the body holds it.
+        unless the body holds it. The body may change any field, including the
+        primary key, so the object then names the object that the body
+        describes.
 
         Override this hook for an API whose write responses hold something
         other than the object, such as a status message. Raise before changing
@@ -2126,11 +2163,12 @@ class JSONObject:
             The object's JSON after the write.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object.
+            ResponseShapeError: If the response body is not JSON, or does not
+                hold a JSON object.
         """
         json = {**current, **sent}
         if resp.content:
-            json.update(self._object_from_response(resp.json()))
+            json.update(self._object_from_response(_response_json(resp)))
 
         return json
 
@@ -2153,8 +2191,9 @@ class JSONObject:
         holds, if any, is merged over it.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object. The
-                server may have applied the updates, but they remain pending.
+            ResponseShapeError: If the response body does not hold a JSON
+                object. The server may have applied the updates, but they
+                remain pending.
         """
         self._queue_in_place_changes()
         if len(self._pending_updates) == 0:
@@ -2344,6 +2383,12 @@ class JSONObject:
         After ``update_from_json()`` on an object that was not loaded, this is
         the partial payload received so far.
 
+        The mapping is the object's own state, not a copy, so treat it as
+        read-only. Changing it, or a value inside it, bypasses change
+        tracking, so ``save()`` may send nothing or the wrong fields. Copy it
+        with ``copy.deepcopy()`` before changing it, and assign fields to
+        change the object.
+
         Returns:
             JSON payload representing this object.
         """
@@ -2360,11 +2405,13 @@ class JSONObject:
         """Load this object's JSON from the API, keeping pending updates.
 
         Raises:
-            TypeError: If the response does not hold a JSON object.
+            ResponseShapeError: If the response does not hold a JSON object.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_in_place_changes()
-        json = self._object_from_response(self.api.get(self.url).json())
+        json = self._object_from_response(
+            _response_json(self.api.get(self.url))
+        )
 
         # Some APIs leave the primary key out of a detail response, because the
         # URL holds it. Keep the key that the object was loaded by, so that the
@@ -2537,7 +2584,11 @@ class JSONObject:
 
     @classmethod
     def create(
-        cls: type[Self], *, api: API | None = None, **kwargs: Any
+        cls: type[Self],
+        *,
+        api: API | None = None,
+        fields: Mapping[str, Any] | None = None,
+        **kwargs: Any,
     ) -> Self:
         """Create and return a new remote object.
 
@@ -2551,6 +2602,9 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. The new object keeps it as their API,
                 so their later requests use it too.
+            fields: Optional field values as a mapping, used as the keyword
+                arguments are. A key in it may be anything, including ``api``
+                or ``fields``.
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
@@ -2558,9 +2612,13 @@ class JSONObject:
             Newly created object instance.
 
         Raises:
-            TypeError: If the response does not hold a JSON object.
+            ResponseShapeError: If the response does not hold a JSON object.
+            TypeError: If a field is given both as a keyword argument and in
+                ``fields``.
         """
-        payload = cls._encode_fields(kwargs)
+        payload = cls._encode_fields(
+            _query_params(fields, kwargs, "Field", "fields")
+        )
         client = cls.api if api is None else api
         resp = client.post(cls.class_url, json=payload)
 
@@ -2624,7 +2682,7 @@ class JSONObject:
         Returns:
             Iterable of JSON objects used to construct model instances.
         """
-        return cls.collection_items(resp.json())
+        return cls.collection_items(_response_json(resp))
 
     @classmethod
     def collection_items(cls, payload: Any) -> Iterable[Any]:
@@ -2647,12 +2705,13 @@ class JSONObject:
             Iterable of JSON objects used to construct model instances.
 
         Raises:
-            TypeError: If the payload is not a supported collection response.
+            ResponseShapeError: If the payload is not a supported collection
+                response.
         """
         if isinstance(payload, list):
             return payload
 
-        raise TypeError(
+        raise ResponseShapeError(
             f"{cls.__name__}.collection_items() expected a list response, "
             f"got {type(payload).__name__}"
         )
@@ -2705,7 +2764,7 @@ class JSONObject:
         """
         json = cls.object_json(payload)
         if not isinstance(json, Mapping):
-            raise TypeError(
+            raise ResponseShapeError(
                 f"{cls.__name__} response must hold a JSON object, "
                 f"got {type(json).__name__}"
             )
@@ -2902,6 +2961,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Iterator[Self]:
         """Query objects matching request parameters.
@@ -2923,6 +2983,10 @@ class JSONObject:
         iterable other than a string, bytes, or a mapping, such as a generator
         or a ``deque``, is a collection.
 
+        The keyword arguments ``api``, ``prefetch``, ``defaults``, and
+        ``params`` of the query methods are not query parameters. Pass a
+        parameter with one of these names in ``params``.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -2930,6 +2994,10 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. Returned objects keep it as their
                 API, so their later requests use it too.
+            params: Optional query parameters as a mapping, encoded as the
+                keyword arguments are. A name in it may be anything, including
+                ``api``, ``prefetch``, ``defaults``, or ``params``, which the
+                query methods reserve for themselves.
             **kwargs: Query string parameters.
 
         Returns:
@@ -2939,9 +3007,12 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
         # without bulk lookup fails even when the query matches nothing.
@@ -2949,7 +3020,7 @@ class JSONObject:
             cls._prefetch_info(field)
 
         client = cls.api if api is None else api
-        resp = client.get(cls.class_url, params=cls._encode_query(kwargs))
+        resp = client.get(cls.class_url, params=cls._encode_query(query))
         token = _query_api.set((cls, client))
         try:
             items = cls.collection_items_from_response(resp)
@@ -2996,6 +3067,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
         """Fetch exactly one object matching query parameters.
@@ -3015,6 +3087,8 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. The returned object keeps it as their
                 API, so their later requests use it too.
+            params: Optional query parameters as a mapping, as for
+                ``filter()``.
             **kwargs: Query string parameters.
 
         Returns:
@@ -3026,18 +3100,21 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
-        results = iter(cls.filter(prefetch=prefetch, api=api, **kwargs))
+        query = _query_params(params, kwargs)
+        results = iter(cls.filter(prefetch=prefetch, api=api, params=query))
         first = next(results, None)
         if first is None:
-            raise DoesNotExist(f"No {_describe_lookup(cls, kwargs)} exists")
+            raise DoesNotExist(f"No {_describe_lookup(cls, query)} exists")
 
         second = next(results, None)
         if second is not None:
             raise MultipleObjectsReturned(
-                f"More than one {_describe_lookup(cls, kwargs)} exists"
+                f"More than one {_describe_lookup(cls, query)} exists"
             )
 
         return first
@@ -3048,6 +3125,7 @@ class JSONObject:
         defaults: Mapping[str, Any] | None = None,
         *,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
@@ -3083,6 +3161,9 @@ class JSONObject:
             api: Optional API to send the lookup and any creation with, instead
                 of the API registered for the class. The returned object keeps
                 it as its API, so its later requests use it too.
+            params: Optional fields and lookups as a mapping, used as the
+                keyword arguments are. A name in it may be anything, including
+                one that the query methods reserve, such as ``api``.
             **kwargs: Fields used for lookup and included in creation.
 
         Returns:
@@ -3093,6 +3174,8 @@ class JSONObject:
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
         """
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once.
@@ -3101,9 +3184,9 @@ class JSONObject:
             if isinstance(value, Iterable)
             and not isinstance(value, (Collection, str, bytes, Mapping))
             else value
-            for name, value in kwargs.items()
+            for name, value in _query_params(params, kwargs).items()
         }
-        results = cls.filter(api=api, **kwargs)
+        results = cls.filter(api=api, params=kwargs)
         first = next(results, None)
         if first is not None:
             second = next(results, None)
@@ -3123,5 +3206,4 @@ class JSONObject:
         if defaults is not None:
             create_kwargs.update(defaults)
 
-        obj = cls.create(api=api, **create_kwargs)
-        return obj, True
+        return cls.create(api=api, fields=create_kwargs), True

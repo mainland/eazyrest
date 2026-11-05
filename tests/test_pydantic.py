@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import enum
+import importlib
 import subprocess
 import sys
 import uuid
@@ -48,7 +49,7 @@ from eazyrest import (
     JSONObject,
     json_object,
 )
-from eazyrest.eazyrest import (
+from eazyrest._models import (
     BaseType,
     CollectionType,
     OptionalType,
@@ -530,7 +531,7 @@ def test_pydantic_fields_refuse_to_write_secrets(
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
         setattr(account, field, value)
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
-        Account.create(**{field: value})
+        Account.create(fields={field: value})
 
     assert requests_mock.call_count == 0
 
@@ -937,6 +938,17 @@ def test_pydantic_cannot_convert_eazyrest_models() -> None:
 
     with pytest.raises(FieldConversionError, match="an eazyrest model"):
         _ = asset.owners
+
+
+def test_pydantic_module_without_pydantic_names_the_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``eazyrest.pydantic`` without Pydantic says what to install."""
+    monkeypatch.setitem(sys.modules, "pydantic", None)
+    monkeypatch.delitem(sys.modules, "eazyrest.pydantic")
+
+    with pytest.raises(ImportError, match=r"eazyrest\[pydantic\] extra"):
+        importlib.import_module("eazyrest.pydantic")
 
 
 def test_pydantic_type_without_pydantic_raises(

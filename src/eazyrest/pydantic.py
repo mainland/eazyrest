@@ -24,6 +24,13 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Annotated, Any, Literal, TypeVar, Union, cast
 
+try:
+    import pydantic  # noqa: F401
+except ImportError as err:
+    raise ImportError(
+        "eazyrest.pydantic needs Pydantic, which the eazyrest[pydantic] extra "
+        "installs"
+    ) from err
 import typing_extensions
 from pydantic import (
     BaseModel,
@@ -42,7 +49,7 @@ from pydantic_core import (
 from typing_extensions import get_type_hints, is_typeddict
 
 from ._conversion import _current_conversion, _final_supertype, _supertype
-from .eazyrest import (
+from ._models import (
     JSONObject,
     _is_named_tuple,
     _is_type_alias,

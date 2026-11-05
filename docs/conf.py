@@ -51,8 +51,8 @@ intersphinx_mapping = {
 nitpicky = True
 nitpick_ignore = [
     # Sphinx cannot link to a type variable.
-    ("py:class", "eazyrest.eazyrest.T"),
-    # eazyrest.py imports TypeAdapter only for type checking, so autodoc cannot
+    ("py:class", "eazyrest._models.T"),
+    # _models.py imports TypeAdapter only for type checking, so autodoc cannot
     # qualify the name.
     ("py:class", "TypeAdapter"),
 ]

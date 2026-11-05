@@ -22,6 +22,14 @@
 ```
 
 ```{eval-rst}
+.. autoexception:: eazyrest.ResponseShapeError
+```
+
+```{eval-rst}
+.. autoexception:: eazyrest.UsageError
+```
+
+```{eval-rst}
 .. autofunction:: eazyrest.json_object
 ```
 
