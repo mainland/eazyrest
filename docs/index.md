@@ -10,6 +10,7 @@ quickstart
 guide
 drf
 reference
+changelog
 ```
 
 ## Overview

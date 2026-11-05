@@ -1,10 +1,11 @@
 """Stateful property tests of an object's local state against a server.
 
-A rule-based state machine applies random sequences of assignments, in- place
+A rule-based state machine applies random sequences of assignments, in-place
 changes, saves, refreshes, pushed updates, and write-mode changes to one
-object. A fake server records every write, and a model of the server, of the
-object's stored JSON, and of the values that reads return predicts the outcome
-of each step.
+object, which it loads or creates, and changes the values that the caller
+passed to ``create()``. A fake server records every write, and a model of the
+server, of the object's stored JSON, and of the values that reads return
+predicts the outcome of each step.
 """
 
 from __future__ import annotations
@@ -47,9 +48,11 @@ class Doc(StateBase):
     count: int
     tags: list[str]
     meta: dict[str, int]
+    # A bare dict is not converted, so its value is passed through as it is.
+    extra: dict  # type: ignore[type-arg]
 
 
-FIELDS = ("title", "count", "tags", "meta")
+FIELDS = ("title", "count", "tags", "meta", "extra")
 """Fields that the machine reads and writes."""
 
 WORDS = st.text(alphabet="abc", max_size=3)
@@ -58,6 +61,9 @@ VALUES = {
     "count": st.integers(min_value=-3, max_value=3),
     "tags": st.lists(WORDS, max_size=3),
     "meta": st.dictionaries(WORDS, st.integers(0, 3), max_size=3),
+    "extra": st.dictionaries(
+        WORDS, st.lists(st.integers(0, 3), max_size=2), max_size=2
+    ),
 }
 
 
@@ -120,12 +126,18 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return json.dumps(body)
         return json.dumps({"id": 1, **self.fake})
 
-    @initialize(data=st.data())
-    def create_object(self, data: st.DataObject) -> None:
-        """Create an unloaded object for a server object.
+    @initialize(
+        data=st.data(),
+        how=st.sampled_from(["load", "create-full", "create-key"]),
+    )
+    def create_object(self, data: st.DataObject, how: str) -> None:
+        """Make an object for a server object, by loading or creating it.
 
         Args:
             data: Hypothesis data object that draws each field's initial value.
+            how: ``"load"`` for an unloaded object, or ``"create-full"`` or
+                ``"create-key"`` for one that ``create()`` makes, with a
+                response holding the whole object or only its key.
         """
         self.fake: dict[str, Any] = {
             field: data.draw(VALUES[field]) for field in FIELDS
@@ -136,7 +148,18 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending: set[str] = set()
         self.in_place: set[str] = set()
         self.cached: set[str] = set()
-        self.obj = Doc(id=1)
+        # The values passed to create(), which the caller still holds.
+        self.caller: dict[str, Any] = {}
+        if how == "load":
+            self.obj = Doc(id=1)
+            return
+
+        body = {"id": 1, **self.fake} if how == "create-full" else {"id": 1}
+        self.mocker.post(
+            "https://state.example.com/docs/", status_code=201, json=body
+        )
+        self.caller = copy.deepcopy(self.fake)
+        self.obj = Doc.create(id=1, **self.caller)
 
     def detect_in_place_changes(self) -> None:
         """Model the detection of in-place changes as pending updates."""
@@ -209,6 +232,21 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.obj.meta[key] = value
         self.expected["meta"][key] = value
         self.in_place.add("meta")
+
+    @precondition(lambda self: bool(self.caller))
+    @rule(word=WORDS, key=WORDS)
+    def change_caller_values(self, word: str, key: str) -> None:
+        """Changing the values passed to ``create()`` changes nothing else.
+
+        Args:
+            word: Tag to append to the caller's ``tags`` list.
+            key: Key to set in the caller's ``meta`` and ``extra`` dicts.
+        """
+        self.caller["tags"].append(word)
+        self.caller["meta"][key] = 99
+        self.caller["extra"][key] = [99]
+        for items in self.caller["extra"].values():
+            items.append(98)
 
     @rule()
     def save(self) -> None:

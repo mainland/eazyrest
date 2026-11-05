@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
 
 from eazyrest import API, BaseType, JSONObject, json_object
 
@@ -149,3 +150,124 @@ def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
     assert lookup.last_request.qs == {"id": ["2"]}
     assert users[2].name == "Ada"
     assert users[2].api is override
+
+
+README = DOCS.parent / "README.md"
+QUICKSTART = DOCS / "quickstart.md"
+
+_DEMO = "https://jsonplaceholder.typicode.com"
+_DEMO_USER = {
+    "id": 1,
+    "name": "Leanne Graham",
+    "username": "Bret",
+    "email": "leanne@example.com",
+    "address": {},
+    "phone": "1-770-736-8031",
+    "website": "example.com",
+    "company": {},
+}
+_DEMO_TODOS = [
+    {"userId": 1, "id": 1, "title": "delectus aut autem", "completed": False},
+    {"userId": 1, "id": 2, "title": "quis ut est", "completed": False},
+]
+
+
+def _mock_demo_api(requests_mock: Any) -> Any:
+    """Serve the JSONPlaceholder requests that the examples send.
+
+    Args:
+        requests_mock: The ``requests_mock`` fixture.
+
+    Returns:
+        The mocked ``PATCH`` endpoint of the first todo.
+    """
+    requests_mock.get(f"{_DEMO}/todos/1/", json=_DEMO_TODOS[0])
+    requests_mock.get(f"{_DEMO}/users/1/", json=_DEMO_USER)
+    requests_mock.get(f"{_DEMO}/todos/?userId=1", json=_DEMO_TODOS)
+    return requests_mock.patch(
+        f"{_DEMO}/todos/1/", json={**_DEMO_TODOS[0], "completed": True}
+    )
+
+
+@pytest.mark.parametrize(
+    ("doc", "marker"),
+    [(README, "with API("), (QUICKSTART, "with API(")],
+)
+def test_front_page_examples_run(
+    requests_mock: Any,
+    capsys: pytest.CaptureFixture[str],
+    doc: Path,
+    marker: str,
+) -> None:
+    """The README and quickstart examples run against the demo API's shape.
+
+    Args:
+        doc: Document that holds the example.
+        marker: Text that identifies the example's block.
+    """
+    patch = _mock_demo_api(requests_mock)
+
+    run_guide_example(marker, doc=doc)
+
+    output = capsys.readouterr().out.splitlines()
+    assert output[0].startswith("delectus aut autem")
+    assert "Leanne Graham" in output[1]
+    assert "2" in output
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"completed": True}
+
+
+def test_merge_response_example_ignores_status_bodies(
+    requests_mock: Any,
+) -> None:
+    """The ``merge_response()`` example keeps the sent fields."""
+    example = run_guide_example("class StatusObject")
+    base: type[JSONObject] = example["StatusObject"]
+
+    @json_object
+    class Ticket(base):  # type: ignore[valid-type,misc]
+        class_url = "/tickets/"
+
+        id: int
+        title: str
+
+    Ticket.register_api(API("https://api.example.com/"))
+    requests_mock.patch(
+        "https://api.example.com/tickets/1/", json={"status": "ok"}
+    )
+    ticket = Ticket(json={"id": 1, "title": "old"})
+
+    ticket.title = "new"
+    ticket.save()
+
+    assert ticket.json == {"id": 1, "title": "new"}
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"detail": "Not found."}, "Not found."),
+        ({"email": ["This field must be unique."]}, "must be unique"),
+    ],
+)
+def test_drf_error_example_raises_its_exception(
+    requests_mock: Any, body: dict[str, Any], message: str
+) -> None:
+    """The DRF error example turns DRF's error bodies into its exception.
+
+    Args:
+        body: DRF error response body.
+        message: Pattern that the exception's message should match.
+    """
+    example = run_guide_example("class DRFAPIError", doc=DRF)
+    api = example["DRFAPI"]("https://api.example.com/")
+    requests_mock.get(
+        "https://api.example.com/users/9/", status_code=400, json=body
+    )
+
+    with pytest.raises(example["DRFAPIError"], match=message) as info:
+        api.get("/users/9/")
+
+    assert isinstance(info.value, requests.HTTPError)
+    assert info.value.response is not None
+    assert info.value.response.status_code == 400

@@ -832,3 +832,92 @@ def test_backslash_redirect_cannot_leave_api_origin(
         )
 
     assert not evil.called
+
+
+# Responses in the shapes that Django REST Framework's paginators produce, for
+# a collection of three items in pages of two.
+_PAGE_NUMBER = [
+    (
+        "https://example.com/v1/items/",
+        {
+            "count": 3,
+            "next": "https://example.com/v1/items/?page=2",
+            "previous": None,
+            "results": [{"id": 1}, {"id": 2}],
+        },
+    ),
+    (
+        "https://example.com/v1/items/?page=2",
+        {
+            "count": 3,
+            "next": None,
+            "previous": "https://example.com/v1/items/",
+            "results": [{"id": 3}],
+        },
+    ),
+]
+_LIMIT_OFFSET = [
+    (
+        "https://example.com/v1/items/?limit=2",
+        {
+            "count": 3,
+            "next": "https://example.com/v1/items/?limit=2&offset=2",
+            "previous": None,
+            "results": [{"id": 1}, {"id": 2}],
+        },
+    ),
+    (
+        "https://example.com/v1/items/?limit=2&offset=2",
+        {
+            "count": 3,
+            "next": None,
+            "previous": "https://example.com/v1/items/?limit=2",
+            "results": [{"id": 3}],
+        },
+    ),
+]
+_CURSOR = [
+    (
+        "https://example.com/v1/items/",
+        {
+            "next": "https://example.com/v1/items/?cursor=cD0y",
+            "previous": None,
+            "results": [{"id": 1}, {"id": 2}],
+        },
+    ),
+    (
+        "https://example.com/v1/items/?cursor=cD0y",
+        {
+            "next": None,
+            "previous": "https://example.com/v1/items/?cursor=cj0xJnA9Mw%3D%3D",
+            "results": [{"id": 3}],
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param(_PAGE_NUMBER, id="PageNumberPagination"),
+        pytest.param(_LIMIT_OFFSET, id="LimitOffsetPagination"),
+        pytest.param(_CURSOR, id="CursorPagination"),
+    ],
+)
+def test_drf_paginators_are_read_in_full(
+    requests_mock: Any, pages: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """Every page shape that DRF's paginators produce reads every item.
+
+    Args:
+        pages: URL and body of each page, in order.
+    """
+    api = API("https://example.com/v1/")
+    for url, body in pages[1:]:
+        requests_mock.get(url, json=body, complete_qs=True)
+    (first_url, first_page) = pages[0]
+
+    items = list(follow_next_links(api, first_page, url=first_url))
+
+    assert items == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert requests_mock.call_count == len(pages) - 1
