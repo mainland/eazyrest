@@ -1079,7 +1079,7 @@ class RelatedCollection(Iterable[T]):
             Each related object, created from the next raw JSON value.
         """
         for value in self._values:
-            yield self._owner.create_related(
+            yield self._owner._create_related(
                 value,
                 self._related_type,
                 field=self._field,
@@ -1838,7 +1838,7 @@ class JSONObject:
         # field cache independently while still sharing the related objects.
         self._prefetched_related = dict(prefetched_related)
 
-    def create_related(
+    def _create_related(
         self,
         arg: Any,
         ty: type[T],
@@ -1931,7 +1931,7 @@ class JSONObject:
                 return _decode(adapter, _copy_json(value))
 
             case RelatedType(model_type):
-                return self.create_related(
+                return self._create_related(
                     value,
                     model_type,
                     field=field,
@@ -2198,7 +2198,9 @@ class JSONObject:
         is a body. A body that omits fields, or no body at all, as with
         ``204 No Content``, therefore keeps their values. A field that the
         server computes, such as a modification time, keeps its old value
-        unless the body holds it.
+        unless the body holds it. The body may change any field, including the
+        primary key, so the object then names the object that the body
+        describes.
 
         Override this hook for an API whose write responses hold something
         other than the object, such as a status message. Raise before changing
@@ -2436,6 +2438,12 @@ class JSONObject:
 
         After ``update_from_json()`` on an object that was not loaded, this is
         the partial payload received so far.
+
+        The mapping is the object's own state, not a copy, so treat it as
+        read-only. Changing it, or a value inside it, bypasses change
+        tracking, so ``save()`` may send nothing or the wrong fields. Copy it
+        with ``copy.deepcopy()`` before changing it, and assign fields to
+        change the object.
 
         Returns:
             JSON payload representing this object.
