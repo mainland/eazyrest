@@ -852,6 +852,9 @@ _UNCHANGEABLE_VALUES = (
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
 
+_ONE_MINUTE = datetime.timedelta(minutes=1)
+"""The unit of an ISO 8601 UTC offset."""
+
 
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
@@ -1978,6 +1981,15 @@ class JSONObject:
                 if base_type is datetime.datetime and isinstance(
                     value, datetime.datetime
                 ):
+                    # isoformat() writes an offset such as +00:19:32, which a
+                    # zone gives some old dates, but ISO 8601 offsets are whole
+                    # minutes, so neither the field nor a server reads it.
+                    offset = value.utcoffset()
+                    if offset is not None and offset % _ONE_MINUTE:
+                        raise ValueError(
+                            "Datetime field values must have a UTC offset of "
+                            "whole minutes"
+                        )
                     return value.isoformat()
                 if base_type is datetime.date and isinstance(
                     value, datetime.date
