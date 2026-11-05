@@ -10,7 +10,16 @@ import sys
 import uuid
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any, ClassVar, Literal, NewType, cast
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    NewType,
+    TypeVar,
+    cast,
+)
 from urllib.parse import parse_qs, urlparse
 
 import pydantic
@@ -681,6 +690,30 @@ class StrictPair:
     first: int
 
 
+GenericT = TypeVar("GenericT")
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="allow"))
+class AllowingBox(Generic[GenericT]):
+    """Generic Pydantic dataclass that keeps keys but never writes them."""
+
+    first: GenericT
+
+
+@pydantic.dataclasses.dataclass
+class IgnoringBox(Generic[GenericT]):
+    """Generic Pydantic dataclass that drops undeclared keys."""
+
+    first: GenericT
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class StrictBox(Generic[GenericT]):
+    """Generic Pydantic dataclass that rejects undeclared keys."""
+
+    first: GenericT
+
+
 @json_object
 class Settings(PydanticBase):
     """Model with ``TypedDict`` and dataclass fields under several configs."""
@@ -694,6 +727,9 @@ class Settings(PydanticBase):
     pair: PydanticPair
     allowing_pair: AllowingPair
     strict_pair: StrictPair
+    allowing_box: AllowingBox[int]
+    ignoring_boxes: dict[str, IgnoringBox[datetime.date]]
+    strict_box: StrictBox[int]
 
 
 @pytest.mark.parametrize(
@@ -703,6 +739,8 @@ class Settings(PydanticBase):
         ("plain", "with_config"),
         ("pair", "never writes them for a dataclass"),
         ("allowing_pair", "never writes them for a dataclass"),
+        ("allowing_box", "never writes them for a dataclass"),
+        ("ignoring_boxes", "never writes them for a dataclass"),
     ],
 )
 def test_types_that_drop_keys_are_rejected(
@@ -722,6 +760,8 @@ def test_types_that_drop_keys_are_rejected(
             "plain": {"k": {"name": "a"}},
             "pair": {"first": 1, "second": 2},
             "allowing_pair": {"first": 1},
+            "allowing_box": {"first": 1, "keep": "server"},
+            "ignoring_boxes": {"k": {"first": "2024-01-01", "keep": "server"}},
         }
     )
 
@@ -735,7 +775,11 @@ def test_types_that_drop_keys_are_rejected(
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("strict", {"name": "a"}), ("strict_pair", {"first": 1})],
+    [
+        ("strict", {"name": "a"}),
+        ("strict_pair", {"first": 1}),
+        ("strict_box", {"first": 1}),
+    ],
 )
 def test_types_may_reject_undeclared_keys(field: str, value: Any) -> None:
     """A type that forbids undeclared keys reads values without them.
