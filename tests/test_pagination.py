@@ -368,6 +368,19 @@ def test_page_without_results_raises_value_error() -> None:
         list(follow_next_links(api, {"next": None}))
 
 
+@pytest.mark.parametrize("results", ["abc", {"name": 1}, None, 3])
+def test_page_results_must_be_a_list(results: Any) -> None:
+    """A page whose results are not a list raises before yielding items.
+
+    Args:
+        results: Malformed value of the page's ``results`` member.
+    """
+    api = API("https://example.com/v1/")
+
+    with pytest.raises(TypeError, match="'results' member"):
+        list(follow_next_links(api, {"next": None, "results": results}))
+
+
 def test_other_payload_raises_type_error() -> None:
     """Only lists and page mappings are collection responses."""
     api = API("https://example.com/v1/")
