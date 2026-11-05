@@ -981,6 +981,25 @@ def _check_model_write(resp: requests.Response) -> requests.Response:
     return resp
 
 
+def _query_type(conversion: AnalyzedType) -> AnalyzedType:
+    """Use primary keys for related query values, including hyperlinks.
+
+    Args:
+        conversion: Field's read/write conversion.
+
+    Returns:
+        The same conversion with each hyperlink represented by a key.
+    """
+    match conversion:
+        case RelatedType(model_type):
+            return RelatedType(model_type)
+        case OptionalType(inner_type):
+            return OptionalType(_query_type(inner_type))
+        case CollectionType(collection_type, item_type):
+            return CollectionType(collection_type, _query_type(item_type))
+    return conversion
+
+
 def _materialize_query_value(value: Any) -> Any:
     """Return a query value with any collection read into a list.
 
@@ -1179,20 +1198,26 @@ def _check_json_keys(
     cls: type[JSONObject],
     field_map: Mapping[str, str],
     exclude: AbstractSet[str],
+    write_map: Mapping[str, str] | None = None,
 ) -> None:
     """Check that no two fields of ``cls`` share a JSON key.
 
     Each field caches its own converted value, so assigning one of two fields
-    backed by the same key would leave the other reading a stale value.
+    backed by the same key would leave the other reading a stale value. Two
+    fields written under one key would overwrite each other in a write.
 
     Args:
         cls: Class being decorated.
         field_map: Mapping from Python attribute name to JSON key.
         exclude: Annotated attribute names to ignore.
+        write_map: Mapping from Python attribute name to the JSON key that
+            writes use.
 
     Raises:
-        ValueError: If two fields, declared or inherited, map to one key.
+        ValueError: If two fields, declared or inherited, map to one key, for
+            reads or for writes.
     """
+    write_map = write_map or {}
     declared = _declared_fields(cls, exclude)
     inherited = sorted(
         field
@@ -1214,6 +1239,20 @@ def _check_json_keys(
                 f"both map to the JSON key {json_field!r}"
             )
 
+    write_fields_by_key: dict[str, str] = {}
+    for field in [*inherited, *declared]:
+        if field in declared:
+            write_field = write_map.get(field, field_map.get(field, field))
+        else:
+            write_field = getattr(cls, field).write_field
+
+        other = write_fields_by_key.setdefault(write_field, field)
+        if other != field:
+            raise ValueError(
+                f"Fields {cls.__name__}.{other} and {cls.__name__}.{field} "
+                f"are both written under the JSON key {write_field!r}"
+            )
+
 
 def _check_options(
     cls: type[JSONObject],
@@ -1221,6 +1260,7 @@ def _check_options(
     field_map: Mapping[str, str],
     exclude: AbstractSet[str],
     write_only: AbstractSet[str] = frozenset(),
+    write_map: Mapping[str, str] | None = None,
 ) -> None:
     """Check that ``json_object()`` options name fields of ``cls``.
 
@@ -1233,6 +1273,8 @@ def _check_options(
         field_map: Mapping from Python attribute name to JSON key.
         exclude: Annotated attribute names to ignore.
         write_only: Names of fields that are written but never read.
+        write_map: Mapping from Python attribute name to the JSON key that
+            writes use.
 
     Raises:
         ValueError: If an option names no field of ``cls``, or the primary key
@@ -1253,6 +1295,13 @@ def _check_options(
         raise ValueError(
             f"json_object(field_map=...) maps {unknown_mapped}, which are not "
             f"fields declared on {cls.__name__}"
+        )
+
+    unknown_write_mapped = sorted(set(write_map or {}).difference(declared))
+    if unknown_write_mapped:
+        raise ValueError(
+            f"json_object(write_map=...) maps {unknown_write_mapped}, which "
+            f"are not fields declared on {cls.__name__}"
         )
 
     unknown_write_only = sorted(set(write_only).difference(declared))
@@ -1288,7 +1337,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
-    write_only: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> type[T]: ...
 
 
@@ -1300,7 +1350,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
-    write_only: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -1311,7 +1362,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
-    write_only: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -1333,11 +1385,23 @@ def json_object(
             declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
+        write_map: Optional mapping from Python attribute name to the JSON
+            key that writes use, for a field that the API returns under one
+            key and accepts under another. Django REST Framework, for
+            example, often returns a related object nested under ``user`` and
+            accepts its primary key as ``user_id``. Reads, queries, and the
+            object's JSON use the field's key. ``create()``, ``save()``, and
+            eager assignments send the field under its write key.
         write_only: Names of fields that the API accepts in writes but never
             returns, such as a password. Such a field can be passed to
             ``create()`` and assigned, and the next write sends it, but it is
             not kept in the object's JSON, and reading it raises
             ``AttributeError``.
+
+    A redeclared field inherits its read and write keys unless a mapping
+    explicitly replaces them. An omitted ``write_only`` option inherits that
+    policy too. An explicit set applies to every redeclared field, so an empty
+    set removes its inherited policy.
 
     Returns:
         The decorated class, or a decorator function when used with arguments.
@@ -1353,6 +1417,8 @@ def json_object(
     """
     if field_map is None:
         field_map = {}
+    if write_map is None:
+        write_map = {}
 
     def wrap(cls: type[T]) -> type[T]:
         """Install JSON descriptors on a ``JSONObject`` subclass.
@@ -1370,8 +1436,20 @@ def json_object(
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
-        _check_options(cls, pk, field_map, exclude, write_only)
-        _check_json_keys(cls, field_map, exclude)
+        read_keys = dict(field_map)
+        write_keys = dict(write_map)
+        hidden = set(write_only or ())
+        for field in _declared_fields(cls, exclude):
+            inherited = getattr(cls, field, None)
+            if not isinstance(inherited, JSONProperty):
+                continue
+            read_keys.setdefault(field, inherited.json_field)
+            if inherited.write_field != inherited.json_field:
+                write_keys.setdefault(field, inherited.write_field)
+            if write_only is None and inherited.write_only:
+                hidden.add(field)
+        _check_options(cls, pk, read_keys, exclude, hidden, write_keys)
+        _check_json_keys(cls, read_keys, exclude, write_keys)
 
         inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
         if pk is not None:
@@ -1399,14 +1477,15 @@ def json_object(
                     f"it to the JSON key {field!r} with field_map."
                 )
 
-            json_field = field_map.get(field, field)
+            json_field = read_keys.get(field, field)
 
             prop = JSONProperty(
                 cls,
                 json_field,
                 field,
                 is_primary_key=field == pk_field,
-                write_only=field in write_only,
+                write_only=field in hidden,
+                write_field=write_keys.get(field),
             )
 
             setattr(cls, field, prop)
@@ -1468,6 +1547,9 @@ class JSONProperty:
     write_only: bool = False
     """Whether the API accepts this field in writes but never returns it."""
 
+    write_field: str
+    """JSON key that writes send this field under, usually ``json_field``."""
+
     is_primary_key: bool = False
     """Whether this property is the primary key of the class that owns it.
 
@@ -1482,6 +1564,7 @@ class JSONProperty:
         field: str,
         is_primary_key: bool = False,
         write_only: bool = False,
+        write_field: str | None = None,
     ):
         """Initialize a property descriptor.
 
@@ -1492,12 +1575,15 @@ class JSONProperty:
             is_primary_key: Whether this property stores the primary key.
             write_only: Whether the API accepts this field in writes but never
                 returns it.
+            write_field: JSON key that writes send this field under, if not
+                ``json_field``.
         """
         self.cls = cls
         self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
         self.write_only = write_only
+        self.write_field = json_field if write_field is None else write_field
 
         # If this property is a primary key, then we store a reference to it in
         # the class's _pk attribute and the JSON field corresponding to the
@@ -2234,7 +2320,7 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(self.url, json=payload)
+            resp = self.api.patch(self.url, json=self._to_wire(payload))
             self._apply_patch_response(resp, payload)
             return
 
@@ -2251,11 +2337,37 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(self.url, json=payload)
+            resp = self.api.patch(self.url, json=self._to_wire(payload))
             self._apply_patch_response(resp, payload)
             return
 
         self._pending_updates[json_field] = value
+
+    @classmethod
+    def _to_wire(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a write's JSON with each field under its write key.
+
+        Args:
+            payload: JSON members keyed by the fields' JSON keys, as the
+                object's JSON is, or other keys, which are kept.
+
+        Returns:
+            ``payload`` with each field that ``write_map`` names under its
+            write key.
+        """
+        write_keys = {
+            descriptor.json_field: descriptor.write_field
+            for field in getattr(cls, "_json_fields", ())
+            if (descriptor := getattr(cls, field)).write_field
+            != descriptor.json_field
+        }
+        wire = {}
+        for key, value in payload.items():
+            target = write_keys.get(key, key)
+            if target in wire:
+                raise TypeError(f"Multiple fields write the JSON key {target}")
+            wire[target] = value
+        return wire
 
     @classmethod
     def _write_only_keys(cls) -> frozenset[str]:
@@ -2459,7 +2571,9 @@ class JSONObject:
         if len(self._pending_updates) == 0:
             return
 
-        resp = self.api.patch(self.url, json=self._pending_updates, **options)
+        resp = self.api.patch(
+            self.url, json=self._to_wire(self._pending_updates), **options
+        )
         self._apply_patch_response(resp, self._pending_updates)
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
@@ -2727,12 +2841,15 @@ class JSONObject:
         return json
 
     @classmethod
-    def _encode_fields(cls, fields: Mapping[str, Any]) -> dict[str, Any]:
+    def _encode_fields(
+        cls, fields: Mapping[str, Any], *, query: bool = False
+    ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
         Args:
             fields: Values keyed by Python attribute name for JSON-backed
                 fields, or by JSON key for other values.
+            query: Whether to encode a query, whose related values use keys.
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
@@ -2743,14 +2860,22 @@ class JSONObject:
 
         for field, value in fields.items():
             descriptor = getattr(cls, field, None)
+            key = (
+                descriptor.json_field
+                if isinstance(descriptor, JSONProperty)
+                else field
+            )
+            if key in payload:
+                raise TypeError(f"Multiple fields use the JSON key {key}")
             if isinstance(descriptor, JSONProperty):
                 with _converting(cls, field):
-                    payload[descriptor.json_field] = cls.to_json(
+                    conversion = descriptor.analyzed_type
+                    payload[key] = cls.to_json(
                         value,
-                        descriptor.analyzed_type,
+                        _query_type(conversion) if query else conversion,
                     )
             else:
-                payload[field] = value
+                payload[key] = value
 
         return payload
 
@@ -2814,7 +2939,8 @@ class JSONObject:
                 name: value
                 for name, value in params.items()
                 if not cls._is_single_collection_item(name, value)
-            }
+            },
+            query=True,
         )
         for name, value in params.items():
             if cls._is_single_collection_item(name, value):
@@ -2824,8 +2950,13 @@ class JSONObject:
                 collection = _unwrap_optional_type(descriptor.analyzed_type)
                 assert isinstance(collection, CollectionType)
                 with _converting(cls, name):
+                    if descriptor.json_field in payload:
+                        raise TypeError(
+                            "Multiple fields use the JSON key "
+                            f"{descriptor.json_field}"
+                        )
                     payload[descriptor.json_field] = cls.to_json(
-                        value, collection.item_type
+                        value, _query_type(collection.item_type)
                     )
 
         for name in params:
@@ -2836,6 +2967,16 @@ class JSONObject:
                 else name
             )
             value = _materialize_query_value(payload[json_field])
+            if not isinstance(descriptor, JSONProperty):
+                if isinstance(value, JSONObject):
+                    value = cls.to_json(value, RelatedType(type(value)))
+                elif isinstance(value, list):
+                    value = [
+                        cls.to_json(item, RelatedType(type(item)))
+                        if isinstance(item, JSONObject)
+                        else item
+                        for item in value
+                    ]
             problem = _unsendable_query_value(value)
             if problem is not None:
                 raise ValueError(
@@ -2892,7 +3033,7 @@ class JSONObject:
         )
         client = cls.api if api is None else api
         resp = _check_model_write(
-            client.post(cls.class_url, json=payload, **options)
+            client.post(cls.class_url, json=cls._to_wire(payload), **options)
         )
 
         # The object keeps neither a write-only field nor an extra key.
@@ -3247,7 +3388,8 @@ class JSONObject:
         Parameters named after JSON-backed fields are renamed by ``field_map``
         and converted to JSON values, so ``user=User(id=2)`` is sent as
         ``userId=2`` when ``field_map={"user": "userId"}``. Other parameters
-        are sent unchanged.
+        are sent unchanged, except that a model instance, also as an item of a
+        collection, is sent as its primary key.
 
         Every parameter must have a value that requests sends intact. It must
         not be ``None``, an empty collection, or a mapping, and a collection
@@ -3411,9 +3553,11 @@ class JSONObject:
         way as ``create()``. JSON-backed fields are renamed by ``field_map``
         and converted to JSON values, so ``user=User(id=2)`` is sent as
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
-        unchanged. Every key in ``kwargs`` is sent in the lookup's query
-        string, which servers and proxies may log, so pass a value that only
-        the creation needs, such as a password, in ``defaults``.
+        unchanged, except that the lookup sends a model instance as its
+        primary key, as ``filter()`` does. Every key in ``kwargs`` is sent in
+        the lookup's query string, which servers and proxies may log, so pass
+        a value that only the creation needs, such as a password, in
+        ``defaults``.
 
         As in Django, a key that contains ``__`` and does not name a field,
         such as ``name__iexact`` or ``created__gte``, is a lookup rather than a

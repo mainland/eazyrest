@@ -4863,3 +4863,97 @@ def test_write_only_must_name_a_readable_field(
         class Broken(ModelBase):
             id: int
             name: str
+
+
+@json_object(write_map={"owner": "owner_id"})
+class Chore(ModelBase):
+    """Model whose relation is read nested and written as a primary key."""
+
+    class_url = "/chores/"
+
+    id: int
+    title: str
+    owner: User
+
+
+CHORE_JSON = {"id": 1, "title": "t", "owner": {"id": 2, "name": "Ada"}}
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize("respond", [True, False])
+def test_write_map_sends_a_field_under_its_write_key(
+    requests_mock: Any, write_mode: WriteMode, respond: bool
+) -> None:
+    """A mapped field is read from its key and written under another.
+
+    Args:
+        write_mode: Write mode of the chore.
+        respond: Whether the server answers with the object or no content.
+    """
+    if respond:
+        patch = requests_mock.patch(
+            "https://example.com/v1/chores/1/",
+            json={**CHORE_JSON, "owner": {"id": 3, "name": "Bob"}},
+        )
+    else:
+        patch = requests_mock.patch(
+            "https://example.com/v1/chores/1/", status_code=204
+        )
+    chore = Chore(json=CHORE_JSON, write_mode=write_mode)
+    assert chore.owner.name == "Ada"
+    bob = User(id=3)
+
+    chore.owner = bob
+    chore.save()
+
+    assert patch.last_request.json() == {"owner_id": 3}
+    assert "owner_id" not in chore.json
+    if respond:
+        assert chore.json["owner"] == {"id": 3, "name": "Bob"}
+        assert chore.owner.name == "Bob"
+    else:
+        assert chore.json["owner"] == 3
+        assert chore.owner is bob
+    assert requests_mock.call_count == 1
+
+
+def test_write_map_applies_to_create_but_not_queries(
+    requests_mock: Any,
+) -> None:
+    """``create()`` writes the mapped key, and a query uses the read key."""
+    post = requests_mock.post(
+        "https://example.com/v1/chores/", json=CHORE_JSON
+    )
+    lookup = requests_mock.get("https://example.com/v1/chores/", json=[])
+
+    chore = Chore.create(title="t", owner=User(id=2))
+    list(Chore.filter(owner=User(id=2)))
+
+    assert post.last_request.json() == {"title": "t", "owner_id": 2}
+    assert chore.owner.name == "Ada"
+    assert lookup.last_request.qs == {"owner": ["2"]}
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"write_map": {"nope": "x"}}, "maps \\['nope'\\]"),
+        ({"write_map": {"name": "title"}}, "both written under"),
+    ],
+)
+def test_write_map_must_name_fields_and_distinct_keys(
+    options: dict[str, Any], match: str
+) -> None:
+    """``write_map`` names fields, and no two fields share a write key.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str
+            title: str

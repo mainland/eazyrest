@@ -46,6 +46,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 
 - `json_object()` takes its options as keyword arguments only. It raises `ValueError` for a field that would replace a `JSONObject` attribute, for a `pk=`, `field_map=`, or `exclude=` name that is not a field, and for two fields with the same JSON key. A class with decorated ancestors that are not subclasses of one another raises `TypeError`.
 - A decorated subclass keeps the primary key that it inherits.
+- Redeclaring a field also preserves its read and write keys and, when those options are omitted, its write-only policies. Explicit mappings or policy sets override those defaults.
 
 #### URLs and HTTP
 

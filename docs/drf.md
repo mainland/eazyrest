@@ -179,9 +179,35 @@ class Todo(DRFObject):
     title: str
 ```
 
-Related fields can be represented as primary keys, embedded objects, or hyperlinks depending on the serializer. Primary keys and embedded objects work naturally with `JSONObject` annotations. Hyperlinked relationship fields are usually best modeled as `str` fields unless the API also exposes a stable primary key that `eazyrest` can use to build the related object URL.
+Related fields can be represented as primary keys, embedded objects, or hyperlinks depending on the serializer. Primary keys and embedded objects work naturally with `JSONObject` annotations.
 
-For read-only serializer fields that you still want to read, annotate them normally. For server-computed values that should not be JSON-backed on the client, use `exclude=`. For write-only serializer fields such as passwords, either pass them directly to `create()` as extra JSON keys or keep them off the model class entirely.
+A common serializer reads a relation nested and writes it as a primary key under another name:
+
+```python
+class TodoSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    user_id = serializers.PrimaryKeyRelatedField(
+        source="user", queryset=User.objects.all(), write_only=True
+    )
+```
+
+Use `write_map` to send such a field under its write key. Reads, queries, and the object's JSON keep using `user`, and `create()`, `save()`, and eager assignments send the related object's primary key as `user_id`. The response's nested object then replaces the assigned one:
+
+```python
+@json_object(write_map={"user": "user_id"})
+class Todo(DRFObject):
+    class_url = "/todos/"
+
+    id: int
+    user: User
+    title: str
+
+
+todo.user = User(id=3)
+todo.save()  # PATCH {"user_id": 3}
+```
+
+For read-only serializer fields that you still want to read, annotate them normally. For server-computed values that should not be JSON-backed on the client, use `exclude=`. For write-only serializer fields such as passwords, declare them and list them in `json_object(write_only=...)`.
 
 ## Pass through filtering, search, and ordering
 

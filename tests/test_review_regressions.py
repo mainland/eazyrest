@@ -51,7 +51,7 @@ class ReviewUser(ReviewBase):
         return {pk: cls(json={"id": pk, "name": "Ada"}, api=api) for pk in pks}
 
 
-@json_object(write_only={"password"})
+@json_object(write_only={"password"}, write_map={"owner": "owner_id"})
 class ReviewDoc(ReviewBase):
     """Resource combining the new write and relation features."""
 
@@ -144,6 +144,78 @@ def test_model_writes_refuse_streaming(
 
     assert not requests_mock.called
     assert doc._pending_updates == {"title": "new"}
+
+
+def test_create_rejects_colliding_write_names(requests_mock: Any) -> None:
+    """Mapped fields and raw wire names must not overwrite one another."""
+    with pytest.raises(TypeError, match="owner_id"):
+        ReviewDoc.create(owner=ReviewUser(id=2), owner_id=3)
+
+    assert not requests_mock.called
+
+
+def test_query_rejects_colliding_read_names(requests_mock: Any) -> None:
+    """A raw alias must not replace a converted query constraint."""
+
+    @json_object(field_map={"owner": "owner_id"})
+    class Mapped(ReviewDoc):
+        owner: ReviewUser
+
+    with pytest.raises(TypeError, match="owner_id"):
+        Mapped.filter(owner=ReviewUser(id=2), owner_id=3)
+
+    assert not requests_mock.called
+
+
+def test_non_field_queries_encode_model_keys(requests_mock: Any) -> None:
+    """Lookup syntax must not send a model's display representation."""
+    query = requests_mock.get("https://review.example/docs/", json=[])
+
+    list(ReviewDoc.filter(owner__in=[ReviewUser(id=2), ReviewUser(id=3)]))
+
+    assert query.last_request.qs == {"owner__in": ["2", "3"]}
+
+
+def test_redeclared_fields_keep_their_options() -> None:
+    """Narrowing or repeating an annotation preserves its wire policy."""
+
+    @json_object(
+        field_map={"owner": "user"},
+        write_map={"owner": "user_id"},
+        write_only={"password"},
+    )
+    class Parent(ReviewBase):
+        id: int
+        owner: ReviewUser
+        password: str
+
+    @json_object
+    class Child(Parent):
+        owner: ReviewUser
+        password: str
+
+    child = Child(json={"id": 1, "user": 2, "password": "dummy"})
+
+    assert child.owner.pk == 2
+    assert Child.owner.json_field == "user"  # type: ignore[attr-defined]
+    assert Child.owner.write_field == "user_id"  # type: ignore[attr-defined]
+    assert "password" not in child.json
+    with pytest.raises(AttributeError, match="write-only"):
+        _ = child.password
+
+
+def test_redeclared_field_can_explicitly_replace_its_policy() -> None:
+    """An explicit set or mapping overrides a redeclared field's policy."""
+
+    @json_object(write_only=set(), write_map={"owner": "owner"})
+    class Child(ReviewDoc):
+        password: str
+        owner: ReviewUser
+
+    child = Child(json={**DOC_JSON, "password": "dummy"})
+
+    assert child.password == "dummy"
+    assert Child.owner.write_field == "owner"  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(

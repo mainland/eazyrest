@@ -45,6 +45,8 @@ class User(JSONObject):
     resource_url: str
 ```
 
+Use `write_map=` for a field that the API returns under one key and accepts under another, such as a related object returned nested under `user` and written as its primary key under `user_id`. Reads, queries, and the object's JSON use the field's key, and writes send it under the mapped key. The [Django REST Framework guide](drf.md#map-serializer-names-and-relation-shapes) shows an example.
+
 Use `write_only=` for a field that the API accepts in writes but never returns, such as a password. It can be passed to `create()` or assigned, and the next write sends it, but the object never keeps it in its JSON, assigning it does not load the object, and reading it raises `AttributeError`:
 
 ```python
@@ -62,7 +64,7 @@ account.password = "correct horse battery staple"
 account.save()  # PATCH {"password": "..."}, without loading the account
 ```
 
-A decorated subclass of a decorated model keeps the fields of its base class and adds its own. A model inherits fields through a single chain of decorated classes. A class whose decorated ancestors are not subclasses of one another, such as `class Both(Named, Dated)` for two decorated models, raises `TypeError` when it is defined. Put shared fields on one decorated base class instead. Undecorated base classes, which declare no fields, can be mixed in freely, for example to share hooks such as `collection_items()`.
+A decorated subclass of a decorated model keeps the fields of its base class and adds its own. Redeclaring a field preserves its `field_map` and `write_map` keys unless an explicit mapping replaces them. It also inherits `write_only` policies when those options are omitted. An explicit set applies to the fields redeclared on that class, so an empty set clears their inherited policy. A model inherits fields through a single chain of decorated classes. A class whose decorated ancestors are not subclasses of one another, such as `class Both(Named, Dated)` for two decorated models, raises `TypeError` when it is defined. Put shared fields on one decorated base class instead. Undecorated base classes, which declare no fields, can be mixed in freely, for example to share hooks such as `collection_items()`.
 
 ## Loading and caching
 
@@ -376,7 +378,7 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
-`filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
+`filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged, except that a model instance, also as an item of a collection, is sent as its primary key, so `Todo.filter(user__in=[ada, bob])` sends `user__in=1&user__in=2`.
 
 The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
