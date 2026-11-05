@@ -12,6 +12,7 @@ import requests
 import urllib3
 from requests.utils import requote_uri
 
+from ._errors import RedirectError
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -182,9 +183,9 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         target: Redirect target.
 
     Raises:
-        requests.HTTPError: If requests would follow ``resp`` with another
-            method, or without the body of the request it answers. The
-            response is closed first.
+        RedirectError: If requests would follow ``resp`` with another method,
+            or without the body of the request it answers. The response is
+            closed first.
     """
     request = resp.request
     method = (request.method or "").upper()
@@ -195,7 +196,7 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         return
 
     resp.close()
-    raise requests.HTTPError(
+    raise RedirectError(
         f"{method} {resp.url} was redirected with status {resp.status_code} "
         f"to {target}, which requests follows "
         + ("as a GET" if changed else "without the request body")
@@ -218,7 +219,7 @@ class API:
     302, and any other request answered with a 302 or 303, as a ``GET``, and it
     resends a request answered with a 301 without its body. The server then
     never receives the original request, so a redirect that would change the
-    method or drop a body raises ``requests.HTTPError`` before it is followed.
+    method or drop a body raises ``RedirectError`` before it is followed.
     Django's ``APPEND_SLASH`` answers a URL that lacks its trailing slash with
     such a redirect.
 
@@ -226,8 +227,9 @@ class API:
     an origin in ``redirect_origins``. Requests drops an ``Authorization``
     header when a redirect leaves the host, but it sends every other header,
     such as an API key or a CSRF token, and a 307 or 308 resends the body. A
-    redirect to another origin raises ``requests.HTTPError`` before anything is
-    sent there.
+    redirect to another origin raises ``RedirectError`` before anything is sent
+    there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
+    the redirect.
     """
 
     base_url: str
@@ -465,10 +467,11 @@ class API:
             Validated HTTP response.
 
         Raises:
-            requests.HTTPError: If a redirect leads to an origin that is not
-                allowed, if requests would follow a redirect without the
-                request's body or with another method, or if
-                ``raise_for_response()`` raises it for the response.
+            RedirectError: If a redirect leads to an origin that is not
+                allowed, or if requests would follow a redirect without the
+                request's body or with another method.
+            requests.HTTPError: If ``raise_for_response()`` raises it for the
+                response.
         """
         kwargs.setdefault("timeout", self.timeout)
         if self.session.verify is not True:
@@ -514,8 +517,8 @@ class API:
                     which are ignored.
 
             Raises:
-                requests.HTTPError: If ``resp`` redirects to an origin that is
-                    not allowed, or if requests would follow it without the
+                RedirectError: If ``resp`` redirects to an origin that is not
+                    allowed, or if requests would follow it without the
                     request's body. The response is closed first.
             """
             target = self.session.get_redirect_target(resp)
@@ -529,7 +532,7 @@ class API:
                 return
 
             resp.close()
-            raise requests.HTTPError(
+            raise RedirectError(
                 f"{resp.request.method} {resp.url} was redirected with status "
                 f"{resp.status_code} to {destination}, whose origin differs "
                 "from the request's, so it was not followed. Add the origin "
@@ -556,7 +559,7 @@ class API:
             resp: Final response, after requests followed any redirects.
 
         Raises:
-            requests.HTTPError: If requests followed a redirect that dropped
+            RedirectError: If requests followed a redirect that dropped
                 the original request's body or changed its method.
         """
         if not resp.history:
@@ -569,7 +572,7 @@ class API:
             for hop in resp.history
         )
         if dropped or resp.request.method != redirect.request.method:
-            raise requests.HTTPError(
+            raise RedirectError(
                 f"{sent} {redirect.url} was redirected with status "
                 f"{redirect.status_code}, and requests resent it to "
                 f"{resp.url} as {resp.request.method}, so the {sent} request "

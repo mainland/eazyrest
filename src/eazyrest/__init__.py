@@ -1,11 +1,17 @@
 """Public package exports for eazyrest."""
 
+from ._errors import (
+    EazyrestError,
+    PaginationError,
+    RedirectError,
+    ResponseShapeError,
+    UsageError,
+)
 from ._models import (
     AnalyzedType,
     BaseType,
     CollectionType,
     DoesNotExist,
-    EazyrestError,
     FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
@@ -31,9 +37,13 @@ __all__ = [
     "JSONObject",
     "MultipleObjectsReturned",
     "OptionalType",
+    "PaginationError",
     "PrefetchNotSupported",
     "PydanticType",
+    "RedirectError",
     "RelatedType",
+    "ResponseShapeError",
+    "UsageError",
     "WriteMode",
     "follow_link_headers",
     "follow_next_links",
