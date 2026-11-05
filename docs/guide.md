@@ -361,7 +361,7 @@ admins = list(User.filter(role="admin"))
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
 
-The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`:
+The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -523,6 +523,17 @@ todo = Todo(id=1, write_mode="eager")
 todo.completed = True
 ```
 
+### Request options
+
+`save()`, `create()`, and `delete()` take `request_options=`, keyword arguments for the request as requests takes them, such as `headers` or `params`. They cannot set the body, which the write builds, or enable `stream=True`, because model writes consume their responses. An unfollowed final 3xx raises `RedirectError`, including when `allow_redirects=False`, and pending updates remain pending. A server that supports optimistic concurrency, for example, refuses a write whose `If-Match` header no longer names the object's current version:
+
+```python
+todo.title = "new"
+todo.save(request_options={"headers": {"If-Match": etag}})
+```
+
+An assignment in eager mode sends its `PATCH` with no options. Use lazy mode and `save()` for a write that needs them.
+
 ### Write responses
 
 After a successful write, the object's JSON holds the fields that were sent, with the object that the response body holds, if any, merged over them. A response with no body, such as `204 No Content`, and a body that holds only some fields, such as only the changed ones, therefore leave the other fields as they were. A field that the server computes, such as a modification time, keeps its old value unless the body holds it. Call `refresh()` to reload it.
@@ -665,7 +676,7 @@ eazyrest raises a subclass of `EazyrestError` for each condition that its own po
 - `APIError`, a `requests.HTTPError`, for a response whose status reports a failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON body, and the message names the body's members but not their text.
 - `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without `bulk_get_by_pks()`.
-- `RedirectError`, a `requests.HTTPError`, for a redirect that is refused before it is followed. Its `response` is the redirect.
+- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect or an unfollowed final 3xx on a model write. Its `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that is not JSON, holds non-finite or unrepresentable numbers, or does not have the expected shape. Its message does not quote the body.
 - `UsageError`, a `RuntimeError`, for a model without a registered API or a second iteration of a lazy related collection.

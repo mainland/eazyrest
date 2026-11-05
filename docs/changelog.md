@@ -21,6 +21,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - Assigning a field no longer sends a `PATCH` at once. By default, an object is in lazy write mode, and assignments wait for `save()`, which sends them in one `PATCH`. Call `save()` after changing an object, or construct the API with `API(url, default_write_mode="eager")`, or call `obj.set_write_mode("eager")`, to send each assignment as it is made.
 - A write response is merged into the object through the new `merge_response()` hook, rather than replacing its JSON. A response without a body, such as `204 No Content`, keeps the values that were sent. `create()` keeps only the JSON-backed fields it sent, so a write-only key such as a password is not kept.
 - A redirect that would change a write's method or drop its body, such as a 301 in answer to a `PATCH` to a URL without its trailing slash, raises `RedirectError` before it is followed, and a lazy update stays pending. Use the URL that the server expects, for example by setting `API.trailing_slash`.
+- `delete()` takes request options in `request_options=`, as `save()` and `create()` do, rather than as positional and keyword arguments for `API.delete()`. Replace `obj.delete(headers=h)` with `obj.delete(request_options={"headers": h})`.
 
 #### Queries
 
@@ -28,7 +29,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - `filter(url=...)` is removed. Override `class_url`, or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()` encodes them: renamed by `field_map`, converted to JSON, and with booleans sent as `true` and `false`.
 - A query parameter whose value requests would drop or change raises `ValueError` before the request: `None`, an empty collection or iterator, a mapping, or a collection holding `None` or another collection. In 0.9.0, such a constraint was silently omitted, so `get()` could return an object that does not match it.
-- The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options. Pass a query parameter with one of these names in `params=`. `create()` likewise takes `fields=`.
+- The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, and they reserve `request_options`. Pass a query parameter with one of these names in `params=`. `create()` likewise takes `fields=`.
 - In `get_or_create()`, a key that contains `__` and is not a field, such as `name__iexact`, is sent only in the lookup, not in the creation payload. Every keyword argument is sent in the lookup's query string, so pass a value that only the creation needs, such as a password, in `defaults`.
 - `DoesNotExist` and `MultipleObjectsReturned` derive from `EazyrestError` rather than directly from `Exception`, and their messages name the model and the lookup parameters, but not their values.
 

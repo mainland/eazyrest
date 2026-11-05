@@ -13,6 +13,7 @@ from eazyrest import (
     FieldConversionError,
     JSONObject,
     LimitExceeded,
+    RedirectError,
     ResponseShapeError,
     json_object,
 )
@@ -74,6 +75,75 @@ DOC_JSON = {
     "owner": 2,
     "linked": "https://review.example/users/2/",
 }
+
+
+@pytest.mark.parametrize("operation", ["create", "save", "delete"])
+@pytest.mark.parametrize("status", [300, 307, 308])
+def test_model_writes_reject_unconfirmed_redirects(
+    requests_mock: Any, operation: str, status: int
+) -> None:
+    """An unfollowed response cannot acknowledge a model write.
+
+    Args:
+        operation: Model write to perform.
+        status: Non-success final status.
+    """
+    method = {
+        "create": "POST",
+        "save": "PATCH",
+        "full": "PUT",
+        "delete": "DELETE",
+    }[operation]
+    url = "https://review.example/docs/" if operation == "create" else DOC_URL
+    requests_mock.register_uri(
+        method, url, status_code=status, headers={"Location": "/elsewhere/"}
+    )
+    doc = ReviewDoc(json=DOC_JSON)
+    doc.title = "new"
+    options = {"allow_redirects": False}
+
+    def write() -> None:
+        """Perform the requested operation."""
+        if operation == "create":
+            ReviewDoc.create(title="new", request_options=options)
+        elif operation == "delete":
+            doc.delete(request_options=options)
+        else:
+            doc.save(request_options=options)
+
+    with pytest.raises(RedirectError):
+        write()
+
+    assert doc._pending_updates == {"title": "new"}
+    assert requests_mock.call_count == 1
+
+
+@pytest.mark.parametrize("operation", ["create", "save", "delete"])
+def test_model_writes_refuse_streaming(
+    requests_mock: Any, operation: str
+) -> None:
+    """Model operations consume responses themselves and must keep limits.
+
+    Args:
+        operation: Model write to perform.
+    """
+    doc = ReviewDoc(json=DOC_JSON)
+    doc.title = "new"
+
+    def write() -> None:
+        """Perform the requested operation."""
+        if operation == "create":
+            ReviewDoc.create(title="new", request_options={"stream": True})
+        elif operation == "delete":
+            doc.delete(request_options={"stream": True})
+        else:
+            doc.save(request_options={"stream": True})
+
+    with pytest.raises(TypeError, match="stream"):
+        write()
+
+    assert not requests_mock.called
+    assert doc._pending_updates == {"title": "new"}
 
 
 @pytest.mark.parametrize(
