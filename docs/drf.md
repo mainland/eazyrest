@@ -490,6 +490,8 @@ For large DRF APIs, `CursorPagination` is usually the cleanest built-in choice:
 
 `LimitOffsetPagination` is a good fit when clients need explicit slices, such as `?limit=100&offset=300`, and the result set is not so large that high offsets become expensive. `PageNumberPagination` is a good fit when the API is intentionally page-oriented, such as `?page=4`, and clients benefit from stable page-number links.
 
+With `PageNumberPagination` and `LimitOffsetPagination`, the iterator that `filter()` returns has the collection's size as `count`, from the first page. `CursorPagination` does not report a size, so `count` is `None`.
+
 Follow `next` links in `collection_items()`, as `follow_next_links()` does, rather than in related-field conversion. Related fields should describe one object's payload. Page traversal should describe how to walk a collection endpoint.
 
 ## Recommended DRF server-side setup

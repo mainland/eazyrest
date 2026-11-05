@@ -11,6 +11,7 @@ import requests
 from eazyrest import (
     API,
     JSONObject,
+    Results,
     follow_link_headers,
     follow_next_links,
     json_object,
@@ -921,3 +922,73 @@ def test_drf_paginators_are_read_in_full(
 
     assert items == [{"id": 1}, {"id": 2}, {"id": 3}]
     assert requests_mock.call_count == len(pages) - 1
+
+
+def test_filter_reports_the_collection_count(requests_mock: Any) -> None:
+    """``filter()`` passes on the first page's ``count``, and stays lazy."""
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json={
+            "count": 3,
+            "next": "https://example.com/v1/items/?page=2",
+            "results": [{"id": 1}, {"id": 2}],
+        },
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"count": 3, "next": None, "results": [{"id": 3}]},
+    )
+
+    items = Item.filter()
+
+    assert isinstance(items, Results)
+    assert items.count == 3
+    assert not second.called
+    assert [item.id for item in items] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    "payload", [[{"id": 1}], {"next": None, "results": []}, {"count": "3"}]
+)
+def test_count_is_none_when_the_response_has_none(payload: Any) -> None:
+    """A list, a page without ``count``, or a non-integer count gives None.
+
+    Args:
+        payload: First response of the collection.
+    """
+    api = API("https://example.com/v1/")
+
+    assert follow_next_links(api, payload).count is None
+
+
+def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
+    """Any iterable with an integer ``count`` gives ``filter()`` its count."""
+
+    class Counted:
+        count = 42
+
+        def __init__(self, items: list[Any]) -> None:
+            self.items = items
+
+        def __iter__(self) -> Any:
+            return iter(self.items)
+
+    @json_object
+    class Custom(PagedBase):
+        class_url = "/custom/"
+
+        id: int
+
+        @classmethod
+        def collection_items(cls, payload: Any) -> Any:
+            return Counted(payload["data"])
+
+    requests_mock.get(
+        "https://example.com/v1/custom/", json={"data": [{"id": 1}]}
+    )
+
+    items = Custom.filter()
+
+    assert items.count == 42
+    assert [item.id for item in items] == [1]
+    assert Custom.all().count == 42

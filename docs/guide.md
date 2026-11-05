@@ -378,6 +378,15 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+The iterator is a `Results`, whose `count` is the size of the whole collection when the response reports it, as a page of Django REST Framework's `PageNumberPagination` or `LimitOffsetPagination` does, and `None` otherwise. It is known as soon as `filter()` returns, before any item or later page is read:
+
+```python
+admins = User.filter(role="admin")
+print(f"{admins.count} admins")
+```
+
+`filter()` takes `count` from the iterable that `collection_items()` returns. `follow_next_links()` returns one with the first page's `count` member, and a hook of your own can return any iterable with an integer `count` attribute.
+
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged, except that a model instance, also as an item of a collection, is sent as its primary key, so `Todo.filter(user__in=[ada, bob])` sends `user__in=1&user__in=2`.
 
 The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:

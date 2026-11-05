@@ -313,6 +313,33 @@ def test_unrepresentable_json_keeps_the_error_boundary(
     assert info.value.data is None
 
 
+@pytest.mark.parametrize("prefetch", [None, "owner"])
+@pytest.mark.parametrize("item", [1, "ab", [["id", 1]]])
+def test_collection_items_must_be_objects(
+    requests_mock: Any, prefetch: str | None, item: Any
+) -> None:
+    """A collection cannot coerce a scalar or pairs into a resource.
+
+    Args:
+        prefetch: Whether to prefetch a related field.
+        item: Malformed collection member.
+    """
+    requests_mock.get("https://review.example/docs/", json=[item])
+
+    with pytest.raises(ResponseShapeError):
+        list(ReviewDoc.filter(prefetch=prefetch))
+
+
+def test_unhashable_prefetch_key_is_a_shape_error(requests_mock: Any) -> None:
+    """Malformed related keys fail at the response boundary."""
+    requests_mock.get(
+        "https://review.example/docs/", json=[{"id": 1, "owner": [2]}]
+    )
+
+    with pytest.raises(ResponseShapeError):
+        list(ReviewDoc.filter(prefetch="owner"))
+
+
 def test_error_body_depth_limit_is_not_silently_lost(
     requests_mock: Any,
 ) -> None:
