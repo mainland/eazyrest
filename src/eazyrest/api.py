@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextvars
 import sys
+import time
 from collections.abc import Callable, Collection
 from http.cookiejar import CookieJar
 from typing import Any
@@ -10,8 +12,17 @@ from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
 from requests.utils import requote_uri
+from urllib3.exceptions import (
+    DecodeError,
+    MaxRetryError,
+    ProtocolError,
+    ReadTimeoutError,
+    SSLError,
+)
+from urllib3.response import BaseHTTPResponse
+from urllib3.util import Retry
 
-from ._errors import RedirectError
+from ._errors import LimitExceeded, RedirectError, _response_json
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -216,6 +227,295 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
     )
 
 
+# Bytes to read from a response body at a time. read1() returns as soon as
+# any bytes arrive, so a slow body cannot hold a read open past the deadline
+# for longer than one socket timeout.
+_READ_SIZE = 64 * 1024
+
+
+class _Budget:
+    """The limits of one request: its body size and its total time."""
+
+    def __init__(
+        self, max_bytes: int | None, total_timeout: float | None
+    ) -> None:
+        """Start the budget of a request.
+
+        Args:
+            max_bytes: Greatest decoded body size of each response, or
+                ``None`` for no limit.
+            total_timeout: Seconds that the request may take, including
+                redirects and reading bodies, or ``None`` for no limit.
+        """
+        self.max_bytes = max_bytes
+        self.total_timeout = total_timeout
+        self.deadline = (
+            None if total_timeout is None else time.monotonic() + total_timeout
+        )
+
+    def timeout(self, timeout: Any) -> Any:
+        """Return a request timeout that ends no later than the deadline.
+
+        Args:
+            timeout: Timeout that the request would otherwise use, as requests
+                accepts it.
+
+        Returns:
+            ``timeout``, with each part reduced to the time remaining.
+        """
+        if self.deadline is None:
+            return timeout
+        remaining = max(self.deadline - time.monotonic(), 0.001)
+        if timeout is None:
+            return remaining
+        if isinstance(timeout, tuple):
+            return tuple(
+                remaining if part is None else min(part, remaining)
+                for part in timeout
+            )
+        return min(timeout, remaining)
+
+    def check_time(self, resp: requests.Response | None = None) -> None:
+        """Raise if the request has run out of time.
+
+        Args:
+            resp: Response being handled, if any, which is closed first.
+
+        Raises:
+            LimitExceeded: If the deadline has passed.
+        """
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            where = "The request"
+            if resp is not None:
+                resp.close()
+                where = f"{resp.request.method} {resp.url}"
+            raise LimitExceeded(
+                "total_timeout",
+                f"{where} took at least {self.total_timeout} seconds",
+            )
+
+    def read_body(self, resp: requests.Response) -> None:
+        """Read a streamed response's body within the budget.
+
+        The body is read into the response, so ``resp.content`` and
+        ``resp.json()`` use it as if requests had read it.
+
+        Args:
+            resp: Response sent with ``stream=True``, whose body is unread.
+
+        Raises:
+            LimitExceeded: If the body is larger than the limit, or reading it
+                passes the deadline. The response is closed first.
+        """
+        # requests marks a body that it has not read with False.
+        if getattr(resp, "_content", None) is not False:
+            return
+
+        declared = resp.headers.get("Content-Length", "")
+        # A length longer than the limit's has more digits than int() reads
+        # quickly, and str.isdigit() also accepts digits that int() refuses.
+        if (
+            self.max_bytes is not None
+            and declared.isascii()
+            and declared.isdigit()
+            and (
+                len(declared) > len(str(self.max_bytes))
+                or int(declared) > self.max_bytes
+            )
+        ):
+            self._too_large(resp)
+
+        raw = resp.raw
+        read = getattr(raw, "read1", None) or raw.read
+        chunks = []
+        size = 0
+        try:
+            while True:
+                self.check_time(resp)
+                chunk = read(_READ_SIZE, decode_content=True)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if self.max_bytes is not None and size > self.max_bytes:
+                    self._too_large(resp)
+                chunks.append(chunk)
+        except (ProtocolError, DecodeError, ReadTimeoutError, SSLError) as err:
+            if isinstance(err, ReadTimeoutError):
+                # The socket timeout is at most the time that remains, so a
+                # read that timed out at the deadline ran out of total time.
+                self.check_time(resp)
+            resp.close()
+            error_type: type[requests.RequestException]
+            if isinstance(err, ProtocolError):
+                error_type = requests.exceptions.ChunkedEncodingError
+            elif isinstance(err, DecodeError):
+                error_type = requests.exceptions.ContentDecodingError
+            elif isinstance(err, ReadTimeoutError):
+                error_type = requests.ConnectionError
+            else:
+                error_type = requests.exceptions.SSLError
+            raise error_type(err, request=resp.request, response=resp) from err
+        self.check_time(resp)
+
+        resp._content = b"".join(chunks)
+        resp._content_consumed = True  # type: ignore[attr-defined]
+        release = getattr(raw, "release_conn", None)
+        if release is not None:
+            release()
+
+    def _too_large(self, resp: requests.Response) -> None:
+        """Close a response whose body is too large, and raise.
+
+        Args:
+            resp: Response whose body exceeds the limit.
+
+        Raises:
+            LimitExceeded: Always.
+        """
+        resp.close()
+        raise LimitExceeded(
+            "max_response_bytes",
+            f"The response to {resp.request.method} {resp.url} is larger "
+            f"than {self.max_bytes} bytes",
+        )
+
+
+_request_budget: contextvars.ContextVar[_Budget | None] = (
+    contextvars.ContextVar("_request_budget", default=None)
+)
+"""Budget active while Requests and its adapter handle one API request."""
+
+
+class _BudgetRetry(Retry):
+    """Apply the active request's budget to urllib3's internal retries."""
+
+    @classmethod
+    def wrap(cls, retry: Retry) -> Self:
+        """Copy a retry configuration without changing its policy.
+
+        Args:
+            retry: Configuration that the HTTP adapter accepted.
+
+        Returns:
+            The same settings, with budget checks around retry work.
+        """
+        return cls(
+            total=retry.total,
+            connect=retry.connect,
+            read=retry.read,
+            redirect=retry.redirect,
+            status=retry.status,
+            other=retry.other,
+            allowed_methods=retry.allowed_methods,
+            status_forcelist=retry.status_forcelist,
+            backoff_factor=retry.backoff_factor,
+            backoff_max=retry.backoff_max,
+            retry_after_max=retry.retry_after_max,
+            raise_on_redirect=retry.raise_on_redirect,
+            raise_on_status=retry.raise_on_status,
+            history=retry.history,
+            respect_retry_after_header=retry.respect_retry_after_header,
+            remove_headers_on_redirect=retry.remove_headers_on_redirect,
+            backoff_jitter=retry.backoff_jitter,
+        )
+
+    def increment(
+        self,
+        method: str | None = None,
+        url: str | None = None,
+        response: BaseHTTPResponse | None = None,
+        error: Exception | None = None,
+        _pool: Any = None,
+        _stacktrace: Any = None,
+    ) -> Self:
+        """Bound an intermediate response before urllib3 drains its body.
+
+        Args:
+            method: Request method.
+            url: Request URL.
+            response: Response that would cause a retry, if any.
+            error: Transport failure that would cause a retry, if any.
+            _pool: Connection pool, forwarded to urllib3.
+            _stacktrace: Transport failure's traceback, forwarded to urllib3.
+
+        Returns:
+            Retry configuration for the next attempt.
+
+        Raises:
+            LimitExceeded: If the response or request exceeds its budget.
+            MaxRetryError: If the retry policy has been exhausted.
+        """
+        budget = _request_budget.get()
+        wrapped = None
+        if budget is not None:
+            if response is not None:
+                wrapped = requests.Response()
+                wrapped.raw = response
+                wrapped.status_code = response.status
+                wrapped.headers.update(response.headers)
+                wrapped.url = url or ""
+                wrapped.request = requests.PreparedRequest()
+                wrapped.request.method = method
+            budget.check_time(wrapped)
+
+        try:
+            retry = super().increment(
+                method, url, response, error, _pool, _stacktrace
+            )
+        except MaxRetryError:
+            # With raise_on_status=False, urllib3 returns the unread response
+            # to Requests, and _send() reads it under the same budget.
+            if (
+                budget is not None
+                and wrapped is not None
+                and self.raise_on_status
+            ):
+                budget.read_body(wrapped)
+            raise
+        if budget is not None and wrapped is not None:
+            budget.read_body(wrapped)
+        return retry
+
+    def sleep(self, response: BaseHTTPResponse | None = None) -> None:
+        """Wait between attempts without sleeping past the request deadline.
+
+        Args:
+            response: Response whose Retry-After header may set the delay.
+
+        Raises:
+            LimitExceeded: If the request deadline is reached.
+        """
+        budget = _request_budget.get()
+        if budget is None or budget.deadline is None:
+            super().sleep(response)
+            return
+        budget.check_time()
+        delay = (
+            self.get_retry_after(response)
+            if self.respect_retry_after_header and response is not None
+            else None
+        )
+        if not delay:
+            delay = self.get_backoff_time()
+        remaining = max(budget.deadline - time.monotonic(), 0.0)
+        if delay > 0:
+            time.sleep(min(delay, remaining))
+        budget.check_time()
+
+
+class _HTTPAdapter(requests.adapters.HTTPAdapter):
+    """Requests adapter whose standard retry policy obeys the API budget."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Configure connection pools and budget-aware retries.
+
+        Args:
+            kwargs: Arguments accepted by Requests' HTTPAdapter.
+        """
+        super().__init__(**kwargs)
+        self.max_retries = _BudgetRetry.wrap(self.max_retries)
+
+
 class API:
     """HTTP client wrapper for REST APIs.
 
@@ -249,8 +549,39 @@ class API:
     timeout: float | tuple[float, float] | None = 10.0
     """Default request timeout in seconds, as requests accepts it.
 
-    A pair gives the connect and read timeouts separately, and ``None`` waits
-    forever. A request's own ``timeout`` argument takes precedence.
+    This bounds the wait to connect and the wait for each read from the
+    socket, not the whole request. A server that keeps sending a byte now and
+    then never reaches it. ``total_timeout`` bounds the whole request. A pair
+    gives the connect and read timeouts separately, and ``None`` waits forever.
+    A request's own ``timeout`` argument takes precedence.
+    """
+
+    total_timeout: float | None = 300.0
+    """Seconds that a request may take in all, or ``None`` for no limit.
+
+    The time includes redirects, retries, retry delays, and reading response
+    bodies with the adapters this client creates. It is checked between reads
+    and attempts, so a request can overrun it by at most one ``timeout``. A
+    request that overruns it raises ``LimitExceeded``. Each request of an
+    operation that sends several, such as reading the pages of a collection,
+    has its own. Custom adapters and application hooks control their own work.
+    """
+
+    max_response_bytes: int | None = 16 * 1024 * 1024
+    """Greatest size of a response body, decompressed, or ``None``.
+
+    A larger body raises ``LimitExceeded`` as soon as it is seen to be too
+    large, before it is decoded. A request sent with ``stream=True``, which
+    reads its own body, is not limited.
+    """
+
+    max_json_depth: int | None = 128
+    """Greatest nesting depth of arrays and objects in a response's JSON.
+
+    eazyrest's conversions recurse through nested values, so a deeper value
+    raises ``LimitExceeded`` instead of exhausting Python's recursion limit.
+    ``None`` removes the limit, but Python's decoder still fails for JSON
+    nested more deeply than about a thousand levels.
     """
 
     trailing_slash: bool = True
@@ -378,12 +709,13 @@ class API:
         if verify is not None:
             session.verify = verify
 
-        # Adapt session for multiple connections
-        if len(kwargs) != 0:
-            url = urlparse(self.base_url)
-
-            adapter = requests.adapters.HTTPAdapter(**kwargs)
-            session.mount(url.scheme + "://", adapter)
+        scheme = urlparse(self.base_url).scheme + "://"
+        for prefix in ("http://", "https://"):
+            session.adapters[prefix].close()
+            session.mount(
+                prefix,
+                _HTTPAdapter(**kwargs) if prefix == scheme else _HTTPAdapter(),
+            )
 
         self.session = session
 
@@ -441,6 +773,25 @@ class API:
         """
         resp.raise_for_status()
 
+    def json(self, resp: requests.Response) -> Any:
+        """Decode response JSON with this client's depth and number policy.
+
+        Use this in collection, bulk-lookup, and error hooks that decode a
+        response themselves. Request methods already enforce body limits.
+
+        Args:
+            resp: Response whose body has been read by this client.
+
+        Returns:
+            Decoded JSON value.
+
+        Raises:
+            ResponseShapeError: If the body is not valid JSON with finite,
+                representable numbers.
+            LimitExceeded: If JSON nesting exceeds ``max_json_depth``.
+        """
+        return _response_json(resp, self.max_json_depth)
+
     def resolve_url(self, uri: str) -> str:
         """Resolve a request URI against ``base_url``.
 
@@ -486,6 +837,15 @@ class API:
                 response.
         """
         kwargs.setdefault("timeout", self.timeout)
+        # A request that streams reads its own body, so only its time and its
+        # redirects are checked.
+        budget = _Budget(
+            None if kwargs.get("stream") else self.max_response_bytes,
+            self.total_timeout,
+        )
+        streamed = bool(kwargs.get("stream"))
+        kwargs["stream"] = True
+        kwargs["timeout"] = budget.timeout(kwargs["timeout"])
         if self.session.verify is not True:
             # With trust_env, requests replaces a verify setting of True with
             # the CA bundle that REQUESTS_CA_BUNDLE or CURL_CA_BUNDLE names,
@@ -499,19 +859,33 @@ class API:
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
         url = self.resolve_url(uri)
-        kwargs["hooks"] = self._guard_redirects(url, kwargs.get("hooks"))
-        resp = send(url, *args, **kwargs)
-        self._check_redirects(resp)
-        return self._check_response(resp)
+        kwargs["hooks"] = self._guard_redirects(
+            url, kwargs.get("hooks"), budget
+        )
+        token = _request_budget.set(budget)
+        try:
+            resp = send(url, *args, **kwargs)
+            self._check_redirects(resp)
+            budget.check_time(resp)
+            if not streamed:
+                budget.read_body(resp)
+            return self._check_response(resp)
+        finally:
+            _request_budget.reset(token)
 
     def _guard_redirects(
-        self, url: str, hooks: dict[str, Any] | None
+        self,
+        url: str,
+        hooks: dict[str, Any] | None,
+        budget: _Budget | None = None,
     ) -> dict[str, Any]:
         """Return request hooks that refuse unsafe redirects.
 
         Args:
             url: Absolute URL of the request.
             hooks: Hooks passed with the request, if any.
+            budget: Limits of the request, which each redirect's body and the
+                time to reach it must respect.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
@@ -541,6 +915,10 @@ class API:
             destination = _redirect_destination(resp, target)
             if _redirect_origins(resp, target) <= allowed:
                 _check_write_redirect(resp, target)
+                if budget is not None:
+                    # requests reads a redirect's body before following it.
+                    budget.check_time(resp)
+                    budget.read_body(resp)
                 return
 
             resp.close()
