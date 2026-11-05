@@ -2899,3 +2899,35 @@ def test_failed_eager_write_keeps_previous_value(requests_mock: Any) -> None:
         todo.title = "new"
 
     assert todo.title == "old"
+
+
+@json_object
+class Stamped(JSONObject):
+    """Model whose field names are also the names of their types' modules."""
+
+    class_url = "/stamped/"
+
+    id: int
+    datetime: datetime.datetime
+    uuid: uuid.UUID
+
+
+def test_string_annotation_naming_its_field_resolves_to_the_type() -> None:
+    """A string annotation such as ``uuid.UUID`` does not name the field.
+
+    This module uses ``from __future__ import annotations``, so the annotation
+    of ``uuid: uuid.UUID`` is the string ``"uuid.UUID"``. The field's
+    descriptor in the class namespace must not shadow the module.
+    """
+    obj = Stamped(
+        json={
+            "id": 1,
+            "datetime": "2024-04-01T12:00:00Z",
+            "uuid": "12345678-1234-5678-1234-567812345678",
+        }
+    )
+
+    assert obj.datetime == datetime.datetime(
+        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+    )
+    assert obj.uuid == uuid.UUID("12345678-1234-5678-1234-567812345678")

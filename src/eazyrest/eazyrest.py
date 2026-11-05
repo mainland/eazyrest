@@ -638,8 +638,16 @@ class JSONProperty:
             },
         )
         # A class defined inside a function is absent from its module's
-        # globals. Keep its own namespace when resolving self-references.
-        localns = dict(vars(self.cls))
+        # globals. Keep its own namespace when resolving self-references, but
+        # without the fields, which json_object() put there as descriptors.
+        # In a plain class a field without a default is absent from the
+        # namespace, so a string annotation such as "date" in ``date: date``
+        # names the module's date, not the field.
+        localns = {
+            name: value
+            for name, value in vars(self.cls).items()
+            if not isinstance(value, JSONProperty)
+        }
         localns[self.cls.__name__] = self.cls
         return typing.get_type_hints(holder, localns=localns)[self.field]
 
