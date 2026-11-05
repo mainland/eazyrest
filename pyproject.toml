@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["rest", "http", "api", "json"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -41,6 +41,11 @@ dependencies = [
     "typing_extensions>=4.14.1; python_version < '3.11'",
     "urllib3>=2.8.0",
 ]
+
+[project.urls]
+Source = "https://github.com/mainland/eazyrest"
+Issues = "https://github.com/mainland/eazyrest/issues"
+Changelog = "https://github.com/mainland/eazyrest/blob/main/docs/changelog.md"
 
 [project.optional-dependencies]
 # Pydantic 2.12 is the first release that writes the undeclared keys of a
