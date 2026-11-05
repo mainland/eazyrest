@@ -13,6 +13,7 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
 )
+from ._results import Results
 from .api import (
     API,
     _origin,
@@ -178,6 +179,25 @@ class _PageReader:
         return resp
 
 
+def _count_of(payload: Any, count_key: str) -> int | None:
+    """Return the collection size that a page reports.
+
+    Args:
+        payload: Decoded JSON payload of a page.
+        count_key: Member of a page that holds the collection's size.
+
+    Returns:
+        The member's value, if the payload is a mapping and the value is an
+        integer, and ``None`` otherwise.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    count = payload.get(count_key)
+    if isinstance(count, int) and not isinstance(count, bool):
+        return count
+    return None
+
+
 def follow_next_links(
     api: API,
     payload: Any,
@@ -185,9 +205,10 @@ def follow_next_links(
     url: str | None = None,
     results_key: str = "results",
     next_key: str = "next",
+    count_key: str = "count",
     allow_other_origins: bool = False,
-) -> Iterator[Any]:
-    """Yield the items of a collection response, following next-page links.
+) -> Results[Any]:
+    """Iterate the items of a collection response, following next-page links.
 
     A list payload is an unpaginated collection, so its items are yielded
     directly. A mapping payload is one page. Its ``results_key`` member holds
@@ -216,6 +237,11 @@ def follow_next_links(
     ``CursorPagination``. Return the iterator from ``collection_items()`` to
     read every page of a collection.
 
+    The returned iterator's ``count`` is the first page's ``count_key``
+    member, the number of items in the whole collection that
+    ``PageNumberPagination`` and ``LimitOffsetPagination`` report, or ``None``
+    if the page has none. ``filter()`` passes it on.
+
     Args:
         api: Client used to request the next pages.
         payload: Decoded JSON payload of the first response.
@@ -225,12 +251,13 @@ def follow_next_links(
             from.
         results_key: Member of a page that holds the page's items.
         next_key: Member of a page that holds the next page's URL.
+        count_key: Member of a page that holds the collection's size.
         allow_other_origins: Whether to follow next-page URLs, and redirects
             from page requests, whose origin differs from the API's base URL. A
             redirect must still lead to an origin that the API allows.
 
-    Yields:
-        JSON items from every page, in order.
+    Returns:
+        Iterator over the JSON items of every page, in order.
 
     Raises:
         ResponseShapeError: If a page is not JSON, if a payload is neither a
@@ -245,48 +272,59 @@ def follow_next_links(
             ``max_pages`` or more items than its ``max_items``, or a page
             exceeds another of its limits.
     """
-    reader = _PageReader(api, allow_other_origins)
-    page_url = api.base_url if url is None else api.resolve_url(url)
-    # Without url=, the first page's URL is unknown, and the base URL is not a
-    # page.
-    if url is not None:
-        reader.read_urls.add(page_url)
+    count = _count_of(payload, count_key)
 
-    while True:
-        if isinstance(payload, list):
-            yield from reader.count_items(payload)
-            return
+    def items() -> Iterator[Any]:
+        """Yield the items of every page.
 
-        if not isinstance(payload, Mapping):
-            raise ResponseShapeError(
-                "Collection responses must be lists or page mappings, "
-                f"got {type(payload).__name__}"
-            )
+        Yields:
+            JSON items from every page, in order.
+        """
+        page = payload
+        reader = _PageReader(api, allow_other_origins)
+        page_url = api.base_url if url is None else api.resolve_url(url)
+        # Without url=, the first page's URL is unknown, and the base URL is
+        # not a page.
+        if url is not None:
+            reader.read_urls.add(page_url)
 
-        if results_key not in payload:
-            raise ResponseShapeError(
-                f"Collection page has no {results_key!r} member"
-            )
+        while True:
+            if isinstance(page, list):
+                yield from reader.count_items(page)
+                return
 
-        results = payload[results_key]
-        # A string would yield its characters, and a mapping its keys.
-        if not isinstance(results, list):
-            raise ResponseShapeError(
-                f"The {results_key!r} member of a collection page must be a "
-                f"list, got {type(results).__name__}"
-            )
-        yield from reader.count_items(results)
+            if not isinstance(page, Mapping):
+                raise ResponseShapeError(
+                    "Collection responses must be lists or page mappings, "
+                    f"got {type(page).__name__}"
+                )
 
-        next_url = payload.get(next_key)
-        # Some APIs mark the last page with an empty link. Resolving it would
-        # name the current page again.
-        if next_url is None or next_url == "":
-            return
+            if results_key not in page:
+                raise ResponseShapeError(
+                    f"Collection page has no {results_key!r} member"
+                )
 
-        resp = reader.read(urljoin(page_url, next_url))
-        # After a redirect, a page's links are relative to its final URL.
-        page_url = resp.url
-        payload = api.json(resp)
+            results = page[results_key]
+            # A string would yield its characters, and a mapping its keys.
+            if not isinstance(results, list):
+                raise ResponseShapeError(
+                    f"The {results_key!r} member of a collection page must be "
+                    f"a list, got {type(results).__name__}"
+                )
+            yield from reader.count_items(results)
+
+            next_url = page.get(next_key)
+            # Some APIs mark the last page with an empty link. Resolving it
+            # would name the current page again.
+            if next_url is None or next_url == "":
+                return
+
+            resp = reader.read(urljoin(page_url, next_url))
+            # After a redirect, a page's links are relative to its final URL.
+            page_url = resp.url
+            page = api.json(resp)
+
+    return Results(items(), count)
 
 
 def follow_link_headers(
@@ -294,8 +332,8 @@ def follow_link_headers(
     resp: requests.Response,
     *,
     allow_other_origins: bool = False,
-) -> Iterator[Any]:
-    """Yield the items of a collection response, following Link headers.
+) -> Results[Any]:
+    """Iterate the items of a collection response, following Link headers.
 
     Each page's body is a JSON list of items, and its ``Link`` header names the
     next page with a ``next`` relation, as in ``rel="next"`` or ``rel="next
@@ -319,8 +357,9 @@ def follow_link_headers(
             from page requests, whose origin differs from the API's base URL. A
             redirect must still lead to an origin that the API allows.
 
-    Yields:
-        JSON items from every page, in order.
+    Returns:
+        Iterator over the JSON items of every page, in order. Its ``count`` is
+        ``None``, because a Link header does not report the collection's size.
 
     Raises:
         ResponseShapeError: If a page's body is not a JSON list.
@@ -333,21 +372,31 @@ def follow_link_headers(
             ``max_pages`` or more items than its ``max_items``, or a page
             exceeds another of its limits.
     """
-    reader = _PageReader(api, allow_other_origins)
-    reader.read_urls.add(resp.url)
 
-    while True:
-        payload = api.json(resp)
-        if not isinstance(payload, list):
-            raise ResponseShapeError(
-                "Pages linked by Link headers must be JSON lists, "
-                f"got {type(payload).__name__}"
-            )
+    def items() -> Iterator[Any]:
+        """Yield the items of every page.
 
-        yield from reader.count_items(payload)
+        Yields:
+            JSON items from every page, in order.
+        """
+        page = resp
+        reader = _PageReader(api, allow_other_origins)
+        reader.read_urls.add(page.url)
 
-        next_url = _next_link(resp)
-        if not next_url:
-            return
+        while True:
+            payload = api.json(page)
+            if not isinstance(payload, list):
+                raise ResponseShapeError(
+                    "Pages linked by Link headers must be JSON lists, "
+                    f"got {type(payload).__name__}"
+                )
 
-        resp = reader.read(urljoin(resp.url, next_url))
+            yield from reader.count_items(payload)
+
+            next_url = _next_link(page)
+            if not next_url:
+                return
+
+            page = reader.read(urljoin(page.url, next_url))
+
+    return Results(items())

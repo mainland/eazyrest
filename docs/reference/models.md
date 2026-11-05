@@ -34,6 +34,10 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.Hyperlinked
+```
+
+```{eval-rst}
 .. autodata:: eazyrest.AnalyzedType
 ```
 

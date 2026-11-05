@@ -9,6 +9,11 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.Results
+   :members:
+```
+
+```{eval-rst}
 .. autofunction:: eazyrest.follow_next_links
 ```
 

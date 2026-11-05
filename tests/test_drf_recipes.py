@@ -14,33 +14,9 @@ pytest.importorskip("django")
 pytest.importorskip("rest_framework")
 pytest.importorskip("django_filters")
 
-import django
-from django.conf import settings
+from drf_settings import configure
 
-if not settings.configured:
-    settings.configure(
-        DATABASES={
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": ":memory:",
-            }
-        },
-        INSTALLED_APPS=[
-            "django.contrib.contenttypes",
-            "django.contrib.auth",
-            "rest_framework",
-            "django_filters",
-        ],
-        REST_FRAMEWORK={
-            "DEFAULT_RENDERER_CLASSES": [
-                "rest_framework.renderers.JSONRenderer"
-            ],
-            "UNAUTHENTICATED_USER": None,
-        },
-        ALLOWED_HOSTS=["testserver"],
-        USE_TZ=True,
-    )
-    django.setup()
+configure()
 
 import django_filters
 from django.contrib.auth.models import Group
@@ -104,10 +80,7 @@ class GroupViewSet(viewsets.ReadOnlyModelViewSet):
 
 @pytest.fixture(scope="module", autouse=True)
 def _groups() -> None:
-    """Create the auth tables and three groups."""
-    from django.core.management import call_command
-
-    call_command("migrate", verbosity=0, run_syncdb=True)
+    """Create three groups."""
     for name in ["a", "b", "c"]:
         Group.objects.get_or_create(name=name)
 

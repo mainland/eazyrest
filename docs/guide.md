@@ -45,7 +45,26 @@ class User(JSONObject):
     resource_url: str
 ```
 
-A decorated subclass of a decorated model keeps the fields of its base class and adds its own. A model inherits fields through a single chain of decorated classes. A class whose decorated ancestors are not subclasses of one another, such as `class Both(Named, Dated)` for two decorated models, raises `TypeError` when it is defined. Put shared fields on one decorated base class instead. Undecorated base classes, which declare no fields, can be mixed in freely, for example to share hooks such as `collection_items()`.
+Use `write_map=` for a field that the API returns under one key and accepts under another, such as a related object returned nested under `user` and written as its primary key under `user_id`. Reads, queries, and the object's JSON use the field's key, and writes send it under the mapped key. The [Django REST Framework guide](drf.md#map-serializer-names-and-relation-shapes) shows an example.
+
+Use `write_only=` for a field that the API accepts in writes but never returns, such as a password. It can be passed to `create()` or assigned, and the next write sends it, but the object never keeps it in its JSON, assigning it does not load the object, and reading it raises `AttributeError`:
+
+```python
+@json_object(write_only={"password"})
+class Account(JSONObject):
+    class_url = "/accounts/"
+
+    id: int
+    name: str
+    password: str
+
+
+account = Account(id=1)
+account.password = "correct horse battery staple"
+account.save()  # PATCH {"password": "..."}, without loading the account
+```
+
+A decorated subclass of a decorated model keeps the fields of its base class and adds its own. Redeclaring a field preserves its `field_map` and `write_map` keys unless an explicit mapping replaces them. It also inherits `write_only` policies when those options are omitted. An explicit set applies to the fields redeclared on that class, so an empty set clears their inherited policy. A model inherits fields through a single chain of decorated classes. A class whose decorated ancestors are not subclasses of one another, such as `class Both(Named, Dated)` for two decorated models, raises `TypeError` when it is defined. Put shared fields on one decorated base class instead. Undecorated base classes, which declare no fields, can be mixed in freely, for example to share hooks such as `collection_items()`.
 
 ## Loading and caching
 
@@ -173,6 +192,8 @@ class Timeline(JSONObject):
 In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
 An `Iterable` field of related objects, such as `members: Iterable[User]`, is lazy. Reading it creates no related objects, and each is created when iteration reaches it. The field can be iterated only once, so that each related object, and any change you make to it while iterating, exists only once. A second iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than once, call `list()` on the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create the related objects when the field is first read and keep them.
+
+A relation that the API represents by the related object's URL rather than its primary key, as Django REST Framework's hyperlinked fields do, is annotated with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it gives an object that loads from that URL, and writing it sends the object's absolute URL. Queries send its primary key, as DRF relation filters expect. A URL on an origin that the related model's API does not allow raises `FieldConversionError`. The [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis) gives the details.
 
 A related object that a field returns keeps your unsaved changes for as long as the field's JSON is unchanged. Loading the missing fields of an object keeps the related objects whose JSON the load left unchanged, and assigning a related object, or a `list`, `tuple`, or `set` of them, keeps the objects you assigned. When the server changes a relation, the field reads new related objects, and an object that you still hold keeps its own changes, which its `save()` sends.
 
@@ -359,9 +380,18 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
-`filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
+The iterator is a `Results`, whose `count` is the size of the whole collection when the response reports it, as a page of Django REST Framework's `PageNumberPagination` or `LimitOffsetPagination` does, and `None` otherwise. It is known as soon as `filter()` returns, before any item or later page is read:
 
-The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`:
+```python
+admins = User.filter(role="admin")
+print(f"{admins.count} admins")
+```
+
+`filter()` takes `count` from the iterable that `collection_items()` returns. `follow_next_links()` returns one with the first page's `count` member, and a hook of your own can return any iterable with an integer `count` attribute.
+
+`filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged, except that a model instance, also as an item of a collection, is sent as its primary key, so `Todo.filter(user__in=[ada, bob])` sends `user__in=1&user__in=2`.
+
+The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -523,6 +553,35 @@ todo = Todo(id=1, write_mode="eager")
 todo.completed = True
 ```
 
+### Full updates
+
+`save()` sends the changed fields in a `PATCH`. For an API that updates an object only with a `PUT` of the whole object, call `save(full=True)`. It sends every writable declared field that the object's JSON has, with its unsaved changes and any pending write-only fields, even if nothing changed. Each value is encoded as an assignment would encode it, so a related object is sent as its primary key, and a field that `write_map` names under its write key. It loads an unloaded or partial object first, preserving pending changes. Read-only fields are omitted.
+
+### Uploading files
+
+`create()` and `save()` take `files=`, files to upload as requests takes them, keyed by field name or by the API's field name. The write is then a multipart request, with the other fields as form fields, and `save(files=...)` sends it even if no field changed. Declare a file field as `str`, since an API such as Django REST Framework returns the file's URL:
+
+```python
+avatar = Avatar.create(name="me", files={"image": open("me.png", "rb")})
+avatar.save(files={"image": ("new.png", data, "image/png")})
+print(avatar.image)  # the URL that the response holds
+```
+
+A form field holds text, so booleans are sent as `true` and `false` and numbers as strings, and a list of scalars is sent as repeated fields. A field whose value is `None`, a mapping, an empty list, or a nested list cannot be sent this way and raises `TypeError` before the request. Save such a field in a separate write without files.
+
+Requests reads a file object from its current position. Before retrying an upload after a failure, reopen or rewind each file. A 307 or 308 redirect resends the already prepared multipart body.
+
+### Request options
+
+`save()`, `create()`, and `delete()` take `request_options=`, keyword arguments for the request as requests takes them, such as `headers` or `params`. They cannot set the body, which the write builds, or enable `stream=True`, because model writes consume their responses. An unfollowed final 3xx raises `RedirectError`, including when `allow_redirects=False`, and pending updates remain pending. A server that supports optimistic concurrency, for example, refuses a write whose `If-Match` header no longer names the object's current version:
+
+```python
+todo.title = "new"
+todo.save(request_options={"headers": {"If-Match": etag}})
+```
+
+An assignment in eager mode sends its `PATCH` with no options. Use lazy mode and `save()` for a write that needs them.
+
 ### Write responses
 
 After a successful write, the object's JSON holds the fields that were sent, with the object that the response body holds, if any, merged over them. A response with no body, such as `204 No Content`, and a body that holds only some fields, such as only the changed ones, therefore leave the other fields as they were. A field that the server computes, such as a modification time, keeps its old value unless the body holds it. Call `refresh()` to reload it.
@@ -662,15 +721,16 @@ A related object loads through the API registered for its own class, so models s
 eazyrest raises a subclass of `EazyrestError` for each condition that its own policies detect, so `except EazyrestError` catches them all. Each also derives from the exception type that it replaced, so code written for that type keeps working:
 
 - `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a field cannot convert.
-- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object.
+- `APIError`, a `requests.HTTPError`, for a response whose status reports a failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON body, and the message names the body's members but not their text.
+- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without `bulk_get_by_pks()`.
-- `RedirectError`, a `requests.HTTPError`, for a redirect that is refused before it is followed. Its `response` is the redirect.
+- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect or an unfollowed final 3xx on a model write. Its `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that is not JSON, holds non-finite or unrepresentable numbers, or does not have the expected shape. Its message does not quote the body.
 - `UsageError`, a `RuntimeError`, for a model without a registered API or a second iteration of a lazy related collection.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's [limits](#limits).
 
-An HTTP error status still raises whatever `API.raise_for_response()` raises, `requests.HTTPError` by default, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. A declaration that `@json_object` cannot accept raises `TypeError` or `ValueError` when the class is defined.
+An HTTP error status raises whatever `API.raise_for_response()` raises, `APIError` or `NotFound` by default. Invalid JSON gives these errors `data=None`. A depth-limit violation instead raises `LimitExceeded`, including for an error body, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. Invalid decorator options raise `TypeError` or `ValueError` when the class is defined. Field annotations resolve lazily, so an invalid conversion declaration can raise `FieldConversionError` at first use.
 
 ## Threads
 

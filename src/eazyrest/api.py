@@ -22,7 +22,7 @@ from urllib3.exceptions import (
 from urllib3.response import BaseHTTPResponse
 from urllib3.util import Retry
 
-from ._errors import LimitExceeded, RedirectError, _response_json
+from ._errors import LimitExceeded, RedirectError, _api_error, _response_json
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -758,17 +758,22 @@ class API:
     def raise_for_response(self, resp: requests.Response) -> None:
         """Raise an exception if ``resp`` represents a failed request.
 
-        Subclasses can override this hook to translate API-specific error
-        payloads into richer exception types while preserving the default
-        ``requests`` behavior for successful responses.
+        The default raises ``NotFound`` for a 404 and ``APIError`` for any
+        other failure. Both are ``requests.HTTPError``, and they hold the
+        response's JSON body as ``data``. Subclasses can override this hook to
+        translate API-specific error payloads into other exception types.
 
         Args:
             resp: Response object to validate.
 
         Raises:
-            requests.HTTPError: If the response status indicates failure.
+            NotFound: If the response status is 404.
+            APIError: If the response status indicates another failure.
+            LimitExceeded: If the error body exceeds ``max_json_depth``.
         """
-        resp.raise_for_status()
+        if resp.ok:
+            return
+        raise _api_error(resp, self.max_json_depth)
 
     def json(self, resp: requests.Response) -> Any:
         """Decode response JSON with this client's depth and number policy.

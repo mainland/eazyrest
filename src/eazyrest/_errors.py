@@ -17,8 +17,59 @@ class EazyrestError(Exception):
     """
 
 
+class DoesNotExist(EazyrestError):
+    """Raised when no object matches a query that expects one result."""
+
+
+class MultipleObjectsReturned(EazyrestError):
+    """Raised when a query expected one object but got multiple results."""
+
+
+class PrefetchNotSupported(EazyrestError):
+    """Raised when explicit prefetch is requested for an unsupported model."""
+
+
+class APIError(EazyrestError, requests.HTTPError):
+    """Raised for a response whose status reports a failed request.
+
+    ``API.raise_for_response()`` raises it, or ``NotFound`` for a 404, in
+    place of requests' ``HTTPError``, which it also is. The ``response``
+    attribute holds the response.
+
+    The message names the method, URL, and status, and the members of a JSON
+    object body, such as the fields that a Django REST Framework validation
+    error names. It does not quote the body, whose messages can quote the
+    values that were sent. The parsed body is in ``data``.
+    """
+
+    data: object
+    """The response's JSON body, or ``None`` if the body is not JSON."""
+
+    def __init__(
+        self, message: str, *, response: requests.Response, data: object
+    ) -> None:
+        """Describe a failed request.
+
+        Args:
+            message: Description of the failure.
+            response: Response whose status reports the failure.
+            data: The response's JSON body, or ``None``.
+        """
+        super().__init__(message, response=response)
+        self.data = data
+
+
+class NotFound(APIError, DoesNotExist):
+    """Raised for a response with status 404.
+
+    It is also ``DoesNotExist``, so ``except DoesNotExist`` catches an object
+    that a lazy load finds deleted, as it catches a lookup that matches
+    nothing.
+    """
+
+
 class RedirectError(EazyrestError, requests.HTTPError):
-    """Raised when a redirect is refused before it is followed.
+    """Raised for an unsafe redirect or an unconfirmed model write.
 
     A redirect is refused if it leads to an origin that the API does not
     allow, or if requests would follow it without the request's body or with
@@ -167,3 +218,37 @@ class LimitExceeded(EazyrestError):
         """
         super().__init__(f"{message}, which exceeds API.{limit}")
         self.limit = limit
+
+
+def _api_error(
+    resp: requests.Response, max_depth: int | None = None
+) -> APIError:
+    """Return the exception for a response whose status reports a failure.
+
+    Args:
+        resp: Failed response.
+        max_depth: Greatest JSON nesting depth to decode, as for
+            ``_response_json()``.
+
+    Returns:
+        ``NotFound`` for a 404 and ``APIError`` otherwise, with the body's
+        JSON, if any, as ``data``.
+    """
+    data: object = None
+    if resp.content:
+        try:
+            data = _response_json(resp, max_depth)
+        except ResponseShapeError:
+            data = None
+
+    kind = "Client" if 400 <= resp.status_code < 500 else "Server"
+    message = (
+        f"{resp.status_code} {kind} Error: {resp.reason} for "
+        f"{resp.request.method} {resp.url}"
+    )
+    if isinstance(data, dict):
+        names = sorted(str(name) for name in data if name != "detail")
+        if names:
+            message += f" (body names {', '.join(names)})"
+    error_type = NotFound if resp.status_code == 404 else APIError
+    return error_type(message, response=resp, data=data)

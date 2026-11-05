@@ -3,9 +3,14 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from ._errors import (
+    APIError,
+    DoesNotExist,
     EazyrestError,
     LimitExceeded,
+    MultipleObjectsReturned,
+    NotFound,
     PaginationError,
+    PrefetchNotSupported,
     RedirectError,
     ResponseShapeError,
     UsageError,
@@ -14,16 +19,15 @@ from ._models import (
     AnalyzedType,
     BaseType,
     CollectionType,
-    DoesNotExist,
     FieldConversionError,
+    Hyperlinked,
     JSONObject,
-    MultipleObjectsReturned,
     OptionalType,
-    PrefetchNotSupported,
     PydanticType,
     RelatedType,
     json_object,
 )
+from ._results import Results
 from .api import API
 from .dateparse import parse_datetime, parse_duration
 from .pagination import follow_link_headers, follow_next_links
@@ -37,15 +41,18 @@ except PackageNotFoundError:  # pragma: no cover - only without metadata
 
 __all__ = [
     "API",
+    "APIError",
     "AnalyzedType",
     "BaseType",
     "CollectionType",
     "DoesNotExist",
     "EazyrestError",
     "FieldConversionError",
+    "Hyperlinked",
     "JSONObject",
     "LimitExceeded",
     "MultipleObjectsReturned",
+    "NotFound",
     "OptionalType",
     "PaginationError",
     "PrefetchNotSupported",
@@ -53,6 +60,7 @@ __all__ = [
     "RedirectError",
     "RelatedType",
     "ResponseShapeError",
+    "Results",
     "UsageError",
     "WriteMode",
     "follow_link_headers",

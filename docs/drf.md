@@ -153,6 +153,30 @@ class Todo(DRFObject):
     resource_url: str
 ```
 
+A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every relation, represents a related object by its URL rather than its primary key. Annotate such a field with `Hyperlinked()`:
+
+```python
+from typing import Annotated
+
+from eazyrest import Hyperlinked
+
+
+@json_object
+class Todo(DRFObject):
+    class_url = "/todos/"
+
+    id: int
+    owner: Annotated[User, Hyperlinked()]
+    watchers: list[Annotated[User, Hyperlinked()]]
+
+
+todo.owner.name  # GET https://api.example.com/users/2/
+todo.owner = User(id=3)
+todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
+```
+
+Reading the field gives a related object that loads from the URL when one of its other fields is read. Writing it sends the related object's absolute URL. A query sends its primary key, as django-filter's relation filters expect. Pass a related model instance or a bare primary key to the query. A relative URL is resolved against the related model's API. A URL whose origin is neither that API's nor one of its `redirect_origins` raises `FieldConversionError` when the field is read, so a server cannot send the client, with its credentials, to another host. Prefetching needs primary keys, so a hyperlinked field cannot be prefetched.
+
 ## Match DRF serializer fields
 
 DRF serializer fields usually emit JSON-friendly primitives. Most of those can be represented directly with annotations, but a few common DRF fields benefit from explicit model conventions.
@@ -161,7 +185,9 @@ DRF `DateTimeField` emits ISO 8601 strings by default, and `eazyrest` decodes an
 
 DRF `DurationField` emits Django's duration format, such as `1 02:03:04`, unless it is configured to emit ISO 8601. `eazyrest` parses both formats into `datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations, which DRF accepts as input. Override `to_json()` if your API requires a different wire format.
 
-DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` are usually easiest to model as `str` URL fields unless you want a custom wrapper type.
+A serializer field with `write_only=True`, such as a password, appears in requests but never in responses. Declare it, and list it in `json_object(write_only=...)`, so that it can be assigned and saved like any other field without being kept or read back.
+
+DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` return the file's URL, so declare them as `str`, and upload a file with `files=` on `create()` or `save()`, which sends a multipart request that DRF's `MultiPartParser` reads.
 
 ## Map serializer names and relation shapes
 
@@ -177,9 +203,35 @@ class Todo(DRFObject):
     title: str
 ```
 
-Related fields can be represented as primary keys, embedded objects, or hyperlinks depending on the serializer. Primary keys and embedded objects work naturally with `JSONObject` annotations. Hyperlinked relationship fields are usually best modeled as `str` fields unless the API also exposes a stable primary key that `eazyrest` can use to build the related object URL.
+Related fields can be represented as primary keys, embedded objects, or hyperlinks depending on the serializer. Primary keys and embedded objects work naturally with `JSONObject` annotations, and hyperlinks with [`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
 
-For read-only serializer fields that you still want to read, annotate them normally. For server-computed values that should not be JSON-backed on the client, use `exclude=`. For write-only serializer fields such as passwords, either pass them directly to `create()` as extra JSON keys or keep them off the model class entirely.
+A common serializer reads a relation nested and writes it as a primary key under another name:
+
+```python
+class TodoSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    user_id = serializers.PrimaryKeyRelatedField(
+        source="user", queryset=User.objects.all(), write_only=True
+    )
+```
+
+Use `write_map` to send such a field under its write key. Reads, queries, and the object's JSON keep using `user`, and `create()`, `save()`, and eager assignments send the related object's primary key as `user_id`. The response's nested object then replaces the assigned one:
+
+```python
+@json_object(write_map={"user": "user_id"})
+class Todo(DRFObject):
+    class_url = "/todos/"
+
+    id: int
+    user: User
+    title: str
+
+
+todo.user = User(id=3)
+todo.save()  # PATCH {"user_id": 3}
+```
+
+For read-only serializer fields that you still want to read, annotate them normally. For server-computed values that should not be JSON-backed on the client, use `exclude=`. For write-only serializer fields such as passwords, declare them and list them in `json_object(write_only=...)`.
 
 ## Pass through filtering, search, and ordering
 
@@ -284,7 +336,7 @@ List a parameter that the view reads itself, such as `expand`, or that a custom 
 
 Lazy field assignment and `save()` use `PATCH`, which matches DRF viewsets that support partial updates. `create()` uses `POST` against `class_url`, and `delete()` uses `DELETE` against the object URL.
 
-If a DRF endpoint does not allow partial updates, avoid field assignment plus `save()` for that model and call the API directly with the shape that endpoint expects. If your serializer has fields that are required on create but read-only afterward, pass them to `create()` and let normal field assignment handle later PATCHable fields.
+If a DRF endpoint does not allow partial updates, call `save(full=True)`, which sends a `PUT` holding every writable declared field present after an unloaded or partial object is loaded, encoded as an assignment would encode it. If your serializer has fields that are required on create but read-only afterward, pass them to `create()` and let normal field assignment handle later PATCHable fields.
 
 ## Unwrap DRF error responses
 
@@ -300,7 +352,22 @@ or validation errors such as:
 {"email": ["This field must be unique."]}
 ```
 
-If you want cleaner exceptions on the client side, override `API.raise_for_response()` and translate DRF's error payload into your own exception type:
+A failed request raises `APIError`, or `NotFound` for a 404. Both are `requests.HTTPError`, and `data` holds the parsed body, so a client can report each field's errors:
+
+```python
+from eazyrest import APIError
+
+try:
+    user.save()
+except APIError as err:
+    if isinstance(err.data, dict):
+        for field, messages in err.data.items():
+            print(field, messages)
+```
+
+The message names the status and the members of the body, as in `400 Client Error: Bad Request for PATCH https://api.example.com/users/1/ (body names email)`, but not their text, because DRF's messages can quote the submitted values, such as `"'abc' is not a valid choice."`. `NotFound` is also `DoesNotExist`, so `except DoesNotExist` catches an object that was deleted on the server when it is lazily loaded, as it catches a lookup that matched nothing.
+
+For exception types of your own, override `API.raise_for_response()` and translate DRF's error payload:
 
 ```python
 import requests
@@ -446,6 +513,8 @@ For large DRF APIs, `CursorPagination` is usually the cleanest built-in choice:
 - `eazyrest` can prefetch related objects for each batch of parent objects.
 
 `LimitOffsetPagination` is a good fit when clients need explicit slices, such as `?limit=100&offset=300`, and the result set is not so large that high offsets become expensive. `PageNumberPagination` is a good fit when the API is intentionally page-oriented, such as `?page=4`, and clients benefit from stable page-number links.
+
+With `PageNumberPagination` and `LimitOffsetPagination`, the iterator that `filter()` returns has the collection's size as `count`, from the first page. `CursorPagination` does not report a size, so `count` is `None`.
 
 Follow `next` links in `collection_items()`, as `follow_next_links()` does, rather than in related-field conversion. Related fields should describe one object's payload. Page traversal should describe how to walk a collection endpoint.
 
