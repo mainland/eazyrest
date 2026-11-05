@@ -10,6 +10,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job only reads the repository.
 permissions:
   contents: read
 
@@ -24,15 +25,17 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Run Tests
-        run: uvx --with tox-uv tox -e ${{ matrix.env }}
+        env:
+          TOX_ENV: ${{ matrix.env }}
+        run: uvx --with tox-uv tox -e "$TOX_ENV"
 
   minimums:
     name: Test (${{ matrix.env }})
@@ -46,33 +49,35 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Run Tests
-        run: uvx --with tox-uv tox -e ${{ matrix.env }}
+        env:
+          TOX_ENV: ${{ matrix.env }}
+        run: uvx --with tox-uv tox -e "$TOX_ENV"
 
   lint:
     runs-on: ubuntu-latest
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Check That uv.lock Is Current
         run: uv lock --check
 
       - name: Cache pre-commit Environments
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -85,16 +90,16 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Audit Locked Dependencies
         run: |
-          uv export --locked --all-groups --no-emit-project \
+          uv export --locked --all-groups --all-extras --no-emit-project \
             --output-file "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit==2.10.1 --disable-pip --require-hashes \
             --requirement "$RUNNER_TEMP/requirements.txt"
@@ -104,12 +109,12 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build Documentation
         run: uvx --with tox-uv tox -e docs
@@ -119,14 +124,14 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # setuptools-scm derives the version from tags.
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build Distributions
         run: |

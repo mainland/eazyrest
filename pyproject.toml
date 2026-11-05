@@ -97,6 +97,7 @@ dev = [
   "twine",
   "types-python-dateutil",
   "types-requests",
+  "zizmor==1.32.0",
 ]
 
 # Sphinx 9.1 requires Python 3.12, so the docs group does, and so does the dev
@@ -318,4 +319,4 @@ PC170 = "The repository has no reStructuredText files."
 PC901 = "CI runs the hooks through tox, not pre-commit.ci."
 PC902 = "CI runs the hooks through tox, not pre-commit.ci."
 PC903 = "CI runs the hooks through tox, not pre-commit.ci."
-SEC001 = "Actions are pinned by major version, and Dependabot updates them."
+SEC001 = "zizmor runs as a local hook from .venv."
