@@ -4540,3 +4540,72 @@ def test_get_or_create_sends_reserved_names(requests_mock: Any) -> None:
         "title": ["a"],
     }
     assert post.last_request.json() == {"api": "v2", "title": "a"}
+
+
+def test_field_missing_from_full_object_raises_once(
+    requests_mock: Any,
+) -> None:
+    """A field that the loaded object lacks raises without loading again."""
+    detail = requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 1, "completed": False},
+    )
+    todo = Todo(id=1)
+
+    with pytest.raises(AttributeError, match="no attribute 'title'"):
+        _ = todo.title
+    with pytest.raises(AttributeError, match="no attribute 'title'"):
+        _ = todo.title
+
+    assert detail.call_count == 1
+
+
+def test_prefetch_of_field_that_is_not_related_raises() -> None:
+    """``prefetch=`` names a related-object field, checked before a request."""
+    with pytest.raises(ValueError, match="not a related-object field"):
+        Todo.filter(prefetch="title")
+
+
+def test_detail_load_keeps_key_from_partial_json(requests_mock: Any) -> None:
+    """A detail response without the key keeps the key that the JSON held."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"userId": 1, "title": "a", "completed": True},
+    )
+    todo = Todo(id=1)
+    todo.update_from_json({"id": 1, "title": "a"})
+
+    assert todo.completed is True
+    assert todo.id == 1
+    assert todo.json["id"] == 1
+
+
+def test_prefetch_skips_missing_null_and_malformed_relations(
+    requests_mock: Any,
+) -> None:
+    """Items without a usable related key are left out of the bulk load."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[
+            {"id": 1, "title": "no user", "completed": False},
+            {"id": 2, "userId": None, "title": "null", "completed": False},
+            {"id": 3, "userId": 5, "title": "user", "completed": False},
+        ],
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/?id=5",
+        json=[{"id": 5, "name": "Eve"}],
+        complete_qs=True,
+    )
+    requests_mock.get(
+        "https://example.com/v1/teams/",
+        json=[{"id": 1, "members": "not a list"}, {"id": 2}],
+    )
+
+    todos = list(Todo.filter(prefetch="user"))
+    teams = list(Team.filter(prefetch="members"))
+
+    assert getattr(todos[1], "user") is None  # noqa: B009
+    assert todos[2].user.name == "Eve"
+    assert users.call_count == 1
+    assert len(teams) == 2
