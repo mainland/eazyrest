@@ -21,6 +21,7 @@ from ._models import (
     JSONObject,
     json_object,
 )
+from ._results import Results
 from .api import API
 from .dateparse import parse_datetime, parse_duration
 from .pagination import follow_link_headers, follow_next_links
@@ -48,6 +49,7 @@ __all__ = [
     "PrefetchNotSupported",
     "RedirectError",
     "ResponseShapeError",
+    "Results",
     "UsageError",
     "WriteMode",
     "follow_link_headers",

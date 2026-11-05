@@ -627,6 +627,21 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+The iterator is a `Results`, whose `count` is the size of the whole collection
+when the response reports it, as a page of Django REST Framework's
+`PageNumberPagination` or `LimitOffsetPagination` does, and `None` otherwise.
+It is known as soon as `filter()` returns, before any item or later page is
+read:
+
+```python
+admins = User.filter(role="admin")
+print(f"{admins.count} admins")
+```
+
+`filter()` takes `count` from the iterable that `collection_items()` returns.
+`follow_next_links()` returns one with the first page's `count` member, and a
+hook of your own can return any iterable with an integer `count` attribute.
+
 `filter()` and `get()` encode a keyword argument named after a JSON-backed
 field with the same JSON field name and conversion as `create()`. For example,
 `Todo.filter(user=user)` sends the user's primary key under the field's JSON

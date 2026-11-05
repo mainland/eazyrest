@@ -61,6 +61,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
 )
+from ._results import Results, _count_of
 from .api import API
 from .write_mode import WriteMode, validate_write_mode
 
@@ -769,6 +770,22 @@ class _OwnedJSON(dict[str, Any]):
     because the caller may change it later. Internal construction from a
     response or a parent's JSON wraps the mapping in this class instead.
     """
+
+    def __init__(self, value: Mapping[str, Any]) -> None:
+        """Validate an object response before taking ownership of it.
+
+        Args:
+            value: JSON object from a response or collection hook.
+
+        Raises:
+            ResponseShapeError: If the value is not a mapping.
+        """
+        if not isinstance(value, Mapping):
+            raise ResponseShapeError(
+                "Collection items must be JSON objects, "
+                f"got {type(value).__name__}"
+            )
+        super().__init__(value)
 
 
 _UNCHANGEABLE_VALUES = (
@@ -3287,7 +3304,13 @@ class JSONObject:
 
                 if collection_type is None:
                     if not isinstance(raw_value, dict):
-                        pks.add(raw_value)
+                        try:
+                            pks.add(raw_value)
+                        except TypeError as err:
+                            raise ResponseShapeError(
+                                f"{cls.__name__}.{field} has an invalid "
+                                "related key"
+                            ) from err
                     continue
 
                 if not isinstance(raw_value, Iterable) or isinstance(
@@ -3298,11 +3321,16 @@ class JSONObject:
                 raw_items = tuple(raw_value)
                 # Explicit prefetch only bulk-loads foreign-key style entries.
                 # Embedded related JSON objects do not need to be prefetched.
-                pks.update(
-                    item
-                    for item in raw_items
-                    if item is not None and not isinstance(item, dict)
-                )
+                try:
+                    pks.update(
+                        item
+                        for item in raw_items
+                        if item is not None and not isinstance(item, dict)
+                    )
+                except TypeError as err:
+                    raise ResponseShapeError(
+                        f"{cls.__name__}.{field} has an invalid related key"
+                    ) from err
 
             if len(pks) == 0:
                 continue
@@ -3344,9 +3372,10 @@ class JSONObject:
         iterator = iter(items)
 
         while True:
-            batch_items = list(
-                itertools.islice(iterator, cls.prefetch_batch_size)
-            )
+            batch_items = [
+                _OwnedJSON(item)
+                for item in itertools.islice(iterator, cls.prefetch_batch_size)
+            ]
             if len(batch_items) == 0:
                 return
 
@@ -3376,7 +3405,7 @@ class JSONObject:
         api: API | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> Iterator[Self]:
+    ) -> Results[Self]:
         """Query objects matching request parameters.
 
         The request is sent when ``filter()`` is called. Objects are created as
@@ -3416,7 +3445,10 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Iterator over objects built from the response payload.
+            Iterator over objects built from the response payload. Its
+            ``count`` is the size of the whole collection, if the iterable
+            that ``collection_items()`` returns has a ``count`` attribute, as
+            ``follow_next_links()``'s does, and ``None`` otherwise.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
@@ -3443,11 +3475,16 @@ class JSONObject:
         finally:
             _query_api.reset(token)
 
+        count = _count_of(items)
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
-            return (cls(json=_OwnedJSON(item), api=api) for item in items)
+            return Results(
+                (cls(json=_OwnedJSON(item), api=api) for item in items), count
+            )
 
-        return cls._prefetched_filter(items, prefetch_fields, api)
+        return Results(
+            cls._prefetched_filter(items, prefetch_fields, api), count
+        )
 
     @classmethod
     def all(
@@ -3455,7 +3492,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
-    ) -> Iterator[Self]:
+    ) -> Results[Self]:
         """Return all objects for this resource type.
 
         Args:
@@ -3467,7 +3504,7 @@ class JSONObject:
                 API, so their later requests use it too.
 
         Returns:
-            Iterator over all objects.
+            Iterator over all objects, with ``count`` as for ``filter()``.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
