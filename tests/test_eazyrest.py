@@ -14,6 +14,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
+from hypothesis import given
+from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
 
 from eazyrest import (
@@ -4172,6 +4174,46 @@ def test_string_annotation_naming_its_field_resolves_to_the_type() -> None:
         2024, 4, 1, 12, tzinfo=datetime.timezone.utc
     )
     assert obj.uuid == uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+
+_QUERY_SCALARS = st.one_of(
+    st.none(), st.booleans(), st.integers(), st.text(max_size=3)
+)
+_QUERY_VALUES = st.recursive(
+    _QUERY_SCALARS,
+    lambda items: st.one_of(
+        st.lists(items, max_size=3),
+        st.lists(items, max_size=3).map(tuple),
+        st.lists(items, max_size=3).map(iter),
+        st.lists(items, max_size=3).map(deque),
+        st.dictionaries(st.text(max_size=2), items, max_size=2),
+    ),
+    max_leaves=6,
+)
+
+
+@given(value=_QUERY_VALUES, name=st.sampled_from(["userId", "ordering"]))
+def test_query_encoding_sends_constraint_or_raises(
+    value: Any, name: str
+) -> None:
+    """Every query value is either sent intact or refused before sending.
+
+    Args:
+        value: Generated query value.
+        name: Parameter name, a JSON key or a name that is not a field.
+    """
+    try:
+        params = Todo._encode_query({name: value})
+    except ValueError:
+        return
+
+    url = requests.Request("GET", "https://example.com/", params=params)
+    sent = parse_qs(
+        urlparse(str(url.prepare().url)).query,
+        keep_blank_values=True,
+    )
+    items = params[name] if isinstance(params[name], list) else [params[name]]
+    assert len(sent[name]) == len(items)
 
 
 @pytest.mark.parametrize(

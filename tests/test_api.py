@@ -13,9 +13,12 @@ import pytest
 import requests
 import requests.auth
 import urllib3
+from hypothesis import given
+from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
 
 from eazyrest import API
+from eazyrest.api import _redirect_destination
 
 
 def test_api_preserves_base_path_prefix_in_relative_requests(
@@ -329,6 +332,50 @@ def test_api_refuses_backslash_authority_redirect(
         api.post("/users/", json={"password": "secret"})
 
     assert not evil.called
+
+
+_LOCATION_TEXT = st.lists(
+    st.sampled_from(
+        [
+            *"abc.:/\\@%?#[]-_ 019\t\u00e9",
+            *["example.com", "evil.net", "//", "https:", "http:", ":443"],
+        ]
+    ),
+    max_size=12,
+).map("".join)
+
+
+@given(location=_LOCATION_TEXT)
+def test_redirect_destination_matches_requests(location: str) -> None:
+    """The guard computes the same redirect URL that requests follows.
+
+    Args:
+        location: Generated ``Location`` header value.
+    """
+    session = requests.Session()
+    resp = requests.Response()
+    resp.status_code = 307
+    resp.url = "https://example.com/v1/users/?page=1"
+    resp.headers["Location"] = location
+    resp.request = requests.Request("GET", resp.url).prepare()
+    resp._content = b""
+    resp._content_consumed = True  # type: ignore[attr-defined]
+    try:
+        target = session.get_redirect_target(resp)
+    except UnicodeDecodeError:
+        # requests cannot read the header either, so it follows nothing.
+        return
+    if not target:
+        return
+
+    try:
+        followed = next(
+            session.resolve_redirects(resp, resp.request, yield_requests=True)
+        )
+    except (ValueError, requests.RequestException):
+        return
+
+    assert _redirect_destination(resp, target) == followed.url
 
 
 @pytest.mark.parametrize("on_request", [False, True])
