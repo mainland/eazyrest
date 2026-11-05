@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
+__all__ = ["WriteMode"]
+
 WriteMode = Literal["lazy", "eager"]
 """How ``JSONObject`` field assignments are persisted.
 

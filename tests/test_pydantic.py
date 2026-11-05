@@ -38,7 +38,7 @@ from eazyrest import (
     PydanticType,
     json_object,
 )
-from eazyrest.eazyrest import analyze_type
+from eazyrest._models import analyze_type
 from eazyrest.pydantic import UUID, Date, Datetime, Duration
 
 TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")

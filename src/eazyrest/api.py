@@ -14,6 +14,8 @@ from requests.utils import requote_uri
 
 from .write_mode import WriteMode, validate_write_mode
 
+__all__ = ["API"]
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:

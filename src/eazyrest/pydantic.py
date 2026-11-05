@@ -37,14 +37,14 @@ from pydantic_core import (
 )
 from typing_extensions import is_typeddict
 
-from .dateparse import parse_datetime, parse_duration
-from .eazyrest import (
+from ._models import (
     JSONObject,
     _decode_date,
     _decode_enum,
     _decode_uuid,
     lenient_issubclass,
 )
+from .dateparse import parse_datetime, parse_duration
 
 __all__ = ["UUID", "Date", "Datetime", "Duration"]
 
