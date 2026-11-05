@@ -220,9 +220,10 @@ skip_missing_interpreters = true
 # a runtime dependency that is missing from pyproject.toml fails the tests.
 [tool.tox.env_run_base]
 dependency_groups = ["test"]
+set_env = {COVERAGE_FILE = "{env_dir}/.coverage"}
 commands = [
   ["coverage", "run", "-m", "pytest", "-q"],
-  ["coverage", "report"],
+  ["coverage", "report", "--fail-under=95"],
 ]
 
 # Test against the oldest Pydantic release that the pydantic extra allows. It
@@ -264,11 +265,15 @@ base_python = ["3.12"]
 deps = ["django", "djangorestframework", "django-filter"]
 commands = [
   [
+    "coverage",
+    "run",
+    "-m",
     "pytest",
     "-q",
     "tests/test_drf_recipes.py",
     "tests/test_drf_client.py",
   ],
+  ["coverage", "report"],
 ]
 
 # Test the core without Pydantic, so that a dependency that only Pydantic
@@ -280,6 +285,7 @@ base_python = ["3.12"]
 dependency_groups = ["test-core"]
 commands = [
   ["coverage", "run", "-m", "pytest", "-q", "--ignore=tests/test_pydantic.py"],
+  ["coverage", "report"],
   [
     "python",
     "-c",
