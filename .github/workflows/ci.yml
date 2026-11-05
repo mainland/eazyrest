@@ -136,7 +136,7 @@ jobs:
       - name: Build Distributions
         run: |
           uv build
-          uvx twine check --strict dist/eazyrest-*
+          uvx twine==7.0.0 check --strict dist/eazyrest-*
 
       # The extras' dependencies have markers that differ between the oldest
       # and newest supported Python, so install each on both.

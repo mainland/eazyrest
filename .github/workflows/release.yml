@@ -1,0 +1,123 @@
+name: Release
+
+# Pushing a version tag, such as v1.0.0 or v1.0.0rc1, builds the
+# distributions from that tag, tests the exact files, publishes them to
+# TestPyPI, and then, once a maintainer approves the pypi environment,
+# publishes the same files to PyPI. Publishing uses PyPI's trusted publishing,
+# so no API token is stored. Register this workflow, release.yml, as a trusted
+# publisher on TestPyPI and PyPI, with the environments testpypi and pypi.
+on:
+  push:
+    tags: ["v*"]
+
+# Never cancel a release that has started publishing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Each job asks for exactly the permissions that it needs.
+permissions: {}
+
+jobs:
+  build:
+    name: Build and Test Distributions
+    # The image that the release has run on, until CI has run on the next.
+    runs-on: ubuntu-24.04
+    permissions:
+      # Check out the tagged source.
+      contents: read
+
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # setuptools-scm derives the version from tags.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set Up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          # A cache that another workflow wrote must not reach a release.
+          enable-cache: false
+
+      - name: Build Distributions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A dirty tree would build a version that does not match the tag.
+          git diff --quiet HEAD --
+          test "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)"
+          version="$(python3 .github/scripts/release_version.py "$TAG")"
+          # The triggering tag is authoritative when several tags name HEAD.
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_EAZYREST="$version" \
+            uv build --out-dir dist
+          sdist="dist/eazyrest-$version.tar.gz"
+          wheel="dist/eazyrest-$version-py3-none-any.whl"
+          test -f "$sdist" && test -f "$wheel"
+          uvx twine==7.0.0 check --strict "$sdist" "$wheel"
+          mkdir release
+          mv "$sdist" "$wheel" release/
+          sha256sum release/*
+
+      # Test the exact wheel on the oldest and newest Python, at the minimum
+      # dependencies, and without Pydantic.
+      - name: Test the Wheel
+        run: |
+          wheel="$(ls release/*.whl)"
+          uvx --with tox-uv tox \
+            -e py310,py315,pydantic-min,min-deps,min-deps-py315,no-pydantic \
+            --skip-missing-interpreters false \
+            --installpkg "$wheel"
+
+      - name: Store Distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distributions
+          path: release/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    # The image that the release has run on, until CI has run on the next.
+    runs-on: ubuntu-24.04
+    environment: testpypi
+    permissions:
+      id-token: write # Trusted publishing trades this for an upload token.
+
+    steps:
+      - name: Fetch Distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A rerun of the whole workflow rebuilds files that differ from
+          # those already uploaded, which TestPyPI would refuse, and the PyPI
+          # job would never run. The PyPI job publishes this run's files.
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    # The image that the release has run on, until CI has run on the next.
+    runs-on: ubuntu-24.04
+    # Configure this environment to require a maintainer's approval.
+    environment: pypi
+    permissions:
+      id-token: write # Trusted publishing trades this for an upload token.
+
+    steps:
+      - name: Fetch Distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
