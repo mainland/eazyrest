@@ -77,7 +77,48 @@ DOC_JSON = {
 }
 
 
-@pytest.mark.parametrize("operation", ["create", "save", "delete"])
+@pytest.mark.parametrize("source", ["push", "create", "write-only"])
+def test_full_save_completes_partial_state(
+    requests_mock: Any, source: str
+) -> None:
+    """Replacement writes load fields unknown to a partial object.
+
+    Args:
+        source: Operation that established the partial state.
+    """
+    detail = requests_mock.get(
+        DOC_URL,
+        json={**DOC_JSON, "title": "new" if source == "create" else "old"},
+    )
+    put = requests_mock.put(DOC_URL, status_code=204)
+    if source == "create":
+        requests_mock.post("https://review.example/docs/", json={"id": 1})
+        doc = ReviewDoc.create(title="new")
+    else:
+        doc = ReviewDoc(id=1)
+        if source == "push":
+            doc.update_from_json({"title": "old"})
+            doc.title = "new"
+        else:
+            requests_mock.patch(DOC_URL, json={"id": 1})
+            doc.password = "dummy"
+            doc.save()
+
+    doc.save(full=True)
+
+    assert detail.call_count == 1
+    assert put.last_request.json() == {
+        "id": 1,
+        "title": "old" if source == "write-only" else "new",
+        "body": "keep",
+        "tags": ["a"],
+        "owner_id": 2,
+        "linked": "https://review.example/users/2/",
+    }
+    assert doc._pending_updates == {}
+
+
+@pytest.mark.parametrize("operation", ["create", "save", "full", "delete"])
 @pytest.mark.parametrize("status", [300, 307, 308])
 def test_model_writes_reject_unconfirmed_redirects(
     requests_mock: Any, operation: str, status: int
@@ -109,7 +150,7 @@ def test_model_writes_reject_unconfirmed_redirects(
         elif operation == "delete":
             doc.delete(request_options=options)
         else:
-            doc.save(request_options=options)
+            doc.save(full=operation == "full", request_options=options)
 
     with pytest.raises(RedirectError):
         write()
@@ -299,6 +340,42 @@ def test_date_strings_use_the_same_format_on_every_python(value: str) -> None:
 
     with pytest.raises(FieldConversionError):
         _ = dated.date
+
+
+def test_mapped_write_only_field_stays_out_of_full_save_state(
+    requests_mock: Any,
+) -> None:
+    """Full and eager writes keep a write-only value only until it is sent."""
+
+    @json_object(write_only={"password"}, write_map={"password": "secret"})
+    class Account(ReviewBase):
+        class_url = "/accounts/"
+
+        id: int
+        name: str
+        password: str
+
+    url = "https://review.example/accounts/1/"
+    put = requests_mock.put(url, json={"id": 1, "password": "echo"})
+    account = Account(json={"id": 1, "name": "Ada"})
+    account.password = "dummy"
+
+    account.save(full=True)
+
+    assert put.last_request.json() == {
+        "id": 1,
+        "name": "Ada",
+        "secret": "dummy",
+    }
+    assert "password" not in account.json
+    assert account._pending_updates == {}
+
+    patch = requests_mock.patch(url, status_code=204)
+    account.set_write_mode("eager")
+    account.password = "next"
+
+    assert patch.last_request.json() == {"secret": "next"}
+    assert "password" not in account.json
 
 
 def test_public_json_helper_keeps_limits_in_response_hooks(

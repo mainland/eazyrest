@@ -4957,3 +4957,43 @@ def test_write_map_must_name_fields_and_distinct_keys(
             id: int
             name: str
             title: str
+
+
+def test_full_save_puts_every_field(requests_mock: Any) -> None:
+    """``save(full=True)`` sends the whole object, encoded for writing."""
+    put = requests_mock.put(
+        "https://example.com/v1/chores/1/",
+        json={**CHORE_JSON, "title": "new"},
+    )
+    chore = Chore(json=CHORE_JSON)
+
+    chore.title = "new"
+    chore.save(full=True)
+
+    assert put.last_request.json() == {"id": 1, "title": "new", "owner_id": 2}
+    assert chore.title == "new"
+    assert chore._pending_updates == {}
+
+
+def test_full_save_loads_and_sends_without_changes(requests_mock: Any) -> None:
+    """A full save loads an unloaded object and sends even without changes."""
+    requests_mock.get("https://example.com/v1/todos/1/", json=TODO_JSON)
+    put = requests_mock.put("https://example.com/v1/todos/1/", status_code=204)
+
+    Todo(id=1).save(full=True)
+
+    assert put.last_request.json() == TODO_JSON
+
+
+def test_full_save_sends_pending_write_only_fields(requests_mock: Any) -> None:
+    """A full save includes a pending write-only field, and keeps none."""
+    put = requests_mock.put(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    login = Login(json=LOGIN_JSON)
+
+    login.password = "hunter2"
+    login.save(full=True)
+
+    assert put.last_request.json() == {**LOGIN_JSON, "password": "hunter2"}
+    assert login.json == LOGIN_JSON

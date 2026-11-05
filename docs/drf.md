@@ -312,7 +312,7 @@ List a parameter that the view reads itself, such as `expand`, or that a custom 
 
 Lazy field assignment and `save()` use `PATCH`, which matches DRF viewsets that support partial updates. `create()` uses `POST` against `class_url`, and `delete()` uses `DELETE` against the object URL.
 
-If a DRF endpoint does not allow partial updates, avoid field assignment plus `save()` for that model and call the API directly with the shape that endpoint expects. If your serializer has fields that are required on create but read-only afterward, pass them to `create()` and let normal field assignment handle later PATCHable fields.
+If a DRF endpoint does not allow partial updates, call `save(full=True)`, which sends a `PUT` holding every writable declared field present after an unloaded or partial object is loaded, encoded as an assignment would encode it. If your serializer has fields that are required on create but read-only afterward, pass them to `create()` and let normal field assignment handle later PATCHable fields.
 
 ## Unwrap DRF error responses
 

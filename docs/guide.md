@@ -542,6 +542,10 @@ todo = Todo(id=1, write_mode="eager")
 todo.completed = True
 ```
 
+### Full updates
+
+`save()` sends the changed fields in a `PATCH`. For an API that updates an object only with a `PUT` of the whole object, call `save(full=True)`. It sends every writable declared field that the object's JSON has, with its unsaved changes and any pending write-only fields, even if nothing changed. Each value is encoded as an assignment would encode it, so a related object is sent as its primary key, and a field that `write_map` names under its write key. It loads an unloaded or partial object first, preserving pending changes. Read-only fields are omitted.
+
 ### Request options
 
 `save()`, `create()`, and `delete()` take `request_options=`, keyword arguments for the request as requests takes them, such as `headers` or `params`. They cannot set the body, which the write builds, or enable `stream=True`, because model writes consume their responses. An unfollowed final 3xx raises `RedirectError`, including when `allow_redirects=False`, and pending updates remain pending. A server that supports optimistic concurrency, for example, refuses a write whose `If-Match` header no longer names the object's current version:
