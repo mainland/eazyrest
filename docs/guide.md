@@ -662,7 +662,8 @@ A related object loads through the API registered for its own class, so models s
 eazyrest raises a subclass of `EazyrestError` for each condition that its own policies detect, so `except EazyrestError` catches them all. Each also derives from the exception type that it replaced, so code written for that type keeps working:
 
 - `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a field cannot convert.
-- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object.
+- `APIError`, a `requests.HTTPError`, for a response whose status reports a failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON body, and the message names the body's members but not their text.
+- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without `bulk_get_by_pks()`.
 - `RedirectError`, a `requests.HTTPError`, for a redirect that is refused before it is followed. Its `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to another origin, or to a page already read.
@@ -670,7 +671,7 @@ eazyrest raises a subclass of `EazyrestError` for each condition that its own po
 - `UsageError`, a `RuntimeError`, for a model without a registered API or a second iteration of a lazy related collection.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's [limits](#limits).
 
-An HTTP error status still raises whatever `API.raise_for_response()` raises, `requests.HTTPError` by default, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. A declaration that `@json_object` cannot accept raises `TypeError` or `ValueError` when the class is defined.
+An HTTP error status raises whatever `API.raise_for_response()` raises, `APIError` or `NotFound` by default. Invalid JSON gives these errors `data=None`. A depth-limit violation instead raises `LimitExceeded`, including for an error body, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. Invalid decorator options raise `TypeError` or `ValueError` when the class is defined. Field annotations resolve lazily, so an invalid conversion declaration can raise `FieldConversionError` at first use.
 
 ## Threads
 

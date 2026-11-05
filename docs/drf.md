@@ -300,7 +300,22 @@ or validation errors such as:
 {"email": ["This field must be unique."]}
 ```
 
-If you want cleaner exceptions on the client side, override `API.raise_for_response()` and translate DRF's error payload into your own exception type:
+A failed request raises `APIError`, or `NotFound` for a 404. Both are `requests.HTTPError`, and `data` holds the parsed body, so a client can report each field's errors:
+
+```python
+from eazyrest import APIError
+
+try:
+    user.save()
+except APIError as err:
+    if isinstance(err.data, dict):
+        for field, messages in err.data.items():
+            print(field, messages)
+```
+
+The message names the status and the members of the body, as in `400 Client Error: Bad Request for PATCH https://api.example.com/users/1/ (body names email)`, but not their text, because DRF's messages can quote the submitted values, such as `"'abc' is not a valid choice."`. `NotFound` is also `DoesNotExist`, so `except DoesNotExist` catches an object that was deleted on the server when it is lazily loaded, as it catches a lookup that matched nothing.
+
+For exception types of your own, override `API.raise_for_response()` and translate DRF's error payload:
 
 ```python
 import requests

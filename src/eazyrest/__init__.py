@@ -3,9 +3,14 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from ._errors import (
+    APIError,
+    DoesNotExist,
     EazyrestError,
     LimitExceeded,
+    MultipleObjectsReturned,
+    NotFound,
     PaginationError,
+    PrefetchNotSupported,
     RedirectError,
     ResponseShapeError,
     UsageError,
@@ -14,12 +19,9 @@ from ._models import (
     AnalyzedType,
     BaseType,
     CollectionType,
-    DoesNotExist,
     FieldConversionError,
     JSONObject,
-    MultipleObjectsReturned,
     OptionalType,
-    PrefetchNotSupported,
     PydanticType,
     RelatedType,
     json_object,
@@ -37,6 +39,7 @@ except PackageNotFoundError:  # pragma: no cover - only without metadata
 
 __all__ = [
     "API",
+    "APIError",
     "AnalyzedType",
     "BaseType",
     "CollectionType",
@@ -46,6 +49,7 @@ __all__ = [
     "JSONObject",
     "LimitExceeded",
     "MultipleObjectsReturned",
+    "NotFound",
     "OptionalType",
     "PaginationError",
     "PrefetchNotSupported",

@@ -9,8 +9,11 @@ import requests
 
 from eazyrest import (
     API,
+    APIError,
+    DoesNotExist,
     EazyrestError,
     JSONObject,
+    NotFound,
     PaginationError,
     RedirectError,
     ResponseShapeError,
@@ -27,6 +30,8 @@ from eazyrest import (
         (PaginationError, (ValueError,)),
         (ResponseShapeError, (TypeError, ValueError)),
         (UsageError, (RuntimeError,)),
+        (APIError, (requests.HTTPError,)),
+        (NotFound, (requests.HTTPError, DoesNotExist)),
     ],
 )
 def test_policy_errors_keep_the_types_they_replace(
@@ -121,3 +126,82 @@ def test_model_without_api_is_a_usage_error() -> None:
 
     with pytest.raises(UsageError, match="No API registered"):
         _ = Orphan.api
+
+
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        ({"email": ["Enter a valid email address: 'x'."]}, "email"),
+        ({"name": ["Required."], "age": ["Too young."]}, "age, name"),
+        ({"detail": "You do not have permission: 'secret'."}, None),
+        ("<html>secret</html>", None),
+    ],
+)
+def test_failed_request_raises_api_error_with_its_body(
+    requests_mock: Any, body: Any, names: str | None
+) -> None:
+    """An error status raises ``APIError``, which holds the parsed body.
+
+    The message names the members of a JSON object body but quotes none of
+    its text, which can quote the values that were sent.
+
+    Args:
+        body: Error response body, JSON or text.
+        names: Member names that the message should list, or ``None``.
+    """
+    api = API("https://example.com/v1/")
+    if isinstance(body, str):
+        requests_mock.post(
+            "https://example.com/v1/users/", status_code=400, text=body
+        )
+    else:
+        requests_mock.post(
+            "https://example.com/v1/users/", status_code=400, json=body
+        )
+
+    with pytest.raises(APIError) as info:
+        api.post("/users/", json={"email": "x"})
+
+    error = info.value
+    assert isinstance(error, requests.HTTPError)
+    assert error.response is not None
+    assert error.response.status_code == 400
+    assert error.data == (None if isinstance(body, str) else body)
+    message = str(error)
+    assert message.startswith(
+        "400 Client Error: None for POST https://example.com/v1/users/"
+    )
+    assert "secret" not in message
+    assert "'x'" not in message
+    if names is None:
+        assert "body names" not in message
+    else:
+        assert message.endswith(f"(body names {names})")
+
+
+def test_deleted_object_raises_not_found(requests_mock: Any) -> None:
+    """A 404 on a lazy load is ``NotFound``, a ``DoesNotExist``."""
+    requests_mock.get(
+        "https://example.com/v1/notes/7/",
+        status_code=404,
+        json={"detail": "Not found."},
+    )
+
+    with pytest.raises(DoesNotExist) as info:
+        _ = Note(id=7).text
+
+    assert isinstance(info.value, NotFound)
+    assert isinstance(info.value, requests.HTTPError)
+    assert info.value.data == {"detail": "Not found."}
+
+
+def test_server_error_is_an_api_error(requests_mock: Any) -> None:
+    """A 5xx status raises ``APIError`` but not ``NotFound``."""
+    api = API("https://example.com/v1/")
+    requests_mock.get("https://example.com/v1/x", status_code=503)
+
+    with pytest.raises(APIError, match=r"^503 Server Error") as info:
+        api.get("/x")
+
+    assert not isinstance(info.value, NotFound)
+    assert info.value.data is None
