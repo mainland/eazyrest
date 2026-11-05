@@ -102,6 +102,16 @@ same exceptions as one, such as `requests.HTTPError` or
 `hasattr()` also loads the object, and it propagates request errors instead of
 returning `False`.
 
+`json` returns the object's own payload, not a copy, so treat it as read-only.
+Changing it, or a value inside it, bypasses change tracking, and `save()` may
+then send nothing or the wrong fields. Assign fields to change an object, and
+copy the payload with `copy.deepcopy()` before changing it for another purpose.
+
+An assignment converts the value for its field but does not otherwise check its
+type, unless the field's type is one that Pydantic validates. A value that
+cannot be written as JSON fails when it is sent, at `save()` in lazy mode, and
+stays pending.
+
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it.
 
@@ -638,12 +648,15 @@ for example case-insensitively. Make sure that the API filters on each field
 you look up by. The Django REST Framework guide shows
 [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
-`get()` raises `DoesNotExist` when nothing matches and
-`MultipleObjectsReturned` when more than one object does, and `get_or_create()`
-raises the latter too. Their messages name the model and the lookup parameters,
-but not their values, as in `No Todo matching title exists`. These exceptions
-and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause
-catches every error that eazyrest itself defines.
+`get()` queries the collection, as `filter()` does, and expects exactly one
+object, so `get()` without parameters requires a collection of one object. To
+load an object by its primary key, construct it, as in `User(id=1)`. `get()`
+raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when
+more than one object does, and `get_or_create()` raises the latter too. Their
+messages name the model and the lookup parameters, but not their values, as in
+`No Todo matching title exists`. These exceptions and `PrefetchNotSupported`
+derive from `EazyrestError`, so one `except` clause catches every error that
+eazyrest itself defines.
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched,
 a `POST`, so two clients can both create the object. Rely on a uniqueness
