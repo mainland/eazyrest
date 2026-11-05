@@ -825,6 +825,38 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+def _query_params(
+    params: Mapping[str, Any] | None,
+    kwargs: Mapping[str, Any],
+    kind: str = "Query parameter",
+    argument: str = "params",
+) -> dict[str, Any]:
+    """Return the parameters given as a mapping and as keywords.
+
+    Args:
+        params: Parameters passed as a mapping, whose names may be anything,
+            including the names that the methods reserve.
+        kwargs: Parameters passed as keyword arguments.
+        kind: What a parameter is, for the error message.
+        argument: Name of the mapping argument, for the error message.
+
+    Returns:
+        Every parameter, keyed by name.
+
+    Raises:
+        TypeError: If a name is given both ways.
+    """
+    if params is None:
+        return dict(kwargs)
+    both = sorted(set(params) & set(kwargs))
+    if both:
+        raise TypeError(
+            f"{kind} {both[0]} is given both as a keyword argument and in "
+            f"{argument}"
+        )
+    return {**params, **kwargs}
+
+
 def _materialize_query_value(value: Any) -> Any:
     """Return a query value with any collection read into a list.
 
@@ -2544,7 +2576,11 @@ class JSONObject:
 
     @classmethod
     def create(
-        cls: type[Self], *, api: API | None = None, **kwargs: Any
+        cls: type[Self],
+        *,
+        api: API | None = None,
+        fields: Mapping[str, Any] | None = None,
+        **kwargs: Any,
     ) -> Self:
         """Create and return a new remote object.
 
@@ -2558,6 +2594,9 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. The new object keeps it as their API,
                 so their later requests use it too.
+            fields: Optional field values as a mapping, used as the keyword
+                arguments are. A key in it may be anything, including ``api``
+                or ``fields``.
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
@@ -2566,8 +2605,12 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If the response does not hold a JSON object.
+            TypeError: If a field is given both as a keyword argument and in
+                ``fields``.
         """
-        payload = cls._encode_fields(kwargs)
+        payload = cls._encode_fields(
+            _query_params(fields, kwargs, "Field", "fields")
+        )
         client = cls.api if api is None else api
         resp = client.post(cls.class_url, json=payload)
 
@@ -2910,6 +2953,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Iterator[Self]:
         """Query objects matching request parameters.
@@ -2931,6 +2975,10 @@ class JSONObject:
         iterable other than a string, bytes, or a mapping, such as a generator
         or a ``deque``, is a collection.
 
+        The keyword arguments ``api``, ``prefetch``, ``defaults``, and
+        ``params`` of the query methods are not query parameters. Pass a
+        parameter with one of these names in ``params``.
+
         Args:
             prefetch: Optional related field name or field names to bulk-load
                 explicitly. Prefetched related objects may be shared by
@@ -2938,6 +2986,10 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. Returned objects keep it as their
                 API, so their later requests use it too.
+            params: Optional query parameters as a mapping, encoded as the
+                keyword arguments are. A name in it may be anything, including
+                ``api``, ``prefetch``, ``defaults``, or ``params``, which the
+                query methods reserve for themselves.
             **kwargs: Query string parameters.
 
         Returns:
@@ -2947,9 +2999,12 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
         # without bulk lookup fails even when the query matches nothing.
@@ -2957,7 +3012,7 @@ class JSONObject:
             cls._prefetch_info(field)
 
         client = cls.api if api is None else api
-        resp = client.get(cls.class_url, params=cls._encode_query(kwargs))
+        resp = client.get(cls.class_url, params=cls._encode_query(query))
         token = _query_api.set((cls, client))
         try:
             items = cls.collection_items_from_response(resp)
@@ -3004,6 +3059,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
         """Fetch exactly one object matching query parameters.
@@ -3023,6 +3079,8 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. The returned object keeps it as their
                 API, so their later requests use it too.
+            params: Optional query parameters as a mapping, as for
+                ``filter()``.
             **kwargs: Query string parameters.
 
         Returns:
@@ -3034,18 +3092,21 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
-        results = iter(cls.filter(prefetch=prefetch, api=api, **kwargs))
+        query = _query_params(params, kwargs)
+        results = iter(cls.filter(prefetch=prefetch, api=api, params=query))
         first = next(results, None)
         if first is None:
-            raise DoesNotExist(f"No {_describe_lookup(cls, kwargs)} exists")
+            raise DoesNotExist(f"No {_describe_lookup(cls, query)} exists")
 
         second = next(results, None)
         if second is not None:
             raise MultipleObjectsReturned(
-                f"More than one {_describe_lookup(cls, kwargs)} exists"
+                f"More than one {_describe_lookup(cls, query)} exists"
             )
 
         return first
@@ -3056,6 +3117,7 @@ class JSONObject:
         defaults: Mapping[str, Any] | None = None,
         *,
         api: API | None = None,
+        params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """Get one object by fields or create it if absent.
@@ -3091,6 +3153,9 @@ class JSONObject:
             api: Optional API to send the lookup and any creation with, instead
                 of the API registered for the class. The returned object keeps
                 it as its API, so its later requests use it too.
+            params: Optional fields and lookups as a mapping, used as the
+                keyword arguments are. A name in it may be anything, including
+                one that the query methods reserve, such as ``api``.
             **kwargs: Fields used for lookup and included in creation.
 
         Returns:
@@ -3101,6 +3166,8 @@ class JSONObject:
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
+            TypeError: If a parameter is given both as a keyword argument and
+                in ``params``.
         """
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once.
@@ -3109,9 +3176,9 @@ class JSONObject:
             if isinstance(value, Iterable)
             and not isinstance(value, (Collection, str, bytes, Mapping))
             else value
-            for name, value in kwargs.items()
+            for name, value in _query_params(params, kwargs).items()
         }
-        results = cls.filter(api=api, **kwargs)
+        results = cls.filter(api=api, params=kwargs)
         first = next(results, None)
         if first is not None:
             second = next(results, None)
@@ -3131,5 +3198,4 @@ class JSONObject:
         if defaults is not None:
             create_kwargs.update(defaults)
 
-        obj = cls.create(api=api, **create_kwargs)
-        return obj, True
+        return cls.create(api=api, fields=create_kwargs), True

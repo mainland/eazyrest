@@ -530,7 +530,7 @@ def test_pydantic_fields_refuse_to_write_secrets(
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
         setattr(account, field, value)
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
-        Account.create(**{field: value})
+        Account.create(fields={field: value})
 
     assert requests_mock.call_count == 0
 
