@@ -6,6 +6,7 @@ import datetime
 import enum
 import typing
 import uuid
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, ClassVar, cast
@@ -2834,13 +2835,89 @@ def test_collection_field_values_must_be_collections(
     assert requests_mock.call_count == 0
 
 
-def test_query_omits_none_for_other_parameters(requests_mock: Any) -> None:
-    """A ``None`` value for another parameter is still left to requests."""
+@pytest.mark.parametrize(
+    "query",
+    [
+        lambda: Todo.filter(ordering=None),
+        lambda: Todo.get(title__iexact=None),
+        lambda: Todo.get_or_create(title="a", owner__in=iter(())),
+    ],
+)
+def test_query_rejects_unsendable_other_parameters(
+    requests_mock: Any, query: Any
+) -> None:
+    """A parameter that names no field is checked as a field's is.
+
+    requests would omit it, so ``get()`` could return an object that the
+    constraint excludes.
+
+    Args:
+        query: Callable that runs a query with an unsendable parameter.
+    """
+    with pytest.raises(ValueError, match="cannot be sent"):
+        query()
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda: iter(()), "empty collection"),
+        (deque, "empty collection"),
+        (lambda: range(0), "empty collection"),
+        (lambda: {}.keys(), "empty collection"),
+        (lambda: iter([None]), "contains None"),
+        (lambda: deque([1, None]), "contains None"),
+        (lambda: [iter([1])], "contains a collection"),
+        (lambda: (deque([1]),), "contains a collection"),
+    ],
+)
+@pytest.mark.parametrize("name", ["userId", "ordering"])
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+def test_query_rejects_unsendable_iterables(
+    requests_mock: Any, make: Any, match: str, name: str, method: str
+) -> None:
+    """Any iterable is checked as a collection, whatever its type.
+
+    requests iterates every value that is not a string or bytes, so an empty
+    iterator or ``deque`` would be omitted and ``get()`` would return an
+    unrelated object.
+
+    Args:
+        make: Callable that returns a fresh iterable query value.
+        match: Pattern that the ``ValueError`` message should match.
+        name: Parameter name, a JSON key or a name that is not a field.
+        method: Name of the query method.
+    """
+    requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
+
+    # filter() sends its request, and so checks its parameters, when called.
+    with pytest.raises(ValueError, match=match):
+        getattr(Todo, method)(**{name: make()})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "make", [lambda: iter([1, 2]), lambda: deque([1, 2]), lambda: range(1, 3)]
+)
+def test_query_sends_every_item_of_an_iterable(
+    requests_mock: Any, make: Any
+) -> None:
+    """An iterable query value is read once and sent as repeated parameters.
+
+    Args:
+        make: Callable that returns a fresh iterable of two items.
+    """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(ordering=None))
+    list(Todo.filter(userId=make(), id__in=make()))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {}
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["1", "2"],
+        "id__in": ["1", "2"],
+    }
 
 
 def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
