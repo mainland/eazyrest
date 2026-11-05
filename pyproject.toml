@@ -310,7 +310,9 @@ commands = [
   ],
 ]
 
+# Build with the Python that .readthedocs.yaml uses.
 [tool.tox.env.docs]
+base_python = ["3.13"]
 dependency_groups = ["docs"]
 commands = [
   [
