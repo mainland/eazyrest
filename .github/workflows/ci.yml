@@ -34,9 +34,15 @@ jobs:
       - name: Run Tests
         run: uvx --with tox-uv tox -e ${{ matrix.env }}
 
-  pydantic-min:
-    name: Test (Oldest Pydantic)
+  minimums:
+    name: Test (${{ matrix.env }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Pydantic, the minimum of every dependency on the oldest
+        # and newest Python, and the core without Pydantic.
+        env: ["pydantic-min", "min-deps", "min-deps-py315", "no-pydantic"]
 
     steps:
       - name: Check Out Repository
@@ -48,7 +54,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Run Tests
-        run: uvx --with tox-uv tox -e pydantic-min
+        run: uvx --with tox-uv tox -e ${{ matrix.env }}
 
   lint:
     runs-on: ubuntu-latest
@@ -127,9 +133,29 @@ jobs:
           uv build
           uvx twine check --strict dist/eazyrest-*
 
-      - name: Import Wheel Without Extras
+      # The extras' dependencies have markers that differ between the oldest
+      # and newest supported Python, so install each on both.
+      - name: Import Wheel With Each Extra on the Oldest and Newest Python
         run: |
-          uv venv "$RUNNER_TEMP/wheel-env"
-          VIRTUAL_ENV="$RUNNER_TEMP/wheel-env" uv pip install dist/*.whl
+          wheel="$(ls dist/*.whl)"
+          for python in 3.10 3.15; do
+            for extra in core pydantic socks; do
+              env="$RUNNER_TEMP/wheel-$python-$extra"
+              uv venv --python "$python" "$env"
+              if [ "$extra" = core ]; then
+                VIRTUAL_ENV="$env" uv pip install "$wheel"
+              else
+                VIRTUAL_ENV="$env" uv pip install "$wheel[$extra]"
+              fi
+            done
+          done
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-env/bin/python" -c "import eazyrest"
+          for python in 3.10 3.15; do
+            "$RUNNER_TEMP/wheel-$python-core/bin/python" -c "import eazyrest"
+            # The core installs without Pydantic.
+            "$RUNNER_TEMP/wheel-$python-core/bin/python" -c \
+              "import importlib.util, sys; sys.exit(importlib.util.find_spec('pydantic') is not None)"
+            "$RUNNER_TEMP/wheel-$python-pydantic/bin/python" -c \
+              "import eazyrest.pydantic"
+            "$RUNNER_TEMP/wheel-$python-socks/bin/python" -c "import socks"
+          done
