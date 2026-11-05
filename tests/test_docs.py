@@ -8,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from eazyrest import API, BaseType, JSONObject, json_object
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
@@ -84,6 +86,7 @@ def test_enum_fallback_example_maps_unknown_values() -> None:
 
 def test_pydantic_example_converts_fields(requests_mock: Any) -> None:
     """The Pydantic example reads, writes, and saves changes in place."""
+    pytest.importorskip("pydantic")
     example = run_guide_example("class Logo")
     logo_type = example["Logo"]
     logo_type.register_api(API("https://api.example.com/"))

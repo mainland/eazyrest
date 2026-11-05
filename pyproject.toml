@@ -16,7 +16,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["rest", "http", "api", "json"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -28,20 +28,34 @@ classifiers = [
     "Programming Language :: Python :: 3.15",
     "Typing :: Typed",
 ]
+# Each minimum is a release that the min-deps tox environments test, not
+# necessarily the first that works. requests 2.33.0 and urllib3 2.8.0 are the
+# first releases without known vulnerabilities, and urllib3 2 is the first
+# with HTTPResponse.read1(), which the response limits need. python-dateutil
+# 2.9.0 is the first release that imports without a DeprecationWarning on
+# Python 3.12, and typing_extensions 4.14.1 has Self.
 dependencies = [
-    "isodate",
-    # python-dateutil 2.7.0 is the first release with isoparse().
-    "python-dateutil>=2.7",
-    "requests",
-    "typing_extensions; python_version < '3.11'",
-    "urllib3",
+    "isodate>=0.7.2",
+    "python-dateutil>=2.9.0.post0",
+    "requests>=2.33.0",
+    "typing_extensions>=4.14.1; python_version < '3.11'",
+    "urllib3>=2.8.0",
 ]
+
+[project.urls]
+Source = "https://github.com/mainland/eazyrest"
+Issues = "https://github.com/mainland/eazyrest/issues"
+Changelog = "https://github.com/mainland/eazyrest/blob/main/docs/changelog.md"
 
 [project.optional-dependencies]
 # Pydantic 2.12 is the first release that writes the undeclared keys of a
-# TypedDict whose config allows them.
+# TypedDict whose config allows them, and 2.14.1 the oldest tested release
+# that installs on Python 3.15. eazyrest.pydantic uses Pydantic 2's API, which
+# a later major version may change.
 pydantic = [
-  "pydantic>=2.12",
+  "pydantic>=2.12,<3; python_version < '3.15'",
+  "pydantic>=2.14.1,<3; python_version >= '3.15'",
+  "typing_extensions>=4.14.1",
 ]
 socks = [
   "requests[socks]",
@@ -49,12 +63,20 @@ socks = [
 
 [dependency-groups]
 test = [
+  {include-group = "test-core"},
+  "pydantic>=2.12,<3",
+]
+# The tests that do not need Pydantic, for the no-pydantic tox environment.
+test-core = [
   "coverage",
   "hypothesis",
-  "pydantic>=2.12",
+  # The packaging test reads the requirements in the package's metadata.
+  "packaging",
   # pytest 9 is the first release that reads [tool.pytest].
   "pytest>=9",
   "requests-mock",
+  # The tests use TypeAliasType on every Python version.
+  "typing_extensions>=4.14.1",
 ]
 docs = [
   "furo",
@@ -75,13 +97,18 @@ dev = [
   "twine",
   "types-python-dateutil",
   "types-requests",
+  "zizmor==1.32.0",
 ]
 
 # Sphinx 9.1 requires Python 3.12, so the docs group does, and so does the dev
 # group, which includes it. The test environments still run every supported
 # Python.
+# Declare the dev group's requirement too. uv otherwise also resolves its tools
+# for Python 3.10, through a release of filelock with known vulnerabilities
+# that no supported environment installs.
 [tool.uv.dependency-groups]
 docs = {requires-python = ">=3.12"}
+dev = {requires-python = ">=3.12"}
 
 [tool.setuptools]
 include-package-data = true
@@ -168,6 +195,9 @@ env_list = [
   "py314",
   "py315",
   "pydantic-min",
+  "min-deps",
+  "min-deps-py315",
+  "no-pydantic",
   "lint",
   "docs",
 ]
@@ -182,9 +212,53 @@ commands = [
   ["coverage", "report"],
 ]
 
-# Test against the oldest Pydantic release that the pydantic extra allows.
+# Test against the oldest Pydantic release that the pydantic extra allows. It
+# has no wheel for Python 3.15, so use the oldest supported Python.
 [tool.tox.env.pydantic-min]
+base_python = ["3.10"]
 deps = ["pydantic==2.12.0"]
+
+# Test against the minimum of every dependency that pyproject.toml declares, on
+# the oldest Python and then the newest. The dependencies are installed first,
+# so installing the package keeps these versions.
+[tool.tox.env.min-deps]
+base_python = ["3.10"]
+deps = [
+  "isodate==0.7.2",
+  "python-dateutil==2.9.0.post0",
+  "requests==2.33.0",
+  "urllib3==2.8.0",
+  "typing_extensions==4.14.1",
+  "pydantic==2.12.0",
+]
+
+[tool.tox.env.min-deps-py315]
+base_python = ["3.15"]
+deps = [
+  "isodate==0.7.2",
+  "python-dateutil==2.9.0.post0",
+  "requests==2.33.0",
+  "urllib3==2.8.0",
+  # Pydantic 2.14.1 needs typing_extensions 4.16.0.
+  "typing_extensions==4.16.0",
+  "pydantic==2.14.1",
+]
+
+# Test the core without Pydantic, so that a dependency that only Pydantic
+# brings in cannot hide a missing one. The Pydantic tests are skipped. The
+# interpreter is fixed, so that the result does not depend on which Python tox
+# finds first.
+[tool.tox.env.no-pydantic]
+base_python = ["3.12"]
+dependency_groups = ["test-core"]
+commands = [
+  ["coverage", "run", "-m", "pytest", "-q", "--ignore=tests/test_pydantic.py"],
+  [
+    "python",
+    "-c",
+    "import importlib.util, sys; sys.exit(importlib.util.find_spec('pydantic') is not None)",
+  ],
+]
 
 # The hooks run the checkers from .venv, at the versions that uv.lock pins, so
 # the lint environment first brings .venv up to date.
@@ -245,4 +319,4 @@ PC170 = "The repository has no reStructuredText files."
 PC901 = "CI runs the hooks through tox, not pre-commit.ci."
 PC902 = "CI runs the hooks through tox, not pre-commit.ci."
 PC903 = "CI runs the hooks through tox, not pre-commit.ci."
-SEC001 = "Actions are pinned by major version, and Dependabot updates them."
+SEC001 = "zizmor runs as a local hook from .venv."

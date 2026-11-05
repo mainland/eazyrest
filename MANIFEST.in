@@ -1,1 +1,4 @@
 global-include py.typed
+include .github/scripts/release_version.py
+# Editor settings are tracked for contributors but do not belong in an sdist.
+exclude .vscode/settings.json
