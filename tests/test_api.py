@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import http.server
+import json
+import re
+import threading
 import warnings
 from typing import Any, cast
 
 import pytest
 import requests
+import requests.auth
 import urllib3
+from requests_mock import ANY as requests_mock_ANY
 
 from eazyrest import API
 
@@ -44,14 +50,16 @@ def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
     assert response.json() == {"id": 1}
 
 
-@pytest.mark.parametrize(
-    ("method", "status"),
-    [("post", 301), ("post", 302), ("patch", 302), ("delete", 303)],
-)
-def test_api_rejects_redirect_that_changes_method(
+@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_api_refuses_redirect_that_drops_write(
     requests_mock: Any, method: str, status: int
 ) -> None:
-    """A write that a redirect would resend as a GET raises.
+    """A write that requests would resend without its body raises.
+
+    A 301 keeps ``PATCH``, ``PUT``, and ``DELETE`` but drops the body, and
+    the other redirects change the method to ``GET``. Either way the server
+    would never receive the write, so nothing is sent to the destination.
 
     Args:
         method: Name of the ``API`` method that sends the write, such as
@@ -61,17 +69,123 @@ def test_api_rejects_redirect_that_changes_method(
     api = API("https://example.com/v1/")
     requests_mock.request(
         method.upper(),
-        "https://example.com/v1/users/",
+        "https://example.com/v1/users/1",
         status_code=status,
-        headers={"Location": "https://example.com/v2/users/"},
+        headers={"Location": "https://example.com/v1/users/1/"},
     )
-    requests_mock.get("https://example.com/v2/users/", json=[{"id": 1}])
+    destination = requests_mock.request(
+        requests_mock_ANY, "https://example.com/v1/users/1/", json={"id": 1}
+    )
 
-    with pytest.raises(requests.HTTPError, match="was not performed") as info:
-        getattr(api, method)("/users/", json={"name": "Ada"})
+    with pytest.raises(requests.HTTPError, match="not be performed") as info:
+        getattr(api, method)("/users/1", json={"name": "Ada"})
 
     assert info.value.response is not None
     assert info.value.response.status_code == status
+    assert not destination.called
+
+
+def test_api_follows_moved_bodyless_delete(requests_mock: Any) -> None:
+    """A 301 resends a bodyless ``DELETE`` unchanged, so it is followed."""
+    api = API("https://example.com/v1/")
+    requests_mock.delete(
+        "https://example.com/v1/users/1",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/users/1/"},
+    )
+    deleted = requests_mock.delete(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+
+    api.delete("/users/1")
+
+    assert deleted.called
+
+
+def test_api_check_redirects_rejects_followed_body_loss() -> None:
+    """The final-response check catches a body lost after the hook ran."""
+    first = requests.Response()
+    first.status_code = 301
+    first.url = "https://example.com/v1/users/1"
+    first.headers["Location"] = "https://example.com/v1/users/1/"
+    first.request = requests.Request(
+        "PATCH", first.url, json={"name": "Ada"}
+    ).prepare()
+    final = requests.Response()
+    final.status_code = 200
+    final.url = "https://example.com/v1/users/1/"
+    final.request = requests.Request("PATCH", final.url).prepare()
+    final.history = [first]
+
+    with pytest.raises(requests.HTTPError, match="not performed"):
+        API._check_redirects(final)
+
+
+def test_api_check_redirects_ignores_a_resent_401() -> None:
+    """A 401 that an authentication handler resent is not a redirect.
+
+    requests records it in the history, as ``HTTPDigestAuth`` does, and the
+    resent request keeps its method and body, which the server performs.
+    """
+    challenge = requests.Response()
+    challenge.status_code = 401
+    challenge.url = "https://example.com/v1/users/1/"
+    challenge.headers["WWW-Authenticate"] = 'Digest realm="r", nonce="n"'
+    challenge.request = requests.Request(
+        "PATCH", challenge.url, json={"name": "Ada"}
+    ).prepare()
+    final = requests.Response()
+    final.status_code = 200
+    final.url = challenge.url
+    final.request = requests.Request(
+        "PATCH", final.url, json={"name": "Ada"}
+    ).prepare()
+    final.history = [challenge]
+
+    API._check_redirects(final)
+
+
+def test_digest_authentication_writes_once() -> None:
+    """A write answered by a digest challenge is resent and succeeds."""
+    received: list[Any] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_PATCH(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            if "Authorization" not in self.headers:
+                self.send_response(401)
+                self.send_header(
+                    "WWW-Authenticate",
+                    'Digest realm="r", nonce="abc", qop="auth", '
+                    'algorithm="MD5"',
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with API(f"http://127.0.0.1:{server.server_port}/") as api:
+            api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+
+            response = api.patch("/notes/1/", json={"title": "new"})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert response.status_code == 200
+    assert received == [{"title": "new"}]
 
 
 @pytest.mark.parametrize("status", [307, 308])
@@ -178,6 +292,43 @@ def test_api_follows_redirect_within_absolute_request_origin(
     requests_mock.get("https://other.example.com/users/1/", json={"id": 1})
 
     assert api.get("https://other.example.com/users/1").json() == {"id": 1}
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://example.com\\@evil.example.net/steal",
+        "https://example.com:443\\@evil.example.net/steal",
+        "//example.com\\@evil.example.net/steal",
+    ],
+)
+def test_api_refuses_backslash_authority_redirect(
+    requests_mock: Any, target: str
+) -> None:
+    """A backslash in a redirect cannot hide another host from the guard.
+
+    requests percent-encodes the backslash before following the redirect, so
+    the text before ``@`` becomes userinfo and the request goes to the host
+    after it, with every session header.
+
+    Args:
+        target: Redirect target whose host differs once requests encodes it.
+    """
+    api = API("https://example.com/v1/")
+    api.session.headers["X-API-Key"] = "secret"
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=307,
+        headers={"Location": target},
+    )
+    evil = requests_mock.post(
+        re.compile("https://.*evil\\.example\\.net/.*"), json={}
+    )
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        api.post("/users/", json={"password": "secret"})
+
+    assert not evil.called
 
 
 @pytest.mark.parametrize("on_request", [False, True])

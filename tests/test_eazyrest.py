@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
+from requests_mock import ANY as requests_mock_ANY
 
 from eazyrest import (
     API,
@@ -2869,27 +2870,51 @@ def test_save_accepts_empty_patch_response(requests_mock: Any) -> None:
     assert todo.title == "new"
 
 
-def test_redirected_save_keeps_pending_updates(requests_mock: Any) -> None:
-    """A PATCH that a redirect turns into a GET is not reported as saved."""
+@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_redirected_save_keeps_pending_updates(
+    requests_mock: Any, status: int, write_mode: WriteMode
+) -> None:
+    """A PATCH that a redirect would resend without its body is not saved.
+
+    A 301 keeps the method but drops the body, as Django's ``APPEND_SLASH``
+    does to a URL without its trailing slash. The redirect is not followed. A
+    lazy update stays pending, and an eager assignment does not take effect.
+
+    Args:
+        status: Redirect status code that the server returns.
+        write_mode: Write mode of the object.
+    """
     requests_mock.patch(
         "https://example.com/v1/todos/1/",
-        status_code=302,
-        headers={"Location": "https://example.com/v2/todos/1/"},
+        status_code=status,
+        headers={"Location": "https://example.com/v1/todos/1/moved/"},
     )
-    requests_mock.get(
-        "https://example.com/v2/todos/1/",
+    moved = requests_mock.register_uri(
+        requests_mock_ANY,
+        "https://example.com/v1/todos/1/moved/",
         json={"id": 1, "userId": 2, "title": "old", "completed": False},
     )
     todo = Todo(
-        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+        write_mode=write_mode,
     )
 
-    todo.title = "new"
-    with pytest.raises(requests.HTTPError, match="was not performed"):
+    def update() -> None:
+        todo.title = "new"
         todo.save()
 
-    assert todo.title == "new"
-    assert todo._pending_updates == {"title": "new"}
+    with pytest.raises(requests.HTTPError, match="not be performed"):
+        update()
+
+    assert not moved.called
+    if write_mode == "lazy":
+        assert todo.title == "new"
+        assert todo._pending_updates == {"title": "new"}
+    else:
+        # A failed eager write leaves the field as the server has it.
+        assert todo.title == "old"
+        assert todo._pending_updates == {}
 
 
 def test_eager_write_accepts_empty_patch_response(

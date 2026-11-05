@@ -564,3 +564,64 @@ def test_prefetch_reads_ahead_across_pages(requests_mock: Any) -> None:
     assert first.owner.pk == 10
     assert [item.owner.pk for item in items] == [20]
     assert requests_mock.call_count == 2
+
+
+def test_single_callable_session_hook_is_kept(requests_mock: Any) -> None:
+    """A session hook given as one callable, as requests allows, still runs."""
+    api = API("https://example.com/v1/")
+    seen: list[str] = []
+
+    def record(resp: requests.Response, **kwargs: Any) -> None:
+        seen.append(resp.url)
+
+    api.session.hooks["response"] = record
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = list(
+        follow_next_links(
+            api, {"next": "/v1/items/?page=2", "results": [{"id": 1}]}
+        )
+    )
+
+    assert items == [{"id": 1}, {"id": 2}]
+    assert seen == ["https://example.com/v1/items/?page=2"]
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://example.com\\@evil.example.net/items/?page=2",
+        "//example.com\\@evil.example.net/items/?page=2",
+    ],
+)
+def test_backslash_redirect_cannot_leave_api_origin(
+    requests_mock: Any, target: str
+) -> None:
+    """A page redirect cannot hide another host behind a backslash.
+
+    Args:
+        target: Redirect target that requests sends to another host.
+    """
+    api = API("https://example.com/v1/")
+    api.session.headers["X-API-Key"] = "test-token"
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        status_code=302,
+        headers={"Location": target},
+    )
+    evil = requests_mock.get(
+        re.compile(r"https://.*evil\.example\.net/.*"),
+        json={"next": None, "results": []},
+    )
+
+    with pytest.raises(ValueError, match="different origin"):
+        list(
+            follow_next_links(
+                api, {"next": "/v1/items/?page=2", "results": []}
+            )
+        )
+
+    assert not evil.called
