@@ -1394,6 +1394,7 @@ def _check_options(
     exclude: AbstractSet[str],
     write_only: AbstractSet[str] = frozenset(),
     write_map: Mapping[str, str] | None = None,
+    read_only: AbstractSet[str] = frozenset(),
 ) -> None:
     """Check that ``json_object()`` options name fields of ``cls``.
 
@@ -1408,6 +1409,7 @@ def _check_options(
         write_only: Names of fields that are written but never read.
         write_map: Mapping from Python attribute name to the JSON key that
             writes use.
+        read_only: Names of fields whose Python values cannot be written.
 
     Raises:
         ValueError: If an option names no field of ``cls``, or the primary key
@@ -1444,6 +1446,15 @@ def _check_options(
             f"are not fields declared on {cls.__name__}"
         )
 
+    unknown_read_only = sorted(set(read_only).difference(declared))
+    if unknown_read_only:
+        raise ValueError(
+            f"json_object(read_only=...) names {unknown_read_only}, which "
+            f"are not fields declared on {cls.__name__}"
+        )
+    if read_only & write_only:
+        raise ValueError("A field cannot be both read-only and write-only")
+
     inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
     key = pk or (inherited_pk.field if inherited_pk is not None else "id")
     if key in write_only:
@@ -1472,6 +1483,7 @@ def json_object(
     exclude: AbstractSet[str] = frozenset(),
     write_only: AbstractSet[str] | None = None,
     write_map: Mapping[str, str] | None = None,
+    read_only: AbstractSet[str] | None = None,
 ) -> type[T]: ...
 
 
@@ -1485,6 +1497,7 @@ def json_object(
     exclude: AbstractSet[str] = frozenset(),
     write_only: AbstractSet[str] | None = None,
     write_map: Mapping[str, str] | None = None,
+    read_only: AbstractSet[str] | None = None,
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -1497,6 +1510,7 @@ def json_object(
     exclude: AbstractSet[str] = frozenset(),
     write_only: AbstractSet[str] | None = None,
     write_map: Mapping[str, str] | None = None,
+    read_only: AbstractSet[str] | None = None,
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -1530,11 +1544,15 @@ def json_object(
             ``create()`` and assigned, and the next write sends it, but it is
             not kept in the object's JSON, and reading it raises
             ``AttributeError``.
+        read_only: Names of fields whose Python values cannot be assigned or
+            passed to ``create()`` and are omitted from full saves. An initial
+            primary key can still identify a lazy object. Files passed in
+            ``files=`` are separate upload values and may name these fields.
 
     A redeclared field inherits its read and write keys unless a mapping
-    explicitly replaces them. An omitted ``write_only`` option inherits that
-    policy too. An explicit set applies to every redeclared field, so an empty
-    set removes its inherited policy.
+    explicitly replaces them. Omitted ``write_only`` and ``read_only`` options
+    inherit those policies too. An explicit set applies to every redeclared
+    field, so an empty set removes its inherited policy.
 
     Returns:
         The decorated class, or a decorator function when used with arguments.
@@ -1572,6 +1590,7 @@ def json_object(
         read_keys = dict(field_map)
         write_keys = dict(write_map)
         hidden = set(write_only or ())
+        readonly = set(read_only or ())
         for field in _declared_fields(cls, exclude):
             inherited = getattr(cls, field, None)
             if not isinstance(inherited, JSONProperty):
@@ -1581,7 +1600,11 @@ def json_object(
                 write_keys.setdefault(field, inherited.write_field)
             if write_only is None and inherited.write_only:
                 hidden.add(field)
-        _check_options(cls, pk, read_keys, exclude, hidden, write_keys)
+            if read_only is None and inherited.read_only:
+                readonly.add(field)
+        _check_options(
+            cls, pk, read_keys, exclude, hidden, write_keys, readonly
+        )
         _check_json_keys(cls, read_keys, exclude, write_keys)
 
         inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
@@ -1619,6 +1642,7 @@ def json_object(
                 is_primary_key=field == pk_field,
                 write_only=field in hidden,
                 write_field=write_keys.get(field),
+                read_only=field in readonly,
             )
 
             setattr(cls, field, prop)
@@ -1680,6 +1704,9 @@ class JSONProperty:
     write_only: bool = False
     """Whether the API accepts this field in writes but never returns it."""
 
+    read_only: bool = False
+    """Whether the Python field value cannot be written."""
+
     write_field: str
     """JSON key that writes send this field under, usually ``json_field``."""
 
@@ -1698,6 +1725,7 @@ class JSONProperty:
         is_primary_key: bool = False,
         write_only: bool = False,
         write_field: str | None = None,
+        read_only: bool = False,
     ):
         """Initialize a property descriptor.
 
@@ -1710,12 +1738,14 @@ class JSONProperty:
                 returns it.
             write_field: JSON key that writes send this field under, if not
                 ``json_field``.
+            read_only: Whether the Python field value cannot be written.
         """
         self.cls = cls
         self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
         self.write_only = write_only
+        self.read_only = read_only
         self.write_field = json_field if write_field is None else write_field
 
         # If this property is a primary key, then we store a reference to it in
@@ -1894,6 +1924,10 @@ class JSONProperty:
             obj._pk_value = value
             return
 
+        if self.read_only:
+            raise AttributeError(
+                f"{type(obj).__name__}.{self.field} is read-only"
+            )
         json = obj._json_with_field(self.json_field, self.field)
         with _converting(type(obj), self.field):
             new_value = obj.to_json(value, self.analyzed_type)
@@ -2533,8 +2567,17 @@ class JSONObject:
             if (descriptor := getattr(cls, field)).write_field
             != descriptor.json_field
         }
+        readonly = {
+            descriptor.json_field
+            for field in getattr(cls, "_json_fields", ())
+            if (descriptor := getattr(cls, field)).read_only
+        }
         wire = {}
         for key, value in payload.items():
+            if key in readonly:
+                raise AttributeError(
+                    f"{cls.__name__} field {key} is read-only"
+                )
             target = write_keys.get(key, key)
             if target in wire:
                 raise TypeError(f"Multiple fields write the JSON key {target}")
@@ -2844,7 +2887,11 @@ class JSONObject:
         payload: dict[str, Any] = {}
         for field in sorted(getattr(self, "_json_fields", ())):
             descriptor = getattr(type(self), field)
-            if descriptor.write_only or descriptor.json_field not in json:
+            if (
+                descriptor.write_only
+                or descriptor.read_only
+                or descriptor.json_field not in json
+            ):
                 continue
             conversion = descriptor.analyzed_type
             with _converting(type(self), field):
@@ -3172,6 +3219,10 @@ class JSONObject:
             if key in payload:
                 raise TypeError(f"Multiple fields use the JSON key {key}")
             if isinstance(descriptor, JSONProperty):
+                if descriptor.read_only and not query:
+                    raise AttributeError(
+                        f"{cls.__name__}.{field} is read-only"
+                    )
                 with _converting(cls, field):
                     conversion = descriptor.analyzed_type
                     payload[key] = cls.to_json(
@@ -3335,6 +3386,7 @@ class JSONObject:
                 ``fields``, if ``request_options`` sets the body, or if a
                 field's value cannot be sent as a form field with ``files``.
                 Also raised for response streaming or conflicting wire names.
+            AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If a redirect is unsafe or the final status is 3xx.
             LimitExceeded: If a request or its JSON exceeds the API's limits.

@@ -314,6 +314,40 @@ def test_redeclared_field_can_explicitly_replace_its_policy() -> None:
     assert Child.owner.write_field == "owner"  # type: ignore[attr-defined]
 
 
+def test_read_only_fields_are_omitted_from_full_updates(
+    requests_mock: Any,
+) -> None:
+    """File URLs and computed values remain readable without being resent."""
+
+    @json_object(read_only={"image", "id"})
+    class Image(ReviewBase):
+        class_url = "/images/"
+
+        id: int
+        title: str
+        image: str
+
+    payload = {"id": 1, "title": "old", "image": "/media/file.txt"}
+    requests_mock.get("https://review.example/images/1/", json=payload)
+    put = requests_mock.put(
+        "https://review.example/images/1/", status_code=204
+    )
+    image = Image(id=1)
+
+    image.save(full=True)
+
+    assert put.last_request.json() == {"title": "old"}
+    assert image.image == "/media/file.txt"
+    with pytest.raises(AttributeError, match="read-only"):
+        image.image = "/media/other.txt"
+    with pytest.raises(AttributeError, match="read-only"):
+        Image.create(image="/media/other.txt")
+
+    requests_mock.patch("https://review.example/images/1/", status_code=204)
+    image.save(files={"image": ("new.txt", b"upload")})
+    assert b"upload" in requests_mock.last_request.body
+
+
 @pytest.mark.parametrize("mode", ["lazy", "eager"])
 def test_hyperlink_key_assignment_updates_existing_identity(
     requests_mock: Any, mode: WriteMode

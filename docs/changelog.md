@@ -47,7 +47,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 
 - `json_object()` takes its options as keyword arguments only. It raises `ValueError` for a field that would replace a `JSONObject` attribute, for a `pk=`, `field_map=`, or `exclude=` name that is not a field, and for two fields with the same JSON key. A class with decorated ancestors that are not subclasses of one another raises `TypeError`.
 - A decorated subclass keeps the primary key that it inherits.
-- Redeclaring a field also preserves its read and write keys and, when those options are omitted, its write-only policies. Explicit mappings or policy sets override those defaults.
+- Redeclaring a field also preserves its read and write keys and, when those options are omitted, its write-only and read-only policies. Explicit mappings or policy sets override those defaults.
 
 #### URLs and HTTP
 
@@ -69,7 +69,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - Pydantic conversion of fields whose types use Pydantic, through the `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`, `Duration`, and `UUID`. A type that would drop the keys it does not declare is rejected, and a field must read back what it writes.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the `type` statement.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`, detection of in-place changes to field values, and `merge_response()`.
-- For Django REST Framework APIs: `write_map=` for a relation read nested and written by key, `write_only=` for a field such as a password, `Hyperlinked()` for relations represented by URLs, file uploads with `files=` on `create()` and `save()`, full updates with `save(full=True)`, request options such as headers with `request_options=` on `save()`, `create()`, and `delete()`, the collection's size as `count`, and `APIError` with the parsed error body. Hyperlinked writes send URLs and relation queries send primary keys.
+- For Django REST Framework APIs: `write_map=` for a relation read nested and written by key, `write_only=` for a field such as a password, `read_only=` for returned values that writes omit, `Hyperlinked()` for relations represented by URLs, file uploads with `files=` on `create()` and `save()`, full updates with `save(full=True)`, request options such as headers with `request_options=` on `save()`, `create()`, and `delete()`, the collection's size as `count`, and `APIError` with the parsed error body. Hyperlinked writes send URLs and relation queries send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`, `resolve_url()`, `trailing_slash`, `redirect_origins`, `reset_session()` that keeps the session's configuration, `register_api()`, and `api=` on queries and `create()`.
 - `absolute_url`, and a `repr()` that shows the class and primary key without loading the object.
 - The exceptions `EazyrestError`, `APIError`, `NotFound`, `FieldConversionError`, `PrefetchNotSupported`, `RedirectError`, `PaginationError`, `ResponseShapeError`, `UsageError`, and `LimitExceeded`. Each one that replaces another exception type also derives from that type.
