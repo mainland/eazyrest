@@ -192,7 +192,8 @@ def follow_next_links(
         JSON items from every page, in order.
 
     Raises:
-        TypeError: If a payload is neither a list nor a mapping.
+        TypeError: If a payload is neither a list nor a mapping, or if a
+            page's ``results_key`` member is not a list.
         ValueError: If a page has no ``results_key`` member, if a next-page URL
             names a page already read, or if a next-page URL or redirect has
             another origin and ``allow_other_origins`` is ``False``.
@@ -218,7 +219,14 @@ def follow_next_links(
         if results_key not in payload:
             raise ValueError(f"Collection page has no {results_key!r} member")
 
-        yield from payload[results_key]
+        results = payload[results_key]
+        # A string would yield its characters, and a mapping its keys.
+        if not isinstance(results, list):
+            raise TypeError(
+                f"The {results_key!r} member of a collection page must be a "
+                f"list, got {type(results).__name__}"
+            )
+        yield from results
 
         next_url = payload.get(next_key)
         # Some APIs mark the last page with an empty link. Resolving it would
