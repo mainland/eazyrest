@@ -107,7 +107,7 @@ resource.
 Field annotations drive JSON conversion when values are read from or written to model instances. Scalar fields preserve normal JSON values, while a few common Python types are converted automatically:
 
 - `datetime.datetime` values decode from ISO 8601 strings, such as `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601 strings. A string without a UTC offset decodes to a naive `datetime`, and a naive `datetime` encodes without an offset. See `parse_datetime()`.
-- `datetime.date` values decode from ISO 8601 dates, such as `2024-04-01`, and encode back to them. A date with a time is rejected, and so is a `datetime.datetime` assigned to the field, although it is also a `datetime.date`.
+- `datetime.date` values decode from extended ISO 8601 dates in `YYYY-MM-DD` form, such as `2024-04-01`, and encode back to that form on every supported Python. Basic and week dates are rejected. A date with a time is rejected, and so is a `datetime.datetime` assigned to the field, although it is also a `datetime.date`.
 - `uuid.UUID` values decode from UUID strings and encode to the standard hyphenated form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO 8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's `DurationField` format, the format of `str(timedelta)`, unit forms such as `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations with years or months are rejected in every format, because those units have no fixed length. See `parse_duration()`.
 - `enum.Enum` values decode from their JSON values and encode back to their enum values.
