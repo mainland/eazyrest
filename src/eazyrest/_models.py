@@ -57,6 +57,7 @@ from ._errors import (
     EazyrestError,
     MultipleObjectsReturned,
     PrefetchNotSupported,
+    RedirectError,
     ResponseShapeError,
     UsageError,
 )
@@ -845,6 +846,84 @@ def _query_params(
             f"{argument}"
         )
     return {**params, **kwargs}
+
+
+# Keyword arguments that the query methods reserve without yet taking them, so
+# that taking them later does not change what an existing call sends.
+_RESERVED_QUERY_KEYWORDS = frozenset({"request_options"})
+
+
+def _check_query_keywords(kwargs: Mapping[str, Any]) -> None:
+    """Reject query keyword arguments that the query methods reserve.
+
+    Args:
+        kwargs: Keyword arguments passed to a query method.
+
+    Raises:
+        TypeError: If a keyword argument is reserved.
+    """
+    reserved = sorted(_RESERVED_QUERY_KEYWORDS.intersection(kwargs))
+    if reserved:
+        raise TypeError(
+            f"The query methods reserve the keyword argument {reserved[0]}. "
+            "Pass a query parameter of that name in params."
+        )
+
+
+# Request arguments that eazyrest sets itself for a write.
+_WRITE_BODY_ARGUMENTS = frozenset({"json", "data", "files"})
+
+
+def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the request options of a write, checked.
+
+    Args:
+        options: Keyword arguments for the request, such as ``headers`` or
+            ``params``, as ``requests.Session.request()`` takes them.
+
+    Returns:
+        A copy of ``options``, or an empty dict.
+
+    Raises:
+        TypeError: If ``options`` sets the request body, which the write
+            builds itself, or enables streaming of the response.
+    """
+    if options is None:
+        return {}
+    if options.get("stream"):
+        raise TypeError(
+            "Model writes cannot stream their responses. Use an API method "
+            "directly to read a streamed response."
+        )
+    body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
+    if body:
+        raise TypeError(
+            f"request_options cannot set {', '.join(body)}, because the write "
+            "builds the request body itself"
+        )
+    return dict(options)
+
+
+def _check_model_write(resp: requests.Response) -> requests.Response:
+    """Require a completed write before acknowledging a model change.
+
+    Args:
+        resp: Response that the API accepted.
+
+    Returns:
+        The response when no redirect remains to be followed.
+
+    Raises:
+        RedirectError: If the response is a final 3xx status.
+    """
+    if 300 <= resp.status_code < 400:
+        resp.close()
+        raise RedirectError(
+            f"{resp.request.method} {resp.url} returned status "
+            f"{resp.status_code}, so the model write was not confirmed",
+            response=resp,
+        )
+    return resp
 
 
 def _materialize_query_value(value: Any) -> Any:
@@ -2004,14 +2083,25 @@ class JSONObject:
                     f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
-    def delete(self, *args: Any, **kwargs: Any) -> None:
+    def delete(
+        self, *, request_options: Mapping[str, Any] | None = None
+    ) -> None:
         """Delete this object from the remote API.
 
         Args:
-            *args: Positional arguments forwarded to ``API.delete``.
-            **kwargs: Keyword arguments forwarded to ``API.delete``.
+            request_options: Optional keyword arguments for the request, such
+                as ``headers={"If-Match": etag}``, as for ``save()``. They
+                cannot set the body or enable response streaming.
+
+        Raises:
+            TypeError: If ``request_options`` sets the body or streams the
+                response.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
-        self.api.delete(self.url, *args, **kwargs)
+        options = _request_options(request_options)
+        _check_model_write(self.api.delete(self.url, **options))
 
     @property
     def write_mode(self) -> WriteMode:
@@ -2090,6 +2180,7 @@ class JSONObject:
                 object. The object's state, including its pending updates, is
                 unchanged.
         """
+        _check_model_write(resp)
         self._replace_json(self.merge_response(resp, self.json, payload))
         self._pending_updates.clear()
 
@@ -2163,7 +2254,9 @@ class JSONObject:
 
         return json
 
-    def save(self) -> None:
+    def save(
+        self, *, request_options: Mapping[str, Any] | None = None
+    ) -> None:
         """Persist all pending lazy field updates.
 
         In ``"lazy"`` mode, field assignments are accumulated locally and sent
@@ -2181,16 +2274,23 @@ class JSONObject:
         includes the saved updates, and the object that the response body
         holds, if any, is merged over it.
 
+        Args:
+            request_options: Optional keyword arguments for the request, such
+                as ``headers={"If-Match": etag}``, as ``requests`` takes them.
+                They cannot set the body.
+
         Raises:
             ResponseShapeError: If the response body does not hold a JSON
                 object. The server may have applied the updates, but they
                 remain pending.
+            TypeError: If ``request_options`` sets the body.
         """
+        options = _request_options(request_options)
         self._queue_in_place_changes()
         if len(self._pending_updates) == 0:
             return
 
-        resp = self.api.patch(self.url, json=self._pending_updates)
+        resp = self.api.patch(self.url, json=self._pending_updates, **options)
         self._apply_patch_response(resp, self._pending_updates)
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
@@ -2579,6 +2679,7 @@ class JSONObject:
         *,
         api: API | None = None,
         fields: Mapping[str, Any] | None = None,
+        request_options: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
         """Create and return a new remote object.
@@ -2594,8 +2695,11 @@ class JSONObject:
                 registered for the class. The new object keeps it as their API,
                 so their later requests use it too.
             fields: Optional field values as a mapping, used as the keyword
-                arguments are. A key in it may be anything, including ``api``
-                or ``fields``.
+                arguments are. A key in it may be anything, including ``api``,
+                ``fields``, or ``request_options``.
+            request_options: Optional keyword arguments for the request, such
+                as ``headers``, as ``requests`` takes them. They cannot set the
+                body.
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
@@ -2605,13 +2709,16 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response does not hold a JSON object.
             TypeError: If a field is given both as a keyword argument and in
-                ``fields``.
+                ``fields``, or if ``request_options`` sets the body.
         """
+        options = _request_options(request_options)
         payload = cls._encode_fields(
             _query_params(fields, kwargs, "Field", "fields")
         )
         client = cls.api if api is None else api
-        resp = client.post(cls.class_url, json=payload)
+        resp = _check_model_write(
+            client.post(cls.class_url, json=payload, **options)
+        )
 
         json_keys = cls._json_keys()
         # The payload can hold the caller's own containers, such as a dict
@@ -2975,8 +3082,9 @@ class JSONObject:
         or a ``deque``, is a collection.
 
         The keyword arguments ``api``, ``prefetch``, ``defaults``, and
-        ``params`` of the query methods are not query parameters. Pass a
-        parameter with one of these names in ``params``.
+        ``params`` of the query methods are not query parameters, and the
+        query methods reserve ``request_options``. Pass a parameter with one
+        of these names in ``params``.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -2999,10 +3107,11 @@ class JSONObject:
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
@@ -3092,10 +3201,11 @@ class JSONObject:
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
         results = iter(cls.filter(prefetch=prefetch, api=api, params=query))
         first = next(results, None)
@@ -3166,8 +3276,9 @@ class JSONObject:
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
         """
+        _check_query_keywords(kwargs)
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once.
         kwargs = {

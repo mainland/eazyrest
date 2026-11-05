@@ -43,6 +43,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   in answer to a `PATCH` to a URL without its trailing slash, raises
   `RedirectError` before it is followed, and a lazy update stays pending. Use
   the URL that the server expects, for example by setting `API.trailing_slash`.
+- `delete()` takes request options in `request_options=`, as `save()` and
+  `create()` do, rather than as positional and keyword arguments for
+  `API.delete()`. Replace `obj.delete(headers=h)` with
+  `obj.delete(request_options={"headers": h})`.
 
 #### Queries
 
@@ -59,8 +63,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   a constraint was silently omitted, so `get()` could return an object that
   does not match it.
 - The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the
-  query methods are their own options. Pass a query parameter with one of these
-  names in `params=`. `create()` likewise takes `fields=`.
+  query methods are their own options, and they reserve `request_options`. Pass
+  a query parameter with one of these names in `params=`. `create()` likewise
+  takes `fields=`.
 - `get_or_create()` returns an existing object as the server sent it. 0.9.0
   assigned every keyword argument to the object it found, which sent a `PATCH`.
   To change the object, assign its fields and call `save()`.

@@ -4527,6 +4527,41 @@ def test_name_given_both_ways_raises(requests_mock: Any, call: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: Todo.filter(request_options={"headers": {}}),
+        lambda: Todo.get(request_options={"headers": {}}),
+        lambda: Todo.get_or_create(request_options={"headers": {}}),
+    ],
+)
+def test_query_methods_reserve_request_options(
+    requests_mock: Any, call: Any
+) -> None:
+    """A query method rejects ``request_options`` rather than sending it.
+
+    Taking it later, as ``save()`` does, must not change what a call sends.
+
+    Args:
+        call: Callable that passes ``request_options`` as a keyword argument.
+    """
+    with pytest.raises(TypeError, match="reserve the keyword argument"):
+        call()
+
+    assert requests_mock.call_count == 0
+
+
+def test_params_sends_request_options_parameter(requests_mock: Any) -> None:
+    """``params=`` sends a parameter named ``request_options``."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(params={"request_options": "x"}))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "request_options": ["x"]
+    }
+
+
 def test_get_or_create_sends_reserved_names(requests_mock: Any) -> None:
     """``params=`` reaches both the lookup and the creation payload."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
@@ -4612,3 +4647,92 @@ def test_prefetch_skips_missing_null_and_malformed_relations(
     assert todos[2].user.name == "Eve"
     assert users.call_count == 1
     assert len(teams) == 2
+
+
+def test_save_sends_request_options(requests_mock: Any) -> None:
+    """``save(request_options=...)`` adds headers and a query to the PATCH."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/", json={"id": 1, "title": "new"}
+    )
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+
+    todo.title = "new"
+    todo.save(
+        request_options={"headers": {"If-Match": '"v1"'}, "params": {"x": "1"}}
+    )
+
+    assert patch.last_request.headers["If-Match"] == '"v1"'
+    assert patch.last_request.qs == {"x": ["1"]}
+    assert patch.last_request.json() == {"title": "new"}
+
+
+def test_create_sends_request_options(requests_mock: Any) -> None:
+    """``create(request_options=...)`` adds headers to the POST."""
+    post = requests_mock.post(
+        "https://example.com/v1/todos/", json={"id": 3, "title": "a"}
+    )
+
+    Todo.create(
+        title="a", request_options={"headers": {"Idempotency-Key": "k"}}
+    )
+
+    assert post.last_request.headers["Idempotency-Key"] == "k"
+    assert post.last_request.json() == {"title": "a"}
+
+
+@pytest.mark.parametrize("name", ["json", "data", "files"])
+def test_request_options_cannot_set_the_body(
+    requests_mock: Any, name: str
+) -> None:
+    """The body belongs to the write, so options cannot replace it.
+
+    Args:
+        name: Request argument that would set the body.
+    """
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+    todo.title = "new"
+
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        todo.save(request_options={name: {}})
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        Todo.create(title="a", request_options={name: {}})
+
+    assert requests_mock.call_count == 0
+    assert todo._pending_updates == {"title": "new"}
+
+
+def test_delete_sends_request_options(requests_mock: Any) -> None:
+    """``delete()`` passes its request options to the request."""
+    deleted = requests_mock.delete(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    Todo(id=1).delete(request_options={"headers": {"If-Match": '"v2"'}})
+
+    assert deleted.last_request.headers["If-Match"] == '"v2"'
+
+
+@pytest.mark.parametrize("name", ["json", "data", "files"])
+def test_delete_rejects_body_options(requests_mock: Any, name: str) -> None:
+    """``delete()`` rejects request options that set a body, as writes do.
+
+    Args:
+        name: Request option that sets the body.
+    """
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        Todo(id=1).delete(request_options={name: {}})
+
+    assert requests_mock.call_count == 0
+
+
+def test_delete_takes_request_options_by_keyword_only() -> None:
+    """``delete()`` takes neither positional nor bare request arguments."""
+    todo = Todo(id=1)
+    with pytest.raises(TypeError):
+        todo.delete({"headers": {}})  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        todo.delete(headers={})  # type: ignore[call-arg]
