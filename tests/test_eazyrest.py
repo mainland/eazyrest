@@ -4473,3 +4473,70 @@ def test_create_does_not_keep_caller_containers(
     profile.settings = settings
     profile.save()
     assert patch.last_request.json() == {"settings": {"nested": {"x": 2}}}
+
+
+def test_params_sends_reserved_names(requests_mock: Any) -> None:
+    """``params=`` sends a parameter that a query method reserves."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(params={"api": "v2", "prefetch": "1"}, title="a"))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "api": ["v2"],
+        "prefetch": ["1"],
+        "title": ["a"],
+    }
+
+
+def test_params_are_encoded_as_keyword_arguments(requests_mock: Any) -> None:
+    """A field named in ``params`` is renamed and converted as usual."""
+    lookup = requests_mock.get(
+        "https://example.com/v1/todos/", json=[{"id": 1, "userId": 2}]
+    )
+
+    todo = Todo.get(params={"user": User(id=2), "completed": True})
+
+    assert todo.id == 1
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["2"],
+        "completed": ["true"],
+    }
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: Todo.filter(params={"title": "a"}, title="b"),
+        lambda: Todo.get(params={"title": "a"}, title="b"),
+        lambda: Todo.get_or_create(params={"title": "a"}, title="b"),
+        lambda: Todo.create(fields={"title": "a"}, title="b"),
+    ],
+)
+def test_name_given_both_ways_raises(requests_mock: Any, call: Any) -> None:
+    """A name given as a keyword argument and in the mapping is ambiguous.
+
+    Args:
+        call: Callable that gives one name both ways.
+    """
+    with pytest.raises(TypeError, match="both as a keyword argument"):
+        call()
+
+    assert requests_mock.call_count == 0
+
+
+def test_get_or_create_sends_reserved_names(requests_mock: Any) -> None:
+    """``params=`` reaches both the lookup and the creation payload."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/", json={"id": 3, "title": "a"}
+    )
+
+    todo, created = Todo.get_or_create(params={"api": "v2"}, title="a")
+
+    assert created
+    assert todo.id == 3
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "api": ["v2"],
+        "title": ["a"],
+    }
+    assert post.last_request.json() == {"api": "v2", "title": "a"}

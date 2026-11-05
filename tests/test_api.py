@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import warnings
 from typing import Any, cast
 
 import pytest
@@ -549,32 +548,41 @@ def test_api_mounts_adapter_with_retries() -> None:
     assert adapter.max_retries.total == 3
 
 
-def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
-    """Assigned cookies are sent with later requests."""
+def test_api_cookie_setter_replaces_cookies(requests_mock: Any) -> None:
+    """Assigning a jar replaces the session's cookies with its cookies."""
     api = API("https://example.com/")
+    api.cookies.set("stale", "old", domain="example.com", path="/")
     jar = requests.cookies.RequestsCookieJar()
     jar.set("session", "abc", domain="example.com", path="/")
     requests_mock.get("https://example.com/me", json={})
 
     api.cookies = jar
+    jar.set("later", "x", domain="example.com", path="/")
     api.get("/me")
 
     assert requests_mock.last_request.headers["Cookie"] == "session=abc"
 
 
-def test_api_without_verification_suppresses_only_insecure_warnings() -> None:
-    """``verify=False`` leaves other urllib3 warnings visible."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        api = API("https://example.com/", verify=False)
-        warnings.warn(
-            "insecure", urllib3.exceptions.InsecureRequestWarning, stacklevel=1
-        )
-        warnings.warn(
-            "clock", urllib3.exceptions.SystemTimeWarning, stacklevel=1
-        )
+def test_api_without_verification_keeps_warnings_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``verify=False`` leaves urllib3's warnings to the application.
+
+    Suppressing them would hide them for every client in the process.
+    """
+    disabled: list[type[Warning]] = []
+    monkeypatch.setattr(urllib3, "disable_warnings", disabled.append)
+
+    api = API("https://example.com/", verify=False)
 
     assert api.session.verify is False
-    assert [type(w.message) for w in caught] == [
-        urllib3.exceptions.SystemTimeWarning
-    ]
+    assert disabled == []
+
+
+def test_package_reports_its_version() -> None:
+    """``eazyrest.__version__`` is the installed distribution's version."""
+    import importlib.metadata
+
+    import eazyrest
+
+    assert eazyrest.__version__ == importlib.metadata.version("eazyrest")

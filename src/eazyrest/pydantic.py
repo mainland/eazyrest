@@ -21,6 +21,14 @@ from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal, Union, cast
 
 import isodate
+
+try:
+    import pydantic  # noqa: F401
+except ImportError as err:
+    raise ImportError(
+        "eazyrest.pydantic needs Pydantic, which the eazyrest[pydantic] extra "
+        "installs"
+    ) from err
 from pydantic import (
     PlainSerializer,
     PlainValidator,
@@ -37,14 +45,14 @@ from pydantic_core import (
 )
 from typing_extensions import is_typeddict
 
-from .dateparse import parse_datetime, parse_duration
-from .eazyrest import (
+from ._models import (
     JSONObject,
     _decode_date,
     _decode_enum,
     _decode_uuid,
     lenient_issubclass,
 )
+from .dateparse import parse_datetime, parse_duration
 
 __all__ = ["UUID", "Date", "Datetime", "Duration"]
 

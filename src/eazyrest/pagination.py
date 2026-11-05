@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 
 import requests
 
+from ._errors import PaginationError, ResponseShapeError, _response_json
 from .api import (
     API,
     _origin,
@@ -15,6 +16,8 @@ from .api import (
     _redirect_origins,
     _response_hooks,
 )
+
+__all__ = ["follow_link_headers", "follow_next_links"]
 
 
 def _next_link(resp: requests.Response) -> str | None:
@@ -66,11 +69,11 @@ class _PageReader:
             url: Absolute URL of a page or of a redirect target.
 
         Raises:
-            ValueError: If ``url`` has an origin other than the API's base URL
-                and other origins are not allowed.
+            PaginationError: If ``url`` has an origin other than the API's base
+                URL and other origins are not allowed.
         """
         if not self.allow_other_origins and _origin(url) != self.api_origin:
-            raise ValueError(
+            raise PaginationError(
                 f"Next-page URL {url!r} has a different origin from the "
                 f"API's base URL {self.api.base_url!r}. Pass "
                 "allow_other_origins=True to follow it."
@@ -86,11 +89,12 @@ class _PageReader:
             Response for the page.
 
         Raises:
-            ValueError: If ``url`` names a page already read, or if it or a
-                redirect has another origin and other origins are not allowed.
+            PaginationError: If ``url`` names a page already read, or if it or
+                a redirect has another origin and other origins are not
+                allowed.
         """
         if url in self.read_urls:
-            raise ValueError(
+            raise PaginationError(
                 f"Next-page URL {url!r} names a page that was already read, "
                 "so following it would never end"
             )
@@ -108,8 +112,8 @@ class _PageReader:
                     which are ignored.
 
             Raises:
-                ValueError: If ``resp`` redirects to an origin other than the
-                    API's base URL and other origins are not allowed. The
+                PaginationError: If ``resp`` redirects to an origin other than
+                    the API's base URL and other origins are not allowed. The
                     response is closed first.
             """
             target = self.api.session.get_redirect_target(resp)
@@ -118,7 +122,7 @@ class _PageReader:
             destination = _redirect_destination(resp, target)
             if _redirect_origins(resp, target) != {self.api_origin}:
                 resp.close()
-                raise ValueError(
+                raise PaginationError(
                     f"Page request {resp.url!r} was redirected to "
                     f"{destination!r}, which has a different origin from the "
                     f"API's base URL {self.api.base_url!r}. Pass "
@@ -154,7 +158,7 @@ def follow_next_links(
     page. On the last page, that member is ``None``, an empty string, or
     absent. The next page is requested only after the items of the current page
     have been consumed. A next-page URL that names a page already read raises
-    ``ValueError``, because following it would never end.
+    ``PaginationError``, because following it would never end.
 
     A next-page URL is resolved against the URL of the page that holds it, as
     RFC 3986 resolves a relative reference. An absolute URL is used as is, a
@@ -192,11 +196,14 @@ def follow_next_links(
         JSON items from every page, in order.
 
     Raises:
-        TypeError: If a payload is neither a list nor a mapping, or if a
-            page's ``results_key`` member is not a list.
-        ValueError: If a page has no ``results_key`` member, if a next-page URL
-            names a page already read, or if a next-page URL or redirect has
-            another origin and ``allow_other_origins`` is ``False``.
+        ResponseShapeError: If a page is not JSON, if a payload is neither a
+            list nor a mapping, or if a page's ``results_key`` member is
+            missing or is not a list.
+        PaginationError: If a next-page URL names a page already read, or if
+            a next-page URL or redirect has another origin and
+            ``allow_other_origins`` is ``False``.
+        RedirectError: If a redirect from a page request is refused, as for
+            any request.
     """
     reader = _PageReader(api, allow_other_origins)
     page_url = api.base_url if url is None else api.resolve_url(url)
@@ -211,18 +218,20 @@ def follow_next_links(
             return
 
         if not isinstance(payload, Mapping):
-            raise TypeError(
+            raise ResponseShapeError(
                 "Collection responses must be lists or page mappings, "
                 f"got {type(payload).__name__}"
             )
 
         if results_key not in payload:
-            raise ValueError(f"Collection page has no {results_key!r} member")
+            raise ResponseShapeError(
+                f"Collection page has no {results_key!r} member"
+            )
 
         results = payload[results_key]
         # A string would yield its characters, and a mapping its keys.
         if not isinstance(results, list):
-            raise TypeError(
+            raise ResponseShapeError(
                 f"The {results_key!r} member of a collection page must be a "
                 f"list, got {type(results).__name__}"
             )
@@ -237,7 +246,7 @@ def follow_next_links(
         resp = reader.read(urljoin(page_url, next_url))
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url
-        payload = resp.json()
+        payload = _response_json(resp)
 
 
 def follow_link_headers(
@@ -253,7 +262,7 @@ def follow_link_headers(
     last"``, as RFC 8288 defines and as APIs such as GitHub's send. A page
     without such a link is the last page. The next page is requested only after
     the items of the current page have been consumed. A link to a page already
-    read raises ``ValueError``, because following it would never end.
+    read raises ``PaginationError``, because following it would never end.
 
     A link is resolved against the URL of the page that holds it. As in
     ``follow_next_links()``, a next-page URL and every redirect destination
@@ -274,18 +283,20 @@ def follow_link_headers(
         JSON items from every page, in order.
 
     Raises:
-        TypeError: If a page's body is not a JSON list.
-        ValueError: If a next-page URL names a page already read, or if a
+        ResponseShapeError: If a page's body is not a JSON list.
+        PaginationError: If a next-page URL names a page already read, or if a
             next-page URL or redirect has another origin and
             ``allow_other_origins`` is ``False``.
+        RedirectError: If a redirect from a page request is refused, as for
+            any request.
     """
     reader = _PageReader(api, allow_other_origins)
     reader.read_urls.add(resp.url)
 
     while True:
-        payload = resp.json()
+        payload = _response_json(resp)
         if not isinstance(payload, list):
-            raise TypeError(
+            raise ResponseShapeError(
                 "Pages linked by Link headers must be JSON lists, "
                 f"got {type(payload).__name__}"
             )

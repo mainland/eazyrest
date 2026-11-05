@@ -1,13 +1,19 @@
 """Public package exports for eazyrest."""
 
-from .api import API
-from .dateparse import parse_datetime, parse_duration
-from .eazyrest import (
+from importlib.metadata import PackageNotFoundError, version
+
+from ._errors import (
+    EazyrestError,
+    PaginationError,
+    RedirectError,
+    ResponseShapeError,
+    UsageError,
+)
+from ._models import (
     AnalyzedType,
     BaseType,
     CollectionType,
     DoesNotExist,
-    EazyrestError,
     FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
@@ -17,8 +23,16 @@ from .eazyrest import (
     RelatedType,
     json_object,
 )
+from .api import API
+from .dateparse import parse_datetime, parse_duration
 from .pagination import follow_link_headers, follow_next_links
 from .write_mode import WriteMode
+
+try:
+    __version__ = version("eazyrest")
+    """Version of the installed package."""
+except PackageNotFoundError:  # pragma: no cover - only without metadata
+    __version__ = "0+unknown"
 
 __all__ = [
     "API",
@@ -31,9 +45,13 @@ __all__ = [
     "JSONObject",
     "MultipleObjectsReturned",
     "OptionalType",
+    "PaginationError",
     "PrefetchNotSupported",
     "PydanticType",
+    "RedirectError",
     "RelatedType",
+    "ResponseShapeError",
+    "UsageError",
     "WriteMode",
     "follow_link_headers",
     "follow_next_links",

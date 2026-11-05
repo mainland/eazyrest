@@ -9,10 +9,12 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
-import urllib3
 from requests.utils import requote_uri
 
+from ._errors import RedirectError
 from .write_mode import WriteMode, validate_write_mode
+
+__all__ = ["API"]
 
 if sys.version_info >= (3, 11):
     from typing import Self
@@ -180,9 +182,9 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         target: Redirect target.
 
     Raises:
-        requests.HTTPError: If requests would follow ``resp`` with another
-            method, or without the body of the request it answers. The
-            response is closed first.
+        RedirectError: If requests would follow ``resp`` with another method,
+            or without the body of the request it answers. The response is
+            closed first.
     """
     request = resp.request
     method = (request.method or "").upper()
@@ -193,7 +195,7 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         return
 
     resp.close()
-    raise requests.HTTPError(
+    raise RedirectError(
         f"{method} {resp.url} was redirected with status {resp.status_code} "
         f"to {target}, which requests follows "
         + ("as a GET" if changed else "without the request body")
@@ -216,7 +218,7 @@ class API:
     302, and any other request answered with a 302 or 303, as a ``GET``, and it
     resends a request answered with a 301 without its body. The server then
     never receives the original request, so a redirect that would change the
-    method or drop a body raises ``requests.HTTPError`` before it is followed.
+    method or drop a body raises ``RedirectError`` before it is followed.
     Django's ``APPEND_SLASH`` answers a URL that lacks its trailing slash with
     such a redirect.
 
@@ -224,8 +226,9 @@ class API:
     an origin in ``redirect_origins``. Requests drops an ``Authorization``
     header when a redirect leaves the host, but it sends every other header,
     such as an API key or a CSRF token, and a 307 or 308 resends the body. A
-    redirect to another origin raises ``requests.HTTPError`` before anything is
-    sent there.
+    redirect to another origin raises ``RedirectError`` before anything is sent
+    there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
+    the redirect.
     """
 
     base_url: str
@@ -282,8 +285,9 @@ class API:
                 a CA bundle to verify them with, as for requests. A path or
                 ``False`` takes precedence over the ``REQUESTS_CA_BUNDLE`` and
                 ``CURL_CA_BUNDLE`` environment variables, which requests
-                otherwise uses. When ``False``, urllib3's
-                ``InsecureRequestWarning`` is suppressed for the whole process.
+                otherwise uses. When ``False``, urllib3 warns with an
+                ``InsecureRequestWarning`` for each request, unless a warnings
+                filter ignores it.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -300,18 +304,26 @@ class API:
             self.set_proxy(proxy)
 
     @property
-    def cookies(self) -> CookieJar:
-        """Return cookies currently used by the session."""
+    def cookies(self) -> requests.cookies.RequestsCookieJar:
+        """The session's cookie jar.
+
+        Assigning a jar replaces the session's cookies with a copy of its
+        cookies. To add cookies, call ``api.cookies.update(jar)`` or
+        ``api.cookies.set(name, value)``.
+        """
         return self.session.cookies
 
     @cookies.setter
     def cookies(self, cookies: CookieJar) -> None:
-        """Merge cookies into the active session.
+        """Replace the session's cookies.
 
         Args:
-            cookies: Cookie jar to merge into the session cookie store.
+            cookies: Cookie jar whose cookies the session uses instead of its
+                own.
         """
-        self.session.cookies.update(cookies)
+        jar = requests.cookies.RequestsCookieJar()
+        jar.update(cookies)
+        self.session.cookies = jar
 
     def set_proxy(self, proxy: str) -> None:
         """Configure an HTTP/HTTPS proxy for subsequent requests.
@@ -340,8 +352,7 @@ class API:
             verify: Whether TLS certificates should be verified, or the path of
                 a CA bundle to verify them with. If omitted, the new session
                 keeps the replaced session's setting, and a first session
-                verifies certificates. When ``False``, urllib3's
-                ``InsecureRequestWarning`` is suppressed for the whole process.
+                verifies certificates.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -357,10 +368,6 @@ class API:
 
         if verify is not None:
             session.verify = verify
-            if verify is False:
-                urllib3.disable_warnings(
-                    urllib3.exceptions.InsecureRequestWarning
-                )
 
         # Adapt session for multiple connections
         if len(kwargs) != 0:
@@ -463,10 +470,11 @@ class API:
             Validated HTTP response.
 
         Raises:
-            requests.HTTPError: If a redirect leads to an origin that is not
-                allowed, if requests would follow a redirect without the
-                request's body or with another method, or if
-                ``raise_for_response()`` raises it for the response.
+            RedirectError: If a redirect leads to an origin that is not
+                allowed, or if requests would follow a redirect without the
+                request's body or with another method.
+            requests.HTTPError: If ``raise_for_response()`` raises it for the
+                response.
         """
         kwargs.setdefault("timeout", self.timeout)
         if self.session.verify is not True:
@@ -512,8 +520,8 @@ class API:
                     which are ignored.
 
             Raises:
-                requests.HTTPError: If ``resp`` redirects to an origin that is
-                    not allowed, or if requests would follow it without the
+                RedirectError: If ``resp`` redirects to an origin that is not
+                    allowed, or if requests would follow it without the
                     request's body. The response is closed first.
             """
             target = self.session.get_redirect_target(resp)
@@ -527,7 +535,7 @@ class API:
                 return
 
             resp.close()
-            raise requests.HTTPError(
+            raise RedirectError(
                 f"{resp.request.method} {resp.url} was redirected with status "
                 f"{resp.status_code} to {destination}, whose origin differs "
                 "from the request's, so it was not followed. Add the origin "
@@ -554,7 +562,7 @@ class API:
             resp: Final response, after requests followed any redirects.
 
         Raises:
-            requests.HTTPError: If requests followed a redirect that dropped
+            RedirectError: If requests followed a redirect that dropped
                 the original request's body or changed its method.
         """
         if not resp.history:
@@ -567,7 +575,7 @@ class API:
             for hop in resp.history
         )
         if dropped or resp.request.method != redirect.request.method:
-            raise requests.HTTPError(
+            raise RedirectError(
                 f"{sent} {redirect.url} was redirected with status "
                 f"{redirect.status_code}, and requests resent it to "
                 f"{resp.url} as {resp.request.method}, so the {sent} request "

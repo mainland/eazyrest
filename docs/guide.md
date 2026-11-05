@@ -62,6 +62,10 @@ Other keyword arguments to the constructor are assignments, made after the prima
 
 Because loading is lazy, reading a field can send a request and can raise the same exceptions as one, such as `requests.HTTPError` or `requests.ConnectionError`. Related objects load the same way, so reading `todo.user.name` can send one request for the todo and another for its user. `hasattr()` also loads the object, and it propagates request errors instead of returning `False`.
 
+`json` returns the object's own payload, not a copy, so treat it as read-only. Changing it, or a value inside it, bypasses change tracking, and `save()` may then send nothing or the wrong fields. Assign fields to change an object, and copy the payload with `copy.deepcopy()` before changing it for another purpose.
+
+An assignment converts the value for its field but does not otherwise check its type, unless the field's type is one that Pydantic validates. A value that cannot be written as JSON fails when it is sent, at `save()` in lazy mode, and stays pending.
+
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without loading it.
 
 Call `refresh()` to discard cached JSON, converted field values, prefetched related objects, and pending lazy updates. The next field read reloads the object from the API.
@@ -168,7 +172,7 @@ class Timeline(JSONObject):
 
 In this example, ISO 8601 strings in `starts_at` become `datetime.datetime` objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning or creating objects with those typed values encodes the nested items back to JSON.
 
-An `Iterable` field of related objects, such as `members: Iterable[User]`, is lazy. Reading it creates no related objects, and each is created when iteration reaches it. The field can be iterated only once, so that each related object, and any change you make to it while iterating, exists only once. A second iteration raises `RuntimeError`. To iterate more than once, call `list()` on the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create the related objects when the field is first read and keep them.
+An `Iterable` field of related objects, such as `members: Iterable[User]`, is lazy. Reading it creates no related objects, and each is created when iteration reaches it. The field can be iterated only once, so that each related object, and any change you make to it while iterating, exists only once. A second iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than once, call `list()` on the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create the related objects when the field is first read and keep them.
 
 A related object that a field returns keeps your unsaved changes for as long as the field's JSON is unchanged. Loading the missing fields of an object keeps the related objects whose JSON the load left unchanged, and assigning a related object, or a `list`, `tuple`, or `set` of them, keeps the objects you assigned. When the server changes a relation, the field reads new related objects, and an object that you still hold keeps its own changes, which its `save()` sends.
 
@@ -357,9 +361,16 @@ admins = list(User.filter(role="admin"))
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
 
+The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`:
+
+```python
+todos = Todo.filter(params={"api": "v2"}, completed=False)
+todo = Todo.create(fields={"api": "v2"}, title="Write docs")
+```
+
 Every keyword argument to `filter()`, `get()`, or the lookup of `get_or_create()` must have a value that requests sends intact. It must not be `None`, an empty collection, or a mapping, and a collection must not hold `None` or another collection. requests omits `None` and empty collections, sends only a mapping's keys, and flattens nested collections, so the query would ignore or change the constraint, and `get()` could return an object that does not match. These methods raise `ValueError` instead of sending such a query. Any iterable other than a string, bytes, or a mapping, such as a generator, a `deque`, or a `range`, counts as a collection, and is read once. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
 
-`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. Its keyword arguments are sent in the lookup's query string, which servers and proxies may log, so pass a value that only the creation needs, such as a password, in `defaults`. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")
@@ -367,7 +378,7 @@ todo, created = Todo.get_or_create(user=user, title="Write docs")
 
 `get()` and `get_or_create()` trust the server to apply every lookup parameter. A server that ignores a parameter, as django-filter does for one that names no filter, returns objects whatever their value for that field. `get()` can then return an object that does not match, and `get_or_create()` can return one with `created=False` instead of creating an object. `eazyrest` does not check the returned objects, because it cannot know how the server matches a parameter, for example case-insensitively. Make sure that the API filters on each field you look up by. The Django REST Framework guide shows [a filter backend that rejects unknown parameters](drf.md#reject-unknown-filter-parameters).
 
-`get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup parameters, but not their values, as in `No Todo matching title exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
+`get()` queries the collection, as `filter()` does, and expects exactly one object, so `get()` without parameters requires a collection of one object. To load an object by its primary key, construct it, as in `User(id=1)`. `get()` raises `DoesNotExist` when nothing matches and `MultipleObjectsReturned` when more than one object does, and `get_or_create()` raises the latter too. Their messages name the model and the lookup parameters, but not their values, as in `No Todo matching title exists`. These exceptions and `PrefetchNotSupported` derive from `EazyrestError`, so one `except` clause catches every error that eazyrest itself defines.
 
 `get_or_create()` is not atomic. It sends a `GET` and then, if nothing matched, a `POST`, so two clients can both create the object. Rely on a uniqueness constraint on the server, and handle the error it returns.
 
@@ -460,7 +471,7 @@ class PagedObject(JSONObject):
 
 With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size` objects ahead of iteration to fill each batch, so they can request later pages early.
 
-By default, `follow_next_links()` reads a page's items from `results` and the next page's URL from `next`, as Django REST Framework does. Pass `results_key=` and `next_key=` for other names. A list payload is a single unpaginated page. A page whose next link is null, empty, or absent is the last page. A next link to a page that was already read raises `ValueError`, rather than reading the same pages forever.
+By default, `follow_next_links()` reads a page's items from `results` and the next page's URL from `next`, as Django REST Framework does. Pass `results_key=` and `next_key=` for other names. A list payload is a single unpaginated page. A page whose next link is null, empty, or absent is the last page. A next link to a page that was already read raises `PaginationError`, rather than reading the same pages forever. A page that is not JSON, or whose results are not a list, raises `ResponseShapeError`.
 
 A next-page URL is resolved against the URL of the page that holds it, as a browser resolves a link. An absolute URL, which is what Django REST Framework sends, is used as is. A path such as `/v1/items/?page=2` is resolved against the server's origin, and a query such as `?page=2` against the page's path. `collection_items()` receives only the payload, so links in the first page are resolved against `base_url` unless you pass `url=`. For an API that sends query-only links, override `collection_items_from_response()`, which receives the response, and pass the URL of the first page:
 
@@ -471,7 +482,7 @@ class PagedObject(JSONObject):
         return follow_next_links(cls.api, resp.json(), url=resp.url)
 ```
 
-`follow_next_links()` raises `ValueError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.
+`follow_next_links()` raises `PaginationError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
@@ -544,9 +555,9 @@ Incoming fields are treated as authoritative server state, so queued lazy update
 
 The `API` class wraps a `requests.Session`, resolves request URLs relative to `base_url`, applies a default timeout, and raises for HTTP error responses. To customize error handling for a particular API, override `raise_for_response()` in an `API` subclass.
 
-Requests follows redirects, but only a 307 or 308 redirect resends a request unchanged. It resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`, and it resends a `PATCH`, `PUT`, or `DELETE` answered with a 301 without its body. The server would then never receive the original request, so a redirect that would change the method or drop the body raises `requests.HTTPError` before it is followed, rather than letting `create()`, `save()`, or `delete()` report success. A lazy update stays pending. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a URL lacks the trailing slash that Django's `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use the URL that the server redirects to. A `GET`, or a `DELETE` without a body, answered with a 301 is followed.
+Requests follows redirects, but only a 307 or 308 redirect resends a request unchanged. It resends a `POST` answered with a 301 or 302, and any other request answered with a 302 or 303, as a `GET`, and it resends a `PATCH`, `PUT`, or `DELETE` answered with a 301 without its body. The server would then never receive the original request, so a redirect that would change the method or drop the body raises `RedirectError` before it is followed, rather than letting `create()`, `save()`, or `delete()` report success. A lazy update stays pending. This happens, for example, when `base_url` uses `http://` and the server redirects to HTTPS, or when a URL lacks the trailing slash that Django's `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use the URL that the server redirects to. A `GET`, or a `DELETE` without a body, answered with a 301 is followed.
 
-A redirect is followed only to the origin of the request it answers, that is, its scheme, host, and port. Requests drops the `Authorization` header when a redirect leaves the host, but it sends every other header, such as an API key or a CSRF token, and a 307 or 308 resends the request body. A redirect to another origin, including one from `http://` to `https://`, raises `requests.HTTPError` before anything is sent there. The check examines the URL exactly as requests will send it, and it refuses a target that another client could read as a different host, such as one with a backslash before an `@`. For an API that redirects to another server on purpose, such as a download host, list that origin in `redirect_origins`:
+A redirect is followed only to the origin of the request it answers, that is, its scheme, host, and port. Requests drops the `Authorization` header when a redirect leaves the host, but it sends every other header, such as an API key or a CSRF token, and a 307 or 308 resends the request body. A redirect to another origin, including one from `http://` to `https://`, raises `RedirectError` before anything is sent there. The check examines the URL exactly as requests will send it, and it refuses a target that another client could read as a different host, such as one with a backslash before an `@`. For an API that redirects to another server on purpose, such as a download host, list that origin in `redirect_origins`:
 
 ```python
 api = API("https://api.example.com/")
@@ -564,7 +575,19 @@ api = API(
 )
 ```
 
-Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process. Either setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
+Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification. urllib3 then warns with an `InsecureRequestWarning` for each request. eazyrest does not suppress the warning, because a filter applies to the whole process and would hide it for every other client too. To accept unverified connections everywhere, ignore it yourself:
+
+```python
+import warnings
+
+import urllib3
+
+warnings.filterwarnings(
+    "ignore", category=urllib3.exceptions.InsecureRequestWarning
+)
+```
+
+Either `verify=` setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
 
 Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
 
@@ -611,6 +634,20 @@ todos = Todo.filter(api=user_api, completed=False)
 Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`. While `filter()` calls `collection_items()`, `cls.api` is the query's API, so a hook such as `follow_next_links(cls.api, payload)` reads later pages with it.
 
 A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
+
+## Errors
+
+eazyrest raises a subclass of `EazyrestError` for each condition that its own policies detect, so `except EazyrestError` catches them all. Each also derives from the exception type that it replaced, so code written for that type keeps working:
+
+- `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a field cannot convert.
+- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one object.
+- `PrefetchNotSupported`, for a prefetch of a model without `bulk_get_by_pks()`.
+- `RedirectError`, a `requests.HTTPError`, for a redirect that is refused before it is followed. Its `response` is the redirect.
+- `PaginationError`, a `ValueError`, for a next-page link or redirect to another origin, or to a page already read.
+- `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that is not JSON or does not have the expected shape. Its message does not quote the body.
+- `UsageError`, a `RuntimeError`, for a model without a registered API or a second iteration of a lazy related collection.
+
+An HTTP error status still raises whatever `API.raise_for_response()` raises, `requests.HTTPError` by default, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. A declaration that `@json_object` cannot accept raises `TypeError` or `ValueError` when the class is defined.
 
 ## Threads
 

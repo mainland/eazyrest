@@ -6,6 +6,8 @@ import re
 import dateutil.parser
 import isodate
 
+__all__ = ["parse_datetime", "parse_duration"]
+
 # A number of seconds, such as "90", "-90", or "1.5".
 _SECONDS_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
 
