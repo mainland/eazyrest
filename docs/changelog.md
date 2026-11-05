@@ -25,13 +25,14 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 
 #### Queries
 
-- `filter()` and `all()` return iterators rather than lists, and the request is sent when they are called. Call `list()` on the result to iterate it more than once.
+- `filter()` and `all()` return iterators rather than lists, and the request is sent when they are called. Call `list()` on the result to iterate it more than once. The iterator is a `Results`, whose `count` is the collection's size when the response reports it.
 - `filter(url=...)` is removed. Override `class_url`, or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()` encodes them: renamed by `field_map`, converted to JSON, and with booleans sent as `true` and `false`.
 - A query parameter whose value requests would drop or change raises `ValueError` before the request: `None`, an empty collection or iterator, a mapping, or a collection holding `None` or another collection. In 0.9.0, such a constraint was silently omitted, so `get()` could return an object that does not match it.
-- The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, and they reserve `request_options`. Pass a query parameter with one of these names in `params=`. `create()` likewise takes `fields=`.
+- The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, and they reserve `request_options`. Pass a query parameter with one of these names in `params=`. `create()` likewise reserves `api`, `fields`, `files`, and `request_options`, and takes field values with those names in `fields=`.
 - In `get_or_create()`, a key that contains `__` and is not a field, such as `name__iexact`, is sent only in the lookup, not in the creation payload. Every keyword argument is sent in the lookup's query string, so pass a value that only the creation needs, such as a password, in `defaults`.
 - `DoesNotExist` and `MultipleObjectsReturned` derive from `EazyrestError` rather than directly from `Exception`, and their messages name the model and the lookup parameters, but not their values.
+- A failed request raises `APIError`, or `NotFound` for a 404, instead of a plain `requests.HTTPError`. Both are `requests.HTTPError`, so existing handlers still catch them, but the message differs: it names the method, URL, status, and the members of a JSON body, and the parsed body is in `data`. `NotFound` is also a `DoesNotExist`, so a 404 on a lazy load is caught by `except DoesNotExist`.
 
 #### Fields and conversion
 
@@ -68,9 +69,10 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - Pydantic conversion of fields whose types use Pydantic, through the `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`, `Duration`, and `UUID`. A type that would drop the keys it does not declare is rejected, and a field must read back what it writes.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the `type` statement.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`, detection of in-place changes to field values, and `merge_response()`.
+- For Django REST Framework APIs: `write_map=` for a relation read nested and written by key, `write_only=` for a field such as a password, `Hyperlinked()` for relations represented by URLs, file uploads with `files=` on `create()` and `save()`, full updates with `save(full=True)`, request options such as headers with `request_options=` on `save()`, `create()`, and `delete()`, the collection's size as `count`, and `APIError` with the parsed error body. Hyperlinked writes send URLs and relation queries send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`, `resolve_url()`, `trailing_slash`, `redirect_origins`, `reset_session()` that keeps the session's configuration, `register_api()`, and `api=` on queries and `create()`.
 - `absolute_url`, and a `repr()` that shows the class and primary key without loading the object.
-- The exceptions `EazyrestError`, `FieldConversionError`, `PrefetchNotSupported`, `RedirectError`, `PaginationError`, `ResponseShapeError`, `UsageError`, and `LimitExceeded`. Each one that replaces another exception type also derives from that type.
+- The exceptions `EazyrestError`, `APIError`, `NotFound`, `FieldConversionError`, `PrefetchNotSupported`, `RedirectError`, `PaginationError`, `ResponseShapeError`, `UsageError`, and `LimitExceeded`. Each one that replaces another exception type also derives from that type.
 - `eazyrest.__version__`.
 - `API.json(response)` decodes JSON in application hooks with the same depth, numeric, and response-shape policy as model reads.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
@@ -79,5 +81,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 
 - A redirect is checked against the URL exactly as requests will send it, so a `Location` such as `https://api.example.com\@evil.example/` cannot hide another host from the origin check.
 - Pydantic error messages leave out input values, mapping keys that the input chose, and discriminated-union tags.
-- The response limits bound what a server can make a client read or wait for.
+- Response limits also cover intermediate retry bodies and retry delays with the adapters that `API` creates. Model writes reject response streaming and unfollowed final 3xx statuses. A full save loads partial state first, and multipart writes reject empty lists rather than silently omitting them.
+- Invalid JSON numbers raise `ResponseShapeError`, malformed error bodies give `APIError.data=None`, and JSON depth violations raise `LimitExceeded` for success and error responses alike. Bounded body reads preserve Requests' transport exceptions.
+- A hyperlinked relation is followed only to an origin that the related model's API allows, and `APIError` messages do not quote the error body, which can quote submitted values.
 - Releases are built and published from a tag by a workflow that uses trusted publishing, with the workflow's actions pinned by commit.
