@@ -9,6 +9,7 @@ import pytest
 
 from eazyrest import (
     API,
+    APIError,
     FieldConversionError,
     JSONObject,
     LimitExceeded,
@@ -89,6 +90,23 @@ def test_unrepresentable_json_keeps_the_error_boundary(
     requests_mock.get(DOC_URL, text='{"id":1,"tags":[' + body + "]}")
     with pytest.raises(ResponseShapeError):
         _ = MockedDoc(id=1).tags
+
+    requests_mock.get(DOC_URL, status_code=400, text='{"error":' + body + "}")
+    with pytest.raises(APIError) as info:
+        MockedDoc.api.get(DOC_URL)
+    assert info.value.data is None
+
+
+def test_error_body_depth_limit_is_not_silently_lost(
+    requests_mock: Any,
+) -> None:
+    """HTTP error parsing preserves an explicit depth-limit violation."""
+    api = API("https://mocked.example/")
+    api.max_json_depth = 1
+    requests_mock.get(DOC_URL, status_code=400, json={"field": ["bad"]})
+
+    with pytest.raises(LimitExceeded, match="max_json_depth"):
+        api.get(DOC_URL)
 
 
 @pytest.mark.parametrize(

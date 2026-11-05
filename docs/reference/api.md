@@ -7,6 +7,15 @@
 ```
 
 ```{eval-rst}
+.. autoexception:: eazyrest.APIError
+   :members:
+```
+
+```{eval-rst}
+.. autoexception:: eazyrest.NotFound
+```
+
+```{eval-rst}
 .. autoexception:: eazyrest.RedirectError
 ```
 

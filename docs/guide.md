@@ -1085,15 +1085,18 @@ served by different APIs can refer to each other. If the parent object has an
 
 ## Errors
 
-eazyrest raises a subclass of `EazyrestError` for each condition that its own
-policies detect, so `except EazyrestError` catches them all. Each also derives
-from the exception type that it replaced, so code written for that type keeps
-working:
+eazyrest raises a subclass of `EazyrestError` for each condition in the list
+below, so `except EazyrestError` catches them all. Each also derives from the
+exception type that it replaced, so code written for that type keeps working:
 
 - `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a
   field cannot convert.
+- `APIError`, a `requests.HTTPError`, for a response whose status reports a
+  failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON
+  body, and the message names the body's members other than `detail`, but not
+  their text.
 - `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one
-  object.
+  object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
 - `RedirectError`, a `requests.HTTPError`, for a redirect that is refused
@@ -1108,11 +1111,19 @@ working:
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
 
-An HTTP error status still raises whatever `API.raise_for_response()` raises,
-`requests.HTTPError` by default, and a transport failure raises the requests
-exception that describes it, such as `requests.ConnectionError`. A declaration
-that `@json_object` cannot accept raises `TypeError` or `ValueError` when the
-class is defined.
+A misuse of an argument, such as a query parameter that is not allowed, an
+assignment to a read-only field, or an unsupported request option, raises a
+`TypeError`, `ValueError`, or `AttributeError` instead, as the section on that
+operation says.
+
+An HTTP error status raises whatever `API.raise_for_response()` raises,
+`APIError` or `NotFound` by default. Invalid JSON gives these errors
+`data=None`. A depth-limit violation instead raises `LimitExceeded`, including
+for an error body, and a transport failure raises the requests exception that
+describes it, such as `requests.ConnectionError`. Invalid decorator options
+raise `TypeError` or `ValueError` when the class is defined. Field annotations
+resolve lazily, so an invalid conversion declaration can raise
+`FieldConversionError` at first use.
 
 ## Threads
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import http.server
+import pickle
+import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,8 +13,13 @@ import requests
 
 from eazyrest import (
     API,
+    APIError,
+    DoesNotExist,
     EazyrestError,
+    FieldConversionError,
     JSONObject,
+    LimitExceeded,
+    NotFound,
     PaginationError,
     RedirectError,
     ResponseShapeError,
@@ -27,6 +36,8 @@ from eazyrest import (
         (PaginationError, (ValueError,)),
         (ResponseShapeError, (TypeError, ValueError)),
         (UsageError, (RuntimeError,)),
+        (APIError, (requests.HTTPError,)),
+        (NotFound, (requests.HTTPError, DoesNotExist)),
     ],
 )
 def test_policy_errors_keep_the_types_they_replace(
@@ -121,3 +132,280 @@ def test_model_without_api_is_a_usage_error() -> None:
 
     with pytest.raises(UsageError, match="No API registered"):
         _ = Orphan.api
+
+
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        ({"email": ["Enter a valid email address: 'x'."]}, "'email'"),
+        ({"name": ["Required."], "age": ["Too young."]}, "'age', 'name'"),
+        ({"detail": "You do not have permission: 'secret'."}, None),
+        ("<html>secret</html>", None),
+    ],
+)
+def test_failed_request_raises_api_error_with_its_body(
+    requests_mock: Any, body: Any, names: str | None
+) -> None:
+    """An error status raises ``APIError``, which holds the parsed body.
+
+    The message names the members of a JSON object body but quotes none of
+    its text, which can quote the values that were sent.
+
+    Args:
+        body: Error response body, JSON or text.
+        names: Member names that the message should list, or ``None``.
+    """
+    api = API("https://example.com/v1/")
+    if isinstance(body, str):
+        requests_mock.post(
+            "https://example.com/v1/users/", status_code=400, text=body
+        )
+    else:
+        requests_mock.post(
+            "https://example.com/v1/users/", status_code=400, json=body
+        )
+
+    with pytest.raises(APIError) as info:
+        api.post("/users/", json={"email": "x"})
+
+    error = info.value
+    assert isinstance(error, requests.HTTPError)
+    assert error.response is not None
+    assert error.response.status_code == 400
+    assert error.data == (None if isinstance(body, str) else body)
+    message = str(error)
+    assert message.startswith(
+        "400 Client Error: None for POST https://example.com/v1/users/"
+    )
+    assert "secret" not in message
+    assert "'x'" not in message
+    if names is None:
+        assert "body names" not in message
+    else:
+        assert message.endswith(f"(body names {names})")
+
+
+def test_deleted_object_raises_not_found(requests_mock: Any) -> None:
+    """A 404 on a lazy load is ``NotFound``, a ``DoesNotExist``."""
+    requests_mock.get(
+        "https://example.com/v1/notes/7/",
+        status_code=404,
+        json={"detail": "Not found."},
+    )
+
+    with pytest.raises(DoesNotExist) as info:
+        _ = Note(id=7).text
+
+    assert isinstance(info.value, NotFound)
+    assert isinstance(info.value, requests.HTTPError)
+    assert info.value.data == {"detail": "Not found."}
+
+
+def test_server_error_is_an_api_error(requests_mock: Any) -> None:
+    """A 5xx status raises ``APIError`` but not ``NotFound``."""
+    api = API("https://example.com/v1/")
+    requests_mock.get("https://example.com/v1/x", status_code=503)
+
+    with pytest.raises(APIError, match=r"^503 Server Error") as info:
+        api.get("/x")
+
+    assert not isinstance(info.value, NotFound)
+    assert info.value.data is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LimitExceeded("max_pages", "The query read 3 pages"),
+        FieldConversionError(int, "count", ValueError("bad")),
+        PaginationError("bad page"),
+        DoesNotExist("gone"),
+    ],
+    ids=["limit", "field", "pagination", "missing"],
+)
+def test_errors_pickle(error: EazyrestError) -> None:
+    """An error reaches another process with its type, message, and fields.
+
+    Args:
+        error: Error to pickle.
+    """
+    copy = pickle.loads(pickle.dumps(error))
+
+    assert type(copy) is type(error)
+    assert str(copy) == str(error)
+    assert vars(copy) == vars(error)
+
+
+def test_http_errors_pickle_without_their_guards() -> None:
+    """An error that holds a response pickles, without eazyrest's guards.
+
+    The guards that check redirects are local functions, which the
+    response's request would otherwise keep.
+    """
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "15")
+            self.end_headers()
+            self.wfile.write(b'{"detail": "x"}')
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with (
+            API(f"http://127.0.0.1:{server.server_port}/") as api,
+            pytest.raises(APIError) as raised,
+        ):
+            api.get("/x")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    copy = pickle.loads(pickle.dumps(raised.value))
+
+    assert type(copy) is APIError
+    assert copy.data == {"detail": "x"}
+    assert copy.response.status_code == 500
+
+
+def test_error_of_a_request_with_a_stream_body_does_not_pickle(
+    requests_mock: Any, tmp_path: Path
+) -> None:
+    """An error pickles unless its request's body is a stream.
+
+    The request keeps an open file that was sent as the body, and a file does
+    not pickle. The same request with a body of bytes does.
+
+    Args:
+        tmp_path: Directory for the file that the request sends.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.post("https://example.com/v1/upload/", status_code=400)
+    path = tmp_path / "upload.bin"
+    path.write_bytes(b"dummy")
+
+    with pytest.raises(APIError) as sent_bytes:
+        api.post("/upload/", data=b"dummy")
+    with path.open("rb") as stream, pytest.raises(APIError) as sent_stream:
+        api.post("/upload/", data=stream)
+
+    assert type(pickle.loads(pickle.dumps(sent_bytes.value))) is APIError
+    with pytest.raises(TypeError, match="pickle"):
+        pickle.dumps(sent_stream.value)
+
+
+def test_errors_of_digest_authentication_pickle() -> None:
+    """An error of a request sent with digest authentication pickles.
+
+    requests keeps the handler's response hooks, which hold the thread-local
+    state of ``HTTPDigestAuth``, on the request.
+    """
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if "Authorization" not in self.headers:
+                self.send_response(401)
+                self.send_header(
+                    "WWW-Authenticate",
+                    'Digest realm="r", nonce="abc", qop="auth", '
+                    'algorithm="MD5"',
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "15")
+            self.end_headers()
+            self.wfile.write(b'{"detail": "x"}')
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with API(f"http://127.0.0.1:{server.server_port}/") as api:
+            api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+            with pytest.raises(APIError) as raised:
+                api.get("/x")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    copy = pickle.loads(pickle.dumps(raised.value))
+
+    assert copy.response.status_code == 500
+    assert copy.response.history[0].status_code == 401
+
+
+def test_errors_after_redirects_pickle_without_their_guards(
+    requests_mock: Any,
+) -> None:
+    """The requests of every hop, and an error's own request, lose the guards.
+
+    An error that a followed redirect leads to holds the redirect in its
+    response's history, and requests raises ``TooManyRedirects`` from
+    ``send()``, with the request that it would have sent next.
+    """
+    api = API("https://example.com/v1/")
+    api.session.max_redirects = 2
+    requests_mock.get(
+        "https://example.com/v1/a",
+        status_code=307,
+        headers={"Location": "https://example.com/v1/b"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/b", status_code=500, json={"detail": "x"}
+    )
+    requests_mock.get(
+        "https://example.com/v1/loop",
+        status_code=307,
+        headers={"Location": "https://example.com/v1/loop"},
+    )
+
+    with pytest.raises(APIError) as failed:
+        api.get("/a")
+    with pytest.raises(requests.TooManyRedirects) as looped:
+        api.get("/loop")
+
+    copy = pickle.loads(pickle.dumps(failed.value))
+    assert copy.response.history[0].status_code == 307
+    loop = pickle.loads(pickle.dumps(looped.value))
+    assert type(loop) is requests.TooManyRedirects
+
+
+def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
+    """A server's names reach the message bounded and escaped.
+
+    A newline or an escape sequence in a name, or in the reason phrase,
+    would otherwise reach a log as written.
+    """
+    api = API("https://example.com/v1/")
+    body = {"a\nb": 1, "b" * 1000: 2, **{f"n{i:02}": i for i in range(20)}}
+    requests_mock.get(
+        "https://example.com/v1/x",
+        status_code=400,
+        reason="Bad\x1b[31m",
+        json=body,
+    )
+
+    with pytest.raises(APIError) as raised:
+        api.get("/x")
+
+    message = str(raised.value)
+    assert "\n" not in message
+    assert "\x1b" not in message
+    assert "'a\\nb'" in message
+    # Ten sorted names are shown, each of at most 40 characters.
+    assert "'" + "b" * 40 + "...'" in message
+    assert "b" * 41 not in message
+    assert "'n07'" in message
+    assert "'n08'" not in message
+    assert "and 12 more" in message
+    assert len(message) < 600

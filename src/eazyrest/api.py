@@ -22,7 +22,7 @@ from urllib3.exceptions import (
 from urllib3.response import BaseHTTPResponse
 from urllib3.util import Retry
 
-from ._errors import LimitExceeded, RedirectError, _response_json
+from ._errors import LimitExceeded, RedirectError, _api_error, _response_json
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -140,6 +140,28 @@ def _redirect_origins(
         except (ValueError, requests.RequestException):
             origins.add(("", None, None))
     return origins
+
+
+def _drop_response_hooks(resp: Any, request: Any = None) -> None:
+    """Remove the response hooks from the requests of a response.
+
+    A sent request's response hooks have run. They can hold objects that
+    cannot be pickled, such as eazyrest's redirect guards, which are local
+    functions, and the thread-local state of ``requests.auth.HTTPDigestAuth``,
+    so a response that keeps them, or an error that holds such a response or
+    request, could not reach another process.
+
+    Args:
+        resp: Response, with its history, or ``None``.
+        request: A request that an error holds, or ``None``.
+    """
+    requests_sent = [request]
+    if isinstance(resp, requests.Response):
+        requests_sent += [hop.request for hop in (*resp.history, resp)]
+    for sent in requests_sent:
+        hooks = getattr(sent, "hooks", None)
+        if isinstance(hooks, dict) and hooks.get("response"):
+            hooks["response"] = []
 
 
 def _response_hooks(hooks: Any) -> list[Callable[..., Any]]:
@@ -777,17 +799,22 @@ class API:
     def raise_for_response(self, resp: requests.Response) -> None:
         """Raise an exception if ``resp`` represents a failed request.
 
-        Subclasses can override this hook to translate API-specific error
-        payloads into richer exception types while preserving the default
-        ``requests`` behavior for successful responses.
+        The default raises ``NotFound`` for a 404 and ``APIError`` for any
+        other failure. Both are ``requests.HTTPError``, and they hold the
+        response's JSON body as ``data``. Subclasses can override this hook to
+        translate API-specific error payloads into other exception types.
 
         Args:
             resp: Response object to validate.
 
         Raises:
-            requests.HTTPError: If the response status indicates failure.
+            NotFound: If the response status is 404.
+            APIError: If the response status indicates another failure.
+            LimitExceeded: If the error body exceeds ``max_json_depth``.
         """
-        resp.raise_for_status()
+        if resp.ok:
+            return
+        raise _api_error(resp, self.max_json_depth)
 
     def json(self, resp: requests.Response) -> Any:
         """Decode response JSON with this client's depth and number policy.
@@ -880,7 +907,12 @@ class API:
         )
         token = _request_budget.set(budget)
         try:
-            resp = send(url, *args, **kwargs)
+            try:
+                resp = send(url, *args, **kwargs)
+            except requests.RequestException as err:
+                _drop_response_hooks(err.response, err.request)
+                raise
+            _drop_response_hooks(resp)
             self._check_redirects(resp)
             budget.check_time(resp)
             if not streamed:
@@ -951,7 +983,10 @@ class API:
         # after any hook that might change the response.
         merged = dict(hooks or {})
         response = merged.get("response") or self.session.hooks.get("response")
-        merged["response"] = [*_response_hooks(response), check_redirect]
+        merged["response"] = [
+            *_response_hooks(response),
+            check_redirect,
+        ]
         return merged
 
     @staticmethod

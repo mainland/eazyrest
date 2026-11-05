@@ -53,7 +53,10 @@ from ._conversion import (
     _table_of,
 )
 from ._errors import (
+    DoesNotExist,
     EazyrestError,
+    MultipleObjectsReturned,
+    PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
 )
@@ -70,18 +73,6 @@ if sys.version_info >= (3, 14):
 
 if TYPE_CHECKING:
     from pydantic import TypeAdapter
-
-
-class DoesNotExist(EazyrestError):
-    """Raised when no object matches a query that expects one result."""
-
-
-class MultipleObjectsReturned(EazyrestError):
-    """Raised when a query expected one object but got multiple results."""
-
-
-class PrefetchNotSupported(EazyrestError):
-    """Raised when explicit prefetch is requested for an unsupported model."""
 
 
 class FieldConversionError(EazyrestError, TypeError, ValueError):

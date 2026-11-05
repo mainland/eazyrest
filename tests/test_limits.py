@@ -388,6 +388,63 @@ def test_retried_response_body_obeys_the_size_limit(
     assert attempts == ["/retry"]
 
 
+def test_discarded_retry_bodies_do_not_count_against_the_size_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """The bodies of attempts that a retry discards are not held.
+
+    Two failed attempts and the final response each have a body of 80 bytes,
+    which total more than the limit of 100, but the request holds only the
+    final body.
+    """
+    attempts = []
+
+    def handle(handler: Any) -> None:
+        attempts.append(handler.path)
+        handler.send_response(503 if len(attempts) < 3 else 200)
+        handler.send_header("Content-Length", "80")
+        handler.end_headers()
+        handler.wfile.write(b"x" * 80)
+
+    api = API(
+        local_server(handle),
+        max_retries=Retry(total=3, status_forcelist=[503]),
+    )
+    api.max_response_bytes = 100
+
+    resp = api.get("/retry")
+
+    assert resp.status_code == 200
+    assert resp.content == b"x" * 80
+    assert len(attempts) == 3
+
+
+def test_exhausted_retry_can_return_its_error_body(
+    local_server: Callable[[Any], str],
+) -> None:
+    """Disabling retry exhaustion errors preserves the final API error data."""
+    from eazyrest import APIError
+
+    def unavailable(handler: Any) -> None:
+        body = b'{"detail":"try later"}'
+        handler.send_response(503)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    api = API(
+        local_server(unavailable),
+        max_retries=Retry(
+            total=1, status_forcelist=[503], raise_on_status=False
+        ),
+    )
+
+    with pytest.raises(APIError) as info:
+        api.get("/retry")
+
+    assert info.value.data == {"detail": "try later"}
+
+
 def test_truncated_response_keeps_requests_exception_type(
     local_server: Callable[[Any], str],
 ) -> None:

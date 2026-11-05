@@ -4,19 +4,21 @@ from importlib.metadata import PackageNotFoundError, version
 
 from ._conversion import DEFAULT_CONVERSIONS, Conversion
 from ._errors import (
+    APIError,
+    DoesNotExist,
     EazyrestError,
     LimitExceeded,
+    MultipleObjectsReturned,
+    NotFound,
     PaginationError,
+    PrefetchNotSupported,
     RedirectError,
     ResponseShapeError,
     UsageError,
 )
 from ._models import (
-    DoesNotExist,
     FieldConversionError,
     JSONObject,
-    MultipleObjectsReturned,
-    PrefetchNotSupported,
     json_object,
 )
 from .api import API
@@ -33,6 +35,7 @@ except PackageNotFoundError:  # pragma: no cover - only without metadata
 __all__ = [
     "API",
     "DEFAULT_CONVERSIONS",
+    "APIError",
     "Conversion",
     "DoesNotExist",
     "EazyrestError",
@@ -40,6 +43,7 @@ __all__ = [
     "JSONObject",
     "LimitExceeded",
     "MultipleObjectsReturned",
+    "NotFound",
     "PaginationError",
     "PrefetchNotSupported",
     "RedirectError",
