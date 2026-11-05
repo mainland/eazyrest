@@ -271,8 +271,11 @@ def _eazyrest_types(ty: Any) -> Any:
     args = typing.get_args(ty)
     if is_typeddict(ty) or is_typeddict(origin):
         _check_undeclared_keys(origin or ty)
-    if isinstance(ty, type) and is_pydantic_dataclass(ty):
-        _check_undeclared_keys(ty)
+    # A parameterized generic dataclass, such as Box[int], is an alias rather
+    # than a class, so check its origin, as for a TypedDict.
+    cls = ty if origin is None else origin
+    if isinstance(cls, type) and is_pydantic_dataclass(cls):
+        _check_undeclared_keys(cls)
     if not args or origin is Literal:
         return ty
     if origin is Annotated:
