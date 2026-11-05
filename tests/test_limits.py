@@ -18,6 +18,8 @@ from eazyrest import (
     API,
     JSONObject,
     LimitExceeded,
+    follow_link_headers,
+    follow_next_links,
     json_object,
 )
 
@@ -29,6 +31,8 @@ def test_limit_defaults() -> None:
     assert api.max_response_bytes == 16 * 1024 * 1024
     assert api.total_timeout == 300.0
     assert api.max_json_depth == 128
+    assert api.max_pages == 1000
+    assert api.max_items == 100_000
 
 
 @pytest.mark.parametrize("declared", [True, False])
@@ -180,6 +184,45 @@ def test_json_within_depth_is_read(requests_mock: Any) -> None:
 
     assert Box(id=1).id == 1
     assert Box(id=1).contents is not None
+
+
+def test_endless_pages_raise(requests_mock: Any) -> None:
+    """A server that links new, empty pages without end is stopped."""
+    api = API("https://example.com/v1/")
+    api.max_pages = 5
+
+    def page(request: Any, context: Any) -> dict[str, Any]:
+        number = int(request.qs["page"][0])
+        return {"next": f"/v1/items/?page={number + 1}", "results": []}
+
+    requests_mock.get("https://example.com/v1/items/", json=page)
+
+    with pytest.raises(LimitExceeded, match="max_pages"):
+        list(
+            follow_next_links(
+                api, {"next": "/v1/items/?page=2", "results": []}
+            )
+        )
+
+    assert requests_mock.call_count == 4
+
+
+def test_too_many_items_raise(requests_mock: Any) -> None:
+    """A traversal stops before yielding more than ``max_items`` items."""
+    api = API("https://example.com/v1/")
+    api.max_items = 3
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json=[{"id": 3}, {"id": 4}],
+        headers={"Link": '</v1/items/?page=3>; rel="next"'},
+    )
+    first = requests.get("https://example.com/v1/items/", timeout=1)
+
+    items = follow_link_headers(api, first)
+
+    assert [next(items), next(items)] == [{"id": 3}, {"id": 4}]
+    with pytest.raises(LimitExceeded, match="max_items"):
+        next(items)
 
 
 @pytest.fixture

@@ -1007,14 +1007,17 @@ pass the adapter arguments again when you call it.
 ### Limits
 
 A server can send more than a client should accept, by mistake or on purpose.
-Each `API` limits what one response can cost, and raises `LimitExceeded` when a
-limit is reached. Its `limit` attribute names the `API` attribute that sets it:
+Each `API` limits what one response or traversal can cost, and raises
+`LimitExceeded` when a limit is reached. Its `limit` attribute names the `API`
+attribute that sets it:
 
 | Attribute | Default | Limits |
 | --- | --- | --- |
 | `max_response_bytes` | 16 MiB | The decompressed size of each response body, checked as it is read. |
 | `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
 | `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
+| `max_pages` | 1,000 | The pages that one `follow_next_links()` or `follow_link_headers()` traversal reads, counting the first. |
+| `max_items` | 100,000 | The items that one traversal yields. |
 
 Set an attribute on an instance or in a subclass to change a limit, or set it
 to `None` to remove it:
@@ -1022,13 +1025,19 @@ to `None` to remove it:
 ```python
 api = API("https://api.example.com/v1/")
 api.max_response_bytes = 64 * 1024 * 1024
-api.total_timeout = None
+api.max_pages = None
 ```
 
-`total_timeout` is checked between reads, so a request can overrun it by at
-most one `timeout`, and it cannot interrupt your own code, such as a validator
-or a hook. A request that passes `stream=True` reads its own body, so
-`max_response_bytes` does not apply to it.
+A limit is never met by truncating. A traversal that would read too many pages
+raises rather than stopping early, so the items it yielded are never mistaken
+for the whole collection. `total_timeout` is checked between reads and retry
+attempts, so a request can overrun it by at most one `timeout`, and it cannot
+interrupt your own code, such as a validator or a hook. Each request of a
+traversal has its own `total_timeout`, because a traversal is lazy and the time
+between pages is yours. A raw `API` request that passes `stream=True` reads its
+own body, so `max_response_bytes` does not apply to it. Custom adapters and
+application hooks control their own work. Use `api.json(response)` in hooks to
+decode JSON with the client's depth limit and response-shape policy.
 
 Use the client as a context manager to ensure the session is closed:
 
@@ -1096,7 +1105,7 @@ working:
   the expected shape. Its message does not quote the body.
 - `UsageError`, a `RuntimeError`, for a model without a registered API or a
   second iteration of a lazy related collection.
-- `LimitExceeded`, for a response that exceeds one of the API's
+- `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
 
 An HTTP error status still raises whatever `API.raise_for_response()` raises,

@@ -584,6 +584,22 @@ class API:
     nested more deeply than about a thousand levels.
     """
 
+    max_pages: int | None = 1000
+    """Greatest number of pages that one pagination traversal reads.
+
+    ``follow_next_links()`` and ``follow_link_headers()`` count the first page
+    too, and raise ``LimitExceeded`` rather than read more, so a server that
+    links new pages without end cannot keep a client reading. ``None`` removes
+    the limit.
+    """
+
+    max_items: int | None = 100_000
+    """Greatest number of items that one pagination traversal yields.
+
+    A traversal raises ``LimitExceeded`` rather than yield more. ``None``
+    removes the limit.
+    """
+
     trailing_slash: bool = True
     """Whether object URLs end with a slash, as in ``/users/1/``.
 
