@@ -413,7 +413,7 @@ class User(JSONObject):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
-            for user in (cls(json=item, api=api) for item in resp.json())
+            for user in (cls(json=item, api=api) for item in api.json(resp))
         }
 ```
 
@@ -479,7 +479,7 @@ A next-page URL is resolved against the URL of the page that holds it, as a brow
 class PagedObject(JSONObject):
     @classmethod
     def collection_items_from_response(cls, resp):
-        return follow_next_links(cls.api, resp.json(), url=resp.url)
+        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
 ```
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.
@@ -589,7 +589,7 @@ warnings.filterwarnings(
 
 Either `verify=` setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
 
-Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
+By default, a request fails if connecting, or any single read from the socket, waits more than 10 seconds. That bounds each wait, not the whole request, so a server that sends a byte every few seconds could keep a request open indefinitely. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
 
 ```python
 from urllib3.util import Retry
@@ -598,7 +598,27 @@ api = API("https://api.example.com/v1/", max_retries=Retry(total=3))
 api.timeout = 30
 ```
 
-urllib3 retries only idempotent methods by default, so a `POST` is not resent. `reset_session()` keeps the session's configuration but not its adapters, so pass the adapter arguments again when you call it.
+urllib3 retries only idempotent methods by default, so a `POST` is not resent. With the adapters that `API` creates, retry delays and intermediate response bodies obey the same total-time and body-size budgets as the final response. `reset_session()` keeps the session's configuration but not its adapters, so pass the adapter arguments again when you call it.
+
+### Limits
+
+A server can send more than a client should accept, by mistake or on purpose. Each `API` limits what one response can cost, and raises `LimitExceeded` when a limit is reached. Its `limit` attribute names the `API` attribute that sets it:
+
+| Attribute | Default | Limits |
+| --- | --- | --- |
+| `max_response_bytes` | 16 MiB | The decompressed size of each response body, checked as it is read. |
+| `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
+| `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
+
+Set an attribute on an instance or in a subclass to change a limit, or set it to `None` to remove it:
+
+```python
+api = API("https://api.example.com/v1/")
+api.max_response_bytes = 64 * 1024 * 1024
+api.total_timeout = None
+```
+
+`total_timeout` is checked between reads, so a request can overrun it by at most one `timeout`, and it cannot interrupt your own code, such as a validator or a hook. A request that passes `stream=True` reads its own body, so `max_response_bytes` does not apply to it.
 
 Use the client as a context manager to ensure the session is closed:
 
@@ -644,8 +664,9 @@ eazyrest raises a subclass of `EazyrestError` for each condition that its own po
 - `PrefetchNotSupported`, for a prefetch of a model without `bulk_get_by_pks()`.
 - `RedirectError`, a `requests.HTTPError`, for a redirect that is refused before it is followed. Its `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to another origin, or to a page already read.
-- `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that is not JSON or does not have the expected shape. Its message does not quote the body.
+- `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that is not JSON, holds non-finite or unrepresentable numbers, or does not have the expected shape. Its message does not quote the body.
 - `UsageError`, a `RuntimeError`, for a model without a registered API or a second iteration of a lazy related collection.
+- `LimitExceeded`, for a response that exceeds one of the API's [limits](#limits).
 
 An HTTP error status still raises whatever `API.raise_for_response()` raises, `requests.HTTPError` by default, and a transport failure raises the requests exception that describes it, such as `requests.ConnectionError`. A declaration that `@json_object` cannot accept raises `TypeError` or `ValueError` when the class is defined.
 

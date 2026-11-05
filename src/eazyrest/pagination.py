@@ -8,7 +8,7 @@ from urllib.parse import urljoin
 
 import requests
 
-from ._errors import PaginationError, ResponseShapeError, _response_json
+from ._errors import PaginationError, ResponseShapeError
 from .api import (
     API,
     _origin,
@@ -246,7 +246,7 @@ def follow_next_links(
         resp = reader.read(urljoin(page_url, next_url))
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url
-        payload = _response_json(resp)
+        payload = api.json(resp)
 
 
 def follow_link_headers(
@@ -294,7 +294,7 @@ def follow_link_headers(
     reader.read_urls.add(resp.url)
 
     while True:
-        payload = _response_json(resp)
+        payload = api.json(resp)
         if not isinstance(payload, list):
             raise ResponseShapeError(
                 "Pages linked by Link headers must be JSON lists, "
