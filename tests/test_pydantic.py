@@ -590,6 +590,137 @@ def test_pydantic_errors_do_not_quote_the_value() -> None:
     assert "-9876" in str(cause.__cause__)
 
 
+class SecretCat(BaseModel):
+    """Union member selected by the tag ``cat``."""
+
+    kind: Literal["cat"]
+    lives: int
+
+
+class SecretDog(BaseModel):
+    """Union member selected by the tag ``dog``."""
+
+    kind: Literal["dog"]
+
+
+class Tokened(BaseModel):
+    """Model whose UUID Pydantic, not eazyrest, converts."""
+
+    token: uuid.UUID
+
+
+class StrictOwner(BaseModel):
+    """Model that rejects keys it does not declare."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+@json_object
+class Secrets(PydanticBase):
+    """Model whose invalid values carry input in Pydantic's messages."""
+
+    class_url = "/secrets/"
+
+    id: int
+    pet: Annotated[SecretCat | SecretDog, Field(discriminator="kind")]
+    counts: Annotated[dict[str, int], Field()]
+    keys: Annotated[dict[int, int], Field()]
+    owner: StrictOwner
+    pets: Annotated[list[SecretCat | SecretDog], Field()]
+    tokened: Tokened
+
+
+SECRET = "sk_live_DUMMY"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "pet",
+            {"kind": SECRET},
+            (
+                "Secrets.pet: Input tag '[redacted]' found using 'kind' does "
+                "not match any of the expected tags: 'cat', 'dog'"
+            ),
+        ),
+        (
+            "pet",
+            {"kind": "cat", "lives": SECRET},
+            (
+                "Secrets.pet: cat.lives: Input should be a valid integer, "
+                "unable to parse string as an integer"
+            ),
+        ),
+        (
+            "counts",
+            {SECRET: "x"},
+            (
+                "Secrets.counts: [key]: Input should be a valid integer, "
+                "unable to parse string as an integer"
+            ),
+        ),
+        (
+            "keys",
+            {SECRET: 1},
+            (
+                "Secrets.keys: [key].[key]: Input should be a valid integer, "
+                "unable to parse string as an integer"
+            ),
+        ),
+        (
+            "owner",
+            {"name": "a", SECRET: 1},
+            "Secrets.owner: [key]: Extra inputs are not permitted",
+        ),
+        (
+            "pets",
+            [{"kind": "dog"}, {"kind": "cat", "lives": SECRET}],
+            (
+                "Secrets.pets: 1.SecretCat.lives: Input should be a valid "
+                "integer, unable to parse string as an integer; "
+                "1.SecretDog.kind: Input should be 'dog'"
+            ),
+        ),
+    ],
+)
+def test_pydantic_errors_do_not_quote_input_keys_or_tags(
+    field: str, value: Any, message: str
+) -> None:
+    """Mapping keys and tags from the input are left out of messages.
+
+    Pydantic copies a discriminated union's tag into its message, and a
+    mapping key, or a key that ``extra="forbid"`` rejects, into the error's
+    location. Declared field names and tags are kept.
+
+    Args:
+        field: Name of the ``Secrets`` field to read.
+        value: Invalid JSON value for the field that holds ``SECRET``.
+        message: Expected error message.
+    """
+    secrets = Secrets(json={"id": 1, field: value})
+
+    with pytest.raises(FieldConversionError) as info:
+        getattr(secrets, field)
+
+    assert str(info.value) == message
+    assert SECRET not in str(info.value)
+
+
+def test_pydantic_uuid_error_does_not_quote_input() -> None:
+    """A UUID parsing error, which quotes the input, hides it."""
+    secrets = Secrets(json={"id": 1, "tokened": {"token": SECRET}})
+
+    with pytest.raises(FieldConversionError) as info:
+        _ = secrets.tokened
+
+    assert str(info.value) == (
+        "Secrets.tokened: token: Input should be a valid UUID, [redacted]"
+    )
+
+
 @json_object
 class Document(PydanticBase):
     """Model whose fields Pydantic writes differently from their values."""
@@ -841,6 +972,34 @@ def test_metadata_refines_eazyrest_conversion(requests_mock: Any) -> None:
     release.save()
 
     assert patch.last_request.json() == {"published": "2024-04-02T12:00:00Z"}
+
+
+def test_json_text_keys_are_redacted() -> None:
+    """Decoded JSON locations must not reveal input-controlled keys."""
+    document = Document(json={"id": 1, "body": '{"DUMMY_SECRET":"bad"}'})
+
+    with pytest.raises(FieldConversionError) as info:
+        _ = document.body
+
+    assert "DUMMY_SECRET" not in str(info.value)
+    assert "[key]" in str(info.value)
+
+
+def test_integer_mapping_keys_are_redacted() -> None:
+    """A numeric mapping key is input data, rather than a list index."""
+
+    @json_object
+    class Keyed(PydanticBase):
+        id: int
+        values: Annotated[dict[int, int], Field()]
+
+    keyed = Keyed(json={"id": 1, "values": {91736123: "bad"}})
+
+    with pytest.raises(FieldConversionError) as info:
+        _ = keyed.values
+
+    assert "91736123" not in str(info.value)
+    assert "[key]" in str(info.value)
 
 
 def _to_timestamp(value: Any, cls: type[Any]) -> float:

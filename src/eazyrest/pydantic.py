@@ -19,9 +19,9 @@ import enum
 import types
 import typing
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, cast
 
 from pydantic import (
     PlainSerializer,
@@ -31,7 +31,11 @@ from pydantic import (
     ValidationError,
     WithJsonSchema,
 )
-from pydantic_core import PydanticSerializationError
+from pydantic_core import (
+    ErrorDetails,
+    PydanticKnownError,
+    PydanticSerializationError,
+)
 from typing_extensions import is_typeddict
 
 from ._conversion import _current_conversion, _final_supertype
@@ -418,26 +422,146 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
         ) from err
 
 
-def _validation_error(err: ValidationError) -> ValueError:
+# Context members of Pydantic's errors that quote the input, by error type. A
+# None key applies to every type. The "error" member of most parsing errors
+# names what is wrong, as in "input is too short", without quoting the input.
+# The messages of custom validators, value_error and assertion_error, are the
+# application's own.
+_INPUT_CONTEXT: dict[str | None, frozenset[str]] = {
+    None: frozenset({"tag", "attribute", "encoding_error"}),
+    "uuid_parsing": frozenset({"error"}),
+    "get_attribute_error": frozenset({"error"}),
+    "iteration_error": frozenset({"error"}),
+    "mapping_type": frozenset({"error"}),
+}
+
+_REDACTED = "[redacted]"
+
+
+def _schema_strings(schema: Any) -> set[str]:
+    """Return every string in a Pydantic core schema.
+
+    The strings include every field name, alias, and literal value that the
+    schema declares. A location part among them names something the
+    application declared, so it is not secret.
+
+    Args:
+        schema: Core schema, or a part of one.
+
+    Returns:
+        The strings that ``schema`` holds, as keys or values, at any depth.
+    """
+    strings: set[str] = set()
+    pending = [schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, str):
+            strings.add(node)
+        elif isinstance(node, Mapping):
+            pending.extend(node.keys())
+            pending.extend(node.values())
+        elif isinstance(node, (list, tuple)):
+            pending.extend(node)
+    return strings
+
+
+def _safe_location(
+    loc: tuple[int | str, ...], value: Any, declared: set[str]
+) -> str:
+    """Return an error location without the keys that came from the input.
+
+    A location part that is a key of a mapping in the input, and that the
+    schema does not declare, is a key that the input chose, such as a key of a
+    ``dict[str, int]``, or an undeclared key that ``extra="forbid"`` rejects.
+    It is shown as ``[key]``. Field names, recognizable sequence indices, and
+    declared union labels are shown as they are.
+
+    Args:
+        loc: Location of the error, as Pydantic reports it.
+        value: Input that was validated.
+        declared: Strings that the schema declares.
+
+    Returns:
+        The location's parts, joined by dots.
+    """
+    parts = []
+    node = value
+    for part in loc:
+        if isinstance(node, Mapping) and part in node:
+            parts.append(str(part) if part in declared else "[key]")
+            node = node[part]
+            continue
+        # A decoder or validator can transform the input before the failure.
+        # Its locations then need not describe nodes of the original value.
+        parts.append(
+            "[key]"
+            if (isinstance(part, str) and part not in declared)
+            or (isinstance(part, int) and not isinstance(node, (list, tuple)))
+            else str(part)
+        )
+        if isinstance(part, int) and isinstance(node, (list, tuple)):
+            node = node[part] if -len(node) <= part < len(node) else None
+        elif isinstance(part, str) and not isinstance(node, Mapping):
+            node = getattr(node, part, None)
+    return ".".join(parts)
+
+
+def _safe_message(error: ErrorDetails) -> str:
+    """Return an error's message without the input that it quotes.
+
+    Args:
+        error: Error, as ``ValidationError.errors()`` reports it.
+
+    Returns:
+        The message, rebuilt from its type and context with each context
+        member that quotes the input replaced, or the message as it is if its
+        context quotes nothing.
+    """
+    ctx = error.get("ctx")
+    if not ctx:
+        return error["msg"]
+    redact = _INPUT_CONTEXT[None] | _INPUT_CONTEXT.get(
+        error["type"], frozenset()
+    )
+    if redact.isdisjoint(ctx):
+        return error["msg"]
+    safe = {
+        name: _REDACTED if name in redact else member
+        for name, member in ctx.items()
+    }
+    try:
+        return PydanticKnownError(cast(Any, error["type"]), safe).message()
+    except (KeyError, TypeError, ValueError):
+        return _REDACTED
+
+
+def _validation_error(
+    err: ValidationError, value: Any, schema: Any
+) -> ValueError:
     """Return a ``ValueError`` that describes a validation error.
 
     Pydantic's own message quotes the input, which may be a secret that the
     server sent or the caller assigned. The returned error's message gives only
-    where and why each value is invalid.
+    where and why each value is invalid. It omits the input, a mapping key that
+    the input chose, and a context value, such as a discriminated union's tag,
+    that Pydantic copies from the input. A custom validator's own message is
+    kept.
 
     Args:
         err: Validation error that Pydantic raised.
+        value: Input that was validated.
+        schema: Core schema of the type that ``value`` was validated as.
 
     Returns:
         ``ValueError`` whose message lists the location and reason of each of
         ``err``'s errors, without the input.
     """
+    declared = _schema_strings(schema)
     reasons = []
     for error in err.errors(include_url=False, include_input=False):
-        location = ".".join(str(part) for part in error["loc"])
-        reasons.append(
-            f"{location}: {error['msg']}" if location else error["msg"]
-        )
+        location = _safe_location(error["loc"], value, declared)
+        message = _safe_message(error)
+        reasons.append(f"{location}: {message}" if location else message)
 
     return ValueError("; ".join(reasons))
 
@@ -459,7 +583,7 @@ def _decode(adapter: TypeAdapter[Any], value: Any) -> Any:
     try:
         return adapter.validate_python(value)
     except ValidationError as err:
-        raise _validation_error(err) from err
+        raise _validation_error(err, value, adapter.core_schema) from err
 
 
 def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
