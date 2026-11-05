@@ -305,7 +305,7 @@ If you want cleaner exceptions on the client side, override `API.raise_for_respo
 ```python
 import requests
 
-from eazyrest import API
+from eazyrest import API, ResponseShapeError
 
 
 class DRFAPIError(requests.HTTPError):
@@ -318,8 +318,8 @@ class DRFAPI(API):
             return
 
         try:
-            payload = resp.json()
-        except ValueError:
+            payload = self.json(resp)
+        except ResponseShapeError:
             resp.raise_for_status()
 
         if isinstance(payload, dict):
@@ -415,7 +415,7 @@ def bulk_get_by_pks(cls, pks, *, api=None):
     resp = api.get("/users/bulk/", params={"id": sorted(pks)})
     return {
         user.pk: user
-        for user in (cls(json=item, api=api) for item in resp.json())
+        for user in (cls(json=item, api=api) for item in api.json(resp))
     }
 ```
 

@@ -9,3 +9,8 @@
 ```{eval-rst}
 .. autoexception:: eazyrest.RedirectError
 ```
+
+```{eval-rst}
+.. autoexception:: eazyrest.LimitExceeded
+   :members:
+```

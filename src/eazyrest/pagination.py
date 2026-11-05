@@ -8,7 +8,11 @@ from urllib.parse import urljoin
 
 import requests
 
-from ._errors import PaginationError, ResponseShapeError, _response_json
+from ._errors import (
+    LimitExceeded,
+    PaginationError,
+    ResponseShapeError,
+)
 from .api import (
     API,
     _origin,
@@ -61,6 +65,31 @@ class _PageReader:
         self.api_origin = _origin(api.base_url)
         self.read_urls: set[str] = set()
         """The URLs of the pages read so far."""
+        self.pages = 1
+        """The number of pages read so far, counting the first."""
+        self.items = 0
+        """The number of items yielded so far."""
+
+    def count_items(self, items: list[Any]) -> list[Any]:
+        """Count a page's items against the API's limit before yielding them.
+
+        Args:
+            items: Items of a page.
+
+        Returns:
+            ``items``.
+
+        Raises:
+            LimitExceeded: If yielding ``items`` would yield more than the
+                API's ``max_items``.
+        """
+        self.items += len(items)
+        limit = self.api.max_items
+        if limit is not None and self.items > limit:
+            raise LimitExceeded(
+                "max_items", f"The collection has more than {limit} items"
+            )
+        return items
 
     def check_origin(self, url: str) -> None:
         """Reject a page or redirect URL before credentials can be sent.
@@ -92,6 +121,8 @@ class _PageReader:
             PaginationError: If ``url`` names a page already read, or if it or
                 a redirect has another origin and other origins are not
                 allowed.
+            LimitExceeded: If the page would be one more than the API's
+                ``max_pages``.
         """
         if url in self.read_urls:
             raise PaginationError(
@@ -99,6 +130,12 @@ class _PageReader:
                 "so following it would never end"
             )
         self.check_origin(url)
+        limit = self.api.max_pages
+        if limit is not None and self.pages >= limit:
+            raise LimitExceeded(
+                "max_pages", f"The collection has more than {limit} pages"
+            )
+        self.pages += 1
 
         def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
             """Check redirects before requests follows them.
@@ -204,6 +241,9 @@ def follow_next_links(
             ``allow_other_origins`` is ``False``.
         RedirectError: If a redirect from a page request is refused, as for
             any request.
+        LimitExceeded: If the collection has more pages than the API's
+            ``max_pages`` or more items than its ``max_items``, or a page
+            exceeds another of its limits.
     """
     reader = _PageReader(api, allow_other_origins)
     page_url = api.base_url if url is None else api.resolve_url(url)
@@ -214,7 +254,7 @@ def follow_next_links(
 
     while True:
         if isinstance(payload, list):
-            yield from payload
+            yield from reader.count_items(payload)
             return
 
         if not isinstance(payload, Mapping):
@@ -235,7 +275,7 @@ def follow_next_links(
                 f"The {results_key!r} member of a collection page must be a "
                 f"list, got {type(results).__name__}"
             )
-        yield from results
+        yield from reader.count_items(results)
 
         next_url = payload.get(next_key)
         # Some APIs mark the last page with an empty link. Resolving it would
@@ -246,7 +286,7 @@ def follow_next_links(
         resp = reader.read(urljoin(page_url, next_url))
         # After a redirect, a page's links are relative to its final URL.
         page_url = resp.url
-        payload = _response_json(resp)
+        payload = api.json(resp)
 
 
 def follow_link_headers(
@@ -289,19 +329,22 @@ def follow_link_headers(
             ``allow_other_origins`` is ``False``.
         RedirectError: If a redirect from a page request is refused, as for
             any request.
+        LimitExceeded: If the collection has more pages than the API's
+            ``max_pages`` or more items than its ``max_items``, or a page
+            exceeds another of its limits.
     """
     reader = _PageReader(api, allow_other_origins)
     reader.read_urls.add(resp.url)
 
     while True:
-        payload = _response_json(resp)
+        payload = api.json(resp)
         if not isinstance(payload, list):
             raise ResponseShapeError(
                 "Pages linked by Link headers must be JSON lists, "
                 f"got {type(payload).__name__}"
             )
 
-        yield from payload
+        yield from reader.count_items(payload)
 
         next_url = _next_link(resp)
         if not next_url:

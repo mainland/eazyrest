@@ -47,7 +47,6 @@ from ._errors import (
     EazyrestError,
     ResponseShapeError,
     UsageError,
-    _response_json,
 )
 from .api import API
 from .dateparse import parse_datetime, parse_duration
@@ -2221,10 +2220,11 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response body is not JSON, or does not
                 hold a JSON object.
+            LimitExceeded: If the response JSON exceeds the depth limit.
         """
         json = {**current, **sent}
         if resp.content:
-            json.update(self._object_from_response(_response_json(resp)))
+            json.update(self._object_from_response(self.api.json(resp)))
 
         return json
 
@@ -2466,7 +2466,7 @@ class JSONObject:
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_in_place_changes()
         json = self._object_from_response(
-            _response_json(self.api.get(self.url))
+            self.api.json(self.api.get(self.url))
         )
 
         # Some APIs leave the primary key out of a detail response, because the
@@ -2738,7 +2738,7 @@ class JSONObject:
         Returns:
             Iterable of JSON objects used to construct model instances.
         """
-        return cls.collection_items(_response_json(resp))
+        return cls.collection_items(cls.api.json(resp))
 
     @classmethod
     def collection_items(cls, payload: Any) -> Iterable[Any]:

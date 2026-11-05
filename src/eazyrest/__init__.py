@@ -4,6 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from ._errors import (
     EazyrestError,
+    LimitExceeded,
     PaginationError,
     RedirectError,
     ResponseShapeError,
@@ -43,6 +44,7 @@ __all__ = [
     "EazyrestError",
     "FieldConversionError",
     "JSONObject",
+    "LimitExceeded",
     "MultipleObjectsReturned",
     "OptionalType",
     "PaginationError",
