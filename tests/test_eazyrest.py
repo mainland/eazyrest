@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import email
+import email.message
 import enum
 import sys
 import types
@@ -4997,3 +4999,119 @@ def test_full_save_sends_pending_write_only_fields(requests_mock: Any) -> None:
 
     assert put.last_request.json() == {**LOGIN_JSON, "password": "hunter2"}
     assert login.json == LOGIN_JSON
+
+
+@json_object(write_map={"owner": "owner_id"})
+class Photo(ModelBase):
+    """Model with a file field that the API returns as a URL."""
+
+    class_url = "/photos/"
+
+    id: int
+    title: str
+    public: bool
+    tags: list[str]
+    meta: dict[str, int]
+    owner: User
+    image: str
+
+
+PHOTO_JSON = {
+    "id": 1,
+    "title": "t",
+    "public": False,
+    "tags": [],
+    "meta": {},
+    "owner": {"id": 2, "name": "Ada"},
+    "image": "https://cdn.example.com/1.png",
+}
+
+
+def _form(request: Any) -> dict[str, list[tuple[str | None, bytes]]]:
+    """Return the parts of a multipart request, by name.
+
+    Args:
+        request: Request that ``requests_mock`` recorded.
+
+    Returns:
+        Each part's file name, or ``None``, and content, keyed by name.
+    """
+    message = email.message_from_bytes(
+        b"Content-Type: "
+        + request.headers["Content-Type"].encode()
+        + b"\r\n\r\n"
+        + request.body
+    )
+    parts: dict[str, list[tuple[str | None, bytes]]] = {}
+    payload = message.get_payload()
+    assert isinstance(payload, list)
+    for part in payload:
+        assert isinstance(part, email.message.Message)
+        name = str(part.get_param("name", header="content-disposition"))
+        content = part.get_payload(decode=True)
+        assert isinstance(content, bytes)
+        parts.setdefault(name, []).append((part.get_filename(), content))
+    return parts
+
+
+def test_create_uploads_files_with_form_fields(requests_mock: Any) -> None:
+    """``create(files=...)`` sends multipart, with fields as form fields."""
+    post = requests_mock.post(
+        "https://example.com/v1/photos/", json=PHOTO_JSON
+    )
+
+    photo = Photo.create(
+        title="t",
+        public=True,
+        tags=["a", "b"],
+        owner=User(id=2),
+        files={"image": ("a.png", b"PNG")},
+    )
+
+    assert post.last_request.headers["Content-Type"].startswith(
+        "multipart/form-data"
+    )
+    assert _form(post.last_request) == {
+        "title": [(None, b"t")],
+        "public": [(None, b"true")],
+        "tags": [(None, b"a"), (None, b"b")],
+        "owner_id": [(None, b"2")],
+        "image": [("a.png", b"PNG")],
+    }
+    assert photo.image == "https://cdn.example.com/1.png"
+
+
+def test_save_uploads_files_without_other_changes(requests_mock: Any) -> None:
+    """``save(files=...)`` uploads even when no field changed."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/photos/1/",
+        json={**PHOTO_JSON, "image": "https://cdn.example.com/2.png"},
+    )
+    photo = Photo(json=PHOTO_JSON)
+
+    photo.save(files={"image": ("b.png", b"PNG2")})
+
+    assert _form(patch.last_request) == {"image": [("b.png", b"PNG2")]}
+    assert photo.image == "https://cdn.example.com/2.png"
+
+
+@pytest.mark.parametrize(("field", "value"), [("meta", {"a": 1})])
+def test_values_that_a_form_cannot_hold_raise(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A mapping cannot be a form field, so the upload is not sent.
+
+    Args:
+        field: Field whose value a form field cannot express.
+        value: That value.
+    """
+    photo = Photo(json=PHOTO_JSON)
+    setattr(photo, field, value)
+
+    with pytest.raises(TypeError, match=f"Field {field} cannot be sent"):
+        photo.save(files={"image": ("a.png", b"PNG")})
+    with pytest.raises(TypeError, match=f"Field {field} cannot be sent"):
+        Photo.create(files={"image": ("a.png", b"PNG")}, **{field: value})
+
+    assert requests_mock.call_count == 0
+    assert photo._pending_updates == {field: value}

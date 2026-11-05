@@ -976,6 +976,39 @@ def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(options)
 
 
+def _form_value(name: str, value: Any) -> Any:
+    """Return a JSON value as a multipart form field's value.
+
+    Args:
+        name: Name of the form field, for the error message.
+        value: JSON value of the field.
+
+    Returns:
+        A string, or a list of strings for a list of scalars, which requests
+        sends as repeated fields. Booleans become ``true`` and ``false``.
+
+    Raises:
+        TypeError: If the value is ``None``, a mapping, an empty list, or a
+            list that holds anything but scalars, which a form field cannot
+            express.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, (str, int, float)) for item in value)
+    ):
+        return [_form_value(name, item) for item in value]
+    raise TypeError(
+        f"Field {name} cannot be sent in a multipart request with files, "
+        f"because its value is {type(value).__name__}, which a form field "
+        "cannot express. Save it in a separate write without files."
+    )
+
+
 def _check_model_write(resp: requests.Response) -> requests.Response:
     """Require a completed write before acknowledging a model change.
 
@@ -2387,6 +2420,42 @@ class JSONObject:
         return wire
 
     @classmethod
+    def _write_body(
+        cls, payload: Mapping[str, Any], files: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return the request arguments that send a write's body.
+
+        Args:
+            payload: JSON members of the write, keyed by read key.
+            files: Files to upload, keyed by field name or form field name,
+                as ``requests`` takes them, or ``None``.
+
+        Returns:
+            ``{"json": ...}`` without files. With files, ``{"data": ...,
+            "files": ...}`` for a multipart request, whose form fields hold
+            the payload.
+
+        Raises:
+            TypeError: If a payload value cannot be a form field.
+        """
+        wire = cls._to_wire(payload)
+        if not files:
+            return {"json": wire}
+        form = {name: _form_value(name, value) for name, value in wire.items()}
+        uploads = {}
+        for name, file in files.items():
+            descriptor = getattr(cls, name, None)
+            key = (
+                descriptor.write_field
+                if isinstance(descriptor, JSONProperty)
+                else name
+            )
+            if key in uploads:
+                raise TypeError(f"Multiple files write the form key {key}")
+            uploads[key] = file
+        return {"data": form, "files": uploads}
+
+    @classmethod
     def _write_only_keys(cls) -> frozenset[str]:
         """Return the JSON keys of this class's write-only fields.
 
@@ -2556,14 +2625,15 @@ class JSONObject:
         self,
         *,
         full: bool = False,
+        files: Mapping[str, Any] | None = None,
         request_options: Mapping[str, Any] | None = None,
     ) -> None:
         """Persist all pending lazy field updates.
 
         In ``"lazy"`` mode, field assignments are accumulated locally and sent
         in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
-        mode, assignments are patched immediately and ``save()`` is a no-op
-        unless pending updates remain from an earlier lazy mode.
+        mode, assignments are patched immediately. Unless ``full`` or
+        ``files`` is supplied, ``save()`` sends nothing when no updates remain.
 
         A value read from a field and then changed in place, such as a list
         appended to, is saved too, in either mode. Such a change is detected
@@ -2576,40 +2646,54 @@ class JSONObject:
         holds, if any, is merged over it.
 
         With ``full=True``, ``save()`` sends a ``PUT`` that holds every
-        declared field the object's JSON has, with its changes, as an API that
-        replaces the whole object expects, even if nothing changed. Each value
-        is encoded as an assignment would encode it, so a related object is
-        sent as its primary key. Pending write-only fields are sent too.
+        writable declared field the object's JSON has, with its changes, as an
+        API that replaces the whole object expects, even if nothing changed.
+        It loads an unloaded or partial object first. Each value is encoded as
+        an assignment would encode it, so a related object is sent as its
+        primary key. Pending write-only fields are sent too.
+
+        With ``files``, the write is a multipart request that uploads them,
+        with the other fields as form fields, even if no field changed. A
+        form field cannot hold ``None``, a mapping, an empty list, or a nested
+        list, so such a value raises ``TypeError`` before anything is sent.
 
         Args:
             full: Whether to send the whole object with ``PUT`` rather than
-                the changes with ``PATCH``. It loads an unloaded object.
+                the changes with ``PATCH``. It loads an unloaded or partial
+                object first.
+            files: Optional files to upload, keyed by field name or by the
+                API's field name, as ``requests`` takes them, such as
+                ``{"image": open("a.png", "rb")}``.
             request_options: Optional keyword arguments for the request, such
                 as ``headers={"If-Match": etag}``, as ``requests`` takes them.
-                They cannot set the body.
+                They cannot set the body or enable response streaming.
 
         Raises:
             ResponseShapeError: If the response body does not hold a JSON
                 object. The server may have applied the updates, but they
                 remain pending.
-            TypeError: If ``request_options`` sets the body.
+            TypeError: If ``request_options`` sets the body or streams the
+                response, or a field cannot be sent as a form field.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
+            FieldConversionError: If a field's value cannot be converted.
         """
         options = _request_options(request_options)
         self._queue_in_place_changes()
         if full:
             payload = self._full_payload()
-            resp = self.api.put(
-                self.url, json=self._to_wire(payload), **options
-            )
+            body = self._write_body(payload, files)
+            resp = self.api.put(self.url, **body, **options)
             self._apply_patch_response(resp, payload)
             return
-        if len(self._pending_updates) == 0:
+        if len(self._pending_updates) == 0 and not files:
             return
 
-        resp = self.api.patch(
-            self.url, json=self._to_wire(self._pending_updates), **options
-        )
-        self._apply_patch_response(resp, self._pending_updates)
+        payload = dict(self._pending_updates)
+        body = self._write_body(payload, files)
+        resp = self.api.patch(self.url, **body, **options)
+        self._apply_patch_response(resp, payload)
 
     def _full_payload(self) -> dict[str, Any]:
         """Return the whole object's JSON for a ``PUT``, keyed by read key.
@@ -3062,6 +3146,7 @@ class JSONObject:
         *,
         api: API | None = None,
         fields: Mapping[str, Any] | None = None,
+        files: Mapping[str, Any] | None = None,
         request_options: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
@@ -3079,7 +3164,9 @@ class JSONObject:
                 so their later requests use it too.
             fields: Optional field values as a mapping, used as the keyword
                 arguments are. A key in it may be anything, including ``api``,
-                ``fields``, or ``request_options``.
+                ``fields``, ``files``, or ``request_options``.
+            files: Optional files to upload, as for ``save()``. The request is
+                then multipart, with the fields as form fields.
             request_options: Optional keyword arguments for the request, such
                 as ``headers``, as ``requests`` takes them. They cannot set the
                 body.
@@ -3092,7 +3179,13 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response does not hold a JSON object.
             TypeError: If a field is given both as a keyword argument and in
-                ``fields``, or if ``request_options`` sets the body.
+                ``fields``, if ``request_options`` sets the body, or if a
+                field's value cannot be sent as a form field with ``files``.
+                Also raised for response streaming or conflicting wire names.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
+            FieldConversionError: If a field's value cannot be converted.
         """
         options = _request_options(request_options)
         payload = cls._encode_fields(
@@ -3100,7 +3193,9 @@ class JSONObject:
         )
         client = cls.api if api is None else api
         resp = _check_model_write(
-            client.post(cls.class_url, json=cls._to_wire(payload), **options)
+            client.post(
+                cls.class_url, **cls._write_body(payload, files), **options
+            )
         )
 
         # The object keeps neither a write-only field nor an extra key.

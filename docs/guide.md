@@ -555,6 +555,20 @@ todo.completed = True
 
 `save()` sends the changed fields in a `PATCH`. For an API that updates an object only with a `PUT` of the whole object, call `save(full=True)`. It sends every writable declared field that the object's JSON has, with its unsaved changes and any pending write-only fields, even if nothing changed. Each value is encoded as an assignment would encode it, so a related object is sent as its primary key, and a field that `write_map` names under its write key. It loads an unloaded or partial object first, preserving pending changes. Read-only fields are omitted.
 
+### Uploading files
+
+`create()` and `save()` take `files=`, files to upload as requests takes them, keyed by field name or by the API's field name. The write is then a multipart request, with the other fields as form fields, and `save(files=...)` sends it even if no field changed. Declare a file field as `str`, since an API such as Django REST Framework returns the file's URL:
+
+```python
+avatar = Avatar.create(name="me", files={"image": open("me.png", "rb")})
+avatar.save(files={"image": ("new.png", data, "image/png")})
+print(avatar.image)  # the URL that the response holds
+```
+
+A form field holds text, so booleans are sent as `true` and `false` and numbers as strings, and a list of scalars is sent as repeated fields. A field whose value is `None`, a mapping, an empty list, or a nested list cannot be sent this way and raises `TypeError` before the request. Save such a field in a separate write without files.
+
+Requests reads a file object from its current position. Before retrying an upload after a failure, reopen or rewind each file. A 307 or 308 redirect resends the already prepared multipart body.
+
 ### Request options
 
 `save()`, `create()`, and `delete()` take `request_options=`, keyword arguments for the request as requests takes them, such as `headers` or `params`. They cannot set the body, which the write builds, or enable `stream=True`, because model writes consume their responses. An unfollowed final 3xx raises `RedirectError`, including when `allow_redirects=False`, and pending updates remain pending. A server that supports optimistic concurrency, for example, refuses a write whose `If-Match` header no longer names the object's current version:

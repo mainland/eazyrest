@@ -163,7 +163,7 @@ DRF `DurationField` emits Django's duration format, such as `1 02:03:04`, unless
 
 A serializer field with `write_only=True`, such as a password, appears in requests but never in responses. Declare it, and list it in `json_object(write_only=...)`, so that it can be assigned and saved like any other field without being kept or read back.
 
-DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` are usually easiest to model as `str` URL fields unless you want a custom wrapper type.
+DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` return the file's URL, so declare them as `str`, and upload a file with `files=` on `create()` or `save()`, which sends a multipart request that DRF's `MultiPartParser` reads.
 
 ## Map serializer names and relation shapes
 
