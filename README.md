@@ -157,25 +157,27 @@ Build the documentation with warnings treated as errors:
 .venv/bin/python -m tox -e docs
 ```
 
-On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15, runs the lint and documentation environments, checks that `uv.lock` is current, audits the locked dependencies for known vulnerabilities, and checks that the built wheel imports without optional dependencies. The test environments install only the runtime dependencies and the `test` dependency group, so a runtime dependency missing from `pyproject.toml` fails the tests, and they report branch coverage.
+On every push and pull request, GitHub Actions runs the test suite on Python 3.10 through 3.15, at the minimum declared dependency versions, with the oldest supported Pydantic, and without Pydantic. It also runs the lint and documentation environments, checks that `uv.lock` is current, audits the locked dependencies for known vulnerabilities, and checks that the built wheel imports with and without each extra. The test environments install only the runtime dependencies and a test dependency group, so a runtime dependency missing from `pyproject.toml` fails the tests, and they report branch coverage. The lint environment includes `zizmor`, which audits the workflows.
 
 To build and validate a distribution:
 
 ```bash
 uv build
-uvx twine check dist/eazyrest-*
+uvx twine check dist/eazyrest-*.tar.gz dist/eazyrest-*.whl
 ```
+
+Start with no `build/` or `dist/` directory left from an earlier build. In
+particular, a wheel-only build can copy removed modules from a stale `build/`
+directory. Keep distributions you want to retain outside the checkout.
 
 ### Publishing
 
-To publish to PyPI:
+Releases are published by `.github/workflows/release.yml`, not from a workstation. Pushing a tag such as `v1.0.0` builds the distributions from the tag, checks that their version matches it, tests the wheel on the oldest and newest Python, and publishes the same files to TestPyPI and then, once a maintainer approves the `pypi` environment, to PyPI. Publishing uses PyPI's trusted publishing, so no API token is stored, and it uploads attestations of the files' origin. Before the first release, register the workflow as a trusted publisher on TestPyPI and PyPI, with the environments `testpypi` and `pypi`, and require approval for `pypi` in the repository's environment settings.
 
-```bash
-uvx twine upload dist/*
-```
+A file uploaded to PyPI can never be replaced, so tag only a clean, tested commit, and consider publishing a release candidate, such as `v1.0.0rc1`, first.
 
-To publish to Test PyPI:
-
-```bash
-uvx twine upload --repository testpypi dist/*
-```
+Use annotated release tags, for example `git tag -a v1.0.0rc1 -m "Release
+1.0.0rc1"`. Tags have three numeric components, optionally followed by `aN`,
+`bN`, `rcN`, or `.postN`, with no leading zeros. The workflow rejects local
+and development versions before building. It uses the triggering tag's
+validated version even if another tag names the same commit.
