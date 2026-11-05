@@ -147,6 +147,8 @@ convention = "google"
 # Test docstrings do not document pytest fixtures, so D417, which wants every
 # parameter, does not apply.
 "tests/**" = ["D417"]
+# Django must be configured before its models and DRF can be imported.
+"tests/test_drf_*.py" = ["D417", "E402"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -174,7 +176,7 @@ module = ["django.*", "rest_framework.*", "django_filters.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["test_drf_recipes"]
+module = ["test_drf_recipes", "test_drf_client"]
 disallow_subclassing_any = false
 
 [tool.pytest]
@@ -260,7 +262,14 @@ deps = [
 [tool.tox.env.drf]
 base_python = ["3.12"]
 deps = ["django", "djangorestframework", "django-filter"]
-commands = [["pytest", "-q", "tests/test_drf_recipes.py"]]
+commands = [
+  [
+    "pytest",
+    "-q",
+    "tests/test_drf_recipes.py",
+    "tests/test_drf_client.py",
+  ],
+]
 
 # Test the core without Pydantic, so that a dependency that only Pydantic
 # brings in cannot hide a missing one. The Pydantic tests are skipped. The
