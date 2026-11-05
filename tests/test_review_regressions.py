@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import io
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 
@@ -12,10 +12,12 @@ from eazyrest import (
     API,
     APIError,
     FieldConversionError,
+    Hyperlinked,
     JSONObject,
     LimitExceeded,
     RedirectError,
     ResponseShapeError,
+    WriteMode,
     json_object,
 )
 
@@ -63,7 +65,7 @@ class ReviewDoc(ReviewBase):
     body: str
     tags: list[str]
     owner: ReviewUser
-    linked: ReviewUser
+    linked: Annotated[ReviewUser, Hyperlinked()]
     password: str
 
 
@@ -245,6 +247,22 @@ def test_query_rejects_colliding_read_names(requests_mock: Any) -> None:
     assert not requests_mock.called
 
 
+@pytest.mark.parametrize("value", [2, "2", ReviewUser(id=2)])
+def test_hyperlinked_queries_use_primary_keys(
+    requests_mock: Any, value: Any
+) -> None:
+    """DRF filters use keys independently of hyperlinked write values.
+
+    Args:
+        value: Key or related resource to filter on.
+    """
+    query = requests_mock.get("https://review.example/docs/", json=[])
+
+    list(ReviewDoc.filter(linked=value))
+
+    assert query.last_request.qs == {"linked": ["2"]}
+
+
 def test_non_field_queries_encode_model_keys(requests_mock: Any) -> None:
     """Lookup syntax must not send a model's display representation."""
     query = requests_mock.get("https://review.example/docs/", json=[])
@@ -294,6 +312,44 @@ def test_redeclared_field_can_explicitly_replace_its_policy() -> None:
 
     assert child.password == "dummy"
     assert Child.owner.write_field == "owner"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("mode", ["lazy", "eager"])
+def test_hyperlink_key_assignment_updates_existing_identity(
+    requests_mock: Any, mode: WriteMode
+) -> None:
+    """A URL identifies an existing resource before its key is loaded.
+
+    Args:
+        mode: Write mode of the parent and related user.
+    """
+    requests_mock.get(
+        "https://review.example/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    patch = requests_mock.patch(
+        "https://review.example/users/2/", status_code=204
+    )
+    user = ReviewDoc(json=DOC_JSON, write_mode=mode).linked
+
+    user.id = 3
+    user.save()
+
+    assert patch.last_request.json() == {"id": 3}
+    assert user.pk == 3
+    assert user.absolute_url == "https://review.example/users/3/"
+
+
+def test_hyperlink_accepts_pushed_identity_without_loading(
+    requests_mock: Any,
+) -> None:
+    """An authoritative push can establish a URL-only object's key."""
+    user = ReviewDoc(json=DOC_JSON).linked
+
+    user.update_from_json({"id": 2, "name": "Ada"})
+
+    assert user.pk == 2
+    assert user.name == "Ada"
+    assert not requests_mock.called
 
 
 @pytest.mark.parametrize(
@@ -404,6 +460,23 @@ def test_date_strings_use_the_same_format_on_every_python(value: str) -> None:
 
     with pytest.raises(FieldConversionError):
         _ = dated.date
+
+
+def test_hyperlink_refresh_does_not_load_unknown_identity(
+    requests_mock: Any,
+) -> None:
+    """Discarding a URL-only object's cache never requires a request."""
+    user = ReviewDoc(json=DOC_JSON).linked
+
+    user.refresh()
+
+    assert user.absolute_url == "https://review.example/users/2/"
+    assert not requests_mock.called
+
+    user.update_from_json({"id": 2, "name": "Ada"})
+
+    assert user.pk == 2
+    assert not requests_mock.called
 
 
 def test_mapped_write_only_field_stays_out_of_full_save_state(

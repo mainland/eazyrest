@@ -28,6 +28,7 @@ from eazyrest import (
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
+    Hyperlinked,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -5115,3 +5116,148 @@ def test_values_that_a_form_cannot_hold_raise(
 
     assert requests_mock.call_count == 0
     assert photo._pending_updates == {field: value}
+
+
+@json_object
+class Note(ModelBase):
+    """Model whose relations are hyperlinks, as DRF's hyperlinked fields."""
+
+    class_url = "/notes/"
+
+    id: int
+    author: Annotated[User, Hyperlinked()]
+    readers: list[Annotated[User, Hyperlinked()]]
+    editor: Annotated[User | None, Hyperlinked()]
+
+
+NOTE_JSON = {
+    "id": 1,
+    "author": "https://example.com/v1/users/2/",
+    "readers": ["https://example.com/v1/users/3/", "/v1/users/4/"],
+    "editor": None,
+}
+
+
+def test_hyperlinked_relation_loads_from_its_url(requests_mock: Any) -> None:
+    """A hyperlinked field reads as an object that loads from the URL."""
+    get = requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    note = Note(json=NOTE_JSON)
+
+    author = note.author
+
+    assert not get.called
+    assert author.url == "https://example.com/v1/users/2/"
+    assert author.name == "Ada"
+    assert author.pk == 2
+    assert [reader.url for reader in note.readers] == [
+        "https://example.com/v1/users/3/",
+        "https://example.com/v1/users/4/",
+    ]
+    assert note.editor is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://other.example.net/users/2/",
+        "http://example.com/v1/users/2/",
+        "https://example.com:8443/v1/users/2/",
+    ],
+)
+def test_hyperlink_to_another_origin_is_refused(
+    requests_mock: Any, url: str
+) -> None:
+    """A URL on another origin raises rather than receive credentials.
+
+    Args:
+        url: Hyperlink on an origin that the API does not allow.
+    """
+    note = Note(json={**NOTE_JSON, "author": url})
+
+    with pytest.raises(FieldConversionError, match="origin") as info:
+        _ = note.author
+
+    assert url not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+def test_malformed_hyperlink_is_not_quoted(requests_mock: Any) -> None:
+    """A hyperlink that urllib cannot join raises without quoting it.
+
+    urllib's own message for a host such as ``[secret]`` quotes the host,
+    which the server chose.
+    """
+    note = Note(json={**NOTE_JSON, "author": "https://[secret]/users/2/"})
+
+    with pytest.raises(FieldConversionError, match="not a valid URL") as info:
+        _ = note.author
+
+    assert "secret" not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+def test_hyperlinked_relation_writes_urls_and_queries_keys(
+    requests_mock: Any,
+) -> None:
+    """A related object writes its URL and uses its key in a query."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/notes/1/", status_code=204
+    )
+    lookup = requests_mock.get("https://example.com/v1/notes/", json=[])
+    note = Note(json=NOTE_JSON)
+
+    note.author = User(id=5)
+    note.readers = [note.author, User(id=6)]
+    note.save()
+    list(Note.filter(author=User(id=5)))
+
+    assert patch.last_request.json() == {
+        "author": "https://example.com/v1/users/5/",
+        "readers": [
+            "https://example.com/v1/users/5/",
+            "https://example.com/v1/users/6/",
+        ],
+    }
+    assert lookup.last_request.qs == {"author": ["5"]}
+
+
+def test_hyperlinked_field_cannot_be_prefetched() -> None:
+    """Prefetching needs keys, which a hyperlink does not give."""
+    with pytest.raises(ValueError, match="hyperlinked"):
+        Note.filter(prefetch="author")
+
+
+def test_hyperlinked_applies_only_to_related_types() -> None:
+    """``Hyperlinked()`` on a type without a related model raises."""
+
+    @json_object
+    class Wrong(ModelBase):
+        id: int
+        name: Annotated[str, Hyperlinked()]
+
+    with pytest.raises(FieldConversionError, match="related model"):
+        _ = Wrong(json={"id": 1, "name": "x"}).name
+
+
+def test_hyperlinked_field_takes_urls_and_objects_only(
+    requests_mock: Any,
+) -> None:
+    """A hyperlink is a URL or an object, never a bare key."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/notes/1/", status_code=204
+    )
+    note = Note(json={**NOTE_JSON, "author": 2})
+
+    with pytest.raises(FieldConversionError, match="must be URLs"):
+        _ = note.author
+    with pytest.raises(FieldConversionError, match="must be objects or URLs"):
+        note.author = 5  # type: ignore[assignment]
+
+    note.author = "https://example.com/v1/users/7/"  # type: ignore[assignment]
+    note.save()
+
+    assert patch.last_request.json() == {
+        "author": "https://example.com/v1/users/7/"
+    }
