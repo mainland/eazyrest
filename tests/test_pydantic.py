@@ -25,6 +25,7 @@ from typing import (
 from urllib.parse import parse_qs, urlparse
 
 import pydantic
+import pydantic_core
 import pytest
 from annotated_types import Gt
 from pydantic import (
@@ -1149,6 +1150,35 @@ def test_metadata_refines_eazyrest_conversion(requests_mock: Any) -> None:
     release.save()
 
     assert patch.last_request.json() == {"published": "2024-04-02T12:00:00Z"}
+
+
+def _secret_tag(value: Any) -> Any:
+    raise pydantic_core.PydanticCustomError(
+        "secret_tag", "unknown tag {tag}", {"tag": SECRET}
+    )
+
+
+@json_object
+class Tagged(PydanticBase):
+    """Model whose validator reports an error with a tag in its context."""
+
+    class_url = "/tagged/"
+
+    id: int
+    value: Annotated[str, AfterValidator(_secret_tag)]
+
+
+def test_custom_error_with_input_context_is_redacted() -> None:
+    """A custom error whose context quotes the input is redacted whole.
+
+    Pydantic does not know its type, so its message cannot be rebuilt.
+    """
+    tagged = Tagged(json={"id": 1, "value": "x"})
+
+    with pytest.raises(FieldConversionError) as info:
+        _ = tagged.value
+
+    assert str(info.value) == "Tagged.value: [redacted]"
 
 
 def test_json_text_keys_are_redacted() -> None:
