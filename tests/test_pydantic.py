@@ -1282,6 +1282,43 @@ def test_integer_mapping_keys_are_redacted() -> None:
     assert "[key]" in str(info.value)
 
 
+def test_union_naming_an_eazyrest_type_converts_as_eazyrest_does() -> None:
+    """A ``|`` union is rebuilt with eazyrest's type in place of datetime."""
+
+    @json_object
+    class Stamped(PydanticBase):
+        id: int
+        when: Annotated[datetime.datetime | bool, Field()]
+
+    stamped = Stamped(json={"id": 1, "when": "2024-04-01T12:00:00Z"})
+
+    assert stamped.when == datetime.datetime(2024, 4, 1, 12, tzinfo=UTC)
+    stamped.when = True
+    assert stamped.json["when"] is True
+
+
+class Untagged(BaseModel):
+    """Union member without the discriminator that its union names."""
+
+    name: str
+
+
+def test_pydantic_user_error_is_a_field_conversion_error() -> None:
+    """A type that Pydantic refuses to build names the field."""
+
+    @json_object
+    class Pet(PydanticBase):
+        id: int
+        pet: Annotated[SecretCat | Untagged, Field(discriminator="kind")]
+
+    with pytest.raises(
+        FieldConversionError, match=r"^Pet\.pet: .*kind"
+    ) as info:
+        _ = Pet(json={"id": 1, "pet": {"kind": "cat", "lives": 9}}).pet
+
+    assert isinstance(info.value.__cause__, TypeError)
+
+
 @with_config(ConfigDict(extra="ignore"))
 class IgnoringInner(TypedDict):
     """``TypedDict`` that drops the keys it does not declare."""

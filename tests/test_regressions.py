@@ -7,6 +7,8 @@ import io
 from typing import Annotated, Any
 
 import pytest
+import requests
+from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
@@ -17,7 +19,9 @@ from eazyrest import (
     LimitExceeded,
     RedirectError,
     ResponseShapeError,
+    UsageError,
     WriteMode,
+    follow_next_links,
     json_object,
 )
 
@@ -618,3 +622,544 @@ def test_public_json_helper_keeps_limits_in_response_hooks(
 
     with pytest.raises(LimitExceeded, match="max_json_depth"):
         api.json(response)
+
+
+def test_mapped_write_only_field_is_created_under_its_write_key(
+    requests_mock: Any,
+) -> None:
+    """Creation sends a mapped write-only value but never keeps it."""
+
+    @json_object(write_only={"password"}, write_map={"password": "secret"})
+    class Account(MockedBase):
+        class_url = "/accounts/"
+
+        id: int
+        name: str
+        password: str
+
+    post = requests_mock.post(
+        "https://mocked.example/accounts/",
+        json={"id": 1, "name": "Ada", "secret": "echo", "password": "echo"},
+    )
+
+    account = Account.create(name="Ada", password="dummy")
+
+    assert post.last_request.json() == {"name": "Ada", "secret": "dummy"}
+    assert "password" not in account.json
+    with pytest.raises(AttributeError, match="write-only"):
+        _ = account.password
+
+
+class TenantBase(JSONObject):
+    """Models whose hyperlinks may also name a second, allowed origin."""
+
+
+tenant_default = API("https://mocked.example/v1/")
+tenant_default.redirect_origins = ("https://files.mocked.example",)
+TenantBase.register_api(tenant_default)
+
+
+@json_object
+class LinkedUser(TenantBase):
+    """Related resource that hyperlinks name."""
+
+    class_url = "/users/"
+
+    id: int
+    name: str
+
+
+@json_object
+class Note(TenantBase):
+    """Resource with a hyperlink and a whole hyperlinked collection."""
+
+    class_url = "/notes/"
+
+    id: int
+    author: Annotated[LinkedUser, Hyperlinked()]
+    readers: Annotated[list[LinkedUser], Hyperlinked()]
+
+
+@json_object
+class Draft(Note):
+    """Subclass that inherits the hyperlinked fields."""
+
+    class_url = "/drafts/"
+
+    title: str
+
+
+def test_hyperlink_may_name_an_allowed_origin(requests_mock: Any) -> None:
+    """An origin in ``redirect_origins`` is followed like the API's own."""
+    requests_mock.get(
+        "https://files.mocked.example/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    note = Note(
+        json={
+            "id": 1,
+            "author": "https://files.mocked.example/users/2/",
+            "readers": [],
+        }
+    )
+
+    author = note.author
+
+    assert repr(author) == (
+        "<LinkedUser url='https://files.mocked.example/users/2/'>"
+    )
+    assert author.name == "Ada"
+    assert author.pk == 2
+
+
+@pytest.mark.parametrize(
+    "url", ["https://mocked.example:port/users/2/", "http://[::1/users/2/"]
+)
+def test_malformed_hyperlink_is_a_conversion_error(
+    requests_mock: Any, url: str
+) -> None:
+    """A hyperlink that is not a URL fails at the field, sending nothing.
+
+    Args:
+        url: Malformed hyperlink.
+    """
+    note = Note(json={"id": 1, "author": url, "readers": []})
+
+    with pytest.raises(FieldConversionError, match="valid"):
+        _ = note.author
+
+    assert not requests_mock.called
+
+
+def test_hyperlinked_collection_and_inherited_fields_use_urls(
+    requests_mock: Any,
+) -> None:
+    """``Hyperlinked()`` applies to a whole list and to inherited fields."""
+    patch = requests_mock.patch(
+        "https://mocked.example/v1/drafts/1/", status_code=204
+    )
+    draft = Draft(
+        json={
+            "id": 1,
+            "title": "t",
+            "author": "/v1/users/2/",
+            "readers": ["/v1/users/3/", "https://mocked.example/v1/users/4/"],
+        }
+    )
+
+    assert draft.author.url == "https://mocked.example/v1/users/2/"
+    assert [reader.url for reader in draft.readers] == [
+        "https://mocked.example/v1/users/3/",
+        "https://mocked.example/v1/users/4/",
+    ]
+
+    draft.author = LinkedUser(id=7)
+    draft.readers = [LinkedUser(id=8)]
+    draft.save()
+
+    assert patch.last_request.json() == {
+        "author": "https://mocked.example/v1/users/7/",
+        "readers": ["https://mocked.example/v1/users/8/"],
+    }
+
+
+def test_query_api_reaches_hyperlinked_objects(requests_mock: Any) -> None:
+    """A tenant API passed to a query checks and loads its hyperlinks."""
+    tenant = API("https://tenant.example/v1/")
+    requests_mock.get(
+        "https://tenant.example/v1/notes/",
+        json=[
+            {
+                "id": 1,
+                "author": "https://tenant.example/v1/users/2/",
+                "readers": [],
+            }
+        ],
+    )
+    requests_mock.get(
+        "https://tenant.example/v1/users/2/", json={"id": 2, "name": "T"}
+    )
+
+    (note,) = Note.filter(api=tenant)
+
+    assert note.author.api is tenant
+    assert note.author.name == "T"
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example"
+    }
+
+    foreign = Note(
+        json={
+            "id": 2,
+            "author": "https://mocked.example/v1/users/2/",
+            "readers": [],
+        },
+        api=tenant,
+    )
+    with pytest.raises(FieldConversionError, match="origin"):
+        _ = foreign.author
+
+
+class PagedMockedBase(MockedBase):
+    """Models whose collection hook reads DRF pages from the response."""
+
+    @classmethod
+    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+        """Read every page, resolving links against the response's URL.
+
+        Args:
+            resp: Response for the collection's first page.
+
+        Returns:
+            An iterator over the items of every page, with their count.
+        """
+        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
+
+
+@json_object
+class PagedDoc(PagedMockedBase):
+    """Paginated resource with a prefetchable relation."""
+
+    class_url = "/paged-docs/"
+    prefetch_batch_size = 2
+
+    id: int
+    owner: MockedUser
+
+
+def test_count_survives_hooks_cross_page_prefetch_and_api(
+    requests_mock: Any,
+) -> None:
+    """``count``, a response hook, prefetch, and ``api=`` work together."""
+    tenant = API("https://tenant.example/")
+    requests_mock.get(
+        "https://tenant.example/paged-docs/",
+        json={
+            "count": 3,
+            "next": "?page=2",
+            "results": [{"id": 1, "owner": 10}],
+        },
+    )
+    requests_mock.get(
+        "https://tenant.example/paged-docs/?page=2",
+        json={
+            "count": 3,
+            "next": None,
+            "results": [{"id": 2, "owner": 20}, {"id": 3, "owner": 10}],
+        },
+    )
+
+    docs = PagedDoc.filter(prefetch="owner", api=tenant)
+
+    assert docs.count == 3
+    loaded = list(docs)
+    assert [doc.id for doc in loaded] == [1, 2, 3]
+    assert [doc.owner.pk for doc in loaded] == [10, 20, 10]
+    assert all(doc.api is tenant and doc.owner.api is tenant for doc in loaded)
+    assert requests_mock.call_count == 2
+    assert {r.hostname for r in requests_mock.request_history} == {
+        "tenant.example"
+    }
+
+
+def test_request_hooks_run_for_model_writes(requests_mock: Any) -> None:
+    """A write's own response hooks run, and the redirect guard still runs."""
+    seen: list[tuple[str, int]] = []
+
+    def record(resp: requests.Response, **kwargs: Any) -> None:
+        seen.append((resp.request.method or "", resp.status_code))
+
+    requests_mock.post("https://mocked.example/docs/", json={"id": 1})
+    doc = MockedDoc.create(
+        title="new", request_options={"hooks": {"response": [record]}}
+    )
+    requests_mock.patch(
+        DOC_URL, status_code=307, headers={"Location": "https://evil.example/"}
+    )
+    doc.title = "next"
+
+    with pytest.raises(RedirectError):
+        doc.save(request_options={"hooks": {"response": record}})
+
+    assert seen == [("POST", 200), ("PATCH", 307)]
+    assert doc._pending_updates == {"title": "next"}
+    assert requests_mock.call_count == 2
+
+
+def test_unfollowed_redirects_allow_a_completed_write(
+    requests_mock: Any,
+) -> None:
+    """With ``allow_redirects=False``, a 2xx write is still acknowledged."""
+    patch = requests_mock.patch(DOC_URL, status_code=204)
+    doc = MockedDoc(json=DOC_JSON)
+    doc.title = "new"
+
+    doc.save(request_options={"allow_redirects": False})
+
+    assert patch.last_request.json() == {"title": "new"}
+    assert doc._pending_updates == {}
+
+
+@json_object
+class CountingUser(MockedBase):
+    """Related resource whose bulk lookup omits one key."""
+
+    class_url = "/counting-users/"
+
+    id: int
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: API | None = None
+    ) -> dict[Any, CountingUser]:
+        """Return loaded users for every key except 99.
+
+        Args:
+            pks: Keys to load.
+            api: Query API override.
+
+        Returns:
+            Users keyed by their primary keys.
+        """
+        return {
+            pk: cls(json={"id": pk, "name": "Ada"}, api=api)
+            for pk in pks
+            if pk != 99
+        }
+
+
+@json_object(pk="user")
+class Profile(MockedBase):
+    """Resource whose primary key is a related object."""
+
+    class_url = "/profiles/"
+
+    user: CountingUser
+    bio: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: API | None = None
+    ) -> dict[Any, Profile]:
+        """Return loaded profiles for the requested keys.
+
+        Args:
+            pks: Keys to load.
+            api: Query API override.
+
+        Returns:
+            Profiles keyed by their primary keys.
+        """
+        return {pk: cls(json={"user": pk, "bio": "b"}, api=api) for pk in pks}
+
+
+@json_object
+class Post(MockedBase):
+    """Resource relating to a model-keyed resource and to a user."""
+
+    class_url = "/posts/"
+
+    id: int
+    profile: Profile
+    author: CountingUser
+
+
+def test_model_valued_primary_key_identifies_by_its_key() -> None:
+    """A related object as primary key gives its own key and URL."""
+    profile = Profile(user=CountingUser(id=3))
+
+    assert profile.pk == 3
+    assert profile.url == "/profiles/3/"
+    assert profile._normalize_pk(CountingUser(id=3)) == 3
+    assert profile._normalize_pk(3) == 3
+
+
+def test_prefetch_matches_model_keys_and_loads_misses(
+    requests_mock: Any,
+) -> None:
+    """Prefetched model-keyed objects are found, and missing keys load."""
+    requests_mock.get(
+        "https://mocked.example/posts/",
+        json=[{"id": 1, "profile": 3, "author": 99}],
+    )
+    missing = requests_mock.get(
+        "https://mocked.example/counting-users/99/",
+        json={"id": 99, "name": "Zed"},
+    )
+
+    (post,) = Post.filter(prefetch=["profile", "author"])
+
+    assert post.profile.bio == "b"
+    assert not missing.called
+    assert post.author.name == "Zed"
+    assert missing.call_count == 1
+
+
+def test_api_descriptor_resolves_without_an_owner_class() -> None:
+    """The descriptor falls back to the instance's class, or refuses."""
+    descriptor = vars(JSONObject)["api"]
+    doc = MockedDoc(json=DOC_JSON)
+
+    assert descriptor.__get__(doc, None) is MockedBase.api
+    with pytest.raises(UsageError, match="owner class"):
+        descriptor.__get__(None, None)
+
+
+def test_plain_collection_must_be_iterable() -> None:
+    """A non-related collection field rejects a scalar JSON value."""
+    doc = MockedDoc(json={**DOC_JSON, "tags": 5})
+
+    with pytest.raises(
+        FieldConversionError, match=r"^MockedDoc\.tags: Collection values"
+    ):
+        _ = doc.tags
+
+
+Stamps = TypeAliasType("Stamps", list[datetime.date])
+
+
+@json_object
+class AliasedDoc(MockedBase):
+    """Resource whose aliases sit inside ``Annotated`` and a union."""
+
+    id: int
+    annotated: Annotated[Stamps, "metadata"]
+    optional: list[Stamps] | None
+
+
+def test_aliases_expand_inside_annotated_and_unions() -> None:
+    """A named alias converts within ``Annotated`` and an ``X | Y`` union."""
+    doc = AliasedDoc(
+        json={
+            "id": 1,
+            "annotated": ["2024-04-01"],
+            "optional": [["2024-04-02"]],
+        }
+    )
+
+    assert doc.annotated == [datetime.date(2024, 4, 1)]
+    assert doc.optional == [[datetime.date(2024, 4, 2)]]
+
+
+def test_single_collection_item_cannot_share_a_raw_key(
+    requests_mock: Any,
+) -> None:
+    """A one-item collection query and a raw key cannot both send ``t``."""
+
+    @json_object(field_map={"tags": "t"})
+    class Tagged(MockedBase):
+        class_url = "/tagged/"
+
+        id: int
+        tags: list[str]
+
+    with pytest.raises(FieldConversionError, match="JSON key t"):
+        Tagged.filter(tags="a", t="b")
+
+    assert not requests_mock.called
+
+
+def test_non_field_lookup_encodes_a_single_model_key(
+    requests_mock: Any,
+) -> None:
+    """A model instance as a lookup value is sent as its primary key."""
+    query = requests_mock.get("https://mocked.example/docs/", json=[])
+
+    list(MockedDoc.filter(owner__exact=MockedUser(id=2)))
+
+    assert query.last_request.qs == {"owner__exact": ["2"]}
+
+
+def test_redirect_guard_runs_without_session_response_hooks(
+    requests_mock: Any,
+) -> None:
+    """A session whose hooks lack a response entry is still guarded."""
+    api = API("https://mocked.example/")
+    del api.session.hooks["response"]
+    requests_mock.get(
+        "https://mocked.example/a",
+        status_code=302,
+        headers={"Location": "https://evil.example/"},
+    )
+
+    with pytest.raises(RedirectError):
+        api.get("/a")
+
+    assert requests_mock.call_count == 1
+
+
+def test_write_only_save_with_empty_body_leaves_object_unloaded(
+    requests_mock: Any,
+) -> None:
+    """Saving only a secret needs no load, and a later read loads."""
+    patch = requests_mock.patch(DOC_URL, status_code=204)
+    detail = requests_mock.get(DOC_URL, json=DOC_JSON)
+    doc = MockedDoc(id=1)
+    doc.password = "dummy"
+
+    doc.save()
+
+    assert patch.last_request.json() == {"password": "dummy"}
+    assert not detail.called
+    assert doc.title == "old"
+    assert detail.call_count == 1
+    assert "password" not in doc.json
+
+
+def test_url_only_object_loads_a_body_without_its_key(
+    requests_mock: Any,
+) -> None:
+    """A detail body may omit the key, since the URL identifies it."""
+    requests_mock.get(
+        "https://mocked.example/v1/users/2/", json={"name": "Ada"}
+    )
+    note = Note(
+        json={
+            "id": 1,
+            "author": "https://mocked.example/v1/users/2/",
+            "readers": [],
+        }
+    )
+    author = note.author
+
+    assert author.name == "Ada"
+    assert author.url == "https://mocked.example/v1/users/2/"
+    assert requests_mock.call_count == 1
+
+
+@json_object
+class Team(MockedBase):
+    """Resource with a to-one and a to-many prefetchable relation."""
+
+    class_url = "/teams/"
+
+    id: int
+    lead: MockedUser
+    members: list[MockedUser]
+
+
+def test_prefetch_skips_embedded_objects(requests_mock: Any) -> None:
+    """An embedded related object is used as is, not looked up again."""
+    requests_mock.get(
+        "https://mocked.example/teams/",
+        json=[{"id": 1, "lead": {"id": 5, "name": "Eve"}, "members": [2]}],
+    )
+
+    (team,) = Team.filter(prefetch=["lead", "members"])
+
+    assert team.lead.name == "Eve"
+    assert [member.name for member in team.members] == ["Ada"]
+    assert requests_mock.call_count == 1
+
+
+def test_unhashable_collection_prefetch_key_is_a_shape_error(
+    requests_mock: Any,
+) -> None:
+    """A malformed key inside a related list fails at the response."""
+    requests_mock.get(
+        "https://mocked.example/teams/",
+        json=[{"id": 1, "lead": 2, "members": [[2]]}],
+    )
+
+    with pytest.raises(ResponseShapeError, match=r"Team\.members"):
+        list(Team.filter(prefetch="members"))
