@@ -665,3 +665,54 @@ def test_package_reports_its_version() -> None:
     import eazyrest
 
     assert eazyrest.__version__ == importlib.metadata.version("eazyrest")
+
+
+def test_raise_for_response_override_may_accept_a_failure(
+    requests_mock: Any,
+) -> None:
+    """An override that returns lets the failed response through."""
+
+    class LenientAPI(API):
+        def raise_for_response(self, resp: requests.Response) -> None:
+            if resp.status_code != 404:
+                resp.raise_for_status()
+
+    api = LenientAPI("https://example.com/")
+    requests_mock.get("https://example.com/missing", status_code=404)
+
+    assert api.get("/missing").status_code == 404
+
+
+def test_redirect_with_unreadable_port_is_refused(requests_mock: Any) -> None:
+    """A redirect whose authority cannot be parsed is not followed."""
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "https://example.com:99999/b"},
+    )
+
+    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+        api.get("/a")
+
+
+@pytest.mark.parametrize(
+    ("timeout", "expected"),
+    [(None, 5.0), (2.0, 2.0), (9.0, 5.0), ((1.0, None), (1.0, 5.0))],
+)
+def test_total_timeout_caps_request_timeout(
+    timeout: Any, expected: Any
+) -> None:
+    """Each part of a request's timeout ends by the request's deadline.
+
+    Args:
+        timeout: Timeout that the request would otherwise use.
+        expected: Timeout with the remaining time, about 5 seconds, as its
+            cap.
+    """
+    from eazyrest.api import _Budget
+
+    budget = _Budget(None, 5.0)
+
+    assert budget.timeout(timeout) == pytest.approx(expected, abs=0.5)
+    assert _Budget(None, None).timeout(timeout) == timeout

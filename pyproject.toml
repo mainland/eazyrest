@@ -167,6 +167,16 @@ pretty = true
 module = ["isodate"]
 ignore_missing_imports = true
 
+# The DRF recipe tests use Django, DRF, and django-filter, which only the drf
+# tox environment installs, so their classes are untyped here.
+[[tool.mypy.overrides]]
+module = ["django.*", "rest_framework.*", "django_filters.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["test_drf_recipes"]
+disallow_subclassing_any = false
+
 [tool.pytest]
 minversion = "9.0"
 addopts = ["--strict-config", "--strict-markers", "-ra"]
@@ -198,6 +208,7 @@ env_list = [
   "min-deps",
   "min-deps-py315",
   "no-pydantic",
+  "drf",
   "lint",
   "docs",
 ]
@@ -243,6 +254,13 @@ deps = [
   "typing_extensions==4.16.0",
   "pydantic==2.14.1",
 ]
+
+# Test the server-side recipes in the Django REST Framework guide against
+# Django, DRF, and django-filter. Other environments skip these tests.
+[tool.tox.env.drf]
+base_python = ["3.12"]
+deps = ["django", "djangorestframework", "django-filter"]
+commands = [["pytest", "-q", "tests/test_drf_recipes.py"]]
 
 # Test the core without Pydantic, so that a dependency that only Pydantic
 # brings in cannot hide a missing one. The Pydantic tests are skipped. The

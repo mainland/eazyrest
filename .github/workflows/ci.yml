@@ -44,8 +44,14 @@ jobs:
       fail-fast: false
       matrix:
         # The oldest Pydantic, the minimum of every dependency on the oldest
-        # and newest Python, and the core without Pydantic.
-        env: ["pydantic-min", "min-deps", "min-deps-py315", "no-pydantic"]
+        # and newest Python, the core without Pydantic, and the DRF guide's
+        # server-side recipes.
+        env:
+          - "pydantic-min"
+          - "min-deps"
+          - "min-deps-py315"
+          - "no-pydantic"
+          - "drf"
 
     steps:
       - name: Check Out Repository
