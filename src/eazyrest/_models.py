@@ -40,7 +40,7 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import requests
 
@@ -62,7 +62,7 @@ from ._errors import (
     UsageError,
 )
 from ._results import Results, _count_of
-from .api import API
+from .api import API, _origin
 from .write_mode import WriteMode, validate_write_mode
 
 if sys.version_info >= (3, 11):
@@ -343,6 +343,27 @@ class RelatedType:
     """Leaf type metadata for a related ``JSONObject`` type."""
 
     model_type: type[JSONObject]
+    hyperlinked: bool = False
+    """Whether the JSON value is the related object's URL, not its key."""
+
+
+@dataclass(frozen=True)
+class Hyperlinked:
+    """Annotation metadata for a relation whose JSON value is a URL.
+
+    Django REST Framework's ``HyperlinkedRelatedField`` and
+    ``HyperlinkedModelSerializer`` represent a related object by its URL,
+    such as ``"https://api.example.com/users/2/"``, rather than its primary
+    key. Annotate such a field as ``Annotated[User, Hyperlinked()]``, or a
+    collection as ``list[Annotated[User, Hyperlinked()]]``. Reading it gives a
+    related object that loads from that URL, and writing it sends the related
+    object's absolute URL.
+
+    A URL is followed only if its origin is the related model's API's, or one
+    of that API's ``redirect_origins``. Otherwise reading the field raises
+    ``FieldConversionError``, so a server cannot point the client, with its
+    credentials, at another host.
+    """
 
 
 @dataclass(frozen=True)
@@ -665,6 +686,29 @@ def _expand_aliases(
     return origin[new_args]
 
 
+def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
+    """Return type metadata whose related types are hyperlinked.
+
+    Args:
+        analyzed: Metadata of the type that ``Hyperlinked()`` annotates.
+
+    Returns:
+        ``analyzed`` with each related type, also an optional one or the item
+        type of a collection, marked as hyperlinked.
+
+    Raises:
+        TypeError: If ``analyzed`` holds no related type.
+    """
+    match analyzed:
+        case RelatedType(model_type):
+            return RelatedType(model_type, hyperlinked=True)
+        case OptionalType(inner_type):
+            return OptionalType(_hyperlinked(inner_type))
+        case CollectionType(collection_type, item_type):
+            return CollectionType(collection_type, _hyperlinked(item_type))
+    raise TypeError("Hyperlinked() applies only to a related model type")
+
+
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
@@ -694,7 +738,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):
             return PydanticType(ty)
 
-        return analyze_type(ty_args[0])
+        inner = analyze_type(ty_args[0])
+        if any(isinstance(metadata, Hyperlinked) for metadata in ty_args[1:]):
+            return _hyperlinked(inner)
+        return inner
 
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
@@ -1085,6 +1132,37 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 T = TypeVar("T", bound="JSONObject")
 
 
+def _checked_hyperlink(api: API, url: str) -> str:
+    """Return a hyperlink as an absolute URL, after checking its origin.
+
+    Args:
+        api: API that the related object uses.
+        url: URL that the JSON holds, absolute or relative to the API's base
+            URL.
+
+    Returns:
+        The absolute URL.
+
+    Raises:
+        ValueError: If the URL's origin is neither the API's nor one of its
+            ``redirect_origins``. The message does not quote the URL.
+    """
+    allowed = {_origin(api.base_url), *map(_origin, api.redirect_origins)}
+    # urljoin() also rejects some URLs, such as one whose host is "[bad]", with
+    # a message that quotes part of the URL.
+    try:
+        absolute = urljoin(api.base_url, url)
+        origin = _origin(absolute)
+    except (ValueError, requests.RequestException) as err:
+        raise ValueError("Hyperlinked field value is not a valid URL") from err
+    if origin not in allowed:
+        raise ValueError(
+            "Hyperlinked field value names an origin other than the API's. "
+            "Add the origin to API.redirect_origins to follow it."
+        )
+    return absolute
+
+
 class RelatedCollection(Iterable[T]):
     """Lazy, single-pass iterable of related objects backed by JSON values.
 
@@ -1114,6 +1192,7 @@ class RelatedCollection(Iterable[T]):
         values: Iterable[Any],
         related_type: type[T],
         field: str | None = None,
+        hyperlinked: bool = False,
     ) -> None:
         """Initialize a lazy related-object collection.
 
@@ -1124,11 +1203,14 @@ class RelatedCollection(Iterable[T]):
             field: Name of the owning field, which finds the related objects
                 that a prefetch loaded, or ``None`` for a collection without
                 one.
+            hyperlinked: Whether the raw values are the related objects'
+                URLs.
         """
         self._owner = owner
         self._values = tuple(values)
         self._related_type = related_type
         self._field = field
+        self._hyperlinked = hyperlinked
         self._iterated = False
 
     def __iter__(self) -> Iterator[T]:
@@ -1166,6 +1248,7 @@ class RelatedCollection(Iterable[T]):
                 value,
                 self._related_type,
                 field=self._field,
+                hyperlinked=self._hyperlinked,
             )
 
 
@@ -1677,7 +1760,11 @@ class JSONProperty:
                 "cannot be read"
             )
 
-        if self._is_key_of(obj) and obj._json is None:
+        if (
+            self._is_key_of(obj)
+            and obj._json is None
+            and obj._url_override is None
+        ):
             # An object created without a key has none until it loads.
             return getattr(obj, "_pk_value", None)
 
@@ -1741,6 +1828,7 @@ class JSONProperty:
             self._is_key_of(obj)
             and obj._json is None
             and not hasattr(obj, "_pk_value")
+            and obj._url_override is None
         ):
             # Convert the key as if it were read from JSON, so it has the same
             # type before and after the object loads. A related object passed
@@ -1915,7 +2003,10 @@ class JSONObject:
     """Object's JSON representation."""
 
     _json_is_partial: bool
-    """Whether ``_json`` holds only fields from ``update_from_json()``."""
+    """Whether ``_json`` holds only some of the object's fields."""
+
+    _url_override: str | None = None
+    """The URL of an object that a hyperlinked relation named, if any."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Check a class's conversions and the models it inherits fields from.
@@ -2059,6 +2150,8 @@ class JSONObject:
             with contextlib.suppress(TypeError, ValueError):
                 value = self._to_json(value, pk_property.analyzed_type)
 
+        if value is None and self._url_override is not None:
+            return f"<{name} url={self._url_override!r}>"
         return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(
@@ -2081,17 +2174,25 @@ class JSONObject:
         ty: type[T],
         *,
         field: str | None = None,
+        hyperlinked: bool = False,
     ) -> T:
-        """Create a related object from embedded JSON or a foreign key.
+        """Create a related object from embedded JSON, a key, or a URL.
 
         Args:
-            arg: Either a JSON mapping for eager object creation or a primary
-                key value for lazy lookup.
+            arg: Either a JSON mapping for eager object creation, a primary
+                key value for lazy lookup, or, for a hyperlinked relation, the
+                related object's URL.
             ty: Related ``JSONObject`` subclass type.
             field: Optional owning field name for prefetch lookup.
+            hyperlinked: Whether a string value is the related object's URL.
 
         Returns:
             Instance of ``ty``.
+
+        Raises:
+            TypeError: If a hyperlinked value is neither a URL nor a mapping.
+            ValueError: If a URL's origin is not one that the related model's
+                API allows.
         """
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
@@ -2104,6 +2205,16 @@ class JSONObject:
             return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
+
+        if hyperlinked:
+            if not isinstance(arg, str):
+                raise TypeError(
+                    "Hyperlinked field values must be URLs or objects, got "
+                    f"{type(arg).__name__}"
+                )
+            related = ty(api=api, write_mode=self.write_mode)
+            related._url_override = _checked_hyperlink(related.api, arg)
+            return related
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
         if field is not None and field in self._prefetched_related:
@@ -2161,11 +2272,12 @@ class JSONObject:
                 with _active_table(_table_of(type(self))):
                     return _decode(adapter, _copy_json(value))
 
-            case RelatedType(model_type):
+            case RelatedType(model_type, hyperlinked):
                 return self._create_related(
                     value,
                     model_type,
                     field=field,
+                    hyperlinked=hyperlinked,
                 )
 
             case CollectionType(collection_type, item_type):
@@ -2191,6 +2303,7 @@ class JSONObject:
                         value,
                         item_type.model_type,
                         field=field,
+                        hyperlinked=item_type.hyperlinked,
                     )
 
                 converted_items = (
@@ -2236,6 +2349,15 @@ class JSONObject:
         match conversion:
             case OptionalType(inner_type):
                 return cls._to_json(value, inner_type)
+            case RelatedType(model_type, hyperlinked=True):
+                if isinstance(value, JSONObject):
+                    return value.absolute_url
+                if isinstance(value, str):
+                    return value
+                raise TypeError(
+                    "Hyperlinked field values must be objects or URLs, got "
+                    f"{type(value).__name__}"
+                )
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     model_type = type(value)
@@ -2511,6 +2633,17 @@ class JSONObject:
         """
         before = self._json if self._json is not None else {}
         json = self._readable_json(json)
+        if self._url_override is not None:
+            key: str = type(self)._pk.json_field
+            saved = before.get(key, _MISSING)
+            if key in self._pending_updates:
+                saved = self._to_json(
+                    self._saved_pk, type(self)._pk.analyzed_type
+                )
+            if saved is not _MISSING and not _json_equal(
+                saved, json.get(key, _MISSING)
+            ):
+                self._url_override = None
         self._json = json
 
         for field in getattr(self, "_json_fields", ()):
@@ -2697,7 +2830,18 @@ class JSONObject:
         """
         payload = copy.deepcopy(dict(json))
 
-        existing_pk = self._persisted_pk()
+        unknown_key = self._url_override is not None and (
+            (self._json is None and getattr(self, "_pk_value", None) is None)
+            or (
+                self._json is not None
+                and self._pk_json_field not in self._json
+            )
+        )
+        existing_pk = (
+            payload.get(self._pk_json_field)
+            if unknown_key
+            else self._persisted_pk()
+        )
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
         if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
             raise ValueError(
@@ -2705,11 +2849,11 @@ class JSONObject:
             )
 
         if self._json is None:
-            self._json = {
-                self._pk_json_field: self._to_json(
+            self._json = {}
+            if existing_pk is not None:
+                self._json[self._pk_json_field] = self._to_json(
                     existing_pk, type(self)._pk.analyzed_type
                 )
-            }
             self._json_is_partial = True
 
         self._json.update(self._readable_json(payload))
@@ -2729,8 +2873,12 @@ class JSONObject:
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
-        # Store value of primary key
-        self._pk_value = self._persisted_pk()
+        # Store value of primary key. An object read from a hyperlink may not
+        # know its key, before it loads or from JSON that lacks it.
+        unknown_key = self._url_override is not None and (
+            self._json is None or self._pk_json_field not in self._json
+        )
+        self._pk_value = None if unknown_key else self._persisted_pk()
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -2817,11 +2965,16 @@ class JSONObject:
             Relative URL for this object. It ends with ``/`` unless the API's
             ``trailing_slash`` is ``False``.
 
+        An object read from a hyperlinked relation has the URL that the
+        relation named, as an absolute URL.
+
         Raises:
             ValueError: If the primary key is ``None``, empty, or a dot
                 segment. The URL would name another resource, such as the
                 collection.
         """
+        if self._url_override is not None:
+            return self._url_override
         pk = self._to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
@@ -3334,6 +3487,11 @@ class JSONObject:
             # As above, the field name is the invalid value.
             raise ValueError(  # noqa: TRY004
                 f"{cls.__name__}.{field} is not a related-object field"
+            )
+        if analyzed_type.hyperlinked:
+            raise ValueError(
+                f"{cls.__name__}.{field} is hyperlinked, and prefetching "
+                "needs primary keys"
             )
 
         model_type = analyzed_type.model_type

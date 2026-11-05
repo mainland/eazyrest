@@ -315,6 +315,16 @@ once, call `list()` on the field, or annotate it as `list[User]` or
 `tuple[User, ...]`, which create the related objects when the field is first
 read and keep them.
 
+A relation that the API represents by the related object's URL rather than its
+primary key, as Django REST Framework's hyperlinked fields do, is annotated
+with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
+gives an object that loads from that URL, and writing it sends the object's
+absolute URL. Queries send its primary key, as DRF relation filters expect. A
+URL on an origin that the related model's API does not allow raises
+`FieldConversionError`. The
+[Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
+gives the details.
+
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
 the related objects whose JSON the load left unchanged, and assigning a related

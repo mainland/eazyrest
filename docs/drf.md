@@ -188,6 +188,40 @@ class Todo(DRFObject):
     resource_url: str
 ```
 
+A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every
+relation, represents a related object by its URL rather than its primary key.
+Annotate such a field with `Hyperlinked()`:
+
+```python
+from typing import Annotated
+
+from eazyrest import Hyperlinked
+
+
+@json_object
+class Todo(DRFObject):
+    class_url = "/todos/"
+
+    id: int
+    owner: Annotated[User, Hyperlinked()]
+    watchers: list[Annotated[User, Hyperlinked()]]
+
+
+todo.owner.name  # GET https://api.example.com/users/2/
+todo.owner = User(id=3)
+todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
+```
+
+Reading the field gives a related object that loads from the URL when one of
+its other fields is read. Writing it sends the related object's absolute URL. A
+query sends its primary key, as django-filter's relation filters expect. Pass a
+related model instance or a bare primary key to the query. A relative URL is
+resolved against the related model's API. A URL whose origin is neither that
+API's nor one of its `redirect_origins` raises `FieldConversionError` when the
+field is read, so a server cannot send the client, with its credentials, to
+another host. Prefetching needs primary keys, so a hyperlinked field cannot be
+prefetched.
+
 ## Match DRF serializer fields
 
 DRF serializer fields usually emit JSON-friendly primitives. Most of those can
@@ -234,7 +268,8 @@ class Todo(DRFObject):
 
 Related fields can be represented as primary keys, embedded objects, or
 hyperlinks depending on the serializer. Primary keys and embedded objects work
-naturally with `JSONObject` annotations.
+naturally with `JSONObject` annotations, and hyperlinks with
+[`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
 
 A common serializer reads a relation nested and writes it as a primary key
 under another name:
