@@ -357,9 +357,16 @@ admins = list(User.filter(role="admin"))
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged.
 
+The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`:
+
+```python
+todos = Todo.filter(params={"api": "v2"}, completed=False)
+todo = Todo.create(fields={"api": "v2"}, title="Write docs")
+```
+
 Every keyword argument to `filter()`, `get()`, or the lookup of `get_or_create()` must have a value that requests sends intact. It must not be `None`, an empty collection, or a mapping, and a collection must not hold `None` or another collection. requests omits `None` and empty collections, sends only a mapping's keys, and flattens nested collections, so the query would ignore or change the constraint, and `get()` could return an object that does not match. These methods raise `ValueError` instead of sending such a query. Any iterable other than a string, bytes, or a mapping, such as a generator, a `deque`, or a `range`, counts as a collection, and is read once. Use the API's own null filter, such as `parent__isnull=True` in django-filter, to match objects whose field is null.
 
-`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
+`get_or_create()` returns the one object that matches its keyword arguments, or creates an object from them if none matches. Its keyword arguments are sent in the lookup's query string, which servers and proxies may log, so pass a value that only the creation needs, such as a password, in `defaults`. The lookup query and the creation payload use the same JSON field names and conversions as `create()`. As in Django, a keyword argument that contains `__` and is not a field, such as `title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")
