@@ -89,14 +89,21 @@ account.save()  # PATCH {"password": "..."}, without loading the account
 A decorated subclass of a decorated model keeps the fields of its base class
 and adds its own. Redeclaring a field preserves its `field_map` and `write_map`
 keys unless an explicit mapping replaces them. It also inherits `write_only`
-policies when those options are omitted. An explicit set applies to the fields
-redeclared on that class, so an empty set clears their inherited policy. A
-model inherits fields through a single chain of decorated classes. A class
-whose decorated ancestors are not subclasses of one another, such as
-`class Both(Named, Dated)` for two decorated models, raises `TypeError` when it
-is defined. Put shared fields on one decorated base class instead. Undecorated
-base classes, which declare no fields, can be mixed in freely, for example to
-share hooks such as `collection_items()`.
+and `read_only` policies when those options are omitted. An explicit set
+applies to the fields redeclared on that class, so an empty set clears their
+inherited policy. A model inherits fields through a single chain of decorated
+classes. A class whose decorated ancestors are not subclasses of one another,
+such as `class Both(Named, Dated)` for two decorated models, raises `TypeError`
+when it is defined. Put shared fields on one decorated base class instead.
+Undecorated base classes, which declare no fields, can be mixed in freely, for
+example to share hooks such as `collection_items()`.
+
+Use `read_only=` for returned values that ordinary writes must omit, such as
+computed values and file URLs. These fields remain readable and usable in
+queries, but assigning them or passing their ordinary values to `create()`
+raises `AttributeError`. A read-only primary key can still identify a lazy
+object, as in `User(id=1)`. Explicit `files=` uploads are separate from the
+returned value and may name a read-only file field.
 
 ## Loading and caching
 
@@ -966,7 +973,8 @@ fields are omitted.
 keyed by field name or by the API's field name. The write is then a multipart
 request, with the other fields as form fields, and `save(files=...)` sends it
 even if no field changed. Declare a file field as `str`, since an API such as
-Django REST Framework returns the file's URL:
+Django REST Framework returns the file's URL, and list it in `read_only=` so a
+full save omits the URL. Explicit uploads still use `files=`:
 
 ```python
 avatar = Avatar.create(name="me", files={"image": open("me.png", "rb")})

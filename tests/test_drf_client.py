@@ -40,7 +40,7 @@ from rest_framework.authentication import (
     TokenAuthentication,
 )
 from rest_framework.authtoken.models import Token
-from rest_framework.parsers import MultiPartParser
+from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -158,24 +158,58 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
 
 
+class UploadSerializer(serializers.Serializer):
+    """Writable upload fields, including DRF's file validation."""
+
+    name = serializers.CharField()
+    public = serializers.CharField()
+    image = serializers.FileField(required=False)
+
+
 class UploadView(APIView):
     """Accept a multipart upload and describe what arrived."""
 
-    parser_classes = (MultiPartParser,)
+    parser_classes = (JSONParser, MultiPartParser)
+    stored: ClassVar[dict[str, Any]] = {}
+
+    def get(self, request: Request) -> Response:
+        """Return the stored upload's fields."""
+        return Response(self.stored)
 
     def post(self, request: Request) -> Response:
         """Describe the uploaded file and form fields."""
-        upload = request.FILES["image"]
-        return Response(
-            {
-                "id": 1,
-                "name": request.data["name"],
-                "public": request.data["public"],
-                "image": f"/media/{upload.name}",
-                "size": upload.size,
-            },
-            status=201,
-        )
+        return self._write(request, partial=False, status=201)
+
+    def put(self, request: Request) -> Response:
+        """Replace writable values, preserving a file when none is sent."""
+        return self._write(request, partial=False)
+
+    def patch(self, request: Request) -> Response:
+        """Update supplied values, including explicit file uploads."""
+        return self._write(request, partial=True)
+
+    def _write(
+        self, request: Request, *, partial: bool, status: int = 200
+    ) -> Response:
+        """Validate and store a write's fields.
+
+        Args:
+            request: JSON or multipart request.
+            partial: Whether missing ordinary fields are accepted.
+            status: Response status.
+
+        Returns:
+            The stored representation with its file URL.
+        """
+        serializer = UploadSerializer(data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        upload = values.pop("image", None)
+        payload = {**self.stored, "id": 1, **values}
+        if upload is not None:
+            payload.update(image=f"/media/{upload.name}", size=upload.size)
+        type(self).stored = payload
+        return Response(payload, status=status)
 
 
 class PriceSerializer(serializers.Serializer):
@@ -296,6 +330,7 @@ router.register("teams", TeamViewSet, basename="team")
 
 urlpatterns = [
     path("uploads/", UploadView.as_view()),
+    path("uploads/1/", UploadView.as_view()),
     path("prices/", PriceView.as_view()),
     path("prices/1/", PriceView.as_view()),
     # The guide's bulk action, at the URL that its client recipe requests.
@@ -392,7 +427,7 @@ class UserModel(DRFBase):
     password: str
 
 
-@json_object
+@json_object(read_only={"id", "image", "size"})
 class UploadModel(DRFBase):
     """Upload whose file field reads as a URL."""
 
@@ -604,6 +639,17 @@ def test_upload_sends_multipart(api: API) -> None:
     assert upload.image == "/media/me.txt"
     assert upload.size == 5
     assert upload.name == "avatar"
+
+    upload.name = "renamed"
+    upload.save(full=True)
+
+    assert upload.name == "renamed"
+    assert upload.image == "/media/me.txt"
+
+    upload.save(files={"image": ("new.txt", b"replacement")})
+
+    assert upload.image == "/media/new.txt"
+    assert upload.size == len(b"replacement")
 
 
 @pytest.fixture(scope="module")

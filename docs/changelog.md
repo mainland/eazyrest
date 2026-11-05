@@ -132,8 +132,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
 - Redeclaring a field also preserves its read and write keys and, when those
-  options are omitted, its write-only policies. Explicit mappings or policy
-  sets override those defaults.
+  options are omitted, its write-only and read-only policies. Explicit mappings
+  or policy sets override those defaults.
 
 #### URLs and HTTP
 
@@ -186,12 +186,13 @@ that can break code written for 0.9.0, followed by what to do about it.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`,
   detection of in-place changes to field values, and `merge_response()`.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and
-  written by key, `write_only=` for a field such as a password, `Hyperlinked()`
-  for relations represented by URLs, file uploads with `files=` on `create()`
-  and `save()`, full updates with `save(full=True)`, request options such as
-  headers with `request_options=` on `save()`, `create()`, and `delete()`, the
-  collection's size as `count`, and `APIError` with the parsed error body.
-  Hyperlinked writes send URLs and relation queries send primary keys.
+  written by key, `write_only=` for a field such as a password, `read_only=`
+  for returned values that writes omit, `Hyperlinked()` for relations
+  represented by URLs, file uploads with `files=` on `create()` and `save()`,
+  full updates with `save(full=True)`, request options such as headers with
+  `request_options=` on `save()`, `create()`, and `delete()`, the collection's
+  size as `count`, and `APIError` with the parsed error body. Hyperlinked
+  writes send URLs and relation queries send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`,
   `resolve_url()`, `trailing_slash`, `redirect_origins`, `reset_session()` that
   keeps the session's configuration, `register_api()`, and `api=` on queries

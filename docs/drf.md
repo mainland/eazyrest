@@ -261,8 +261,10 @@ other field without being kept or read back.
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and
 `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]`
 or `list[MyEnum]`. DRF `FileField` and `ImageField` return the file's URL, so
-declare them as `str`, and upload a file with `files=` on `create()` or
-`save()`, which sends a multipart request that DRF's `MultiPartParser` reads.
+declare them as `str` and list them in `json_object(read_only=...)` to omit
+their returned URLs from full updates. Upload a file with `files=` on
+`create()` or `save()`, which sends a multipart request that DRF's
+`MultiPartParser` reads.
 
 ## Map serializer names and relation shapes
 
