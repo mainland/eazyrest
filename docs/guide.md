@@ -59,6 +59,13 @@ class User(JSONObject):
     resource_url: str
 ```
 
+Use `write_map=` for a field that the API returns under one key and accepts
+under another, such as a related object returned nested under `user` and
+written as its primary key under `user_id`. Reads, queries, and the object's
+JSON use the field's key, and writes send it under the mapped key. The
+[Django REST Framework guide](drf.md#map-serializer-names-and-relation-shapes)
+shows an example.
+
 Use `write_only=` for a field that the API accepts in writes but never returns,
 such as a password. It can be passed to `create()` or assigned, and the next
 write sends it, but the object never keeps it in its JSON, assigning it does
@@ -80,12 +87,16 @@ account.save()  # PATCH {"password": "..."}, without loading the account
 ```
 
 A decorated subclass of a decorated model keeps the fields of its base class
-and adds its own. A model inherits fields through a single chain of decorated
-classes. A class whose decorated ancestors are not subclasses of one another,
-such as `class Both(Named, Dated)` for two decorated models, raises `TypeError`
-when it is defined. Put shared fields on one decorated base class instead.
-Undecorated base classes, which declare no fields, can be mixed in freely, for
-example to share hooks such as `collection_items()`.
+and adds its own. Redeclaring a field preserves its `field_map` and `write_map`
+keys unless an explicit mapping replaces them. It also inherits `write_only`
+policies when those options are omitted. An explicit set applies to the fields
+redeclared on that class, so an empty set clears their inherited policy. A
+model inherits fields through a single chain of decorated classes. A class
+whose decorated ancestors are not subclasses of one another, such as
+`class Both(Named, Dated)` for two decorated models, raises `TypeError` when it
+is defined. Put shared fields on one decorated base class instead. Undecorated
+base classes, which declare no fields, can be mixed in freely, for example to
+share hooks such as `collection_items()`.
 
 ## Loading and caching
 
@@ -621,7 +632,17 @@ field with the same JSON field name and conversion as `create()`. For example,
 `Todo.filter(user=user)` sends the user's primary key under the field's JSON
 key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean
 is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such
-as `ordering` or `created__gte`, are sent unchanged.
+as `ordering` or `created__gte`, are sent unchanged, as their `str()`, except
+that a model instance, also as an item of a collection, is sent as its primary
+key. A plain enum member is therefore sent as its `str()`, such as
+`Status.DONE`, so pass its `value`. A collection repeats the parameter, so
+`Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
+`QueryDict.getlist()` reads, as django-filter does for a filter on a
+many-to-many field. django-filter's `__in` and `__range` lookups, and DRF's
+`ordering`, read one comma-separated value instead, and see only the last of
+repeated ones, so join the values yourself, as in
+`Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
+`Todo.filter(ordering="due,-priority")`.
 
 The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query
 methods are their own options, not query parameters. The query methods also

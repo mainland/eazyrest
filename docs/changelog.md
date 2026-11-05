@@ -120,6 +120,9 @@ that can break code written for 0.9.0, followed by what to do about it.
 - The `JSONObject` constructor takes `json` and `api` as keyword arguments
   only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
+- Redeclaring a field also preserves its read and write keys and, when those
+  options are omitted, its write-only policies. Explicit mappings or policy
+  sets override those defaults.
 
 #### URLs and HTTP
 
