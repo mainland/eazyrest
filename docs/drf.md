@@ -161,6 +161,8 @@ DRF `DateTimeField` emits ISO 8601 strings by default, and `eazyrest` decodes an
 
 DRF `DurationField` emits Django's duration format, such as `1 02:03:04`, unless it is configured to emit ISO 8601. `eazyrest` parses both formats into `datetime.timedelta` and encodes `timedelta` values as ISO 8601 durations, which DRF accepts as input. Override `to_json()` if your API requires a different wire format.
 
+A serializer field with `write_only=True`, such as a password, appears in requests but never in responses. Declare it, and list it in `json_object(write_only=...)`, so that it can be assigned and saved like any other field without being kept or read back.
+
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]` or `list[MyEnum]`. DRF `FileField` and `ImageField` are usually easiest to model as `str` URL fields unless you want a custom wrapper type.
 
 ## Map serializer names and relation shapes

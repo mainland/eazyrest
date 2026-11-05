@@ -4733,3 +4733,133 @@ def test_delete_takes_request_options_by_keyword_only() -> None:
         todo.delete({"headers": {}})  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         todo.delete(headers={})  # type: ignore[call-arg]
+
+
+@json_object(write_only={"password"})
+class Login(ModelBase):
+    """Model with a field that the API accepts but never returns."""
+
+    class_url = "/logins/"
+
+    id: int
+    name: str
+    password: str
+
+
+LOGIN_JSON = {"id": 1, "name": "ada"}
+
+
+def test_write_only_field_is_sent_by_create_but_not_kept(
+    requests_mock: Any,
+) -> None:
+    """``create()`` sends a write-only field, and the object drops it."""
+    post = requests_mock.post(
+        "https://example.com/v1/logins/", json=LOGIN_JSON
+    )
+
+    login = Login.create(name="ada", password="hunter2")
+
+    assert post.last_request.json() == {"name": "ada", "password": "hunter2"}
+    assert login.json == LOGIN_JSON
+    with pytest.raises(AttributeError, match="write-only"):
+        _ = login.password
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_write_only_field_is_assigned_and_sent(
+    requests_mock: Any, write_mode: WriteMode, loaded: bool
+) -> None:
+    """Assigning a write-only field sends it without keeping or loading it.
+
+    Args:
+        write_mode: Write mode of the login.
+        loaded: Whether the login was loaded before the assignment.
+    """
+    get = requests_mock.get(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    if loaded:
+        login = Login(json=LOGIN_JSON, write_mode=write_mode)
+    else:
+        login = Login(id=1, write_mode=write_mode)
+
+    login.password = "hunter2"
+    login.save()
+
+    assert patch.last_request.json() == {"password": "hunter2"}
+    assert not get.called
+    assert "password" not in (login._json or {})
+    assert login._pending_updates == {}
+    assert login.name == "ada"
+    assert "password" not in login.json
+
+
+@pytest.mark.parametrize(
+    "body", [{"password": "hunter2"}, {"detail": "ok"}, {"name": "ada"}]
+)
+def test_write_only_save_keeps_the_key_of_an_unloaded_object(
+    requests_mock: Any, body: dict[str, Any]
+) -> None:
+    """A write-only save whose body lacks the key can still load the object.
+
+    The body becomes the object's partial JSON, which keeps the key that the
+    object was saved under, so a read of another field loads from its URL.
+
+    Args:
+        body: Response body of the write, without the primary key.
+    """
+    get = requests_mock.get(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    requests_mock.patch("https://example.com/v1/logins/1/", json=body)
+    login = Login(id=1)
+
+    login.password = "hunter2"
+    login.save()
+
+    assert login.id == 1
+    assert login.name == "ada"
+    assert get.call_count == (0 if "name" in body else 1)
+    assert "password" not in login.json
+
+
+def test_pending_write_only_field_is_not_kept_by_a_load(
+    requests_mock: Any,
+) -> None:
+    """A load before ``save()`` does not put the pending value in the JSON."""
+    requests_mock.get("https://example.com/v1/logins/1/", json=LOGIN_JSON)
+    login = Login(id=1)
+
+    login.password = "hunter2"
+
+    assert login.name == "ada"
+    assert login.json == LOGIN_JSON
+    assert login._pending_updates == {"password": "hunter2"}
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"write_only": {"nope"}}, "names \\['nope'\\]"),
+        ({"write_only": {"id"}}, "primary key"),
+    ],
+)
+def test_write_only_must_name_a_readable_field(
+    options: dict[str, Any], match: str
+) -> None:
+    """``write_only`` must name fields of the class, and not its key.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str

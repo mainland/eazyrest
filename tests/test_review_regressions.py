@@ -51,7 +51,7 @@ class ReviewUser(ReviewBase):
         return {pk: cls(json={"id": pk, "name": "Ada"}, api=api) for pk in pks}
 
 
-@json_object
+@json_object(write_only={"password"})
 class ReviewDoc(ReviewBase):
     """Resource combining the new write and relation features."""
 
@@ -144,6 +144,39 @@ def test_model_writes_refuse_streaming(
 
     assert not requests_mock.called
     assert doc._pending_updates == {"title": "new"}
+
+
+@pytest.mark.parametrize(
+    "source", ["constructor", "push", "load", "create", "save"]
+)
+def test_write_only_values_never_enter_json(
+    requests_mock: Any, source: str
+) -> None:
+    """Both response and caller JSON exclude declared write-only values.
+
+    Args:
+        source: Source of JSON containing a write-only member.
+    """
+    payload = {**DOC_JSON, "password": "dummy"}
+    if source == "constructor":
+        doc = ReviewDoc(json=payload)
+    elif source == "create":
+        requests_mock.post("https://review.example/docs/", json=payload)
+        doc = ReviewDoc.create(title="old", password="dummy")
+    elif source == "load":
+        requests_mock.get(DOC_URL, json=payload)
+        doc = ReviewDoc(id=1)
+    else:
+        doc = ReviewDoc(json=DOC_JSON)
+        if source == "push":
+            doc.update_from_json(payload)
+        else:
+            requests_mock.patch(DOC_URL, json=payload)
+            doc.title = "new"
+            doc.save()
+
+    assert "password" not in doc.json
+    assert "password" in payload
 
 
 @pytest.mark.parametrize(

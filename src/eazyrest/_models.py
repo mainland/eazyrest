@@ -1220,6 +1220,7 @@ def _check_options(
     pk: str | None,
     field_map: Mapping[str, str],
     exclude: AbstractSet[str],
+    write_only: AbstractSet[str] = frozenset(),
 ) -> None:
     """Check that ``json_object()`` options name fields of ``cls``.
 
@@ -1231,9 +1232,11 @@ def _check_options(
         pk: Explicit primary-key field name, or ``None``.
         field_map: Mapping from Python attribute name to JSON key.
         exclude: Annotated attribute names to ignore.
+        write_only: Names of fields that are written but never read.
 
     Raises:
-        ValueError: If an option names no field of ``cls``.
+        ValueError: If an option names no field of ``cls``, or the primary key
+            is write-only.
     """
     annotations = _annotations(cls)
     declared = _declared_fields(cls, exclude)
@@ -1252,7 +1255,20 @@ def _check_options(
             f"fields declared on {cls.__name__}"
         )
 
+    unknown_write_only = sorted(set(write_only).difference(declared))
+    if unknown_write_only:
+        raise ValueError(
+            f"json_object(write_only=...) names {unknown_write_only}, which "
+            f"are not fields declared on {cls.__name__}"
+        )
+
     inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+    key = pk or (inherited_pk.field if inherited_pk is not None else "id")
+    if key in write_only:
+        raise ValueError(
+            f"json_object(write_only=...) names {key!r}, the primary key of "
+            f"{cls.__name__}, which must be readable"
+        )
     if (
         pk is not None
         and pk not in declared
@@ -1272,6 +1288,7 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] = frozenset(),
 ) -> type[T]: ...
 
 
@@ -1283,6 +1300,7 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] = frozenset(),
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -1293,6 +1311,7 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] = frozenset(),
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -1314,6 +1333,11 @@ def json_object(
             declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
+        write_only: Names of fields that the API accepts in writes but never
+            returns, such as a password. Such a field can be passed to
+            ``create()`` and assigned, and the next write sends it, but it is
+            not kept in the object's JSON, and reading it raises
+            ``AttributeError``.
 
     Returns:
         The decorated class, or a decorator function when used with arguments.
@@ -1346,7 +1370,7 @@ def json_object(
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
-        _check_options(cls, pk, field_map, exclude)
+        _check_options(cls, pk, field_map, exclude, write_only)
         _check_json_keys(cls, field_map, exclude)
 
         inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
@@ -1382,6 +1406,7 @@ def json_object(
                 json_field,
                 field,
                 is_primary_key=field == pk_field,
+                write_only=field in write_only,
             )
 
             setattr(cls, field, prop)
@@ -1440,6 +1465,9 @@ class JSONProperty:
     json_field: str
     """Name of JSON field corresponding to this property."""
 
+    write_only: bool = False
+    """Whether the API accepts this field in writes but never returns it."""
+
     is_primary_key: bool = False
     """Whether this property is the primary key of the class that owns it.
 
@@ -1453,6 +1481,7 @@ class JSONProperty:
         json_field: str,
         field: str,
         is_primary_key: bool = False,
+        write_only: bool = False,
     ):
         """Initialize a property descriptor.
 
@@ -1461,11 +1490,14 @@ class JSONProperty:
             json_field: JSON key backing this attribute.
             field: Python attribute name.
             is_primary_key: Whether this property stores the primary key.
+            write_only: Whether the API accepts this field in writes but never
+                returns it.
         """
         self.cls = cls
         self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
+        self.write_only = write_only
 
         # If this property is a primary key, then we store a reference to it in
         # the class's _pk attribute and the JSON field corresponding to the
@@ -1549,10 +1581,16 @@ class JSONProperty:
 
         Raises:
             AttributeError: If instance access targets a field missing from the
-                backing JSON.
+                backing JSON, or a write-only field.
         """
         if obj is None:
             return self
+
+        if self.write_only:
+            raise AttributeError(
+                f"{type(obj).__name__}.{self.field} is write-only, so it "
+                "cannot be read"
+            )
 
         if self._is_key_of(obj) and obj._json is None:
             # An object created without a key has none until it loads.
@@ -1596,12 +1634,22 @@ class JSONProperty:
             obj: ``JSONObject`` instance being modified.
             value: New Python value to assign.
 
+        A write-only field's value is sent by the next write, as any other
+        assignment is, but it is not kept in the object's JSON, and assigning
+        it does not load the object.
+
         Raises:
             AttributeError: If the backing JSON does not contain this field.
             FieldConversionError: If the value cannot be converted to the
                 field's JSON value, or a primary key that initializes an
                 unloaded object is not a valid value of the field's type.
         """
+        if self.write_only:
+            with _converting(type(obj), self.field):
+                encoded = obj.to_json(value, self.analyzed_type)
+            obj._update_write_only_field(self.json_field, _copy_json(encoded))
+            return
+
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
         if (
@@ -1854,6 +1902,8 @@ class JSONObject:
             self._json = copy.deepcopy(dict(json))
         else:
             self._json = None
+        if self._json is not None:
+            self._json = self._readable_json(self._json)
         self._json_is_partial = False
 
         # Set the primary key first, because assigning any other field loads
@@ -2190,6 +2240,49 @@ class JSONObject:
 
         self._queue_update(json_field, value)
 
+    def _update_write_only_field(self, json_field: str, value: Any) -> None:
+        """Send or queue a write-only field's value, as the write mode says.
+
+        Args:
+            json_field: JSON key of the write-only field.
+            value: JSON-serializable field value.
+        """
+        if self.write_mode == "eager":
+            self._queue_in_place_changes()
+            payload = dict(self._pending_updates)
+            payload[json_field] = value
+            resp = self.api.patch(self.url, json=payload)
+            self._apply_patch_response(resp, payload)
+            return
+
+        self._pending_updates[json_field] = value
+
+    @classmethod
+    def _write_only_keys(cls) -> frozenset[str]:
+        """Return the JSON keys of this class's write-only fields.
+
+        Returns:
+            The JSON key of each write-only field.
+        """
+        return frozenset(
+            descriptor.json_field
+            for field in getattr(cls, "_json_fields", ())
+            if (descriptor := getattr(cls, field)).write_only
+        )
+
+    @classmethod
+    def _readable_json(cls, json: Mapping[str, Any]) -> dict[str, Any]:
+        """Exclude write-only values from stored JSON.
+
+        Args:
+            json: Response or caller-provided object payload.
+
+        Returns:
+            JSON members other than declared write-only fields.
+        """
+        hidden = cls._write_only_keys()
+        return {key: value for key, value in json.items() if key not in hidden}
+
     def _queue_update(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update locally and queue it for ``save()``.
 
@@ -2225,10 +2318,10 @@ class JSONObject:
         resp: requests.Response,
         payload: Mapping[str, Any],
     ) -> None:
-        """Update local state after a successful ``PATCH`` request.
+        """Update local state after a successful ``PATCH`` or ``PUT`` request.
 
         Args:
-            resp: Response to the ``PATCH`` request.
+            resp: Response to the request.
             payload: JSON fields sent in the request.
 
         Raises:
@@ -2237,7 +2330,26 @@ class JSONObject:
                 unchanged.
         """
         _check_model_write(resp)
-        self._replace_json(self.merge_response(resp, self.json, payload))
+        # The object never keeps a write-only field's value.
+        write_only = self._write_only_keys()
+        sent = {k: v for k, v in payload.items() if k not in write_only}
+        if self._json is None and not sent:
+            # Only write-only fields were sent, so the object need not load.
+            # A body becomes its JSON so far, and a read of a field that the
+            # body lacks loads it. That load needs the object's URL, so the
+            # JSON keeps the key the object was saved under, as a load does,
+            # if the body lacks it.
+            json = self._readable_json(self.merge_response(resp, {}, {}))
+            if json:
+                key = self._pk_json_field
+                if key not in json and "_pk_value" in vars(self):
+                    json[key] = self.to_json(
+                        self._pk_value, type(self)._pk.analyzed_type
+                    )
+                self._replace_json(json)
+                self._json_is_partial = True
+        else:
+            self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
 
     def _replace_json(self, json: dict[str, Any]) -> None:
@@ -2252,6 +2364,7 @@ class JSONObject:
             json: The object's new JSON.
         """
         before = self._json if self._json is not None else {}
+        json = self._readable_json(json)
         self._json = json
 
         for field in getattr(self, "_json_fields", ()):
@@ -2386,7 +2499,7 @@ class JSONObject:
             }
             self._json_is_partial = True
 
-        self._json.update(payload)
+        self._json.update(self._readable_json(payload))
 
         for field in self._json_fields:
             descriptor = getattr(type(self), field, None)
@@ -2572,8 +2685,14 @@ class JSONObject:
                     self._pk_value, type(self)._pk.analyzed_type
                 )
 
-        # Unsaved lazy updates still take precedence over server state.
-        json.update(self._pending_updates)
+        # Unsaved lazy updates still take precedence over server state. The
+        # object never keeps a write-only field's value.
+        write_only = self._write_only_keys()
+        json.update(
+            (key, value)
+            for key, value in self._pending_updates.items()
+            if key not in write_only
+        )
         # Keep the values of fields that the load left unchanged, such as a
         # related object with unsaved changes of its own.
         self._replace_json(json)
@@ -2776,7 +2895,8 @@ class JSONObject:
             client.post(cls.class_url, json=payload, **options)
         )
 
-        json_keys = cls._json_keys()
+        # The object keeps neither a write-only field nor an extra key.
+        json_keys = cls._json_keys() - cls._write_only_keys()
         # The payload can hold the caller's own containers, such as a dict
         # field's value, so copy them before they become saved state.
         sent = {
@@ -2785,7 +2905,7 @@ class JSONObject:
             if key in json_keys
         }
         obj = cls(json={}, api=api)
-        obj._json = obj.merge_response(resp, {}, sent)
+        obj._replace_json(obj.merge_response(resp, {}, sent))
         # A new object has no earlier state, so a field that neither the
         # payload nor the response holds is unknown rather than absent.
         obj._json_is_partial = not json_keys.issubset(obj._json)
