@@ -2484,7 +2484,10 @@ class JSONObject:
         return json
 
     def save(
-        self, *, request_options: Mapping[str, Any] | None = None
+        self,
+        *,
+        full: bool = False,
+        request_options: Mapping[str, Any] | None = None,
     ) -> None:
         """Persist all pending lazy field updates.
 
@@ -2503,7 +2506,15 @@ class JSONObject:
         includes the saved updates, and the object that the response body
         holds, if any, is merged over it.
 
+        With ``full=True``, ``save()`` sends a ``PUT`` that holds every
+        declared field the object's JSON has, with its changes, as an API that
+        replaces the whole object expects, even if nothing changed. Each value
+        is encoded as an assignment would encode it, so a related object is
+        sent as its primary key. Pending write-only fields are sent too.
+
         Args:
+            full: Whether to send the whole object with ``PUT`` rather than
+                the changes with ``PATCH``. It loads an unloaded object.
             request_options: Optional keyword arguments for the request, such
                 as ``headers={"If-Match": etag}``, as ``requests`` takes them.
                 They cannot set the body.
@@ -2516,6 +2527,13 @@ class JSONObject:
         """
         options = _request_options(request_options)
         self._queue_in_place_changes()
+        if full:
+            payload = self._full_payload()
+            resp = self.api.put(
+                self.url, json=self._to_wire(payload), **options
+            )
+            self._apply_patch_response(resp, payload)
+            return
         if len(self._pending_updates) == 0:
             return
 
@@ -2523,6 +2541,38 @@ class JSONObject:
             self.url, json=self._to_wire(self._pending_updates), **options
         )
         self._apply_patch_response(resp, self._pending_updates)
+
+    def _full_payload(self) -> dict[str, Any]:
+        """Return the whole object's JSON for a ``PUT``, keyed by read key.
+
+        Returns:
+            Each declared field that the object's JSON has, encoded as an
+            assignment encodes it, and each pending write-only field.
+
+        Raises:
+            FieldConversionError: If a field's value cannot be converted.
+        """
+        if self._json_is_partial:
+            self._load_json()
+        json = self.json
+        payload: dict[str, Any] = {}
+        for field in sorted(getattr(self, "_json_fields", ())):
+            descriptor = getattr(type(self), field)
+            if descriptor.write_only or descriptor.json_field not in json:
+                continue
+            conversion = descriptor.analyzed_type
+            with _converting(type(self), field):
+                payload[descriptor.json_field] = self._to_json(
+                    self._from_json(json[descriptor.json_field], conversion),
+                    conversion,
+                )
+        write_only = self._write_only_keys()
+        payload.update(
+            (key, value)
+            for key, value in self._pending_updates.items()
+            if key in write_only
+        )
+        return payload
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
         """Merge server-provided JSON into this object without a refetch.
