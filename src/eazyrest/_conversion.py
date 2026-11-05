@@ -25,6 +25,9 @@ import isodate
 
 from .dateparse import parse_datetime, parse_duration
 
+_ONE_MINUTE = datetime.timedelta(minutes=1)
+"""The unit of an ISO 8601 UTC offset."""
+
 
 @dataclass(frozen=True, kw_only=True)
 class Conversion:
@@ -143,6 +146,29 @@ def _decode_enum_value(value: Any, cls: type[Any]) -> enum.Enum:
     return _decode_enum(cls, value)
 
 
+def _encode_datetime(value: Any) -> Any:
+    """Encode a ``datetime`` as ISO 8601.
+
+    Args:
+        value: Value of a ``datetime`` field.
+
+    Returns:
+        The ISO 8601 text.
+
+    Raises:
+        ValueError: If the UTC offset is not a whole number of minutes.
+    """
+    # isoformat() writes an offset such as +00:19:32, which a zone gives some
+    # old dates, but ISO 8601 offsets are whole minutes, so neither the field
+    # nor a server reads it.
+    offset = value.utcoffset()
+    if offset is not None and offset % _ONE_MINUTE:
+        raise ValueError(
+            "Datetime field values must have a UTC offset of whole minutes"
+        )
+    return value.isoformat()
+
+
 def _encode_date(value: Any) -> Any:
     """Encode a ``date`` as an ISO 8601 date.
 
@@ -179,7 +205,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
             decode=lambda value, _: parse_datetime(value),
-            encode=lambda value, _: value.isoformat(),
+            encode=lambda value, _: _encode_datetime(value),
         ),
         datetime.date: Conversion(
             decode=lambda value, _: _decode_date(value),

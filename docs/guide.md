@@ -158,7 +158,10 @@ Python types are converted automatically:
 - `datetime.datetime` values decode from ISO 8601 strings, such as
   `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
   strings. A string without a UTC offset decodes to a naive `datetime`, and a
-  naive `datetime` encodes without an offset. See `parse_datetime()`.
+  naive `datetime` encodes without an offset. ISO 8601 offsets are whole
+  minutes, so a `datetime` whose offset has seconds, as the historical local
+  mean time of some time zones gives, raises `FieldConversionError` when it is
+  assigned or written. See `parse_datetime()`.
 - `datetime.date` values decode from extended ISO 8601 dates in `YYYY-MM-DD`
   form, such as `2024-04-01`, and encode back to that form on every supported
   Python. Basic and week dates are rejected. A date with a time is rejected,

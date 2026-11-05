@@ -1032,6 +1032,30 @@ def test_naive_datetime_encodes_without_offset(requests_mock: Any) -> None:
     assert post.last_request.json() == {"starts_at": "2024-04-01T12:00:00"}
 
 
+def test_datetime_with_sub_minute_offset_is_rejected(
+    requests_mock: Any,
+) -> None:
+    """A UTC offset with seconds raises rather than sending unreadable JSON.
+
+    Python writes such an offset, as ``+00:19:32``, but ISO 8601 has none, so
+    neither the field nor a server would read the value back.
+    """
+    offset = datetime.timezone(datetime.timedelta(minutes=19, seconds=32))
+    value = datetime.datetime(1900, 1, 1, tzinfo=offset)
+    event = Event(json={"id": 1, "starts_at": "2024-04-01T12:00:00Z"})
+
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        event.starts_at = value
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        Event.create(starts_at=value)
+
+    assert event.starts_at == datetime.datetime(
+        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+    )
+    assert event._pending_updates == {}
+    assert requests_mock.call_count == 0
+
+
 @pytest.mark.parametrize("value", [True, {"seconds": 1}])
 def test_datetime_field_rejects_other_json_types(value: Any) -> None:
     """Only strings and numbers decode as datetimes.
