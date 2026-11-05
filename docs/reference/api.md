@@ -5,3 +5,7 @@
    :members:
    :show-inheritance:
 ```
+
+```{eval-rst}
+.. autoexception:: eazyrest.RedirectError
+```

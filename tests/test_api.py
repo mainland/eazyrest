@@ -80,7 +80,14 @@ def test_api_refuses_redirect_that_drops_write(
         requests_mock_ANY, "https://example.com/v1/users/1/", json={"id": 1}
     )
 
-    with pytest.raises(requests.HTTPError, match="not be performed") as info:
+    with pytest.raises(
+        requests.HTTPError,
+        match=(
+            "status 303, which says that the server performed it"
+            if status == 303
+            else "not be performed"
+        ),
+    ) as info:
         getattr(api, method)("/users/1", json={"name": "Ada"})
 
     assert info.value.response is not None

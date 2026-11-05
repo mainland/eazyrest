@@ -52,6 +52,12 @@ from ._conversion import (
     _is_instance,
     _table_of,
 )
+from ._errors import (
+    EazyrestError,
+    ResponseShapeError,
+    UsageError,
+    _response_json,
+)
 from .api import API
 from .write_mode import WriteMode, validate_write_mode
 
@@ -65,10 +71,6 @@ if sys.version_info >= (3, 14):
 
 if TYPE_CHECKING:
     from pydantic import TypeAdapter
-
-
-class EazyrestError(Exception):
-    """Base class of the exceptions that eazyrest defines."""
 
 
 class DoesNotExist(EazyrestError):
@@ -200,7 +202,7 @@ class APIDescriptor:
             registered for the nearest class in the MRO of ``objtype``.
 
         Raises:
-            RuntimeError: If both ``obj`` and ``objtype`` are ``None``, or no
+            UsageError: If both ``obj`` and ``objtype`` are ``None``, or no
                 API is registered for ``objtype`` or any of its bases.
         """
         if obj is not None and obj._api_override is not None:
@@ -216,7 +218,7 @@ class APIDescriptor:
 
         if objtype is None:
             if obj is None:
-                raise RuntimeError("Could not resolve API owner class")
+                raise UsageError("Could not resolve API owner class")
 
             objtype = type(obj)
 
@@ -224,7 +226,7 @@ class APIDescriptor:
             if cls in _api_registry:
                 return _api_registry[cls]
 
-        raise RuntimeError(f"No API registered for {objtype.__name__}")
+        raise UsageError(f"No API registered for {objtype.__name__}")
 
 
 #
@@ -966,14 +968,14 @@ class RelatedCollection(Iterable[T]):
             Iterator over the related objects.
 
         Raises:
-            RuntimeError: If the collection has already been iterated.
+            UsageError: If the collection has already been iterated.
         """
         if self._iterated:
             name = type(self._owner).__name__
             if self._field is not None:
                 name = f"{name}.{self._field}"
 
-            raise RuntimeError(
+            raise UsageError(
                 f"{name} is a lazy related collection, which can be iterated "
                 "only once. Call list() on it to iterate more than once, or "
                 "annotate the field as list[...] or tuple[..., ...] to keep "
@@ -2062,8 +2064,9 @@ class JSONObject:
             payload: JSON fields sent in the request.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object. The
-                object's state, including its pending updates, is unchanged.
+            ResponseShapeError: If the response body does not hold a JSON
+                object. The object's state, including its pending updates, is
+                unchanged.
         """
         self._replace_json(self.merge_response(resp, self.json, payload))
         self._pending_updates.clear()
@@ -2126,11 +2129,12 @@ class JSONObject:
             The object's JSON after the write.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object.
+            ResponseShapeError: If the response body is not JSON, or does not
+                hold a JSON object.
         """
         json = {**current, **sent}
         if resp.content:
-            json.update(self._object_from_response(resp.json()))
+            json.update(self._object_from_response(_response_json(resp)))
 
         return json
 
@@ -2153,8 +2157,9 @@ class JSONObject:
         holds, if any, is merged over it.
 
         Raises:
-            TypeError: If the response body does not hold a JSON object. The
-                server may have applied the updates, but they remain pending.
+            ResponseShapeError: If the response body does not hold a JSON
+                object. The server may have applied the updates, but they
+                remain pending.
         """
         self._queue_in_place_changes()
         if len(self._pending_updates) == 0:
@@ -2360,11 +2365,13 @@ class JSONObject:
         """Load this object's JSON from the API, keeping pending updates.
 
         Raises:
-            TypeError: If the response does not hold a JSON object.
+            ResponseShapeError: If the response does not hold a JSON object.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_in_place_changes()
-        json = self._object_from_response(self.api.get(self.url).json())
+        json = self._object_from_response(
+            _response_json(self.api.get(self.url))
+        )
 
         # Some APIs leave the primary key out of a detail response, because the
         # URL holds it. Keep the key that the object was loaded by, so that the
@@ -2558,7 +2565,7 @@ class JSONObject:
             Newly created object instance.
 
         Raises:
-            TypeError: If the response does not hold a JSON object.
+            ResponseShapeError: If the response does not hold a JSON object.
         """
         payload = cls._encode_fields(kwargs)
         client = cls.api if api is None else api
@@ -2624,7 +2631,7 @@ class JSONObject:
         Returns:
             Iterable of JSON objects used to construct model instances.
         """
-        return cls.collection_items(resp.json())
+        return cls.collection_items(_response_json(resp))
 
     @classmethod
     def collection_items(cls, payload: Any) -> Iterable[Any]:
@@ -2647,12 +2654,13 @@ class JSONObject:
             Iterable of JSON objects used to construct model instances.
 
         Raises:
-            TypeError: If the payload is not a supported collection response.
+            ResponseShapeError: If the payload is not a supported collection
+                response.
         """
         if isinstance(payload, list):
             return payload
 
-        raise TypeError(
+        raise ResponseShapeError(
             f"{cls.__name__}.collection_items() expected a list response, "
             f"got {type(payload).__name__}"
         )
@@ -2705,7 +2713,7 @@ class JSONObject:
         """
         json = cls.object_json(payload)
         if not isinstance(json, Mapping):
-            raise TypeError(
+            raise ResponseShapeError(
                 f"{cls.__name__} response must hold a JSON object, "
                 f"got {type(json).__name__}"
             )

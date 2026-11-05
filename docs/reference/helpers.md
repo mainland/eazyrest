@@ -15,3 +15,7 @@
 ```{eval-rst}
 .. autofunction:: eazyrest.follow_link_headers
 ```
+
+```{eval-rst}
+.. autoexception:: eazyrest.PaginationError
+```

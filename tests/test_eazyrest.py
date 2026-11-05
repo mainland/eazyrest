@@ -4284,7 +4284,10 @@ def test_redirected_save_keeps_pending_updates(
         todo.title = "new"
         todo.save()
 
-    with pytest.raises(requests.HTTPError, match="not be performed"):
+    with pytest.raises(
+        requests.HTTPError,
+        match="status 303" if status == 303 else "not be performed",
+    ):
         update()
 
     assert not moved.called

@@ -269,9 +269,10 @@ An `Iterable` field of related objects, such as `members: Iterable[User]`, is
 lazy. Reading it creates no related objects, and each is created when iteration
 reaches it. The field can be iterated only once, so that each related object,
 and any change you make to it while iterating, exists only once. A second
-iteration raises `RuntimeError`. To iterate more than once, call `list()` on
-the field, or annotate it as `list[User]` or `tuple[User, ...]`, which create
-the related objects when the field is first read and keep them.
+iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than
+once, call `list()` on the field, or annotate it as `list[User]` or
+`tuple[User, ...]`, which create the related objects when the field is first
+read and keep them.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
@@ -761,8 +762,9 @@ By default, `follow_next_links()` reads a page's items from `results` and the
 next page's URL from `next`, as Django REST Framework does. Pass `results_key=`
 and `next_key=` for other names. A list payload is a single unpaginated page. A
 page whose next link is null, empty, or absent is the last page. A next link to
-a page that was already read raises `ValueError`, rather than reading the same
-pages forever.
+a page that was already read raises `PaginationError`, rather than reading the
+same pages forever. A page that is not JSON, or whose results are not a list,
+raises `ResponseShapeError`.
 
 A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
@@ -780,9 +782,9 @@ class PagedObject(JSONObject):
         return follow_next_links(cls.api, resp.json(), url=resp.url)
 ```
 
-`follow_next_links()` raises `ValueError` for a next-page URL whose scheme,
-host, or port differs from `base_url`, because the session would send its
-headers and credentials there too. A server behind a misconfigured reverse
+`follow_next_links()` raises `PaginationError` for a next-page URL whose
+scheme, host, or port differs from `base_url`, because the session would send
+its headers and credentials there too. A server behind a misconfigured reverse
 proxy can send such links, for example `http://` links from a server that does
 not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an
 API that serves pages from another host.
@@ -890,20 +892,23 @@ unchanged. It resends a `POST` answered with a 301 or 302, and any other
 request answered with a 302 or 303, as a `GET`, and it resends a `PATCH`,
 `PUT`, or `DELETE` answered with a 301 without its body. The server would then
 never receive the original request, so a redirect that would change the method
-or drop the body raises `requests.HTTPError` before it is followed, rather than
+or drop the body raises `RedirectError` before it is followed, rather than
 letting `create()`, `save()`, or `delete()` report success. A lazy update stays
 pending. This happens, for example, when `base_url` uses `http://` and the
 server redirects to HTTPS, or when a URL lacks the trailing slash that Django's
 `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use
 the URL that the server redirects to. A `GET`, or a `DELETE` without a body,
-answered with a 301 is followed.
+answered with a 301 is followed. A 303 is different: it says that the server
+performed the request and points to its result, so its `RedirectError` says not
+to retry the request, which would repeat it. Read the result instead, or reload
+the object, whose update stays pending until then.
 
 A redirect is followed only to the origin of the request it answers, that is,
 its scheme, host, and port. Requests drops the `Authorization` header when a
 redirect leaves the host, but it sends every other header, such as an API key
 or a CSRF token, and a 307 or 308 resends the request body. A redirect to
 another origin, including one from `http://` to `https://`, raises
-`requests.HTTPError` before anything is sent there. The check examines the URL
+`RedirectError` before anything is sent there. The check examines the URL
 exactly as requests will send it, and it refuses a target that another client
 could read as a different host, such as one with a backslash before an `@`. For
 an API that redirects to another server on purpose, such as a download host,
@@ -997,6 +1002,35 @@ such as `follow_next_links(cls.api, payload)` reads later pages with it.
 A related object loads through the API registered for its own class, so models
 served by different APIs can refer to each other. If the parent object has an
 `api=` override, its related objects use that override too.
+
+## Errors
+
+eazyrest raises a subclass of `EazyrestError` for each condition that its own
+policies detect, so `except EazyrestError` catches them all. Each also derives
+from the exception type that it replaced, so code written for that type keeps
+working:
+
+- `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a
+  field cannot convert.
+- `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one
+  object.
+- `PrefetchNotSupported`, for a prefetch of a model without
+  `bulk_get_by_pks()`.
+- `RedirectError`, a `requests.HTTPError`, for a redirect that is refused
+  before it is followed. Its `response` is the redirect.
+- `PaginationError`, a `ValueError`, for a next-page link or redirect to
+  another origin, or to a page already read.
+- `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
+  is not JSON or does not have the expected shape. Its message does not quote
+  the body.
+- `UsageError`, a `RuntimeError`, for a model without a registered API or a
+  second iteration of a lazy related collection.
+
+An HTTP error status still raises whatever `API.raise_for_response()` raises,
+`requests.HTTPError` by default, and a transport failure raises the requests
+exception that describes it, such as `requests.ConnectionError`. A declaration
+that `@json_object` cannot accept raises `TypeError` or `ValueError` when the
+class is defined.
 
 ## Threads
 

@@ -1,9 +1,15 @@
 """Public package exports for eazyrest."""
 
 from ._conversion import DEFAULT_CONVERSIONS, Conversion
+from ._errors import (
+    EazyrestError,
+    PaginationError,
+    RedirectError,
+    ResponseShapeError,
+    UsageError,
+)
 from ._models import (
     DoesNotExist,
-    EazyrestError,
     FieldConversionError,
     JSONObject,
     MultipleObjectsReturned,
@@ -24,7 +30,11 @@ __all__ = [
     "FieldConversionError",
     "JSONObject",
     "MultipleObjectsReturned",
+    "PaginationError",
     "PrefetchNotSupported",
+    "RedirectError",
+    "ResponseShapeError",
+    "UsageError",
     "WriteMode",
     "follow_link_headers",
     "follow_next_links",
