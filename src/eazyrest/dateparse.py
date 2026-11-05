@@ -101,7 +101,7 @@ def parse_datetime(value: str | float) -> datetime.datetime:
             return datetime.datetime.fromtimestamp(
                 value, datetime.timezone.utc
             )
-        except (OverflowError, OSError) as err:
+        except (OverflowError, OSError, ValueError) as err:
             # The platform's time_t limits the range, so report it as an
             # invalid value like a malformed string.
             raise ValueError("Timestamp is out of range") from err

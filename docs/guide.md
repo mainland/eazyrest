@@ -59,13 +59,44 @@ class User(JSONObject):
     resource_url: str
 ```
 
+Use `write_map=` for a field that the API returns under one key and accepts
+under another, such as a related object returned nested under `user` and
+written as its primary key under `user_id`. Reads, queries, and the object's
+JSON use the field's key, and writes send it under the mapped key. The
+[Django REST Framework guide](drf.md#map-serializer-names-and-relation-shapes)
+shows an example.
+
+Use `write_only=` for a field that the API accepts in writes but never returns,
+such as a password. It can be passed to `create()` or assigned, and the next
+write sends it, but the object never keeps it in its JSON, assigning it does
+not load the object, and reading it raises `AttributeError`:
+
+```python
+@json_object(write_only={"password"})
+class Account(JSONObject):
+    class_url = "/accounts/"
+
+    id: int
+    name: str
+    password: str
+
+
+account = Account(id=1)
+account.password = "correct horse battery staple"
+account.save()  # PATCH {"password": "..."}, without loading the account
+```
+
 A decorated subclass of a decorated model keeps the fields of its base class
-and adds its own. A model inherits fields through a single chain of decorated
-classes. A class whose decorated ancestors are not subclasses of one another,
-such as `class Both(Named, Dated)` for two decorated models, raises `TypeError`
-when it is defined. Put shared fields on one decorated base class instead.
-Undecorated base classes, which declare no fields, can be mixed in freely, for
-example to share hooks such as `collection_items()`.
+and adds its own. Redeclaring a field preserves its `field_map` and `write_map`
+keys unless an explicit mapping replaces them. It also inherits `write_only`
+policies when those options are omitted. An explicit set applies to the fields
+redeclared on that class, so an empty set clears their inherited policy. A
+model inherits fields through a single chain of decorated classes. A class
+whose decorated ancestors are not subclasses of one another, such as
+`class Both(Named, Dated)` for two decorated models, raises `TypeError` when it
+is defined. Put shared fields on one decorated base class instead. Undecorated
+base classes, which declare no fields, can be mixed in freely, for example to
+share hooks such as `collection_items()`.
 
 ## Loading and caching
 
@@ -185,6 +216,21 @@ Python types are converted automatically:
   `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations
   with years or months are rejected in every format, because those units have
   no fixed length. See `parse_duration()`.
+- `datetime.time` values decode from ISO 8601 times such as `09:30`,
+  `09:30:00`, or `09:30:00.5+02:00`, and encode to ISO 8601 times such as
+  `09:30:00`. As for `datetime.datetime`, a time without an offset decodes to a
+  naive `time`, and an offset that is not a whole number of minutes raises
+  `FieldConversionError`.
+- `decimal.Decimal` values decode from decimal strings such as `"1.10"` or from
+  JSON numbers, and encode to strings in positional notation that keep their
+  digits, such as `"1.10"`, as Django REST Framework writes a `DecimalField`. A
+  number decodes from its shortest decimal form, so `0.1` reads as
+  `Decimal("0.1")`, but a JSON number that has more digits than a float holds
+  has already lost them, so prefer an API that writes decimals as strings.
+  `NaN`, infinities, and strings with spaces or underscores are rejected, as is
+  a decimal whose exponent is beyond 4300 in either direction, such as
+  `"1E+20000000"`, whose positional form would be megabytes long, or
+  `"0E-20000"`, which writes each zero after the point.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
@@ -203,9 +249,11 @@ be found, raises `FieldConversionError`.
 
 A value that a field cannot convert, when it is read, assigned, or passed to
 `create()` or a query, raises `FieldConversionError`. Its message names the
-model and field, as in `Booking.day: month must be in 1..12`, and the
-conversion's own error is its `__cause__`. It is both a `TypeError` and a
-`ValueError`, so code that catches either one keeps working.
+model and field, as in
+`Booking.day: Date has a year, month, or day out of range`, but not the value,
+the same on every Python version, and the conversion's own error is its
+`__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches
+either one keeps working.
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
@@ -283,6 +331,16 @@ iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than
 once, call `list()` on the field, or annotate it as `list[User]` or
 `tuple[User, ...]`, which create the related objects when the field is first
 read and keep them.
+
+A relation that the API represents by the related object's URL rather than its
+primary key, as Django REST Framework's hyperlinked fields do, is annotated
+with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
+gives an object that loads from that URL, and writing it sends the object's
+absolute URL, or a URL assigned as a string as given. Queries send its primary
+key, as DRF relation filters expect. A URL on an origin that the related
+model's API does not allow raises `FieldConversionError`. The
+[Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
+gives the details.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
@@ -443,12 +501,13 @@ still hides it.
 
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that
 conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,
-`datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's
-conversion reads and writes the value and Pydantic applies the metadata.
-`Logo.published` therefore reads as a plain `datetime.datetime` field would, a
-constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value,
-and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for
-every type that the annotation names, such as the items of
+`datetime.date`, `datetime.time`, `datetime.timedelta`, `uuid.UUID`,
+`decimal.Decimal`, and enums, eazyrest's conversion reads and writes the value
+and Pydantic applies the metadata. `Logo.published` therefore reads as a plain
+`datetime.datetime` field would, a constraint such as
+`Field(ge=datetime.timedelta(0))` checks the decoded value, and a
+`pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every
+type that the annotation names, such as the items of
 `Annotated[list[datetime.datetime], Field(max_length=3)]`, and for a `NewType`
 of one of these types, which converts by its own entry in the model's table, if
 it has one, as a plain field of it does. A model's conversions of other types,
@@ -464,12 +523,14 @@ Inside a class that the annotation names, such as a Pydantic model or a
 | `datetime.datetime` | A UTC offset becomes `datetime.timezone` | Uses its own `TzInfo` class |
 | `datetime.date` | Rejects numbers | Reads a number as a timestamp |
 | `datetime.timedelta` | Reads Django's `DurationField` format, such as `1 02:03:04`, and rejects years and months | Rejects Django's format, and reads `P1Y` as 365 days |
+| `datetime.time` | Rejects numbers | Reads a number as seconds since midnight |
+| `decimal.Decimal` | Rejects spaces and underscores, and writes `Decimal("1E+2")` as `"100"` | Reads them, and writes `"1E+2"` |
 | Enums | Reads only the members' values | Also reads `"1"` for a member whose value is `1` |
 
 To convert a value inside such a class as an eazyrest field would, annotate it
-with `Datetime`, `Date`, `Duration`, or `UUID` from `eazyrest.pydantic`, as
-`Rendering.timeout` is above. These types convert by the
-[conversion table](#custom-field-conversion) of the model whose field holds
+with `Datetime`, `Date`, `Time`, `Duration`, `UUID`, or `Decimal` from
+`eazyrest.pydantic`, as `Rendering.timeout` is above. These types convert by
+the [conversion table](#custom-field-conversion) of the model whose field holds
 them, so they follow its conversions, such as one that writes datetimes as
 timestamps. Outside a model, they convert by the default table. Pydantic's own
 types, such as `AwareDatetime`, keep Pydantic's rules.
@@ -501,11 +562,11 @@ A value that Pydantic converts can be changed in place, as
 ## Custom field conversion
 
 A model converts field values by a table of conversions, keyed by type. The
-default table converts `datetime`, `date`, `timedelta`, `UUID`, and enums, as
-[Field conversion](#field-conversion) describes, and any other type reads and
-writes its JSON value as it is. To convert another type, or to convert one of
-these differently, declare `conversions` on a shared base model, mapping the
-type to a `Conversion`:
+default table converts `datetime`, `date`, `time`, `timedelta`, `UUID`,
+`Decimal`, and enums, as [Field conversion](#field-conversion) describes, and
+any other type reads and writes its JSON value as it is. To convert another
+type, or to convert one of these differently, declare `conversions` on a shared
+base model, mapping the type to a `Conversion`:
 
 ```python
 import ipaddress
@@ -596,18 +657,45 @@ users = list(User.all())
 admins = list(User.filter(role="admin"))
 ```
 
+The iterator is a `Results`, whose `count` is the size of the whole collection
+when the response reports it, as a page of Django REST Framework's
+`PageNumberPagination` or `LimitOffsetPagination` does, and `None` otherwise.
+It is known as soon as `filter()` returns, before any item or later page is
+read:
+
+```python
+admins = User.filter(role="admin")
+print(f"{admins.count} admins")
+```
+
+`filter()` takes `count` from the iterable that `collection_items()` returns.
+`follow_next_links()` returns one with the first page's `count` member, and a
+hook of your own can return any iterable with an integer `count` attribute.
+
 `filter()` and `get()` encode a keyword argument named after a JSON-backed
 field with the same JSON field name and conversion as `create()`. For example,
 `Todo.filter(user=user)` sends the user's primary key under the field's JSON
 key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean
 is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such
-as `ordering` or `created__gte`, are sent unchanged.
+as `ordering` or `created__gte`, are sent unchanged, as their `str()`, except
+that a model instance, also as an item of a collection, is sent as its primary
+key. A plain enum member is therefore sent as its `str()`, such as
+`Status.DONE`, so pass its `value`. A collection repeats the parameter, so
+`Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
+`QueryDict.getlist()` reads, as django-filter does for a filter on a
+many-to-many field. django-filter's `__in` and `__range` lookups, and DRF's
+`ordering`, read one comma-separated value instead, and see only the last of
+repeated ones, so join the values yourself, as in
+`Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
+`Todo.filter(ordering="due,-priority")`.
 
 The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query
-methods are their own options, not query parameters. Pass a query parameter of
-any name, including one of these, in the `params=` mapping, which `filter()`,
-`get()`, and `get_or_create()` encode as they encode keyword arguments.
-`create()` likewise takes field values in `fields=`, for a key such as `api`:
+methods are their own options, not query parameters. The query methods also
+reserve `request_options` and raise `TypeError` for it. Pass a query parameter
+of any name, including one of these, in the `params=` mapping, which
+`filter()`, `get()`, and `get_or_create()` encode as they encode keyword
+arguments. `create()` likewise takes field values in `fields=`, for a key such
+as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -861,6 +949,60 @@ todo = Todo(id=1, write_mode="eager")
 todo.completed = True
 ```
 
+### Full updates
+
+`save()` sends the changed fields in a `PATCH`. For an API that updates an
+object only with a `PUT` of the whole object, call `save(full=True)`. It sends
+every writable declared field that the object's JSON has, with its unsaved
+changes and any pending write-only fields, even if nothing changed. Each value
+is encoded as an assignment would encode it, so a related object is sent as its
+primary key, and a field that `write_map` names under its write key. It loads
+an unloaded or partial object first, preserving pending changes. Read-only
+fields are omitted.
+
+### Uploading files
+
+`create()` and `save()` take `files=`, files to upload as requests takes them,
+keyed by field name or by the API's field name. The write is then a multipart
+request, with the other fields as form fields, and `save(files=...)` sends it
+even if no field changed. Declare a file field as `str`, since an API such as
+Django REST Framework returns the file's URL:
+
+```python
+avatar = Avatar.create(name="me", files={"image": open("me.png", "rb")})
+avatar.save(files={"image": ("new.png", data, "image/png")})
+print(avatar.image)  # the URL that the response holds
+```
+
+A form field holds text, so booleans are sent as `true` and `false` and numbers
+as strings, and a list of scalars is sent as repeated fields. A field whose
+value is `None`, a mapping, an empty list, or a nested list cannot be sent this
+way and raises `TypeError` before the request. Save such a field in a separate
+write without files.
+
+Requests reads a file object from its current position. Before retrying an
+upload after a failure, reopen or rewind each file. A 307 or 308 redirect
+resends the already prepared multipart body.
+
+### Request options
+
+`save()`, `create()`, and `delete()` take `request_options=`, keyword arguments
+for the request as requests takes them, such as `headers` or `params`. They
+cannot set the body, which the write builds, or enable `stream=True`, because
+model writes consume their responses. An unfollowed final 3xx raises
+`RedirectError`, including when `allow_redirects=False`, and pending updates
+remain pending. A server that supports optimistic concurrency, for example,
+refuses a write whose `If-Match` header no longer names the object's current
+version:
+
+```python
+todo.title = "new"
+todo.save(request_options={"headers": {"If-Match": etag}})
+```
+
+An assignment in eager mode sends its `PATCH` with no options. Use lazy mode
+and `save()` for a write that needs them.
+
 ### Write responses
 
 After a successful write, the object's JSON holds the fields that were sent,
@@ -911,7 +1053,11 @@ the payload lacks then loads the full object.
 The `API` class wraps a `requests.Session`, resolves request URLs relative to
 `base_url`, applies a default timeout, and raises for HTTP error responses. To
 customize error handling for a particular API, override `raise_for_response()`
-in an `API` subclass.
+in an `API` subclass. An override should raise a subclass of `APIError`, and of
+`NotFound` for a 404, so that `except APIError` catches its errors and a lazy
+load of an object deleted on the server still raises `DoesNotExist`. The
+[Django REST Framework guide](drf.md) shows one that keeps the default message
+and `data`.
 
 Requests follows redirects, but only a 307 or 308 redirect resends a request
 unchanged. It resends a `POST` answered with a 301 or 302, and any other
@@ -1085,19 +1231,22 @@ served by different APIs can refer to each other. If the parent object has an
 
 ## Errors
 
-eazyrest raises a subclass of `EazyrestError` for each condition that its own
-policies detect, so `except EazyrestError` catches them all. Each also derives
-from the exception type that it replaced, so code written for that type keeps
-working:
+eazyrest raises a subclass of `EazyrestError` for each condition in the list
+below, so `except EazyrestError` catches them all. Each also derives from the
+exception type that it replaced, so code written for that type keeps working:
 
 - `FieldConversionError`, a `TypeError` and a `ValueError`, for a value that a
   field cannot convert.
+- `APIError`, a `requests.HTTPError`, for a response whose status reports a
+  failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON
+  body, and the message names the body's members other than `detail`, but not
+  their text.
 - `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one
-  object.
+  object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
-- `RedirectError`, a `requests.HTTPError`, for a redirect that is refused
-  before it is followed. Its `response` is the redirect.
+- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect or an
+  unfollowed final 3xx on a model write. Its `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
@@ -1108,11 +1257,19 @@ working:
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
 
-An HTTP error status still raises whatever `API.raise_for_response()` raises,
-`requests.HTTPError` by default, and a transport failure raises the requests
-exception that describes it, such as `requests.ConnectionError`. A declaration
-that `@json_object` cannot accept raises `TypeError` or `ValueError` when the
-class is defined.
+A misuse of an argument, such as a query parameter that is not allowed, an
+assignment to a read-only field, or an unsupported request option, raises a
+`TypeError`, `ValueError`, or `AttributeError` instead, as the section on that
+operation says.
+
+An HTTP error status raises whatever `API.raise_for_response()` raises,
+`APIError` or `NotFound` by default. Invalid JSON gives these errors
+`data=None`. A depth-limit violation instead raises `LimitExceeded`, including
+for an error body, and a transport failure raises the requests exception that
+describes it, such as `requests.ConnectionError`. Invalid decorator options
+raise `TypeError` or `ValueError` when the class is defined. Field annotations
+resolve lazily, so an invalid conversion declaration can raise
+`FieldConversionError` at first use.
 
 ## Threads
 

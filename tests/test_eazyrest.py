@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import decimal
+import email
+import email.message
 import enum
 import sys
 import types
@@ -26,6 +29,7 @@ from eazyrest import (
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
+    Hyperlinked,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -1083,6 +1087,229 @@ def test_datetime_field_rejects_out_of_range_timestamps(value: float) -> None:
         _ = event.starts_at
 
 
+@json_object
+class Shop(ModelBase):
+    """Model with decimal and time fields, as DRF serializes them."""
+
+    class_url = "/shops/"
+
+    id: int
+    price: decimal.Decimal
+    prices: list[decimal.Decimal]
+    opens: datetime.time
+
+
+SHOP_URL = "https://example.com/v1/shops/1/"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1.10", decimal.Decimal("1.10")),
+        ("-12", decimal.Decimal(-12)),
+        ("1.5e3", decimal.Decimal("1.5e3")),
+        ("1e4300", decimal.Decimal("1e4300")),
+        ("-1e-4300", decimal.Decimal("-1e-4300")),
+        ("0e999999", decimal.Decimal("0e999999")),
+        (0.1, decimal.Decimal("0.1")),
+        (2, decimal.Decimal(2)),
+    ],
+)
+def test_decimal_field_reads_strings_and_numbers(
+    value: Any, expected: decimal.Decimal
+) -> None:
+    """A decimal reads from a decimal string or a JSON number.
+
+    Args:
+        value: JSON value of the decimal field.
+        expected: Decimal that the field reads, with the same digits.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    assert shop.price == expected
+    assert str(shop.price) == str(expected)
+
+
+@pytest.mark.parametrize("value", ["1 000", "1_000", " 1.5", "NaN", "Inf", ""])
+def test_decimal_field_rejects_other_strings(value: str) -> None:
+    """Only a decimal number reads, not the other strings ``Decimal`` reads.
+
+    Args:
+        value: String that is not a decimal number.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    with pytest.raises(FieldConversionError, match=r"^Shop\.price: Decimal"):
+        _ = shop.price
+
+
+@pytest.mark.parametrize(
+    "value", ["1E+20000000", "1e-4302", "12.5e4300", "0e-20000", "-0E-4302"]
+)
+def test_decimal_field_rejects_exponents_too_long_to_write(
+    requests_mock: Any, value: str
+) -> None:
+    """A decimal whose positional form would be very long does not read.
+
+    So, 11 bytes of JSON cannot become megabytes when the value is written
+    back. Assigning such a decimal raises too, and sends nothing.
+
+    Args:
+        requests_mock: Mocked HTTP transport.
+        value: Decimal string with a large exponent.
+    """
+    shop = Shop(json={"id": 1, "price": value, "prices": [value]})
+
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        _ = shop.price
+    with pytest.raises(FieldConversionError, match=r"^Shop\.prices: Decimal"):
+        _ = shop.prices
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        shop.price = decimal.Decimal(value)
+    assert requests_mock.call_count == 0
+
+
+def test_decimal_field_rejects_exponents_beyond_decimals_own() -> None:
+    """An exponent that Decimal itself refuses raises a conversion error."""
+    shop = Shop(json={"id": 1, "price": "1e9999999999999999999"})
+
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        _ = shop.price
+
+
+def test_zero_decimal_with_a_large_exponent_writes_one_digit() -> None:
+    """A zero with a positive exponent writes ``"0"``, so it reads."""
+    shop = Shop(json={"id": 1, "price": "0E+20000"})
+
+    assert shop.price == 0
+    shop.price = decimal.Decimal("-0E+20000")
+    assert shop.json["price"] == "-0"
+
+
+@pytest.mark.parametrize("value", [True, [1], {"amount": 1}])
+def test_decimal_field_rejects_other_json_types(value: Any) -> None:
+    """Only strings and numbers read as decimals. A boolean is not a number.
+
+    Args:
+        value: JSON value that is neither a string nor a number.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    with pytest.raises(FieldConversionError, match="strings or numbers"):
+        _ = shop.price
+
+
+def test_decimal_field_writes_strings_with_their_digits(
+    requests_mock: Any,
+) -> None:
+    """A decimal is written as DRF writes one: a string in positional form."""
+    patch = requests_mock.patch(SHOP_URL, status_code=204)
+    shop = Shop(json={"id": 1, "price": "1.10", "prices": ["1"]})
+
+    shop.price = decimal.Decimal("2.50")
+    shop.prices = [decimal.Decimal("1E+2"), decimal.Decimal("-0.001")]
+    shop.save()
+
+    assert patch.last_request.json() == {
+        "price": "2.50",
+        "prices": ["100", "-0.001"],
+    }
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_decimal_field_refuses_to_write_non_finite_values(
+    requests_mock: Any, value: str
+) -> None:
+    """A decimal that JSON and DRF cannot read is refused and not sent.
+
+    Args:
+        value: Text of a decimal that is not finite.
+    """
+    shop = Shop(json={"id": 1, "price": "1.10"})
+
+    with pytest.raises(FieldConversionError, match="finite"):
+        shop.price = decimal.Decimal(value)
+
+    assert shop.price == decimal.Decimal("1.10")
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("09:30", datetime.time(9, 30)),
+        ("09:30:15", datetime.time(9, 30, 15)),
+        ("09:30:15.5", datetime.time(9, 30, 15, 500000)),
+        ("09:30:15.123456", datetime.time(9, 30, 15, 123456)),
+        ("09:30Z", datetime.time(9, 30, tzinfo=datetime.timezone.utc)),
+        (
+            "09:30:00-05:30",
+            datetime.time(
+                9,
+                30,
+                tzinfo=datetime.timezone(
+                    -datetime.timedelta(hours=5, minutes=30)
+                ),
+            ),
+        ),
+    ],
+)
+def test_time_field_reads_iso_8601(
+    value: str, expected: datetime.time
+) -> None:
+    """A time reads from ISO 8601 alike on every supported Python.
+
+    Python 3.10's ``time.fromisoformat()`` rejects ``Z`` and fractions of
+    other than three or six digits.
+
+    Args:
+        value: ISO 8601 time.
+        expected: Time that the field reads.
+    """
+    shop = Shop(json={"id": 1, "opens": value})
+
+    assert shop.opens == expected
+    assert shop.opens.tzinfo == expected.tzinfo
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["9:30", "0930", "24:00", "09:60", "09:30:00.1234567", "09:30+24:00", ""],
+)
+def test_time_field_rejects_other_strings(value: str) -> None:
+    """A string that is not an ISO 8601 time, or is out of range, raises.
+
+    Args:
+        value: String that the field cannot read.
+    """
+    shop = Shop(json={"id": 1, "opens": value})
+
+    with pytest.raises(FieldConversionError, match=r"^Shop\.opens: "):
+        _ = shop.opens
+
+
+def test_time_field_rejects_numbers() -> None:
+    """A number is not read as seconds since midnight, as Pydantic reads it."""
+    shop = Shop(json={"id": 1, "opens": 3600})
+
+    with pytest.raises(FieldConversionError, match="must be strings"):
+        _ = shop.opens
+
+
+def test_time_field_writes_iso_8601(requests_mock: Any) -> None:
+    """A time is written in ISO 8601, and an offset with seconds is refused."""
+    patch = requests_mock.patch(SHOP_URL, status_code=204)
+    shop = Shop(json={"id": 1, "opens": "09:30:00"})
+    odd = datetime.timezone(datetime.timedelta(minutes=19, seconds=32))
+
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        shop.opens = datetime.time(8, tzinfo=odd)
+    shop.opens = datetime.time(8, 15, 0, 500)
+    shop.save()
+
+    assert patch.last_request.json() == {"opens": "08:15:00.000500"}
+
+
 def test_sequence_field_reads_as_tuple_of_converted_items(
     requests_mock: Any,
 ) -> None:
@@ -1255,7 +1482,7 @@ def test_constructor_decodes_uuid_primary_key(
 
 def test_constructor_rejects_invalid_uuid_primary_key() -> None:
     """A key that the field cannot decode fails when the object is made."""
-    with pytest.raises(ValueError, match="badly formed hexadecimal UUID"):
+    with pytest.raises(ValueError, match="UUID is not valid"):
         UUIDUser(key="not-a-uuid")
 
 
@@ -2651,6 +2878,34 @@ def test_reserved_field_name_is_rejected() -> None:
             url: str
 
 
+@pytest.mark.parametrize("registered", [False, True])
+def test_field_named_api_is_rejected_before_or_after_registration(
+    registered: bool,
+) -> None:
+    """A field named ``api`` raises ``ValueError`` in either order.
+
+    Args:
+        registered: Whether an API is registered before the class is decorated.
+    """
+
+    class Base(JSONObject):
+        """Base class of the model, with or without an API."""
+
+    if registered:
+        Base.register_api(API("https://api.example.com/"))
+
+    with pytest.raises(ValueError, match="field_map"):
+
+        @json_object
+        class Service(Base):
+            """Model with a field that would replace ``JSONObject.api``."""
+
+            class_url = "/services/"
+
+            id: int
+            api: str  # type: ignore[assignment, misc]
+
+
 def test_reserved_json_key_can_be_mapped_to_another_attribute() -> None:
     """A reserved JSON key is usable through ``field_map``."""
 
@@ -3215,6 +3470,8 @@ class Secretive(ModelBase):
     day: datetime.date
     length: datetime.timedelta
     status: IssueStatus
+    key: uuid.UUID
+    at: datetime.time
 
 
 SECRET = "TOP-SECRET-1234"
@@ -3226,10 +3483,18 @@ SECRET = "TOP-SECRET-1234"
         ("when", SECRET, "not in ISO 8601 format"),
         ("when", 1e300, "out of range"),
         ("day", SECRET, "not in ISO 8601 format"),
-        ("day", "2024-13-01", "month must be in 1..12"),
+        ("day", "2024-13-01", "Date has a year, month, or day out of range"),
         ("length", SECRET, "not in a supported format"),
         ("length", f"P{SECRET}", "not in ISO 8601 format"),
         ("status", SECRET, "not a valid IssueStatus"),
+        ("key", "secretsecretsecretsecretsecretab", "UUID is not valid"),
+        ("when", 253402300800, "Timestamp is out of range$"),
+        ("day", "1987-02-30", "Date has a year, month, or day out of range$"),
+        (
+            "at",
+            "07:61:00",
+            "Time has an hour, minute, or second out of range$",
+        ),
     ],
 )
 def test_field_conversion_error_does_not_quote_the_value(
@@ -4527,6 +4792,41 @@ def test_name_given_both_ways_raises(requests_mock: Any, call: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: Todo.filter(request_options={"headers": {}}),
+        lambda: Todo.get(request_options={"headers": {}}),
+        lambda: Todo.get_or_create(request_options={"headers": {}}),
+    ],
+)
+def test_query_methods_reserve_request_options(
+    requests_mock: Any, call: Any
+) -> None:
+    """A query method rejects ``request_options`` rather than sending it.
+
+    Taking it later, as ``save()`` does, must not change what a call sends.
+
+    Args:
+        call: Callable that passes ``request_options`` as a keyword argument.
+    """
+    with pytest.raises(TypeError, match="reserve the keyword argument"):
+        call()
+
+    assert requests_mock.call_count == 0
+
+
+def test_params_sends_request_options_parameter(requests_mock: Any) -> None:
+    """``params=`` sends a parameter named ``request_options``."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(params={"request_options": "x"}))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "request_options": ["x"]
+    }
+
+
 def test_get_or_create_sends_reserved_names(requests_mock: Any) -> None:
     """``params=`` reaches both the lookup and the creation payload."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
@@ -4612,3 +4912,617 @@ def test_prefetch_skips_missing_null_and_malformed_relations(
     assert todos[2].user.name == "Eve"
     assert users.call_count == 1
     assert len(teams) == 2
+
+
+def test_save_sends_request_options(requests_mock: Any) -> None:
+    """``save(request_options=...)`` adds headers and a query to the PATCH."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/", json={"id": 1, "title": "new"}
+    )
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+
+    todo.title = "new"
+    todo.save(
+        request_options={"headers": {"If-Match": '"v1"'}, "params": {"x": "1"}}
+    )
+
+    assert patch.last_request.headers["If-Match"] == '"v1"'
+    assert patch.last_request.qs == {"x": ["1"]}
+    assert patch.last_request.json() == {"title": "new"}
+
+
+def test_create_sends_request_options(requests_mock: Any) -> None:
+    """``create(request_options=...)`` adds headers to the POST."""
+    post = requests_mock.post(
+        "https://example.com/v1/todos/", json={"id": 3, "title": "a"}
+    )
+
+    Todo.create(
+        title="a", request_options={"headers": {"Idempotency-Key": "k"}}
+    )
+
+    assert post.last_request.headers["Idempotency-Key"] == "k"
+    assert post.last_request.json() == {"title": "a"}
+
+
+@pytest.mark.parametrize("name", ["json", "data", "files"])
+def test_request_options_cannot_set_the_body(
+    requests_mock: Any, name: str
+) -> None:
+    """The body belongs to the write, so options cannot replace it.
+
+    Args:
+        name: Request argument that would set the body.
+    """
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+    todo.title = "new"
+
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        todo.save(request_options={name: {}})
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        Todo.create(title="a", request_options={name: {}})
+
+    assert requests_mock.call_count == 0
+    assert todo._pending_updates == {"title": "new"}
+
+
+def test_delete_sends_request_options(requests_mock: Any) -> None:
+    """``delete()`` passes its request options to the request."""
+    deleted = requests_mock.delete(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+
+    Todo(id=1).delete(request_options={"headers": {"If-Match": '"v2"'}})
+
+    assert deleted.last_request.headers["If-Match"] == '"v2"'
+
+
+@pytest.mark.parametrize("name", ["json", "data", "files"])
+def test_delete_rejects_body_options(requests_mock: Any, name: str) -> None:
+    """``delete()`` rejects request options that set a body, as writes do.
+
+    Args:
+        name: Request option that sets the body.
+    """
+    with pytest.raises(TypeError, match=f"cannot set {name}"):
+        Todo(id=1).delete(request_options={name: {}})
+
+    assert requests_mock.call_count == 0
+
+
+def test_delete_takes_request_options_by_keyword_only() -> None:
+    """``delete()`` takes neither positional nor bare request arguments."""
+    todo = Todo(id=1)
+    with pytest.raises(TypeError):
+        todo.delete({"headers": {}})  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        todo.delete(headers={})  # type: ignore[call-arg]
+
+
+@json_object(write_only={"password"})
+class Login(ModelBase):
+    """Model with a field that the API accepts but never returns."""
+
+    class_url = "/logins/"
+
+    id: int
+    name: str
+    password: str
+
+
+LOGIN_JSON = {"id": 1, "name": "ada"}
+
+
+def test_write_only_field_is_sent_by_create_but_not_kept(
+    requests_mock: Any,
+) -> None:
+    """``create()`` sends a write-only field, and the object drops it."""
+    post = requests_mock.post(
+        "https://example.com/v1/logins/", json=LOGIN_JSON
+    )
+
+    login = Login.create(name="ada", password="hunter2")
+
+    assert post.last_request.json() == {"name": "ada", "password": "hunter2"}
+    assert login.json == LOGIN_JSON
+    with pytest.raises(AttributeError, match="write-only"):
+        _ = login.password
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_write_only_field_is_assigned_and_sent(
+    requests_mock: Any, write_mode: WriteMode, loaded: bool
+) -> None:
+    """Assigning a write-only field sends it without keeping or loading it.
+
+    Args:
+        write_mode: Write mode of the login.
+        loaded: Whether the login was loaded before the assignment.
+    """
+    get = requests_mock.get(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    if loaded:
+        login = Login(json=LOGIN_JSON, write_mode=write_mode)
+    else:
+        login = Login(id=1, write_mode=write_mode)
+
+    login.password = "hunter2"
+    login.save()
+
+    assert patch.last_request.json() == {"password": "hunter2"}
+    assert not get.called
+    assert "password" not in (login._json or {})
+    assert login._pending_updates == {}
+    assert login.name == "ada"
+    assert "password" not in login.json
+
+
+@pytest.mark.parametrize(
+    "body", [{"password": "hunter2"}, {"detail": "ok"}, {"name": "ada"}]
+)
+def test_write_only_save_keeps_the_key_of_an_unloaded_object(
+    requests_mock: Any, body: dict[str, Any]
+) -> None:
+    """A write-only save whose body lacks the key can still load the object.
+
+    The body becomes the object's partial JSON, which keeps the key that the
+    object was saved under, so a read of another field loads from its URL.
+
+    Args:
+        body: Response body of the write, without the primary key.
+    """
+    get = requests_mock.get(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    requests_mock.patch("https://example.com/v1/logins/1/", json=body)
+    login = Login(id=1)
+
+    login.password = "hunter2"
+    login.save()
+
+    assert login.id == 1
+    assert login.name == "ada"
+    assert get.call_count == (0 if "name" in body else 1)
+    assert "password" not in login.json
+
+
+def test_pending_write_only_field_is_not_kept_by_a_load(
+    requests_mock: Any,
+) -> None:
+    """A load before ``save()`` does not put the pending value in the JSON."""
+    requests_mock.get("https://example.com/v1/logins/1/", json=LOGIN_JSON)
+    login = Login(id=1)
+
+    login.password = "hunter2"
+
+    assert login.name == "ada"
+    assert login.json == LOGIN_JSON
+    assert login._pending_updates == {"password": "hunter2"}
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"write_only": {"nope"}}, "names \\['nope'\\]"),
+        ({"write_only": {"id"}}, "primary key"),
+    ],
+)
+def test_write_only_must_name_a_readable_field(
+    options: dict[str, Any], match: str
+) -> None:
+    """``write_only`` must name fields of the class, and not its key.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str
+
+
+@json_object(write_map={"owner": "owner_id"})
+class Chore(ModelBase):
+    """Model whose relation is read nested and written as a primary key."""
+
+    class_url = "/chores/"
+
+    id: int
+    title: str
+    owner: User
+
+
+CHORE_JSON = {"id": 1, "title": "t", "owner": {"id": 2, "name": "Ada"}}
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize("respond", [True, False])
+def test_write_map_sends_a_field_under_its_write_key(
+    requests_mock: Any, write_mode: WriteMode, respond: bool
+) -> None:
+    """A mapped field is read from its key and written under another.
+
+    Args:
+        write_mode: Write mode of the chore.
+        respond: Whether the server answers with the object or no content.
+    """
+    if respond:
+        patch = requests_mock.patch(
+            "https://example.com/v1/chores/1/",
+            json={**CHORE_JSON, "owner": {"id": 3, "name": "Bob"}},
+        )
+    else:
+        patch = requests_mock.patch(
+            "https://example.com/v1/chores/1/", status_code=204
+        )
+    chore = Chore(json=CHORE_JSON, write_mode=write_mode)
+    assert chore.owner.name == "Ada"
+    bob = User(id=3)
+
+    chore.owner = bob
+    chore.save()
+
+    assert patch.last_request.json() == {"owner_id": 3}
+    assert "owner_id" not in chore.json
+    if respond:
+        assert chore.json["owner"] == {"id": 3, "name": "Bob"}
+        assert chore.owner.name == "Bob"
+    else:
+        assert chore.json["owner"] == 3
+        assert chore.owner is bob
+    assert requests_mock.call_count == 1
+
+
+def test_write_map_applies_to_create_but_not_queries(
+    requests_mock: Any,
+) -> None:
+    """``create()`` writes the mapped key, and a query uses the read key."""
+    post = requests_mock.post(
+        "https://example.com/v1/chores/", json=CHORE_JSON
+    )
+    lookup = requests_mock.get("https://example.com/v1/chores/", json=[])
+
+    chore = Chore.create(title="t", owner=User(id=2))
+    list(Chore.filter(owner=User(id=2)))
+
+    assert post.last_request.json() == {"title": "t", "owner_id": 2}
+    assert chore.owner.name == "Ada"
+    assert lookup.last_request.qs == {"owner": ["2"]}
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"write_map": {"nope": "x"}}, "maps \\['nope'\\]"),
+        ({"write_map": {"name": "title"}}, "both written under"),
+    ],
+)
+def test_write_map_must_name_fields_and_distinct_keys(
+    options: dict[str, Any], match: str
+) -> None:
+    """``write_map`` names fields, and no two fields share a write key.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str
+            title: str
+
+
+def test_full_save_puts_every_field(requests_mock: Any) -> None:
+    """``save(full=True)`` sends the whole object, encoded for writing."""
+    put = requests_mock.put(
+        "https://example.com/v1/chores/1/",
+        json={**CHORE_JSON, "title": "new"},
+    )
+    chore = Chore(json=CHORE_JSON)
+
+    chore.title = "new"
+    chore.save(full=True)
+
+    assert put.last_request.json() == {"id": 1, "title": "new", "owner_id": 2}
+    assert chore.title == "new"
+    assert chore._pending_updates == {}
+
+
+def test_full_save_loads_and_sends_without_changes(requests_mock: Any) -> None:
+    """A full save loads an unloaded object and sends even without changes."""
+    requests_mock.get("https://example.com/v1/todos/1/", json=TODO_JSON)
+    put = requests_mock.put("https://example.com/v1/todos/1/", status_code=204)
+
+    Todo(id=1).save(full=True)
+
+    assert put.last_request.json() == TODO_JSON
+
+
+def test_full_save_sends_pending_write_only_fields(requests_mock: Any) -> None:
+    """A full save includes a pending write-only field, and keeps none."""
+    put = requests_mock.put(
+        "https://example.com/v1/logins/1/", json=LOGIN_JSON
+    )
+    login = Login(json=LOGIN_JSON)
+
+    login.password = "hunter2"
+    login.save(full=True)
+
+    assert put.last_request.json() == {**LOGIN_JSON, "password": "hunter2"}
+    assert login.json == LOGIN_JSON
+
+
+@json_object(write_map={"owner": "owner_id"})
+class Photo(ModelBase):
+    """Model with a file field that the API returns as a URL."""
+
+    class_url = "/photos/"
+
+    id: int
+    title: str
+    public: bool
+    tags: list[str]
+    meta: dict[str, int]
+    owner: User
+    image: str
+
+
+PHOTO_JSON = {
+    "id": 1,
+    "title": "t",
+    "public": False,
+    "tags": [],
+    "meta": {},
+    "owner": {"id": 2, "name": "Ada"},
+    "image": "https://cdn.example.com/1.png",
+}
+
+
+def _form(request: Any) -> dict[str, list[tuple[str | None, bytes]]]:
+    """Return the parts of a multipart request, by name.
+
+    Args:
+        request: Request that ``requests_mock`` recorded.
+
+    Returns:
+        Each part's file name, or ``None``, and content, keyed by name.
+    """
+    message = email.message_from_bytes(
+        b"Content-Type: "
+        + request.headers["Content-Type"].encode()
+        + b"\r\n\r\n"
+        + request.body
+    )
+    parts: dict[str, list[tuple[str | None, bytes]]] = {}
+    payload = message.get_payload()
+    assert isinstance(payload, list)
+    for part in payload:
+        assert isinstance(part, email.message.Message)
+        name = str(part.get_param("name", header="content-disposition"))
+        content = part.get_payload(decode=True)
+        assert isinstance(content, bytes)
+        parts.setdefault(name, []).append((part.get_filename(), content))
+    return parts
+
+
+def test_create_uploads_files_with_form_fields(requests_mock: Any) -> None:
+    """``create(files=...)`` sends multipart, with fields as form fields."""
+    post = requests_mock.post(
+        "https://example.com/v1/photos/", json=PHOTO_JSON
+    )
+
+    photo = Photo.create(
+        title="t",
+        public=True,
+        tags=["a", "b"],
+        owner=User(id=2),
+        files={"image": ("a.png", b"PNG")},
+    )
+
+    assert post.last_request.headers["Content-Type"].startswith(
+        "multipart/form-data"
+    )
+    assert _form(post.last_request) == {
+        "title": [(None, b"t")],
+        "public": [(None, b"true")],
+        "tags": [(None, b"a"), (None, b"b")],
+        "owner_id": [(None, b"2")],
+        "image": [("a.png", b"PNG")],
+    }
+    assert photo.image == "https://cdn.example.com/1.png"
+
+
+def test_save_uploads_files_without_other_changes(requests_mock: Any) -> None:
+    """``save(files=...)`` uploads even when no field changed."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/photos/1/",
+        json={**PHOTO_JSON, "image": "https://cdn.example.com/2.png"},
+    )
+    photo = Photo(json=PHOTO_JSON)
+
+    photo.save(files={"image": ("b.png", b"PNG2")})
+
+    assert _form(patch.last_request) == {"image": [("b.png", b"PNG2")]}
+    assert photo.image == "https://cdn.example.com/2.png"
+
+
+@pytest.mark.parametrize(("field", "value"), [("meta", {"a": 1})])
+def test_values_that_a_form_cannot_hold_raise(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A mapping cannot be a form field, so the upload is not sent.
+
+    Args:
+        field: Field whose value a form field cannot express.
+        value: That value.
+    """
+    photo = Photo(json=PHOTO_JSON)
+    setattr(photo, field, value)
+
+    with pytest.raises(TypeError, match=f"Field {field} cannot be sent"):
+        photo.save(files={"image": ("a.png", b"PNG")})
+    with pytest.raises(TypeError, match=f"Field {field} cannot be sent"):
+        Photo.create(files={"image": ("a.png", b"PNG")}, **{field: value})
+
+    assert requests_mock.call_count == 0
+    assert photo._pending_updates == {field: value}
+
+
+@json_object
+class Note(ModelBase):
+    """Model whose relations are hyperlinks, as DRF's hyperlinked fields."""
+
+    class_url = "/notes/"
+
+    id: int
+    author: Annotated[User, Hyperlinked()]
+    readers: list[Annotated[User, Hyperlinked()]]
+    editor: Annotated[User | None, Hyperlinked()]
+
+
+NOTE_JSON = {
+    "id": 1,
+    "author": "https://example.com/v1/users/2/",
+    "readers": ["https://example.com/v1/users/3/", "/v1/users/4/"],
+    "editor": None,
+}
+
+
+def test_hyperlinked_relation_loads_from_its_url(requests_mock: Any) -> None:
+    """A hyperlinked field reads as an object that loads from the URL."""
+    get = requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    note = Note(json=NOTE_JSON)
+
+    author = note.author
+
+    assert not get.called
+    assert author.url == "https://example.com/v1/users/2/"
+    assert author.name == "Ada"
+    assert author.pk == 2
+    assert [reader.url for reader in note.readers] == [
+        "https://example.com/v1/users/3/",
+        "https://example.com/v1/users/4/",
+    ]
+    assert note.editor is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://other.example.net/users/2/",
+        "http://example.com/v1/users/2/",
+        "https://example.com:8443/v1/users/2/",
+    ],
+)
+def test_hyperlink_to_another_origin_is_refused(
+    requests_mock: Any, url: str
+) -> None:
+    """A URL on another origin raises rather than receive credentials.
+
+    Args:
+        url: Hyperlink on an origin that the API does not allow.
+    """
+    note = Note(json={**NOTE_JSON, "author": url})
+
+    with pytest.raises(FieldConversionError, match="origin") as info:
+        _ = note.author
+
+    assert url not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+def test_malformed_hyperlink_is_not_quoted(requests_mock: Any) -> None:
+    """A hyperlink that urllib cannot join raises without quoting it.
+
+    urllib's own message for a host such as ``[secret]`` quotes the host,
+    which the server chose.
+    """
+    note = Note(json={**NOTE_JSON, "author": "https://[secret]/users/2/"})
+
+    with pytest.raises(FieldConversionError, match="not a valid URL") as info:
+        _ = note.author
+
+    assert "secret" not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+def test_hyperlinked_relation_writes_urls_and_queries_keys(
+    requests_mock: Any,
+) -> None:
+    """A related object writes its URL and uses its key in a query."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/notes/1/", status_code=204
+    )
+    lookup = requests_mock.get("https://example.com/v1/notes/", json=[])
+    note = Note(json=NOTE_JSON)
+
+    note.author = User(id=5)
+    note.readers = [note.author, User(id=6)]
+    note.save()
+    list(Note.filter(author=User(id=5)))
+
+    assert patch.last_request.json() == {
+        "author": "https://example.com/v1/users/5/",
+        "readers": [
+            "https://example.com/v1/users/5/",
+            "https://example.com/v1/users/6/",
+        ],
+    }
+    assert lookup.last_request.qs == {"author": ["5"]}
+
+
+def test_hyperlinked_field_cannot_be_prefetched() -> None:
+    """Prefetching needs keys, which a hyperlink does not give."""
+    with pytest.raises(ValueError, match="hyperlinked"):
+        Note.filter(prefetch="author")
+
+
+def test_hyperlinked_applies_only_to_related_types() -> None:
+    """``Hyperlinked()`` on a type without a related model raises."""
+
+    @json_object
+    class Wrong(ModelBase):
+        id: int
+        name: Annotated[str, Hyperlinked()]
+
+    with pytest.raises(FieldConversionError, match="related model"):
+        _ = Wrong(json={"id": 1, "name": "x"}).name
+
+
+def test_hyperlinked_field_takes_urls_and_objects_only(
+    requests_mock: Any,
+) -> None:
+    """A hyperlink is a URL or an object, never a bare key."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/notes/1/", status_code=204
+    )
+    note = Note(json={**NOTE_JSON, "author": 2})
+
+    with pytest.raises(FieldConversionError, match="must be URLs"):
+        _ = note.author
+    with pytest.raises(FieldConversionError, match="must be objects or URLs"):
+        note.author = 5  # type: ignore[assignment]
+
+    note.author = "https://example.com/v1/users/7/"  # type: ignore[assignment]
+    note.save()
+
+    assert patch.last_request.json() == {
+        "author": "https://example.com/v1/users/7/"
+    }

@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import copy
 import datetime
+import decimal
 import enum
 import inspect
 import itertools
@@ -40,7 +41,7 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import requests
 
@@ -53,11 +54,16 @@ from ._conversion import (
     _table_of,
 )
 from ._errors import (
+    DoesNotExist,
     EazyrestError,
+    MultipleObjectsReturned,
+    PrefetchNotSupported,
+    RedirectError,
     ResponseShapeError,
     UsageError,
 )
-from .api import API
+from ._results import Results, _count_of
+from .api import API, _origin
 from .write_mode import WriteMode, validate_write_mode
 
 if sys.version_info >= (3, 11):
@@ -70,18 +76,6 @@ if sys.version_info >= (3, 14):
 
 if TYPE_CHECKING:
     from pydantic import TypeAdapter
-
-
-class DoesNotExist(EazyrestError):
-    """Raised when no object matches a query that expects one result."""
-
-
-class MultipleObjectsReturned(EazyrestError):
-    """Raised when a query expected one object but got multiple results."""
-
-
-class PrefetchNotSupported(EazyrestError):
-    """Raised when explicit prefetch is requested for an unsupported model."""
 
 
 class FieldConversionError(EazyrestError, TypeError, ValueError):
@@ -350,6 +344,27 @@ class RelatedType:
     """Leaf type metadata for a related ``JSONObject`` type."""
 
     model_type: type[JSONObject]
+    hyperlinked: bool = False
+    """Whether the JSON value is the related object's URL, not its key."""
+
+
+@dataclass(frozen=True)
+class Hyperlinked:
+    """Annotation metadata for a relation whose JSON value is a URL.
+
+    Django REST Framework's ``HyperlinkedRelatedField`` and
+    ``HyperlinkedModelSerializer`` represent a related object by its URL,
+    such as ``"https://api.example.com/users/2/"``, rather than its primary
+    key. Annotate such a field as ``Annotated[User, Hyperlinked()]``, or a
+    collection as ``list[Annotated[User, Hyperlinked()]]``. Reading it gives a
+    related object that loads from that URL, and writing it sends the related
+    object's absolute URL.
+
+    A URL is followed only if its origin is the related model's API's, or one
+    of that API's ``redirect_origins``. Otherwise reading the field raises
+    ``FieldConversionError``, so a server cannot point the client, with its
+    credentials, at another host.
+    """
 
 
 @dataclass(frozen=True)
@@ -672,6 +687,29 @@ def _expand_aliases(
     return origin[new_args]
 
 
+def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
+    """Return type metadata whose related types are hyperlinked.
+
+    Args:
+        analyzed: Metadata of the type that ``Hyperlinked()`` annotates.
+
+    Returns:
+        ``analyzed`` with each related type, also an optional one or the item
+        type of a collection, marked as hyperlinked.
+
+    Raises:
+        TypeError: If ``analyzed`` holds no related type.
+    """
+    match analyzed:
+        case RelatedType(model_type):
+            return RelatedType(model_type, hyperlinked=True)
+        case OptionalType(inner_type):
+            return OptionalType(_hyperlinked(inner_type))
+        case CollectionType(collection_type, item_type):
+            return CollectionType(collection_type, _hyperlinked(item_type))
+    raise TypeError("Hyperlinked() applies only to a related model type")
+
+
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
@@ -701,7 +739,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):
             return PydanticType(ty)
 
-        return analyze_type(ty_args[0])
+        inner = analyze_type(ty_args[0])
+        if any(isinstance(metadata, Hyperlinked) for metadata in ty_args[1:]):
+            return _hyperlinked(inner)
+        return inner
 
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
@@ -778,12 +819,29 @@ class _OwnedJSON(dict[str, Any]):
     response or a parent's JSON wraps the mapping in this class instead.
     """
 
+    def __init__(self, value: Mapping[str, Any]) -> None:
+        """Validate an object response before taking ownership of it.
+
+        Args:
+            value: JSON object from a response or collection hook.
+
+        Raises:
+            ResponseShapeError: If the value is not a mapping.
+        """
+        if not isinstance(value, Mapping):
+            raise ResponseShapeError(
+                "Collection items must be JSON objects, "
+                f"got {type(value).__name__}"
+            )
+        super().__init__(value)
+
 
 _UNCHANGEABLE_VALUES = (
     str,
     bytes,
     int,
     float,
+    decimal.Decimal,
     type(None),
     enum.Enum,
     datetime.date,
@@ -854,6 +912,136 @@ def _query_params(
             f"{argument}"
         )
     return {**params, **kwargs}
+
+
+# Keyword arguments that the query methods reserve without yet taking them, so
+# that taking them later does not change what an existing call sends.
+_RESERVED_QUERY_KEYWORDS = frozenset({"request_options"})
+
+
+def _check_query_keywords(kwargs: Mapping[str, Any]) -> None:
+    """Reject query keyword arguments that the query methods reserve.
+
+    Args:
+        kwargs: Keyword arguments passed to a query method.
+
+    Raises:
+        TypeError: If a keyword argument is reserved.
+    """
+    reserved = sorted(_RESERVED_QUERY_KEYWORDS.intersection(kwargs))
+    if reserved:
+        raise TypeError(
+            f"The query methods reserve the keyword argument {reserved[0]}. "
+            "Pass a query parameter of that name in params."
+        )
+
+
+# Request arguments that eazyrest sets itself for a write.
+_WRITE_BODY_ARGUMENTS = frozenset({"json", "data", "files"})
+
+
+def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the request options of a write, checked.
+
+    Args:
+        options: Keyword arguments for the request, such as ``headers`` or
+            ``params``, as ``requests.Session.request()`` takes them.
+
+    Returns:
+        A copy of ``options``, or an empty dict.
+
+    Raises:
+        TypeError: If ``options`` sets the request body, which the write
+            builds itself, or enables streaming of the response.
+    """
+    if options is None:
+        return {}
+    if options.get("stream"):
+        raise TypeError(
+            "Model writes cannot stream their responses. Use an API method "
+            "directly to read a streamed response."
+        )
+    body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
+    if body:
+        raise TypeError(
+            f"request_options cannot set {', '.join(body)}, because the write "
+            "builds the request body itself"
+        )
+    return dict(options)
+
+
+def _form_value(name: str, value: Any) -> Any:
+    """Return a JSON value as a multipart form field's value.
+
+    Args:
+        name: Name of the form field, for the error message.
+        value: JSON value of the field.
+
+    Returns:
+        A string, or a list of strings for a list of scalars, which requests
+        sends as repeated fields. Booleans become ``true`` and ``false``.
+
+    Raises:
+        TypeError: If the value is ``None``, a mapping, an empty list, or a
+            list that holds anything but scalars, which a form field cannot
+            express.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, (str, int, float)) for item in value)
+    ):
+        return [_form_value(name, item) for item in value]
+    raise TypeError(
+        f"Field {name} cannot be sent in a multipart request with files, "
+        f"because its value is {type(value).__name__}, which a form field "
+        "cannot express. Save it in a separate write without files."
+    )
+
+
+def _check_model_write(resp: requests.Response) -> requests.Response:
+    """Require a completed write before acknowledging a model change.
+
+    Args:
+        resp: Response that the API accepted.
+
+    Returns:
+        The response when no redirect remains to be followed.
+
+    Raises:
+        RedirectError: If the response is a final 3xx status.
+    """
+    if 300 <= resp.status_code < 400:
+        resp.close()
+        raise RedirectError(
+            f"{resp.request.method} {resp.url} returned status "
+            f"{resp.status_code}, so the model write was not confirmed",
+            response=resp,
+        )
+    return resp
+
+
+def _query_type(conversion: AnalyzedType) -> AnalyzedType:
+    """Use primary keys for related query values, including hyperlinks.
+
+    Args:
+        conversion: Field's read/write conversion.
+
+    Returns:
+        The same conversion with each hyperlink represented by a key.
+    """
+    match conversion:
+        case RelatedType(model_type):
+            return RelatedType(model_type)
+        case OptionalType(inner_type):
+            return OptionalType(_query_type(inner_type))
+        case CollectionType(collection_type, item_type):
+            return CollectionType(collection_type, _query_type(item_type))
+    return conversion
 
 
 def _materialize_query_value(value: Any) -> Any:
@@ -946,6 +1134,37 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 T = TypeVar("T", bound="JSONObject")
 
 
+def _checked_hyperlink(api: API, url: str) -> str:
+    """Return a hyperlink as an absolute URL, after checking its origin.
+
+    Args:
+        api: API that the related object uses.
+        url: URL that the JSON holds, absolute or relative to the API's base
+            URL.
+
+    Returns:
+        The absolute URL.
+
+    Raises:
+        ValueError: If the URL's origin is neither the API's nor one of its
+            ``redirect_origins``. The message does not quote the URL.
+    """
+    allowed = {_origin(api.base_url), *map(_origin, api.redirect_origins)}
+    # urljoin() also rejects some URLs, such as one whose host is "[bad]", with
+    # a message that quotes part of the URL.
+    try:
+        absolute = urljoin(api.base_url, url)
+        origin = _origin(absolute)
+    except (ValueError, requests.RequestException) as err:
+        raise ValueError("Hyperlinked field value is not a valid URL") from err
+    if origin not in allowed:
+        raise ValueError(
+            "Hyperlinked field value names an origin other than the API's. "
+            "Add the origin to API.redirect_origins to follow it."
+        )
+    return absolute
+
+
 class RelatedCollection(Iterable[T]):
     """Lazy, single-pass iterable of related objects backed by JSON values.
 
@@ -975,6 +1194,7 @@ class RelatedCollection(Iterable[T]):
         values: Iterable[Any],
         related_type: type[T],
         field: str | None = None,
+        hyperlinked: bool = False,
     ) -> None:
         """Initialize a lazy related-object collection.
 
@@ -985,11 +1205,14 @@ class RelatedCollection(Iterable[T]):
             field: Name of the owning field, which finds the related objects
                 that a prefetch loaded, or ``None`` for a collection without
                 one.
+            hyperlinked: Whether the raw values are the related objects'
+                URLs.
         """
         self._owner = owner
         self._values = tuple(values)
         self._related_type = related_type
         self._field = field
+        self._hyperlinked = hyperlinked
         self._iterated = False
 
     def __iter__(self) -> Iterator[T]:
@@ -1027,6 +1250,7 @@ class RelatedCollection(Iterable[T]):
                 value,
                 self._related_type,
                 field=self._field,
+                hyperlinked=self._hyperlinked,
             )
 
 
@@ -1054,20 +1278,26 @@ def _check_json_keys(
     cls: type[JSONObject],
     field_map: Mapping[str, str],
     exclude: AbstractSet[str],
+    write_map: Mapping[str, str] | None = None,
 ) -> None:
     """Check that no two fields of ``cls`` share a JSON key.
 
     Each field caches its own converted value, so assigning one of two fields
-    backed by the same key would leave the other reading a stale value.
+    backed by the same key would leave the other reading a stale value. Two
+    fields written under one key would overwrite each other in a write.
 
     Args:
         cls: Class being decorated.
         field_map: Mapping from Python attribute name to JSON key.
         exclude: Annotated attribute names to ignore.
+        write_map: Mapping from Python attribute name to the JSON key that
+            writes use.
 
     Raises:
-        ValueError: If two fields, declared or inherited, map to one key.
+        ValueError: If two fields, declared or inherited, map to one key, for
+            reads or for writes.
     """
+    write_map = write_map or {}
     declared = _declared_fields(cls, exclude)
     inherited = sorted(
         field
@@ -1089,12 +1319,28 @@ def _check_json_keys(
                 f"both map to the JSON key {json_field!r}"
             )
 
+    write_fields_by_key: dict[str, str] = {}
+    for field in [*inherited, *declared]:
+        if field in declared:
+            write_field = write_map.get(field, field_map.get(field, field))
+        else:
+            write_field = getattr(cls, field).write_field
+
+        other = write_fields_by_key.setdefault(write_field, field)
+        if other != field:
+            raise ValueError(
+                f"Fields {cls.__name__}.{other} and {cls.__name__}.{field} "
+                f"are both written under the JSON key {write_field!r}"
+            )
+
 
 def _check_options(
     cls: type[JSONObject],
     pk: str | None,
     field_map: Mapping[str, str],
     exclude: AbstractSet[str],
+    write_only: AbstractSet[str] = frozenset(),
+    write_map: Mapping[str, str] | None = None,
 ) -> None:
     """Check that ``json_object()`` options name fields of ``cls``.
 
@@ -1106,9 +1352,13 @@ def _check_options(
         pk: Explicit primary-key field name, or ``None``.
         field_map: Mapping from Python attribute name to JSON key.
         exclude: Annotated attribute names to ignore.
+        write_only: Names of fields that are written but never read.
+        write_map: Mapping from Python attribute name to the JSON key that
+            writes use.
 
     Raises:
-        ValueError: If an option names no field of ``cls``.
+        ValueError: If an option names no field of ``cls``, or the primary key
+            is write-only.
     """
     annotations = _annotations(cls)
     declared = _declared_fields(cls, exclude)
@@ -1127,7 +1377,27 @@ def _check_options(
             f"fields declared on {cls.__name__}"
         )
 
+    unknown_write_mapped = sorted(set(write_map or {}).difference(declared))
+    if unknown_write_mapped:
+        raise ValueError(
+            f"json_object(write_map=...) maps {unknown_write_mapped}, which "
+            f"are not fields declared on {cls.__name__}"
+        )
+
+    unknown_write_only = sorted(set(write_only).difference(declared))
+    if unknown_write_only:
+        raise ValueError(
+            f"json_object(write_only=...) names {unknown_write_only}, which "
+            f"are not fields declared on {cls.__name__}"
+        )
+
     inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
+    key = pk or (inherited_pk.field if inherited_pk is not None else "id")
+    if key in write_only:
+        raise ValueError(
+            f"json_object(write_only=...) names {key!r}, the primary key of "
+            f"{cls.__name__}, which must be readable"
+        )
     if (
         pk is not None
         and pk not in declared
@@ -1147,6 +1417,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> type[T]: ...
 
 
@@ -1158,6 +1430,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> Callable[[type[T]], type[T]]: ...
 
 
@@ -1168,6 +1442,8 @@ def json_object(
     pk: str | None = None,
     field_map: Mapping[str, str] | None = None,
     exclude: AbstractSet[str] = frozenset(),
+    write_only: AbstractSet[str] | None = None,
+    write_map: Mapping[str, str] | None = None,
 ) -> type[T] | Callable[[type[T]], type[T]]:
     """Decorate a ``JSONObject`` subclass to wire typed JSON fields.
 
@@ -1189,6 +1465,23 @@ def json_object(
             declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
+        write_map: Optional mapping from Python attribute name to the JSON
+            key that writes use, for a field that the API returns under one
+            key and accepts under another. Django REST Framework, for
+            example, often returns a related object nested under ``user`` and
+            accepts its primary key as ``user_id``. Reads, queries, and the
+            object's JSON use the field's key. ``create()``, ``save()``, and
+            eager assignments send the field under its write key.
+        write_only: Names of fields that the API accepts in writes but never
+            returns, such as a password. Such a field can be passed to
+            ``create()`` and assigned, and the next write sends it, but it is
+            not kept in the object's JSON, and reading it raises
+            ``AttributeError``.
+
+    A redeclared field inherits its read and write keys unless a mapping
+    explicitly replaces them. An omitted ``write_only`` option inherits that
+    policy too. An explicit set applies to every redeclared field, so an empty
+    set removes its inherited policy.
 
     Returns:
         The decorated class, or a decorator function when used with arguments.
@@ -1204,6 +1497,8 @@ def json_object(
     """
     if field_map is None:
         field_map = {}
+    if write_map is None:
+        write_map = {}
 
     def wrap(cls: type[T]) -> type[T]:
         """Install JSON descriptors on a ``JSONObject`` subclass.
@@ -1221,8 +1516,24 @@ def json_object(
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
-        _check_options(cls, pk, field_map, exclude)
-        _check_json_keys(cls, field_map, exclude)
+        read_keys = dict(field_map)
+        write_keys = dict(write_map)
+        hidden = set(write_only or ())
+        for field in _declared_fields(cls, exclude):
+            # Look the attribute up without running descriptors. A field named
+            # like the class's ``api`` would otherwise resolve the API, which
+            # fails before one is registered, instead of reaching the check
+            # that refuses the name.
+            inherited = inspect.getattr_static(cls, field, None)
+            if not isinstance(inherited, JSONProperty):
+                continue
+            read_keys.setdefault(field, inherited.json_field)
+            if inherited.write_field != inherited.json_field:
+                write_keys.setdefault(field, inherited.write_field)
+            if write_only is None and inherited.write_only:
+                hidden.add(field)
+        _check_options(cls, pk, read_keys, exclude, hidden, write_keys)
+        _check_json_keys(cls, read_keys, exclude, write_keys)
 
         inherited_pk: JSONProperty | None = getattr(cls, "_pk", None)
         if pk is not None:
@@ -1250,13 +1561,15 @@ def json_object(
                     f"it to the JSON key {field!r} with field_map."
                 )
 
-            json_field = field_map.get(field, field)
+            json_field = read_keys.get(field, field)
 
             prop = JSONProperty(
                 cls,
                 json_field,
                 field,
                 is_primary_key=field == pk_field,
+                write_only=field in hidden,
+                write_field=write_keys.get(field),
             )
 
             setattr(cls, field, prop)
@@ -1315,6 +1628,12 @@ class JSONProperty:
     json_field: str
     """Name of JSON field corresponding to this property."""
 
+    write_only: bool = False
+    """Whether the API accepts this field in writes but never returns it."""
+
+    write_field: str
+    """JSON key that writes send this field under, usually ``json_field``."""
+
     is_primary_key: bool = False
     """Whether this property is the primary key of the class that owns it.
 
@@ -1328,6 +1647,8 @@ class JSONProperty:
         json_field: str,
         field: str,
         is_primary_key: bool = False,
+        write_only: bool = False,
+        write_field: str | None = None,
     ):
         """Initialize a property descriptor.
 
@@ -1336,11 +1657,17 @@ class JSONProperty:
             json_field: JSON key backing this attribute.
             field: Python attribute name.
             is_primary_key: Whether this property stores the primary key.
+            write_only: Whether the API accepts this field in writes but never
+                returns it.
+            write_field: JSON key that writes send this field under, if not
+                ``json_field``.
         """
         self.cls = cls
         self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
+        self.write_only = write_only
+        self.write_field = json_field if write_field is None else write_field
 
         # If this property is a primary key, then we store a reference to it in
         # the class's _pk attribute and the JSON field corresponding to the
@@ -1424,12 +1751,22 @@ class JSONProperty:
 
         Raises:
             AttributeError: If instance access targets a field missing from the
-                backing JSON.
+                backing JSON, or a write-only field.
         """
         if obj is None:
             return self
 
-        if self._is_key_of(obj) and obj._json is None:
+        if self.write_only:
+            raise AttributeError(
+                f"{type(obj).__name__}.{self.field} is write-only, so it "
+                "cannot be read"
+            )
+
+        if (
+            self._is_key_of(obj)
+            and obj._json is None
+            and obj._url_override is None
+        ):
             # An object created without a key has none until it loads.
             return getattr(obj, "_pk_value", None)
 
@@ -1471,18 +1808,29 @@ class JSONProperty:
             obj: ``JSONObject`` instance being modified.
             value: New Python value to assign.
 
+        A write-only field's value is sent by the next write, as any other
+        assignment is, but it is not kept in the object's JSON, and assigning
+        it does not load the object.
+
         Raises:
             AttributeError: If the backing JSON does not contain this field.
             FieldConversionError: If the value cannot be converted to the
                 field's JSON value, or a primary key that initializes an
                 unloaded object is not a valid value of the field's type.
         """
+        if self.write_only:
+            with _converting(type(obj), self.field):
+                encoded = obj._to_json(value, self.analyzed_type)
+            obj._update_write_only_field(self.json_field, _copy_json(encoded))
+            return
+
         # Only the first key assignment initializes a lazy object's identity.
         # Later assignments must update the resource at its saved key.
         if (
             self._is_key_of(obj)
             and obj._json is None
             and not hasattr(obj, "_pk_value")
+            and obj._url_override is None
         ):
             # Convert the key as if it were read from JSON, so it has the same
             # type before and after the object loads. A related object passed
@@ -1609,14 +1957,15 @@ class JSONObject:
     """Conversions of field types, keyed by the type they convert.
 
     A class's entries are merged over its bases', and theirs over the
-    default ones for ``datetime``, ``date``, ``timedelta``, ``UUID``,
-    and enums. A field type converts by the entry for exactly that type,
-    else by the entry of the nearest class in its MRO, else, for a
-    ``NewType``, as its supertype. A key cannot be a model, or a type
-    that eazyrest converts itself: ``object``, ``bool``, ``int``,
-    ``float``, ``str``, ``None``'s type, or a collection type such as
-    ``list`` or ``dict``. Declare the mapping in the class body: the
-    class merges and checks its table when it is defined.
+    default ones for ``datetime``, ``date``, ``time``, ``timedelta``,
+    ``UUID``, ``Decimal``, and enums. A field type converts by the entry
+    for exactly that type, else by the entry of the nearest class in its
+    MRO, else, for a ``NewType``, as its supertype. A key cannot be a
+    model, or a type that eazyrest converts itself: ``object``,
+    ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
+    collection type such as ``list`` or ``dict``. Declare the mapping in
+    the class body: the class merges and checks its table when it is
+    defined.
     """
 
     _pk_value: Any
@@ -1657,7 +2006,10 @@ class JSONObject:
     """Object's JSON representation."""
 
     _json_is_partial: bool
-    """Whether ``_json`` holds only fields from ``update_from_json()``."""
+    """Whether ``_json`` holds only some of the object's fields."""
+
+    _url_override: str | None = None
+    """The URL of an object that a hyperlinked relation named, if any."""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Check a class's conversions and the models it inherits fields from.
@@ -1762,6 +2114,8 @@ class JSONObject:
             self._json = copy.deepcopy(dict(json))
         else:
             self._json = None
+        if self._json is not None:
+            self._json = self._readable_json(self._json)
         self._json_is_partial = False
 
         # Set the primary key first, because assigning any other field loads
@@ -1799,6 +2153,8 @@ class JSONObject:
             with contextlib.suppress(TypeError, ValueError):
                 value = self._to_json(value, pk_property.analyzed_type)
 
+        if value is None and self._url_override is not None:
+            return f"<{name} url={self._url_override!r}>"
         return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(
@@ -1821,17 +2177,25 @@ class JSONObject:
         ty: type[T],
         *,
         field: str | None = None,
+        hyperlinked: bool = False,
     ) -> T:
-        """Create a related object from embedded JSON or a foreign key.
+        """Create a related object from embedded JSON, a key, or a URL.
 
         Args:
-            arg: Either a JSON mapping for eager object creation or a primary
-                key value for lazy lookup.
+            arg: Either a JSON mapping for eager object creation, a primary
+                key value for lazy lookup, or, for a hyperlinked relation, the
+                related object's URL.
             ty: Related ``JSONObject`` subclass type.
             field: Optional owning field name for prefetch lookup.
+            hyperlinked: Whether a string value is the related object's URL.
 
         Returns:
             Instance of ``ty``.
+
+        Raises:
+            TypeError: If a hyperlinked value is neither a URL nor a mapping.
+            ValueError: If a URL's origin is not one that the related model's
+                API allows.
         """
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
@@ -1844,6 +2208,16 @@ class JSONObject:
             return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
+
+        if hyperlinked:
+            if not isinstance(arg, str):
+                raise TypeError(
+                    "Hyperlinked field values must be URLs or objects, got "
+                    f"{type(arg).__name__}"
+                )
+            related = ty(api=api, write_mode=self.write_mode)
+            related._url_override = _checked_hyperlink(related.api, arg)
+            return related
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
         if field is not None and field in self._prefetched_related:
@@ -1901,11 +2275,12 @@ class JSONObject:
                 with _active_table(_table_of(type(self))):
                     return _decode(adapter, _copy_json(value))
 
-            case RelatedType(model_type):
+            case RelatedType(model_type, hyperlinked):
                 return self._create_related(
                     value,
                     model_type,
                     field=field,
+                    hyperlinked=hyperlinked,
                 )
 
             case CollectionType(collection_type, item_type):
@@ -1931,6 +2306,7 @@ class JSONObject:
                         value,
                         item_type.model_type,
                         field=field,
+                        hyperlinked=item_type.hyperlinked,
                     )
 
                 converted_items = (
@@ -1976,6 +2352,15 @@ class JSONObject:
         match conversion:
             case OptionalType(inner_type):
                 return cls._to_json(value, inner_type)
+            case RelatedType(model_type, hyperlinked=True):
+                if isinstance(value, JSONObject):
+                    return value.absolute_url
+                if isinstance(value, str):
+                    return value
+                raise TypeError(
+                    "Hyperlinked field values must be objects or URLs, got "
+                    f"{type(value).__name__}"
+                )
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     model_type = type(value)
@@ -2013,14 +2398,25 @@ class JSONObject:
                     f"Unsupported analyzed type {type(conversion).__name__}"
                 )
 
-    def delete(self, *args: Any, **kwargs: Any) -> None:
+    def delete(
+        self, *, request_options: Mapping[str, Any] | None = None
+    ) -> None:
         """Delete this object from the remote API.
 
         Args:
-            *args: Positional arguments forwarded to ``API.delete``.
-            **kwargs: Keyword arguments forwarded to ``API.delete``.
+            request_options: Optional keyword arguments for the request, such
+                as ``headers={"If-Match": etag}``, as for ``save()``. They
+                cannot set the body or enable response streaming.
+
+        Raises:
+            TypeError: If ``request_options`` sets the body or streams the
+                response.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
-        self.api.delete(self.url, *args, **kwargs)
+        options = _request_options(request_options)
+        _check_model_write(self.api.delete(self.url, **options))
 
     @property
     def write_mode(self) -> WriteMode:
@@ -2047,11 +2443,116 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(self.url, json=payload)
+            resp = self.api.patch(self.url, json=self._to_wire(payload))
             self._apply_patch_response(resp, payload)
             return
 
         self._queue_update(json_field, value)
+
+    def _update_write_only_field(self, json_field: str, value: Any) -> None:
+        """Send or queue a write-only field's value, as the write mode says.
+
+        Args:
+            json_field: JSON key of the write-only field.
+            value: JSON-serializable field value.
+        """
+        if self.write_mode == "eager":
+            self._queue_in_place_changes()
+            payload = dict(self._pending_updates)
+            payload[json_field] = value
+            resp = self.api.patch(self.url, json=self._to_wire(payload))
+            self._apply_patch_response(resp, payload)
+            return
+
+        self._pending_updates[json_field] = value
+
+    @classmethod
+    def _to_wire(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Return a write's JSON with each field under its write key.
+
+        Args:
+            payload: JSON members keyed by the fields' JSON keys, as the
+                object's JSON is, or other keys, which are kept.
+
+        Returns:
+            ``payload`` with each field that ``write_map`` names under its
+            write key.
+        """
+        write_keys = {
+            descriptor.json_field: descriptor.write_field
+            for field in getattr(cls, "_json_fields", ())
+            if (descriptor := getattr(cls, field)).write_field
+            != descriptor.json_field
+        }
+        wire = {}
+        for key, value in payload.items():
+            target = write_keys.get(key, key)
+            if target in wire:
+                raise TypeError(f"Multiple fields write the JSON key {target}")
+            wire[target] = value
+        return wire
+
+    @classmethod
+    def _write_body(
+        cls, payload: Mapping[str, Any], files: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return the request arguments that send a write's body.
+
+        Args:
+            payload: JSON members of the write, keyed by read key.
+            files: Files to upload, keyed by field name or form field name,
+                as ``requests`` takes them, or ``None``.
+
+        Returns:
+            ``{"json": ...}`` without files. With files, ``{"data": ...,
+            "files": ...}`` for a multipart request, whose form fields hold
+            the payload.
+
+        Raises:
+            TypeError: If a payload value cannot be a form field.
+        """
+        wire = cls._to_wire(payload)
+        if not files:
+            return {"json": wire}
+        form = {name: _form_value(name, value) for name, value in wire.items()}
+        uploads = {}
+        for name, file in files.items():
+            descriptor = getattr(cls, name, None)
+            key = (
+                descriptor.write_field
+                if isinstance(descriptor, JSONProperty)
+                else name
+            )
+            if key in uploads:
+                raise TypeError(f"Multiple files write the form key {key}")
+            uploads[key] = file
+        return {"data": form, "files": uploads}
+
+    @classmethod
+    def _write_only_keys(cls) -> frozenset[str]:
+        """Return the JSON keys of this class's write-only fields.
+
+        Returns:
+            The JSON key of each write-only field.
+        """
+        return frozenset(
+            descriptor.json_field
+            for field in getattr(cls, "_json_fields", ())
+            if (descriptor := getattr(cls, field)).write_only
+        )
+
+    @classmethod
+    def _readable_json(cls, json: Mapping[str, Any]) -> dict[str, Any]:
+        """Exclude write-only values from stored JSON.
+
+        Args:
+            json: Response or caller-provided object payload.
+
+        Returns:
+            JSON members other than declared write-only fields.
+        """
+        hidden = cls._write_only_keys()
+        return {key: value for key, value in json.items() if key not in hidden}
 
     def _queue_update(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update locally and queue it for ``save()``.
@@ -2088,10 +2589,10 @@ class JSONObject:
         resp: requests.Response,
         payload: Mapping[str, Any],
     ) -> None:
-        """Update local state after a successful ``PATCH`` request.
+        """Update local state after a successful ``PATCH`` or ``PUT`` request.
 
         Args:
-            resp: Response to the ``PATCH`` request.
+            resp: Response to the request.
             payload: JSON fields sent in the request.
 
         Raises:
@@ -2099,7 +2600,27 @@ class JSONObject:
                 object. The object's state, including its pending updates, is
                 unchanged.
         """
-        self._replace_json(self.merge_response(resp, self.json, payload))
+        _check_model_write(resp)
+        # The object never keeps a write-only field's value.
+        write_only = self._write_only_keys()
+        sent = {k: v for k, v in payload.items() if k not in write_only}
+        if self._json is None and not sent:
+            # Only write-only fields were sent, so the object need not load.
+            # A body becomes its JSON so far, and a read of a field that the
+            # body lacks loads it. That load needs the object's URL, so the
+            # JSON keeps the key the object was saved under, as a load does,
+            # if the body lacks it.
+            json = self._readable_json(self.merge_response(resp, {}, {}))
+            if json:
+                key = self._pk_json_field
+                if key not in json and "_pk_value" in vars(self):
+                    json[key] = self._to_json(
+                        self._pk_value, type(self)._pk.analyzed_type
+                    )
+                self._replace_json(json)
+                self._json_is_partial = True
+        else:
+            self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
 
     def _replace_json(self, json: dict[str, Any]) -> None:
@@ -2114,6 +2635,18 @@ class JSONObject:
             json: The object's new JSON.
         """
         before = self._json if self._json is not None else {}
+        json = self._readable_json(json)
+        if self._url_override is not None:
+            key: str = type(self)._pk.json_field
+            saved = before.get(key, _MISSING)
+            if key in self._pending_updates:
+                saved = self._to_json(
+                    self._saved_pk, type(self)._pk.analyzed_type
+                )
+            if saved is not _MISSING and not _json_equal(
+                saved, json.get(key, _MISSING)
+            ):
+                self._url_override = None
         self._json = json
 
         for field in getattr(self, "_json_fields", ()):
@@ -2172,13 +2705,19 @@ class JSONObject:
 
         return json
 
-    def save(self) -> None:
+    def save(
+        self,
+        *,
+        full: bool = False,
+        files: Mapping[str, Any] | None = None,
+        request_options: Mapping[str, Any] | None = None,
+    ) -> None:
         """Persist all pending lazy field updates.
 
         In ``"lazy"`` mode, field assignments are accumulated locally and sent
         in one ``PATCH`` request when ``save()`` is called. In ``"eager"``
-        mode, assignments are patched immediately and ``save()`` is a no-op
-        unless pending updates remain from an earlier lazy mode.
+        mode, assignments are patched immediately. Unless ``full`` or
+        ``files`` is supplied, ``save()`` sends nothing when no updates remain.
 
         A value read from a field and then changed in place, such as a list
         appended to, is saved too, in either mode. Such a change is detected
@@ -2190,17 +2729,87 @@ class JSONObject:
         includes the saved updates, and the object that the response body
         holds, if any, is merged over it.
 
+        With ``full=True``, ``save()`` sends a ``PUT`` that holds every
+        writable declared field the object's JSON has, with its changes, as an
+        API that replaces the whole object expects, even if nothing changed.
+        It loads an unloaded or partial object first. Each value is encoded as
+        an assignment would encode it, so a related object is sent as its
+        primary key. Pending write-only fields are sent too.
+
+        With ``files``, the write is a multipart request that uploads them,
+        with the other fields as form fields, even if no field changed. A
+        form field cannot hold ``None``, a mapping, an empty list, or a nested
+        list, so such a value raises ``TypeError`` before anything is sent.
+
+        Args:
+            full: Whether to send the whole object with ``PUT`` rather than
+                the changes with ``PATCH``. It loads an unloaded or partial
+                object first.
+            files: Optional files to upload, keyed by field name or by the
+                API's field name, as ``requests`` takes them, such as
+                ``{"image": open("a.png", "rb")}``.
+            request_options: Optional keyword arguments for the request, such
+                as ``headers={"If-Match": etag}``, as ``requests`` takes them.
+                They cannot set the body or enable response streaming.
+
         Raises:
             ResponseShapeError: If the response body does not hold a JSON
                 object. The server may have applied the updates, but they
                 remain pending.
+            TypeError: If ``request_options`` sets the body or streams the
+                response, or a field cannot be sent as a form field.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
+            FieldConversionError: If a field's value cannot be converted.
         """
+        options = _request_options(request_options)
         self._queue_in_place_changes()
-        if len(self._pending_updates) == 0:
+        if full:
+            payload = self._full_payload()
+            body = self._write_body(payload, files)
+            resp = self.api.put(self.url, **body, **options)
+            self._apply_patch_response(resp, payload)
+            return
+        if len(self._pending_updates) == 0 and not files:
             return
 
-        resp = self.api.patch(self.url, json=self._pending_updates)
-        self._apply_patch_response(resp, self._pending_updates)
+        payload = dict(self._pending_updates)
+        body = self._write_body(payload, files)
+        resp = self.api.patch(self.url, **body, **options)
+        self._apply_patch_response(resp, payload)
+
+    def _full_payload(self) -> dict[str, Any]:
+        """Return the whole object's JSON for a ``PUT``, keyed by read key.
+
+        Returns:
+            Each declared field that the object's JSON has, encoded as an
+            assignment encodes it, and each pending write-only field.
+
+        Raises:
+            FieldConversionError: If a field's value cannot be converted.
+        """
+        if self._json_is_partial:
+            self._load_json()
+        json = self.json
+        payload: dict[str, Any] = {}
+        for field in sorted(getattr(self, "_json_fields", ())):
+            descriptor = getattr(type(self), field)
+            if descriptor.write_only or descriptor.json_field not in json:
+                continue
+            conversion = descriptor.analyzed_type
+            with _converting(type(self), field):
+                payload[descriptor.json_field] = self._to_json(
+                    self._from_json(json[descriptor.json_field], conversion),
+                    conversion,
+                )
+        write_only = self._write_only_keys()
+        payload.update(
+            (key, value)
+            for key, value in self._pending_updates.items()
+            if key in write_only
+        )
+        return payload
 
     def update_from_json(self, json: Mapping[str, Any]) -> None:
         """Merge server-provided JSON into this object without a refetch.
@@ -2224,7 +2833,18 @@ class JSONObject:
         """
         payload = copy.deepcopy(dict(json))
 
-        existing_pk = self._persisted_pk()
+        unknown_key = self._url_override is not None and (
+            (self._json is None and getattr(self, "_pk_value", None) is None)
+            or (
+                self._json is not None
+                and self._pk_json_field not in self._json
+            )
+        )
+        existing_pk = (
+            payload.get(self._pk_json_field)
+            if unknown_key
+            else self._persisted_pk()
+        )
         incoming_pk = payload.get(self._pk_json_field, existing_pk)
         if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
             raise ValueError(
@@ -2232,14 +2852,14 @@ class JSONObject:
             )
 
         if self._json is None:
-            self._json = {
-                self._pk_json_field: self._to_json(
+            self._json = {}
+            if existing_pk is not None:
+                self._json[self._pk_json_field] = self._to_json(
                     existing_pk, type(self)._pk.analyzed_type
                 )
-            }
             self._json_is_partial = True
 
-        self._json.update(payload)
+        self._json.update(self._readable_json(payload))
 
         for field in self._json_fields:
             descriptor = getattr(type(self), field, None)
@@ -2256,8 +2876,12 @@ class JSONObject:
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates."""
-        # Store value of primary key
-        self._pk_value = self._persisted_pk()
+        # Store value of primary key. An object read from a hyperlink may not
+        # know its key, before it loads or from JSON that lacks it.
+        unknown_key = self._url_override is not None and (
+            self._json is None or self._pk_json_field not in self._json
+        )
+        self._pk_value = None if unknown_key else self._persisted_pk()
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -2344,11 +2968,16 @@ class JSONObject:
             Relative URL for this object. It ends with ``/`` unless the API's
             ``trailing_slash`` is ``False``.
 
+        An object read from a hyperlinked relation has the URL that the
+        relation named, as an absolute URL.
+
         Raises:
             ValueError: If the primary key is ``None``, empty, or a dot
                 segment. The URL would name another resource, such as the
                 collection.
         """
+        if self._url_override is not None:
+            return self._url_override
         pk = self._to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
@@ -2425,8 +3054,14 @@ class JSONObject:
                     self._pk_value, type(self)._pk.analyzed_type
                 )
 
-        # Unsaved lazy updates still take precedence over server state.
-        json.update(self._pending_updates)
+        # Unsaved lazy updates still take precedence over server state. The
+        # object never keeps a write-only field's value.
+        write_only = self._write_only_keys()
+        json.update(
+            (key, value)
+            for key, value in self._pending_updates.items()
+            if key not in write_only
+        )
         # Keep the values of fields that the load left unchanged, such as a
         # related object with unsaved changes of its own.
         self._replace_json(json)
@@ -2461,12 +3096,15 @@ class JSONObject:
         return json
 
     @classmethod
-    def _encode_fields(cls, fields: Mapping[str, Any]) -> dict[str, Any]:
+    def _encode_fields(
+        cls, fields: Mapping[str, Any], *, query: bool = False
+    ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
         Args:
             fields: Values keyed by Python attribute name for JSON-backed
                 fields, or by JSON key for other values.
+            query: Whether to encode a query, whose related values use keys.
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
@@ -2477,14 +3115,22 @@ class JSONObject:
 
         for field, value in fields.items():
             descriptor = getattr(cls, field, None)
+            key = (
+                descriptor.json_field
+                if isinstance(descriptor, JSONProperty)
+                else field
+            )
+            if key in payload:
+                raise TypeError(f"Multiple fields use the JSON key {key}")
             if isinstance(descriptor, JSONProperty):
                 with _converting(cls, field):
-                    payload[descriptor.json_field] = cls._to_json(
+                    conversion = descriptor.analyzed_type
+                    payload[key] = cls._to_json(
                         value,
-                        descriptor.analyzed_type,
+                        _query_type(conversion) if query else conversion,
                     )
             else:
-                payload[field] = value
+                payload[key] = value
 
         return payload
 
@@ -2548,7 +3194,8 @@ class JSONObject:
                 name: value
                 for name, value in params.items()
                 if not cls._is_single_collection_item(name, value)
-            }
+            },
+            query=True,
         )
         for name, value in params.items():
             if cls._is_single_collection_item(name, value):
@@ -2558,8 +3205,13 @@ class JSONObject:
                 collection = _unwrap_optional_type(descriptor.analyzed_type)
                 assert isinstance(collection, CollectionType)
                 with _converting(cls, name):
+                    if descriptor.json_field in payload:
+                        raise TypeError(
+                            "Multiple fields use the JSON key "
+                            f"{descriptor.json_field}"
+                        )
                     payload[descriptor.json_field] = cls._to_json(
-                        value, collection.item_type
+                        value, _query_type(collection.item_type)
                     )
 
         for name in params:
@@ -2570,6 +3222,16 @@ class JSONObject:
                 else name
             )
             value = _materialize_query_value(payload[json_field])
+            if not isinstance(descriptor, JSONProperty):
+                if isinstance(value, JSONObject):
+                    value = cls._to_json(value, RelatedType(type(value)))
+                elif isinstance(value, list):
+                    value = [
+                        cls._to_json(item, RelatedType(type(item)))
+                        if isinstance(item, JSONObject)
+                        else item
+                        for item in value
+                    ]
             problem = _unsendable_query_value(value)
             if problem is not None:
                 raise ValueError(
@@ -2588,6 +3250,8 @@ class JSONObject:
         *,
         api: API | None = None,
         fields: Mapping[str, Any] | None = None,
+        files: Mapping[str, Any] | None = None,
+        request_options: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
         """Create and return a new remote object.
@@ -2603,8 +3267,13 @@ class JSONObject:
                 registered for the class. The new object keeps it as their API,
                 so their later requests use it too.
             fields: Optional field values as a mapping, used as the keyword
-                arguments are. A key in it may be anything, including ``api``
-                or ``fields``.
+                arguments are. A key in it may be anything, including ``api``,
+                ``fields``, ``files``, or ``request_options``.
+            files: Optional files to upload, as for ``save()``. The request is
+                then multipart, with the fields as form fields.
+            request_options: Optional keyword arguments for the request, such
+                as ``headers``, as ``requests`` takes them. They cannot set the
+                body.
             **kwargs: Field values submitted in Python form for JSON-backed
                 fields, or already-JSON values for unknown extra keys.
 
@@ -2614,15 +3283,27 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response does not hold a JSON object.
             TypeError: If a field is given both as a keyword argument and in
-                ``fields``.
+                ``fields``, if ``request_options`` sets the body, or if a
+                field's value cannot be sent as a form field with ``files``.
+                Also raised for response streaming or conflicting wire names.
+            APIError: If the server returns an HTTP error status.
+            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            LimitExceeded: If a request or its JSON exceeds the API's limits.
+            FieldConversionError: If a field's value cannot be converted.
         """
+        options = _request_options(request_options)
         payload = cls._encode_fields(
             _query_params(fields, kwargs, "Field", "fields")
         )
         client = cls.api if api is None else api
-        resp = client.post(cls.class_url, json=payload)
+        resp = _check_model_write(
+            client.post(
+                cls.class_url, **cls._write_body(payload, files), **options
+            )
+        )
 
-        json_keys = cls._json_keys()
+        # The object keeps neither a write-only field nor an extra key.
+        json_keys = cls._json_keys() - cls._write_only_keys()
         # The payload can hold the caller's own containers, such as a dict
         # field's value, so copy them before they become saved state.
         sent = {
@@ -2631,7 +3312,7 @@ class JSONObject:
             if key in json_keys
         }
         obj = cls(json={}, api=api)
-        obj._json = obj.merge_response(resp, {}, sent)
+        obj._replace_json(obj.merge_response(resp, {}, sent))
         # A new object has no earlier state, so a field that neither the
         # payload nor the response holds is unknown rather than absent.
         obj._json_is_partial = not json_keys.issubset(obj._json)
@@ -2810,6 +3491,11 @@ class JSONObject:
             raise ValueError(  # noqa: TRY004
                 f"{cls.__name__}.{field} is not a related-object field"
             )
+        if analyzed_type.hyperlinked:
+            raise ValueError(
+                f"{cls.__name__}.{field} is hyperlinked, and prefetching "
+                "needs primary keys"
+            )
 
         model_type = analyzed_type.model_type
         if not model_type._supports_bulk_get():
@@ -2874,7 +3560,13 @@ class JSONObject:
 
                 if collection_type is None:
                     if not isinstance(raw_value, dict):
-                        pks.add(raw_value)
+                        try:
+                            pks.add(raw_value)
+                        except TypeError as err:
+                            raise ResponseShapeError(
+                                f"{cls.__name__}.{field} has an invalid "
+                                "related key"
+                            ) from err
                     continue
 
                 if not isinstance(raw_value, Iterable) or isinstance(
@@ -2885,11 +3577,16 @@ class JSONObject:
                 raw_items = tuple(raw_value)
                 # Explicit prefetch only bulk-loads foreign-key style entries.
                 # Embedded related JSON objects do not need to be prefetched.
-                pks.update(
-                    item
-                    for item in raw_items
-                    if item is not None and not isinstance(item, dict)
-                )
+                try:
+                    pks.update(
+                        item
+                        for item in raw_items
+                        if item is not None and not isinstance(item, dict)
+                    )
+                except TypeError as err:
+                    raise ResponseShapeError(
+                        f"{cls.__name__}.{field} has an invalid related key"
+                    ) from err
 
             if len(pks) == 0:
                 continue
@@ -2931,9 +3628,10 @@ class JSONObject:
         iterator = iter(items)
 
         while True:
-            batch_items = list(
-                itertools.islice(iterator, cls.prefetch_batch_size)
-            )
+            batch_items = [
+                _OwnedJSON(item)
+                for item in itertools.islice(iterator, cls.prefetch_batch_size)
+            ]
             if len(batch_items) == 0:
                 return
 
@@ -2963,7 +3661,7 @@ class JSONObject:
         api: API | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> Iterator[Self]:
+    ) -> Results[Self]:
         """Query objects matching request parameters.
 
         The request is sent when ``filter()`` is called. Objects are created as
@@ -2973,7 +3671,8 @@ class JSONObject:
         Parameters named after JSON-backed fields are renamed by ``field_map``
         and converted to JSON values, so ``user=User(id=2)`` is sent as
         ``userId=2`` when ``field_map={"user": "userId"}``. Other parameters
-        are sent unchanged.
+        are sent unchanged, except that a model instance, also as an item of a
+        collection, is sent as its primary key.
 
         Every parameter must have a value that requests sends intact. It must
         not be ``None``, an empty collection, or a mapping, and a collection
@@ -2984,8 +3683,9 @@ class JSONObject:
         or a ``deque``, is a collection.
 
         The keyword arguments ``api``, ``prefetch``, ``defaults``, and
-        ``params`` of the query methods are not query parameters. Pass a
-        parameter with one of these names in ``params``.
+        ``params`` of the query methods are not query parameters, and the
+        query methods reserve ``request_options``. Pass a parameter with one
+        of these names in ``params``.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -3001,17 +3701,21 @@ class JSONObject:
             **kwargs: Query string parameters.
 
         Returns:
-            Iterator over objects built from the response payload.
+            Iterator over objects built from the response payload. Its
+            ``count`` is the size of the whole collection, if the iterable
+            that ``collection_items()`` returns has a ``count`` attribute, as
+            ``follow_next_links()``'s does, and ``None`` otherwise.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
@@ -3027,11 +3731,16 @@ class JSONObject:
         finally:
             _query_api.reset(token)
 
+        count = _count_of(items)
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
-            return (cls(json=_OwnedJSON(item), api=api) for item in items)
+            return Results(
+                (cls(json=_OwnedJSON(item), api=api) for item in items), count
+            )
 
-        return cls._prefetched_filter(items, prefetch_fields, api)
+        return Results(
+            cls._prefetched_filter(items, prefetch_fields, api), count
+        )
 
     @classmethod
     def all(
@@ -3039,7 +3748,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
-    ) -> Iterator[Self]:
+    ) -> Results[Self]:
         """Return all objects for this resource type.
 
         Args:
@@ -3051,7 +3760,7 @@ class JSONObject:
                 API, so their later requests use it too.
 
         Returns:
-            Iterator over all objects.
+            Iterator over all objects, with ``count`` as for ``filter()``.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
@@ -3101,10 +3810,11 @@ class JSONObject:
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
         """
+        _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
         results = iter(cls.filter(prefetch=prefetch, api=api, params=query))
         first = next(results, None)
@@ -3134,9 +3844,11 @@ class JSONObject:
         way as ``create()``. JSON-backed fields are renamed by ``field_map``
         and converted to JSON values, so ``user=User(id=2)`` is sent as
         ``userId=2`` when ``field_map={"user": "userId"}``. Other keys are sent
-        unchanged. Every key in ``kwargs`` is sent in the lookup's query
-        string, which servers and proxies may log, so pass a value that only
-        the creation needs, such as a password, in ``defaults``.
+        unchanged, except that the lookup sends a model instance as its
+        primary key, as ``filter()`` does. Every key in ``kwargs`` is sent in
+        the lookup's query string, which servers and proxies may log, so pass
+        a value that only the creation needs, such as a password, in
+        ``defaults``.
 
         As in Django, a key that contains ``__`` and does not name a field,
         such as ``name__iexact`` or ``created__gte``, is a lookup rather than a
@@ -3175,8 +3887,9 @@ class JSONObject:
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``.
+                in ``params``, or a keyword argument is reserved.
         """
+        _check_query_keywords(kwargs)
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once.
         kwargs = {

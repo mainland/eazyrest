@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import decimal
 import enum
 import importlib
 import subprocess
@@ -57,7 +58,8 @@ from eazyrest._models import (
     PydanticType,
     analyze_type,
 )
-from eazyrest.pydantic import UUID, Date, Datetime, Duration
+from eazyrest.pydantic import UUID, Date, Datetime, Duration, Time
+from eazyrest.pydantic import Decimal as DecimalType
 
 TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
 UTC = datetime.timezone.utc
@@ -183,6 +185,47 @@ def test_constraints_apply_after_eazyrest_conversion() -> None:
     assert adapter.validate_python("1:30") == datetime.timedelta(seconds=90)
     with pytest.raises(pydantic.ValidationError):
         adapter.validate_python("-PT1M")
+
+
+@with_config(ConfigDict(extra="allow"))
+class Till(TypedDict):
+    """Mapping with decimal and time values that eazyrest converts."""
+
+    price: DecimalType
+    opens: Time
+
+
+TILL = TypeAdapter(Till)
+
+
+def test_decimal_and_time_types_convert_as_eazyrest_fields_do() -> None:
+    """``Decimal`` and ``Time`` read and write as eazyrest's fields do."""
+    till = TILL.validate_python({"price": 0.1, "opens": "09:30Z"})
+
+    assert till == {
+        "price": decimal.Decimal("0.1"),
+        "opens": datetime.time(9, 30, tzinfo=UTC),
+    }
+    assert TILL.dump_python(
+        {"price": decimal.Decimal("1E+2"), "opens": datetime.time(9, 30)},
+        mode="json",
+    ) == {"price": "100", "opens": "09:30:00"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{"price": "1_000", "opens": "09:30"}, {"price": "1", "opens": 3600}],
+)
+def test_decimal_and_time_types_reject_what_pydantic_reads(
+    value: dict[str, Any],
+) -> None:
+    """Values that Pydantic's own types read, but eazyrest's fields do not.
+
+    Args:
+        value: Mapping with a decimal or time that eazyrest rejects.
+    """
+    with pytest.raises(pydantic.ValidationError):
+        TILL.validate_python(value)
 
 
 def test_types_have_json_schemas() -> None:
@@ -401,6 +444,36 @@ def test_pydantic_fields_reject_invalid_values(field: str, value: Any) -> None:
         getattr(asset, field)
 
 
+@json_object
+class Priced(PydanticBase):
+    """Model whose decimal field Pydantic constrains."""
+
+    class_url = "/priced/"
+
+    id: int
+    price: Annotated[decimal.Decimal, Field(gt=0)]
+
+
+def test_constrained_decimal_converts_as_a_plain_decimal_field(
+    requests_mock: Any,
+) -> None:
+    """``Annotated[Decimal, Field()]`` reads and writes as eazyrest does."""
+    post = requests_mock.post(
+        "https://pydantic.example.com/priced/", json={"id": 2}
+    )
+
+    assert Priced(json={"id": 1, "price": "1.10"}).price == decimal.Decimal(
+        "1.10"
+    )
+    with pytest.raises(FieldConversionError, match=r"^Priced\.price: "):
+        _ = Priced(json={"id": 1, "price": "1_000"}).price
+    with pytest.raises(FieldConversionError, match="greater than 0"):
+        _ = Priced(json={"id": 1, "price": "0"}).price
+    Priced.create(price=decimal.Decimal("1E+2"))
+
+    assert post.last_request.json() == {"price": "100"}
+
+
 def test_pydantic_fields_write_json_values(requests_mock: Any) -> None:
     """Assigned values are written as Pydantic serializes them."""
     patch = requests_mock.patch(ASSET_URL, status_code=204)
@@ -489,7 +562,7 @@ class Login(pydantic.BaseModel):
     password: pydantic.SecretStr
 
 
-@json_object
+@json_object(write_only={"password", "key", "login", "token"})
 class Account(PydanticBase):
     """Model with secret fields, whose writes would send their masks."""
 
@@ -527,7 +600,7 @@ def test_pydantic_fields_refuse_to_write_secrets(
         field: Name of the ``Account`` field to write.
         value: Value whose secret would be written as a mask.
     """
-    account = Account(json={"id": 1, field: None})
+    account = Account(json={"id": 1})
 
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
         setattr(account, field, value)

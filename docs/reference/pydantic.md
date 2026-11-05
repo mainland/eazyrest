@@ -15,11 +15,21 @@
 ```
 
 ```{eval-rst}
+.. autodata:: eazyrest.pydantic.Time
+   :no-value:
+```
+
+```{eval-rst}
 .. autodata:: eazyrest.pydantic.Duration
    :no-value:
 ```
 
 ```{eval-rst}
 .. autodata:: eazyrest.pydantic.UUID
+   :no-value:
+```
+
+```{eval-rst}
+.. autodata:: eazyrest.pydantic.Decimal
    :no-value:
 ```
