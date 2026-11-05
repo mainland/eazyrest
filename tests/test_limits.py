@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import http.server
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -453,3 +454,87 @@ def test_body_timeout_keeps_requests_exception_type(
 
     with pytest.raises(requests.ConnectionError):
         api.get("/stalled")
+
+
+def _unavailable_once(attempts: list[str], body: bytes = b"") -> Any:
+    """Return a handler that answers 503 once and then a JSON object.
+
+    Args:
+        attempts: List to which each request's path is appended.
+        body: Body of the 503 response.
+
+    Returns:
+        Handler for ``local_server``.
+    """
+
+    def handle(handler: Any) -> None:
+        attempts.append(handler.path)
+        if len(attempts) == 1:
+            handler.send_response(503)
+            handler.send_header("Retry-After", "0")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", "2")
+        handler.end_headers()
+        handler.wfile.write(b"{}")
+
+    return handle
+
+
+def test_retry_without_total_timeout_still_sleeps_and_retries(
+    local_server: Callable[[Any], str],
+) -> None:
+    """Removing the time limit leaves urllib3's own retry delays in place."""
+    attempts: list[str] = []
+    api = API(
+        local_server(_unavailable_once(attempts)),
+        max_retries=Retry(total=1, status_forcelist=[503]),
+    )
+    api.total_timeout = None
+
+    assert api.get("/retry").json() == {}
+    assert attempts == ["/retry", "/retry"]
+
+
+def test_session_used_directly_still_retries(
+    local_server: Callable[[Any], str],
+) -> None:
+    """The API's adapter retries a request sent outside the API's budget."""
+    attempts: list[str] = []
+    base = local_server(_unavailable_once(attempts))
+    api = API(base, max_retries=Retry(total=1, status_forcelist=[503]))
+
+    assert api.session.get(f"{base}retry").status_code == 200
+    assert attempts == ["/retry", "/retry"]
+
+
+def test_exhausted_retry_body_obeys_the_size_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """The body of the attempt that exhausts the retries is bounded too."""
+    attempts: list[str] = []
+    api = API(
+        local_server(_unavailable_once(attempts, b"x" * 200)),
+        max_retries=Retry(total=0, status_forcelist=[503]),
+    )
+    api.max_response_bytes = 100
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes"):
+        api.get("/retry")
+
+    assert attempts == ["/retry"]
+
+
+def test_connection_retries_keep_requests_exception_type() -> None:
+    """A retried connection failure, which has no response, is not a limit."""
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        port = unused.getsockname()[1]
+    api = API(f"http://127.0.0.1:{port}/", max_retries=Retry(total=1))
+
+    with pytest.raises(requests.ConnectionError):
+        api.get("/refused")
