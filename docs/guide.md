@@ -182,8 +182,10 @@ to that field writes `null`.
 
 A named type alias, such as `type Dates = list[datetime.datetime]` or a
 `typing_extensions.TypeAliasType`, converts as the type it stands for, also
-with type arguments, as in `ListOf[datetime.datetime]`. An alias that refers to
-itself raises `FieldConversionError`.
+with type arguments, as in `ListOf[datetime.datetime]`. A string inside an
+alias, as in `list["datetime.datetime"]`, names a type in the module that
+defines the alias. An alias that refers to itself, or names a type that cannot
+be found, raises `FieldConversionError`.
 
 A value that a field cannot convert, when it is read, assigned, or passed to
 `create()` or a query, raises `FieldConversionError`. Its message names the

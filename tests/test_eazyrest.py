@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import enum
 import sys
+import types
 import typing
 import uuid
 from collections import deque
@@ -314,6 +315,17 @@ T = TypeVar("T")
 Dates = TypeAliasType("Dates", list[datetime.datetime])
 ListOf = TypeAliasType("ListOf", list[T], type_params=(T,))
 MaybeDates = TypeAliasType("MaybeDates", Dates | None)
+QuotedDates = TypeAliasType("QuotedDates", list["datetime.datetime"])
+# Build list["..."] at run time, since mypy rejects what these aliases test: a
+# quoted self-reference and an unknown name.
+QuotedRecursive = TypeAliasType(
+    "QuotedRecursive",
+    types.GenericAlias(list, ("QuotedRecursive",)),  # type: ignore[valid-type]
+)
+QuotedMissing = TypeAliasType(
+    "QuotedMissing",
+    types.GenericAlias(list, ("NoSuchType",)),  # type: ignore[valid-type]
+)
 
 
 @json_object
@@ -3296,6 +3308,56 @@ def test_unsupported_type_aliases_raise(statement: str, match: str) -> None:
 
     with pytest.raises(FieldConversionError, match=match):
         _ = model(json={"id": 1, "value": [1]}).value
+
+
+def test_quoted_reference_in_alias_resolves_in_its_module() -> None:
+    """A string inside an alias's value names a type, not a string.
+
+    Without resolution, ``list["datetime.datetime"]`` would read its items
+    as unconverted strings.
+    """
+
+    @json_object
+    class Quoted(ModelBase):
+        class_url = "/quoted/"
+
+        id: int
+        dates: QuotedDates
+
+    quoted = Quoted(json={"id": 1, "dates": ["2024-01-01T00:00:00Z"]})
+
+    assert quoted.dates == [
+        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("alias", "match"),
+    [
+        (QuotedRecursive, "refers to itself"),
+        (QuotedMissing, "cannot be resolved"),
+    ],
+)
+def test_unresolvable_quoted_alias_raises(alias: Any, match: str) -> None:
+    """A quoted self-reference or unknown name raises rather than passing.
+
+    Args:
+        alias: Named alias whose value holds the quoted reference.
+        match: Pattern that the error message should match.
+    """
+    model: Any = json_object(
+        type(
+            "Aliased",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "value": alias},
+                "class_url": "/aliased/",
+            },
+        )
+    )
+
+    with pytest.raises(FieldConversionError, match=match):
+        _ = model(json={"id": 1, "value": ["bad"]}).value
 
 
 def test_collection_field_values_must_be_collections(
