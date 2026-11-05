@@ -1,0 +1,2 @@
+# setuptools-scm reads the version of a "git archive" export from this file.
+.git_archival.txt  export-subst

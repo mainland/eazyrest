@@ -1,18 +1,17 @@
 version: 2
 updates:
-  - package-ecosystem: uv
-    directory: /
-    schedule:
-      interval: weekly
-    groups:
-      dependencies:
-        patterns:
-          - "*"
-
+  # Only the workflow actions. pip-audit in CI reports a vulnerable locked
+  # Python package, and the lock is upgraded deliberately, in its own change.
   - package-ecosystem: github-actions
     directory: /
+    # Development happens on dev, not on the default branch.
+    target-branch: dev
     schedule:
-      interval: weekly
+      interval: monthly
+    # Wait two weeks after a release, so that a compromised release is likely
+    # to be found and withdrawn before it is proposed here.
+    cooldown:
+      default-days: 14
     groups:
       actions:
         patterns:

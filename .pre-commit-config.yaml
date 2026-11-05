@@ -46,3 +46,9 @@ repos:
         language: system
         files: ^(pyproject\.toml|\.pre-commit-config\.yaml)$
         pass_filenames: false
+      - id: zizmor
+        name: zizmor
+        entry: .venv/bin/zizmor --offline .github/workflows
+        language: system
+        files: ^\.github/
+        pass_filenames: false

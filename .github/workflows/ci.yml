@@ -10,6 +10,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job only reads the repository.
 permissions:
   contents: read
 
@@ -24,49 +25,59 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Run Tests
-        run: uvx --with tox-uv tox -e ${{ matrix.env }}
+        env:
+          TOX_ENV: ${{ matrix.env }}
+        run: uvx --with tox-uv tox -e "$TOX_ENV"
 
-  pydantic-min:
-    name: Test (Oldest Pydantic)
+  minimums:
+    name: Test (${{ matrix.env }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Pydantic, the minimum of every dependency on the oldest
+        # and newest Python, and the core without Pydantic.
+        env: ["pydantic-min", "min-deps", "min-deps-py315", "no-pydantic"]
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Run Tests
-        run: uvx --with tox-uv tox -e pydantic-min
+        env:
+          TOX_ENV: ${{ matrix.env }}
+        run: uvx --with tox-uv tox -e "$TOX_ENV"
 
   lint:
     runs-on: ubuntu-latest
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Check That uv.lock Is Current
         run: uv lock --check
 
       - name: Cache pre-commit Environments
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -79,16 +90,16 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Audit Locked Dependencies
         run: |
-          uv export --locked --all-groups --no-emit-project \
+          uv export --locked --all-groups --all-extras --no-emit-project \
             --output-file "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit==2.10.1 --disable-pip --require-hashes \
             --requirement "$RUNNER_TEMP/requirements.txt"
@@ -98,12 +109,12 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build Documentation
         run: uvx --with tox-uv tox -e docs
@@ -113,23 +124,43 @@ jobs:
 
     steps:
       - name: Check Out Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # setuptools-scm derives the version from tags.
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set Up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Build Distributions
         run: |
           uv build
-          uvx twine check --strict dist/eazyrest-*
+          uvx twine==7.0.0 check --strict dist/eazyrest-*
 
-      - name: Import Wheel Without Extras
+      # The extras' dependencies have markers that differ between the oldest
+      # and newest supported Python, so install each on both.
+      - name: Import Wheel With Each Extra on the Oldest and Newest Python
         run: |
-          uv venv "$RUNNER_TEMP/wheel-env"
-          VIRTUAL_ENV="$RUNNER_TEMP/wheel-env" uv pip install dist/*.whl
+          wheel="$(ls dist/*.whl)"
+          for python in 3.10 3.15; do
+            for extra in core pydantic socks; do
+              env="$RUNNER_TEMP/wheel-$python-$extra"
+              uv venv --python "$python" "$env"
+              if [ "$extra" = core ]; then
+                VIRTUAL_ENV="$env" uv pip install "$wheel"
+              else
+                VIRTUAL_ENV="$env" uv pip install "$wheel[$extra]"
+              fi
+            done
+          done
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-env/bin/python" -c "import eazyrest"
+          for python in 3.10 3.15; do
+            "$RUNNER_TEMP/wheel-$python-core/bin/python" -c "import eazyrest"
+            # The core installs without Pydantic.
+            "$RUNNER_TEMP/wheel-$python-core/bin/python" -c \
+              "import importlib.util, sys; sys.exit(importlib.util.find_spec('pydantic') is not None)"
+            "$RUNNER_TEMP/wheel-$python-pydantic/bin/python" -c \
+              "import eazyrest.pydantic"
+            "$RUNNER_TEMP/wheel-$python-socks/bin/python" -c "import socks"
+          done
