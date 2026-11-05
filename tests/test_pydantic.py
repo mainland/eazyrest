@@ -48,7 +48,7 @@ from eazyrest import (
     JSONObject,
     json_object,
 )
-from eazyrest.eazyrest import (
+from eazyrest._models import (
     BaseType,
     CollectionType,
     OptionalType,

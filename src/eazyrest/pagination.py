@@ -16,6 +16,8 @@ from .api import (
     _response_hooks,
 )
 
+__all__ = ["follow_link_headers", "follow_next_links"]
+
 
 def _next_link(resp: requests.Response) -> str | None:
     """Return the URL of the ``rel="next"`` link in a response's Link header.

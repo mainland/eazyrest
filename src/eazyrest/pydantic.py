@@ -42,7 +42,7 @@ from pydantic_core import (
 from typing_extensions import get_type_hints, is_typeddict
 
 from ._conversion import _current_conversion, _final_supertype, _supertype
-from .eazyrest import (
+from ._models import (
     JSONObject,
     _is_named_tuple,
     _is_type_alias,

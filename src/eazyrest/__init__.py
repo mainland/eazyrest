@@ -1,9 +1,7 @@
 """Public package exports for eazyrest."""
 
 from ._conversion import DEFAULT_CONVERSIONS, Conversion
-from .api import API
-from .dateparse import parse_datetime, parse_duration
-from .eazyrest import (
+from ._models import (
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
@@ -12,6 +10,8 @@ from .eazyrest import (
     PrefetchNotSupported,
     json_object,
 )
+from .api import API
+from .dateparse import parse_datetime, parse_duration
 from .pagination import follow_link_headers, follow_next_links
 from .write_mode import WriteMode
 
