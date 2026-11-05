@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
 
 from eazyrest import API, BaseType, JSONObject, json_object
 
@@ -214,3 +215,59 @@ def test_front_page_examples_run(
     assert "2" in output
     assert patch.call_count == 1
     assert patch.last_request.json() == {"completed": True}
+
+
+def test_merge_response_example_ignores_status_bodies(
+    requests_mock: Any,
+) -> None:
+    """The ``merge_response()`` example keeps the sent fields."""
+    example = run_guide_example("class StatusObject")
+    base: type[JSONObject] = example["StatusObject"]
+
+    @json_object
+    class Ticket(base):  # type: ignore[valid-type,misc]
+        class_url = "/tickets/"
+
+        id: int
+        title: str
+
+    Ticket.register_api(API("https://api.example.com/"))
+    requests_mock.patch(
+        "https://api.example.com/tickets/1/", json={"status": "ok"}
+    )
+    ticket = Ticket(json={"id": 1, "title": "old"})
+
+    ticket.title = "new"
+    ticket.save()
+
+    assert ticket.json == {"id": 1, "title": "new"}
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"detail": "Not found."}, "Not found."),
+        ({"email": ["This field must be unique."]}, "must be unique"),
+    ],
+)
+def test_drf_error_example_raises_its_exception(
+    requests_mock: Any, body: dict[str, Any], message: str
+) -> None:
+    """The DRF error example turns DRF's error bodies into its exception.
+
+    Args:
+        body: DRF error response body.
+        message: Pattern that the exception's message should match.
+    """
+    example = run_guide_example("class DRFAPIError", doc=DRF)
+    api = example["DRFAPI"]("https://api.example.com/")
+    requests_mock.get(
+        "https://api.example.com/users/9/", status_code=400, json=body
+    )
+
+    with pytest.raises(example["DRFAPIError"], match=message) as info:
+        api.get("/users/9/")
+
+    assert isinstance(info.value, requests.HTTPError)
+    assert info.value.response is not None
+    assert info.value.response.status_code == 400
