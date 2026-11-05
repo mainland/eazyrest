@@ -571,7 +571,19 @@ api = API(
 )
 ```
 
-Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification, which also suppresses urllib3's `InsecureRequestWarning` for the whole process. Either setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
+Pass `verify=` the path of a CA bundle to verify certificates against it, or `verify=False` to disable TLS certificate verification. urllib3 then warns with an `InsecureRequestWarning` for each request. eazyrest does not suppress the warning, because a filter applies to the whole process and would hide it for every other client too. To accept unverified connections everywhere, ignore it yourself:
+
+```python
+import warnings
+
+import urllib3
+
+warnings.filterwarnings(
+    "ignore", category=urllib3.exceptions.InsecureRequestWarning
+)
+```
+
+Either `verify=` setting takes precedence over the `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` environment variables. With the default, `verify=True`, requests uses the bundle that those variables name, if any.
 
 Requests time out after 10 seconds by default. Set the `timeout` attribute to change the default, or pass `timeout=` to a single request. Extra keyword arguments to `API()` configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as `max_retries=` for retries:
 
