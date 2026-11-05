@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import io
 from typing import Any
 
 import pytest
@@ -185,6 +186,42 @@ def test_model_writes_refuse_streaming(
 
     assert not requests_mock.called
     assert doc._pending_updates == {"title": "new"}
+
+
+def test_empty_multipart_list_is_rejected_before_sending(
+    requests_mock: Any,
+) -> None:
+    """An empty list cannot silently disappear from a multipart update."""
+    doc = MockedDoc(json=DOC_JSON)
+    doc.tags = []
+
+    with pytest.raises(TypeError, match="tags"):
+        doc.save(files={"image": ("dummy.txt", b"dummy")})
+
+    assert not requests_mock.called
+    assert doc._pending_updates == {"tags": []}
+
+
+@pytest.mark.parametrize("status", [307, 308])
+def test_multipart_redirect_resends_the_prepared_body(
+    requests_mock: Any, status: int
+) -> None:
+    """Redirects preserve uploads prepared from a file's current position."""
+    requests_mock.post(
+        "https://mocked.example/docs/",
+        status_code=status,
+        headers={"Location": "/created/"},
+    )
+    requests_mock.post("https://mocked.example/created/", json={"id": 1})
+    upload = io.BytesIO(b"skipHELLO")
+    upload.seek(4)
+
+    MockedDoc.create(title="new", files={"image": ("test.txt", upload)})
+
+    first, redirected = requests_mock.request_history
+    assert first.body == redirected.body
+    assert b"HELLO" in redirected.body
+    assert b"skipHELLO" not in redirected.body
 
 
 def test_create_rejects_colliding_write_names(requests_mock: Any) -> None:
@@ -403,6 +440,14 @@ def test_mapped_write_only_field_stays_out_of_full_save_state(
 
     assert patch.last_request.json() == {"secret": "next"}
     assert "password" not in account.json
+
+
+def test_file_aliases_cannot_overwrite_each_other(requests_mock: Any) -> None:
+    """File names are checked after write mappings have been applied."""
+    with pytest.raises(TypeError, match="owner_id"):
+        MockedDoc.create(files={"owner": ("a", b"a"), "owner_id": ("b", b"b")})
+
+    assert not requests_mock.called
 
 
 def test_public_json_helper_keeps_limits_in_response_hooks(

@@ -930,6 +930,30 @@ primary key, and a field that `write_map` names under its write key. It loads
 an unloaded or partial object first, preserving pending changes. Read-only
 fields are omitted.
 
+### Uploading files
+
+`create()` and `save()` take `files=`, files to upload as requests takes them,
+keyed by field name or by the API's field name. The write is then a multipart
+request, with the other fields as form fields, and `save(files=...)` sends it
+even if no field changed. Declare a file field as `str`, since an API such as
+Django REST Framework returns the file's URL:
+
+```python
+avatar = Avatar.create(name="me", files={"image": open("me.png", "rb")})
+avatar.save(files={"image": ("new.png", data, "image/png")})
+print(avatar.image)  # the URL that the response holds
+```
+
+A form field holds text, so booleans are sent as `true` and `false` and numbers
+as strings, and a list of scalars is sent as repeated fields. A field whose
+value is `None`, a mapping, an empty list, or a nested list cannot be sent this
+way and raises `TypeError` before the request. Save such a field in a separate
+write without files.
+
+Requests reads a file object from its current position. Before retrying an
+upload after a failure, reopen or rewind each file. A 307 or 308 redirect
+resends the already prepared multipart body.
+
 ### Request options
 
 `save()`, `create()`, and `delete()` take `request_options=`, keyword arguments
