@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import datetime
 import enum
+import re
 import typing
 import uuid
 import weakref
@@ -89,6 +90,11 @@ def _decode_date(value: Any) -> datetime.date:
         ValueError: If ``value`` is not an ISO 8601 date. The message does not
             quote ``value``.
     """
+    if (
+        isinstance(value, str)
+        and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None
+    ):
+        raise ValueError("Date is not in ISO 8601 format (YYYY-MM-DD)")
     try:
         return datetime.date.fromisoformat(value)
     except ValueError as err:

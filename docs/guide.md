@@ -159,9 +159,10 @@ Python types are converted automatically:
   `2024-04-01T12:00:00Z`, or from Unix timestamps, and encode to ISO 8601
   strings. A string without a UTC offset decodes to a naive `datetime`, and a
   naive `datetime` encodes without an offset. See `parse_datetime()`.
-- `datetime.date` values decode from ISO 8601 dates, such as `2024-04-01`, and
-  encode back to them. A date with a time is rejected, and so is a
-  `datetime.datetime` assigned to the field, although it is also a
+- `datetime.date` values decode from extended ISO 8601 dates in `YYYY-MM-DD`
+  form, such as `2024-04-01`, and encode back to that form on every supported
+  Python. Basic and week dates are rejected. A date with a time is rejected,
+  and so is a `datetime.datetime` assigned to the field, although it is also a
   `datetime.date`.
 - `uuid.UUID` values decode from UUID strings and encode to the standard
   hyphenated form.
