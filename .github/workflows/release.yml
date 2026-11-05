@@ -60,12 +60,12 @@ jobs:
           sha256sum release/*
 
       # Test the exact wheel on the oldest and newest Python, at the minimum
-      # dependencies, and without Pydantic.
+      # dependencies, without Pydantic, and with Django REST Framework.
       - name: Test the Wheel
         run: |
           wheel="$(ls release/*.whl)"
           uvx --with tox-uv tox \
-            -e py310,py315,pydantic-min,min-deps,min-deps-py315,no-pydantic \
+            -e py310,py315,pydantic-min,min-deps,min-deps-py315,no-pydantic,drf \
             --installpkg "$wheel"
 
       - name: Store Distributions
