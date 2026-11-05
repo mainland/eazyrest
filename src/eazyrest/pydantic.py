@@ -24,6 +24,13 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Annotated, Any, Literal, TypeVar, Union, cast
 
+try:
+    import pydantic  # noqa: F401
+except ImportError as err:
+    raise ImportError(
+        "eazyrest.pydantic needs Pydantic, which the eazyrest[pydantic] extra "
+        "installs"
+    ) from err
 import typing_extensions
 from pydantic import (
     BaseModel,

@@ -656,3 +656,12 @@ def test_api_without_verification_keeps_warnings_on(
 
     assert api.session.verify is False
     assert disabled == []
+
+
+def test_package_reports_its_version() -> None:
+    """``eazyrest.__version__`` is the installed distribution's version."""
+    import importlib.metadata
+
+    import eazyrest
+
+    assert eazyrest.__version__ == importlib.metadata.version("eazyrest")
