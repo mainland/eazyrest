@@ -1619,8 +1619,12 @@ class JSONObject:
         resp = cls.api.post(cls.class_url, json=payload)
 
         json_keys = cls._json_keys()
+        # The payload can hold the caller's own containers, such as a dict
+        # field's value, so copy them before they become saved state.
         sent = {
-            key: value for key, value in payload.items() if key in json_keys
+            key: _copy_json(value)
+            for key, value in payload.items()
+            if key in json_keys
         }
         obj = cls(json={})
         obj._json = obj.merge_response(resp, {}, sent)
