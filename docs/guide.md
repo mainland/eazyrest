@@ -59,6 +59,26 @@ class User(JSONObject):
     resource_url: str
 ```
 
+Use `write_only=` for a field that the API accepts in writes but never returns,
+such as a password. It can be passed to `create()` or assigned, and the next
+write sends it, but the object never keeps it in its JSON, assigning it does
+not load the object, and reading it raises `AttributeError`:
+
+```python
+@json_object(write_only={"password"})
+class Account(JSONObject):
+    class_url = "/accounts/"
+
+    id: int
+    name: str
+    password: str
+
+
+account = Account(id=1)
+account.password = "correct horse battery staple"
+account.save()  # PATCH {"password": "..."}, without loading the account
+```
+
 A decorated subclass of a decorated model keeps the fields of its base class
 and adds its own. A model inherits fields through a single chain of decorated
 classes. A class whose decorated ancestors are not subclasses of one another,

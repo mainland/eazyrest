@@ -489,7 +489,7 @@ class Login(pydantic.BaseModel):
     password: pydantic.SecretStr
 
 
-@json_object
+@json_object(write_only={"password", "key", "login", "token"})
 class Account(PydanticBase):
     """Model with secret fields, whose writes would send their masks."""
 
@@ -527,7 +527,7 @@ def test_pydantic_fields_refuse_to_write_secrets(
         field: Name of the ``Account`` field to write.
         value: Value whose secret would be written as a mask.
     """
-    account = Account(json={"id": 1, field: None})
+    account = Account(json={"id": 1})
 
     with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
         setattr(account, field, value)

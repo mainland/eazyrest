@@ -206,6 +206,11 @@ which DRF accepts as input. If your API requires another wire format, replace
 the `timedelta` conversion in a model's `conversions`, as the guide's
 [Custom field conversion](guide.md#custom-field-conversion) section shows.
 
+A serializer field with `write_only=True`, such as a password, appears in
+requests but never in responses. Declare it, and list it in
+`json_object(write_only=...)`, so that it can be assigned and saved like any
+other field without being kept or read back.
+
 DRF `ChoiceField` maps well to `enum.Enum` annotations, and
 `MultipleChoiceField` maps well to collection annotations such as `set[MyEnum]`
 or `list[MyEnum]`. DRF `FileField` and `ImageField` are usually easiest to
