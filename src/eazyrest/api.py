@@ -9,7 +9,6 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
-import urllib3
 from requests.utils import requote_uri
 
 from ._errors import RedirectError
@@ -295,8 +294,9 @@ class API:
                 a CA bundle to verify them with, as for requests. A path or
                 ``False`` takes precedence over the ``REQUESTS_CA_BUNDLE`` and
                 ``CURL_CA_BUNDLE`` environment variables, which requests
-                otherwise uses. When ``False``, urllib3's
-                ``InsecureRequestWarning`` is suppressed for the whole process.
+                otherwise uses. When ``False``, urllib3 warns with an
+                ``InsecureRequestWarning`` for each request, unless a warnings
+                filter ignores it.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -361,8 +361,7 @@ class API:
             verify: Whether TLS certificates should be verified, or the path of
                 a CA bundle to verify them with. If omitted, the new session
                 keeps the replaced session's setting, and a first session
-                verifies certificates. When ``False``, urllib3's
-                ``InsecureRequestWarning`` is suppressed for the whole process.
+                verifies certificates.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -378,10 +377,6 @@ class API:
 
         if verify is not None:
             session.verify = verify
-            if verify is False:
-                urllib3.disable_warnings(
-                    urllib3.exceptions.InsecureRequestWarning
-                )
 
         # Adapt session for multiple connections
         if len(kwargs) != 0:
