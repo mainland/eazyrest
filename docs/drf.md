@@ -134,13 +134,17 @@ individual subclasses.
 ## Configure authentication and CSRF
 
 `API` wraps a `requests.Session`, so DRF authentication usually belongs on the
-API object. For token or bearer authentication, set the session headers once:
+API object. For DRF's `TokenAuthentication`, set the session's `Authorization`
+header once, with DRF's keyword, `Token`:
 
 ```python
 api = API("https://api.example.com/")
-api.session.headers.update({"Authorization": "Bearer TOKEN"})
+api.session.headers.update({"Authorization": "Token KEY"})
 DRFObject.register_api(api)
 ```
+
+A JSON Web Token package, such as `djangorestframework-simplejwt`, takes
+`Bearer` instead, as in `"Bearer TOKEN"`.
 
 For cookie-backed session authentication, assign cookies to the API session. If
 you make unsafe requests such as `POST`, `PATCH`, or `DELETE` against a
