@@ -97,8 +97,12 @@ dev = [
 # Sphinx 9.1 requires Python 3.12, so the docs group does, and so does the dev
 # group, which includes it. The test environments still run every supported
 # Python.
+# Declare the dev group's requirement too. uv otherwise also resolves its tools
+# for Python 3.10, through a release of filelock with known vulnerabilities
+# that no supported environment installs.
 [tool.uv.dependency-groups]
 docs = {requires-python = ">=3.12"}
+dev = {requires-python = ">=3.12"}
 
 [tool.setuptools]
 include-package-data = true
