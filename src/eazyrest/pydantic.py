@@ -21,6 +21,14 @@ from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal, Union, cast
 
 import isodate
+
+try:
+    import pydantic  # noqa: F401
+except ImportError as err:
+    raise ImportError(
+        "eazyrest.pydantic needs Pydantic, which the eazyrest[pydantic] extra "
+        "installs"
+    ) from err
 from pydantic import (
     PlainSerializer,
     PlainValidator,
