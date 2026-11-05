@@ -528,6 +528,41 @@ def test_api_accepts_ca_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert disabled == []
 
 
+@pytest.mark.parametrize("verify", ["/etc/ssl/certs/internal.pem", False])
+def test_api_verify_wins_over_environment_ca_bundle(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, verify: bool | str
+) -> None:
+    """A configured ``verify`` is not replaced by an environment CA bundle.
+
+    With ``trust_env``, requests replaces a request's ``verify`` of ``True``
+    with ``REQUESTS_CA_BUNDLE`` and prefers it over the session's setting.
+
+    Args:
+        verify: Configured CA bundle path, or ``False``.
+    """
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/public.pem")
+    monkeypatch.setenv("CURL_CA_BUNDLE", "/etc/ssl/certs/public.pem")
+    api = API("https://example.com/", verify=verify)
+    requests_mock.get("https://example.com/users/1", json={"id": 1})
+
+    api.get("/users/1")
+
+    assert requests_mock.last_request.verify == verify
+
+
+def test_api_default_verify_honors_environment_ca_bundle(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default ``verify=True`` uses requests' environment CA bundle."""
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/corporate.pem")
+    api = API("https://example.com/")
+    requests_mock.get("https://example.com/users/1", json={"id": 1})
+
+    api.get("/users/1")
+
+    assert requests_mock.last_request.verify == "/etc/ssl/certs/corporate.pem"
+
+
 def test_api_mounts_adapter_with_retries() -> None:
     """Extra keyword arguments configure the base URL's adapter."""
     api = API("https://example.com/", max_retries=3)

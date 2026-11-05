@@ -271,9 +271,11 @@ class API:
             default_write_mode: Default model write mode used when a
                 ``JSONObject`` instance does not override it explicitly.
             verify: Whether TLS certificates should be verified, or the path of
-                a CA bundle to verify them with, as for requests. When
-                ``False``, urllib3's ``InsecureRequestWarning`` is suppressed
-                for the whole process.
+                a CA bundle to verify them with, as for requests. A path or
+                ``False`` takes precedence over the ``REQUESTS_CA_BUNDLE`` and
+                ``CURL_CA_BUNDLE`` environment variables, which requests
+                otherwise uses. When ``False``, urllib3's
+                ``InsecureRequestWarning`` is suppressed for the whole process.
             kwargs: If present, these are forwarded to a new
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
@@ -459,6 +461,12 @@ class API:
                 ``raise_for_response()`` raises it for the response.
         """
         kwargs.setdefault("timeout", self.timeout)
+        if self.session.verify is not True:
+            # With trust_env, requests replaces a verify setting of True with
+            # the CA bundle that REQUESTS_CA_BUNDLE or CURL_CA_BUNDLE names,
+            # and then prefers it over the session's setting. Only a setting
+            # passed with the request is kept.
+            kwargs.setdefault("verify", self.session.verify)
         if self.session.proxies:
             # requests lets proxy environment variables override session
             # proxies, but not proxies passed with the request. requests adds
