@@ -313,18 +313,26 @@ class API:
             self.set_proxy(proxy)
 
     @property
-    def cookies(self) -> CookieJar:
-        """Return cookies currently used by the session."""
+    def cookies(self) -> requests.cookies.RequestsCookieJar:
+        """The session's cookie jar.
+
+        Assigning a jar replaces the session's cookies with a copy of its
+        cookies. To add cookies, call ``api.cookies.update(jar)`` or
+        ``api.cookies.set(name, value)``.
+        """
         return self.session.cookies
 
     @cookies.setter
     def cookies(self, cookies: CookieJar) -> None:
-        """Merge cookies into the active session.
+        """Replace the session's cookies.
 
         Args:
-            cookies: Cookie jar to merge into the session cookie store.
+            cookies: Cookie jar whose cookies the session uses instead of its
+                own.
         """
-        self.session.cookies.update(cookies)
+        jar = requests.cookies.RequestsCookieJar()
+        jar.update(cookies)
+        self.session.cookies = jar
 
     def set_proxy(self, proxy: str) -> None:
         """Configure an HTTP/HTTPS proxy for subsequent requests.

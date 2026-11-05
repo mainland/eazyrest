@@ -628,14 +628,16 @@ def test_api_mounts_adapter_with_retries() -> None:
     assert adapter.max_retries.total == 3
 
 
-def test_api_cookie_setter_merges_cookies(requests_mock: Any) -> None:
-    """Assigned cookies are sent with later requests."""
+def test_api_cookie_setter_replaces_cookies(requests_mock: Any) -> None:
+    """Assigning a jar replaces the session's cookies with its cookies."""
     api = API("https://example.com/")
+    api.cookies.set("stale", "old", domain="example.com", path="/")
     jar = requests.cookies.RequestsCookieJar()
     jar.set("session", "abc", domain="example.com", path="/")
     requests_mock.get("https://example.com/me", json={})
 
     api.cookies = jar
+    jar.set("later", "x", domain="example.com", path="/")
     api.get("/me")
 
     assert requests_mock.last_request.headers["Cookie"] == "session=abc"
