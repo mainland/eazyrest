@@ -4168,7 +4168,7 @@ def test_creation_uses_the_api_passed_to_it(requests_mock: Any) -> None:
 def test_prefetch_passes_the_query_api_to_bulk_lookup(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bulk lookup receives the query's API only when it passed one."""
+    """Bulk lookup receives the query's API, or the related model's own."""
     tenant = API("https://tenant.example.com/v2/")
     seen: list[API | None] = []
 
@@ -4185,10 +4185,13 @@ def test_prefetch_passes_the_query_api_to_bulk_lookup(
     requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
 
     (todo,) = Todo.filter(api=tenant, prefetch="user")
-    list(Todo.filter(prefetch="user"))
+    (plain,) = Todo.filter(prefetch="user")
 
-    assert seen == [tenant, None]
+    assert seen == [tenant, User.api]
     assert todo.user.api is tenant
+    # The hook created the user with the client it received, but prefetched
+    # objects keep the query's own api=, here none.
+    assert plain.user._api_override is None
 
 
 def test_prefetch_loads_related_objects_from_the_query_api(
