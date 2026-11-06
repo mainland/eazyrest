@@ -856,13 +856,18 @@ Override these hooks if an API wraps responses in envelopes:
   later pages depend on the response itself, such as its headers or URL
 - `object_json()` for single-object endpoints
 
+The collection hooks receive the query's client as `api`, the API that the
+query passed as `api=` or the class's registered API. Send any request for
+later pages with it, so that a query with `api=` reads every page from that
+API.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:
 
 ```python
 @classmethod
-def collection_items(cls, payload):
+def collection_items(cls, payload, *, api):
     return payload["results"]
 
 
@@ -882,8 +887,8 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload)
+    def collection_items(cls, payload, *, api):
+        return follow_next_links(api, payload)
 ```
 
 With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
@@ -910,8 +915,8 @@ the response, and pass the URL of the first page:
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_next_links(api, api.json(resp), url=resp.url)
 ```
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose
@@ -938,8 +943,8 @@ from eazyrest import JSONObject, follow_link_headers
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_link_headers(cls.api, resp)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_link_headers(api, resp)
 ```
 
 ## Write modes
@@ -1240,9 +1245,10 @@ sends requests with different credentials, for example one `API` per user:
 todos = Todo.filter(api=user_api, completed=False)
 ```
 
-Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`. While
-`filter()` calls `collection_items()`, `cls.api` is the query's API, so a hook
-such as `follow_next_links(cls.api, payload)` reads later pages with it.
+Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, and the
+collection hooks receive the query's client as `api`, so a hook such as
+`follow_next_links(api, payload)` reads later pages with it. While `filter()`
+calls a collection hook, `cls.api` is the query's API too.
 
 A related object loads through the API registered for its own class, so models
 served by different APIs can refer to each other. If the parent object has an

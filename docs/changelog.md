@@ -166,7 +166,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   through `prefetch=` and `bulk_get_by_pks()`.
 - Pagination helpers `follow_next_links()`, for Django REST Framework's page
   shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the
-  `collection_items_from_response()` hook.
+  `collection_items_from_response()` hook. The collection hooks receive the
+  query's client as `api`, so a hook reads later pages with the API that the
+  query used.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
   `Time`, `Duration`, `UUID`, and `Decimal`. A type that would drop the keys it
