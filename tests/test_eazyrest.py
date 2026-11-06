@@ -170,11 +170,12 @@ class SearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any) -> Any:
+    def collection_items(cls, payload: Any, *, api: API) -> Any:
         """Extract wrapped collection items for this test model.
 
         Args:
             payload: Decoded JSON body of a collection response.
+            api: The query's client.
 
         Returns:
             The items under the body's ``results`` key.
@@ -204,11 +205,12 @@ class PaginatedSearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any) -> Any:
+    def collection_items(cls, payload: Any, *, api: API) -> Any:
         """Follow ``next`` links and yield items across all pages.
 
         Args:
             payload: Decoded JSON body of the first page.
+            api: The query's client.
 
         Yields:
             Each item in the ``results`` list of each page, fetching the page
@@ -219,7 +221,7 @@ class PaginatedSearchResult(ModelBase):
             next_url = payload["next"]
             if next_url is None:
                 return
-            payload = cls.api.get(next_url).json()
+            payload = api.get(next_url).json()
 
 
 @json_object

@@ -192,9 +192,9 @@ class APIDescriptor:
             return obj._api_override
 
         if obj is None and objtype is not None:
-            # While a query that passed api= calls collection_items(), that API
-            # is the queried class's API, so a hook such as
-            # follow_next_links(cls.api, payload) reads later pages with it.
+            # While a query that passed api= calls a collection hook, that API
+            # is the queried class's API, so code in the hook that reads
+            # cls.api, rather than the hook's api argument, uses it too.
             query = _query_api.get()
             if query is not None and query[0] is objtype:
                 return query[1]
@@ -3456,41 +3456,44 @@ class JSONObject:
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response
+        cls, resp: requests.Response, *, api: API
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 
         ``filter()`` calls this hook with the response to its request. The
         default passes the decoded payload to ``collection_items()``. Override
         this hook instead when the items or the later pages depend on more than
-        the payload, such as a ``Link`` header or the URL of the response. As
-        in ``collection_items()``, ``cls.api`` is the query's API while
-        ``filter()`` calls this hook.
+        the payload, such as a ``Link`` header or the URL of the response.
 
         Args:
             resp: Response to the collection request.
+            api: The query's client, as for ``collection_items()``.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
         """
-        return cls.collection_items(cls.api.json(resp))
+        return cls.collection_items(api.json(resp), api=api)
 
     @classmethod
-    def collection_items(cls, payload: Any) -> Iterable[Any]:
+    def collection_items(cls, payload: Any, *, api: API) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
         The default implementation yields items from a list response directly.
         Subclasses can override this hook to unwrap envelope responses or
         follow pagination links by issuing additional requests through
-        ``cls.api``. When the query passed ``api=``, ``cls.api`` is that API
-        while ``filter()`` calls this hook, so read it during the call rather
-        than later, while iterating.
+        ``api``, the query's client, as ``follow_next_links(api, payload)``
+        does.
+
+        ``api`` is the API that the query passed as ``api=``, or the class's
+        registered API. While ``filter()`` calls this hook, ``cls.api`` is
+        that API too.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.
 
         Args:
             payload: Decoded JSON payload returned by a collection request.
+            api: The query's client, for requests for later pages.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
@@ -3837,7 +3840,7 @@ class JSONObject:
         resp = client.get(cls.class_url, params=cls._encode_query(query))
         token = _query_api.set((cls, client))
         try:
-            items = cls.collection_items_from_response(resp)
+            items = cls.collection_items_from_response(resp, api=client)
         finally:
             _query_api.reset(token)
 

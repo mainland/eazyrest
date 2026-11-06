@@ -753,16 +753,19 @@ class PagedReviewBase(ReviewBase):
     """Models whose collection hook reads DRF pages from the response."""
 
     @classmethod
-    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+    def collection_items_from_response(
+        cls, resp: requests.Response, *, api: API
+    ) -> Any:
         """Read every page, resolving links against the response's URL.
 
         Args:
             resp: Response for the collection's first page.
+            api: The query's client.
 
         Returns:
             An iterator over the items of every page, with their count.
         """
-        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
+        return follow_next_links(api, api.json(resp), url=resp.url)
 
 
 @json_object

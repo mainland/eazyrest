@@ -336,9 +336,9 @@ class DRFBase(JSONObject):
     """Base model that reads every page of a DRF collection."""
 
     @classmethod
-    def collection_items(cls, payload: Any) -> Any:
+    def collection_items(cls, payload: Any, *, api: API) -> Any:
         """Read every page, following next links."""
-        return follow_next_links(cls.api, payload)
+        return follow_next_links(api, payload)
 
 
 @json_object

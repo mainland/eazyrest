@@ -34,8 +34,8 @@ from eazyrest import JSONObject, follow_next_links, json_object
 
 class DRFModel(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload)
+    def collection_items(cls, payload, *, api):
+        return follow_next_links(api, payload)
 
 
 @json_object
@@ -98,8 +98,8 @@ from eazyrest import API, JSONObject, follow_next_links
 
 class DRFObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload)
+    def collection_items(cls, payload, *, api):
+        return follow_next_links(api, payload)
 
 
 api = API("https://api.example.com/")
