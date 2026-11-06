@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import decimal
 import enum
 import ipaddress
 import uuid
@@ -196,8 +197,10 @@ def test_default_table_is_public_and_read_only() -> None:
     assert set(DEFAULT_CONVERSIONS) == {
         datetime.datetime,
         datetime.date,
+        datetime.time,
         datetime.timedelta,
         uuid.UUID,
+        decimal.Decimal,
         enum.Enum,
     }
     with pytest.raises(TypeError):

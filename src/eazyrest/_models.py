@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import copy
 import datetime
+import decimal
 import enum
 import inspect
 import itertools
@@ -840,6 +841,7 @@ _UNCHANGEABLE_VALUES = (
     bytes,
     int,
     float,
+    decimal.Decimal,
     type(None),
     enum.Enum,
     datetime.date,
@@ -1955,14 +1957,15 @@ class JSONObject:
     """Conversions of field types, keyed by the type they convert.
 
     A class's entries are merged over its bases', and theirs over the
-    default ones for ``datetime``, ``date``, ``timedelta``, ``UUID``,
-    and enums. A field type converts by the entry for exactly that type,
-    else by the entry of the nearest class in its MRO, else, for a
-    ``NewType``, as its supertype. A key cannot be a model, or a type
-    that eazyrest converts itself: ``object``, ``bool``, ``int``,
-    ``float``, ``str``, ``None``'s type, or a collection type such as
-    ``list`` or ``dict``. Declare the mapping in the class body: the
-    class merges and checks its table when it is defined.
+    default ones for ``datetime``, ``date``, ``time``, ``timedelta``,
+    ``UUID``, ``Decimal``, and enums. A field type converts by the entry
+    for exactly that type, else by the entry of the nearest class in its
+    MRO, else, for a ``NewType``, as its supertype. A key cannot be a
+    model, or a type that eazyrest converts itself: ``object``,
+    ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
+    collection type such as ``list`` or ``dict``. Declare the mapping in
+    the class body: the class merges and checks its table when it is
+    defined.
     """
 
     _pk_value: Any

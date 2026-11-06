@@ -216,6 +216,21 @@ Python types are converted automatically:
   `1h 30m`, `2 weeks`, or Go's `1h30m0s`, and numbers of seconds. Durations
   with years or months are rejected in every format, because those units have
   no fixed length. See `parse_duration()`.
+- `datetime.time` values decode from ISO 8601 times such as `09:30`,
+  `09:30:00`, or `09:30:00.5+02:00`, and encode to ISO 8601 times such as
+  `09:30:00`. As for `datetime.datetime`, a time without an offset decodes to a
+  naive `time`, and an offset that is not a whole number of minutes raises
+  `FieldConversionError`.
+- `decimal.Decimal` values decode from decimal strings such as `"1.10"` or from
+  JSON numbers, and encode to strings in positional notation that keep their
+  digits, such as `"1.10"`, as Django REST Framework writes a `DecimalField`. A
+  number decodes from its shortest decimal form, so `0.1` reads as
+  `Decimal("0.1")`, but a JSON number that has more digits than a float holds
+  has already lost them, so prefer an API that writes decimals as strings.
+  `NaN`, infinities, and strings with spaces or underscores are rejected, as is
+  a decimal whose exponent is beyond 4300 in either direction, such as
+  `"1E+20000000"`, whose positional form would be megabytes long, or
+  `"0E-20000"`, which writes each zero after the point.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
@@ -234,9 +249,11 @@ be found, raises `FieldConversionError`.
 
 A value that a field cannot convert, when it is read, assigned, or passed to
 `create()` or a query, raises `FieldConversionError`. Its message names the
-model and field, as in `Booking.day: month must be in 1..12`, and the
-conversion's own error is its `__cause__`. It is both a `TypeError` and a
-`ValueError`, so code that catches either one keeps working.
+model and field, as in
+`Booking.day: Date has a year, month, or day out of range`, but not the value,
+the same on every Python version, and the conversion's own error is its
+`__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches
+either one keeps working.
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
@@ -484,12 +501,13 @@ still hides it.
 
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that
 conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,
-`datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's
-conversion reads and writes the value and Pydantic applies the metadata.
-`Logo.published` therefore reads as a plain `datetime.datetime` field would, a
-constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value,
-and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for
-every type that the annotation names, such as the items of
+`datetime.date`, `datetime.time`, `datetime.timedelta`, `uuid.UUID`,
+`decimal.Decimal`, and enums, eazyrest's conversion reads and writes the value
+and Pydantic applies the metadata. `Logo.published` therefore reads as a plain
+`datetime.datetime` field would, a constraint such as
+`Field(ge=datetime.timedelta(0))` checks the decoded value, and a
+`pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every
+type that the annotation names, such as the items of
 `Annotated[list[datetime.datetime], Field(max_length=3)]`, and for a `NewType`
 of one of these types, which converts by its own entry in the model's table, if
 it has one, as a plain field of it does. A model's conversions of other types,
@@ -505,12 +523,14 @@ Inside a class that the annotation names, such as a Pydantic model or a
 | `datetime.datetime` | A UTC offset becomes `datetime.timezone` | Uses its own `TzInfo` class |
 | `datetime.date` | Rejects numbers | Reads a number as a timestamp |
 | `datetime.timedelta` | Reads Django's `DurationField` format, such as `1 02:03:04`, and rejects years and months | Rejects Django's format, and reads `P1Y` as 365 days |
+| `datetime.time` | Rejects numbers | Reads a number as seconds since midnight |
+| `decimal.Decimal` | Rejects spaces and underscores, and writes `Decimal("1E+2")` as `"100"` | Reads them, and writes `"1E+2"` |
 | Enums | Reads only the members' values | Also reads `"1"` for a member whose value is `1` |
 
 To convert a value inside such a class as an eazyrest field would, annotate it
-with `Datetime`, `Date`, `Duration`, or `UUID` from `eazyrest.pydantic`, as
-`Rendering.timeout` is above. These types convert by the
-[conversion table](#custom-field-conversion) of the model whose field holds
+with `Datetime`, `Date`, `Time`, `Duration`, `UUID`, or `Decimal` from
+`eazyrest.pydantic`, as `Rendering.timeout` is above. These types convert by
+the [conversion table](#custom-field-conversion) of the model whose field holds
 them, so they follow its conversions, such as one that writes datetimes as
 timestamps. Outside a model, they convert by the default table. Pydantic's own
 types, such as `AwareDatetime`, keep Pydantic's rules.
@@ -542,11 +562,11 @@ A value that Pydantic converts can be changed in place, as
 ## Custom field conversion
 
 A model converts field values by a table of conversions, keyed by type. The
-default table converts `datetime`, `date`, `timedelta`, `UUID`, and enums, as
-[Field conversion](#field-conversion) describes, and any other type reads and
-writes its JSON value as it is. To convert another type, or to convert one of
-these differently, declare `conversions` on a shared base model, mapping the
-type to a `Conversion`:
+default table converts `datetime`, `date`, `time`, `timedelta`, `UUID`,
+`Decimal`, and enums, as [Field conversion](#field-conversion) describes, and
+any other type reads and writes its JSON value as it is. To convert another
+type, or to convert one of these differently, declare `conversions` on a shared
+base model, mapping the type to a `Conversion`:
 
 ```python
 import ipaddress

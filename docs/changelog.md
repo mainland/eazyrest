@@ -87,9 +87,10 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 #### Fields and conversion
 
-- Fields convert their values by annotation. `datetime`, `date`, `timedelta`,
-  `UUID`, enum, optional, collection, and related-object fields read and write
-  their JSON forms, and so do their items, as in `list[datetime.datetime]`.
+- Fields convert their values by annotation. `datetime`, `date`, `time`,
+  `timedelta`, `UUID`, `Decimal`, enum, optional, collection, and
+  related-object fields read and write their JSON forms, and so do their items,
+  as in `list[datetime.datetime]`.
 - A `datetime` field writes ISO 8601 rather than a timestamp, and reads ISO
   8601 or a Unix timestamp. `parse_datetime()` no longer uses `dateparser` or
   the local time zone, so it reads only what a field reads, and its
@@ -166,10 +167,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   `collection_items_from_response()` hook.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
-  `Duration`, and `UUID`. A type that would drop the keys it does not declare
-  is rejected, and a field must read back what it writes, so a secret such as a
-  `SecretStr`, which Pydantic writes as a mask, is refused unless a serializer
-  reveals it. Models are written by their fields' aliases.
+  `Time`, `Duration`, `UUID`, and `Decimal`. A type that would drop the keys it
+  does not declare is rejected, and a field must read back what it writes, so a
+  secret such as a `SecretStr`, which Pydantic writes as a mask, is refused
+  unless a serializer reveals it. Models are written by their fields' aliases.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the
   `type` statement.
 - Conversion tables: a model's `conversions` maps a type to a `Conversion` that

@@ -2,8 +2,8 @@
 
 A conversion describes one Python type's JSON form: how to read the type
 from JSON, and how to write it. The default table holds eazyrest's
-conversions for ``datetime``, ``date``, ``timedelta``, ``UUID``, and
-enums. JSON scalars need none.
+conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
+``UUID``, ``Decimal``, and enums. JSON scalars need none.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
+import decimal
 import enum
 import re
 import typing
@@ -69,14 +70,18 @@ def _decode_uuid(value: Any) -> uuid.UUID:
 
     Raises:
         TypeError: If ``value`` is not a string.
-        ValueError: If ``value`` is not a UUID.
+        ValueError: If ``value`` is not a UUID. The message does not quote
+            ``value``, as Python's may.
     """
     if not isinstance(value, str):
         raise TypeError(
             f"UUID values must be strings, got {type(value).__name__}"
         )
 
-    return uuid.UUID(value)
+    try:
+        return uuid.UUID(value)
+    except ValueError as err:
+        raise ValueError("UUID is not valid") from err
 
 
 def _decode_date(value: Any) -> datetime.date:
@@ -101,12 +106,197 @@ def _decode_date(value: Any) -> datetime.date:
     try:
         return datetime.date.fromisoformat(value)
     except ValueError as err:
-        # Python quotes a string that is not ISO 8601, but not one with a field
-        # out of range, as in "month must be in 1..12".
-        if repr(value) in str(err):
-            raise ValueError("Date is not in ISO 8601 format") from err
+        # Python's message names a field out of range, and from Python 3.14
+        # its value.
+        raise ValueError(
+            "Date has a year, month, or day out of range"
+        ) from err
 
-        raise
+
+_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+"""A decimal number as JSON and Django REST Framework write it."""
+
+
+_MAX_DECIMAL_EXPONENT = 4300
+"""The largest exponent, in either direction, of a decimal that converts.
+
+A decimal is written in positional notation, so ``"1E+20000000"``, 11
+bytes, would write 20 MB. The bound is the number of digits that Python
+converts between ``int`` and ``str`` by default."""
+
+
+def _check_decimal_exponent(value: decimal.Decimal) -> decimal.Decimal:
+    """Check that a decimal's positional form has a bounded length.
+
+    Args:
+        value: Finite decimal.
+
+    Returns:
+        ``value``.
+
+    Raises:
+        ValueError: If ``value``'s exponent is out of range. The message
+            does not quote ``value``.
+    """
+    # A zero with a positive exponent writes one digit, but a zero with a
+    # negative one writes each zero after the point, as "0e-5" writes
+    # "0.00000".
+    adjusted = value.adjusted()
+    if adjusted < -_MAX_DECIMAL_EXPONENT or (
+        value and adjusted > _MAX_DECIMAL_EXPONENT
+    ):
+        raise ValueError(
+            "Decimal has an exponent beyond "
+            f"+/-{_MAX_DECIMAL_EXPONENT}, whose positional form is too long"
+        )
+    return value
+
+
+def _decode_decimal(value: Any) -> decimal.Decimal:
+    """Decode a JSON decimal, written as a string or a number.
+
+    Django REST Framework writes a ``DecimalField`` as a string, such as
+    ``"1.10"``, which keeps its digits, or as a number when its
+    ``COERCE_DECIMAL_TO_STRING`` setting is false.
+
+    Args:
+        value: Decimal number as a string, or a JSON number.
+
+    Returns:
+        Decoded ``Decimal``. A float converts from its shortest decimal form,
+        so ``0.1`` reads as ``Decimal("0.1")``.
+
+    Raises:
+        TypeError: If ``value`` is neither a string nor a number. A boolean is
+            not a number.
+        ValueError: If a string is not a decimal number, or its exponent is
+            beyond 4300 in either direction. The message does not quote
+            ``value``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise TypeError(
+            "Decimal values must be strings or numbers, got "
+            f"{type(value).__name__}"
+        )
+    if isinstance(value, str):
+        # Decimal() also reads spaces, underscores, "NaN", and "Infinity".
+        if _DECIMAL.fullmatch(value) is None:
+            raise ValueError("Decimal is not a decimal number")
+        try:
+            parsed = decimal.Decimal(value)
+        except decimal.InvalidOperation:
+            # Decimal() refuses an exponent beyond its own limits.
+            raise ValueError(
+                "Decimal has an exponent beyond "
+                f"+/-{_MAX_DECIMAL_EXPONENT}, whose positional form is too "
+                "long"
+            ) from None
+        return _check_decimal_exponent(parsed)
+    if isinstance(value, float):
+        return _check_decimal_exponent(decimal.Decimal(repr(value)))
+    return _check_decimal_exponent(decimal.Decimal(value))
+
+
+def _encode_decimal(value: decimal.Decimal) -> str:
+    """Encode a decimal as a JSON string, as Django REST Framework does.
+
+    Args:
+        value: Decimal to encode.
+
+    Returns:
+        ``value`` in positional notation, with its digits, such as ``"1.10"``
+        or ``"100"`` for ``Decimal("1E+2")``.
+
+    Raises:
+        ValueError: If ``value`` is not finite, or its exponent is beyond 4300
+            in either direction.
+    """
+    if not value.is_finite():
+        raise ValueError("Decimal field values must be finite")
+    return format(_check_decimal_exponent(value), "f")
+
+
+_TIME = re.compile(
+    r"([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,6}))?)?"
+    r"(Z|[+-][0-9]{2}:[0-9]{2})?"
+)
+"""An ISO 8601 time of day, with optional seconds, fraction, and offset."""
+
+
+def _decode_time(value: Any) -> datetime.time:
+    """Decode a JSON ISO 8601 time string.
+
+    Python's ``time.fromisoformat()`` reads more forms on Python 3.11 than on
+    3.10, so the format is checked here, the same on every version.
+
+    Args:
+        value: ISO 8601 time, such as ``"09:30"``, ``"09:30:00.5"``, or
+            ``"09:30:00+02:00"``.
+
+    Returns:
+        Decoded ``time``. A UTC offset becomes a ``datetime.timezone``.
+
+    Raises:
+        TypeError: If ``value`` is not a string.
+        ValueError: If ``value`` is not an ISO 8601 time. The message does not
+            quote ``value``.
+    """
+    if not isinstance(value, str):
+        raise TypeError(
+            f"Time values must be strings, got {type(value).__name__}"
+        )
+    match = _TIME.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            "Time is not in ISO 8601 format (HH:MM[:SS[.ffffff]][+HH:MM])"
+        )
+
+    hour, minute, second, fraction, offset = match.groups()
+    tzinfo: datetime.tzinfo | None = None
+    if offset == "Z":
+        tzinfo = datetime.timezone.utc
+    elif offset is not None:
+        hours, minutes = int(offset[1:3]), int(offset[4:6])
+        if hours > 23 or minutes > 59:
+            raise ValueError("Time has a UTC offset out of range")
+        sign = -1 if offset[0] == "-" else 1
+        tzinfo = datetime.timezone(
+            sign * datetime.timedelta(hours=hours, minutes=minutes)
+        )
+    try:
+        return datetime.time(
+            int(hour),
+            int(minute),
+            int(second or 0),
+            int((fraction or "0").ljust(6, "0")),
+            tzinfo=tzinfo,
+        )
+    except ValueError as err:
+        # Python's message names the field, and from Python 3.14 its value.
+        raise ValueError(
+            "Time has an hour, minute, or second out of range"
+        ) from err
+
+
+def _encode_time(value: datetime.time) -> str:
+    """Encode a time as an ISO 8601 string.
+
+    Args:
+        value: Time to encode.
+
+    Returns:
+        ``value`` in ISO 8601, such as ``"09:30:00"``.
+
+    Raises:
+        ValueError: If ``value`` has a UTC offset that is not a whole number of
+            minutes, which ISO 8601 cannot write.
+    """
+    offset = value.utcoffset()
+    if offset is not None and offset % _ONE_MINUTE:
+        raise ValueError(
+            "Time field values must have a UTC offset of whole minutes"
+        )
+    return value.isoformat()
 
 
 def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
@@ -218,6 +408,14 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
             encode=lambda value, _: isodate.duration_isoformat(value),
+        ),
+        datetime.time: Conversion(
+            decode=lambda value, _: _decode_time(value),
+            encode=lambda value, _: _encode_time(value),
+        ),
+        decimal.Decimal: Conversion(
+            decode=lambda value, _: _decode_decimal(value),
+            encode=lambda value, _: _encode_decimal(value),
         ),
         enum.Enum: Conversion(
             decode=_decode_enum_value,

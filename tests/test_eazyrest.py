@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import decimal
 import email
 import email.message
 import enum
@@ -1086,6 +1087,229 @@ def test_datetime_field_rejects_out_of_range_timestamps(value: float) -> None:
         _ = event.starts_at
 
 
+@json_object
+class Shop(ModelBase):
+    """Model with decimal and time fields, as DRF serializes them."""
+
+    class_url = "/shops/"
+
+    id: int
+    price: decimal.Decimal
+    prices: list[decimal.Decimal]
+    opens: datetime.time
+
+
+SHOP_URL = "https://example.com/v1/shops/1/"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1.10", decimal.Decimal("1.10")),
+        ("-12", decimal.Decimal(-12)),
+        ("1.5e3", decimal.Decimal("1.5e3")),
+        ("1e4300", decimal.Decimal("1e4300")),
+        ("-1e-4300", decimal.Decimal("-1e-4300")),
+        ("0e999999", decimal.Decimal("0e999999")),
+        (0.1, decimal.Decimal("0.1")),
+        (2, decimal.Decimal(2)),
+    ],
+)
+def test_decimal_field_reads_strings_and_numbers(
+    value: Any, expected: decimal.Decimal
+) -> None:
+    """A decimal reads from a decimal string or a JSON number.
+
+    Args:
+        value: JSON value of the decimal field.
+        expected: Decimal that the field reads, with the same digits.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    assert shop.price == expected
+    assert str(shop.price) == str(expected)
+
+
+@pytest.mark.parametrize("value", ["1 000", "1_000", " 1.5", "NaN", "Inf", ""])
+def test_decimal_field_rejects_other_strings(value: str) -> None:
+    """Only a decimal number reads, not the other strings ``Decimal`` reads.
+
+    Args:
+        value: String that is not a decimal number.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    with pytest.raises(FieldConversionError, match=r"^Shop\.price: Decimal"):
+        _ = shop.price
+
+
+@pytest.mark.parametrize(
+    "value", ["1E+20000000", "1e-4302", "12.5e4300", "0e-20000", "-0E-4302"]
+)
+def test_decimal_field_rejects_exponents_too_long_to_write(
+    requests_mock: Any, value: str
+) -> None:
+    """A decimal whose positional form would be very long does not read.
+
+    So, 11 bytes of JSON cannot become megabytes when the value is written
+    back. Assigning such a decimal raises too, and sends nothing.
+
+    Args:
+        requests_mock: Mocked HTTP transport.
+        value: Decimal string with a large exponent.
+    """
+    shop = Shop(json={"id": 1, "price": value, "prices": [value]})
+
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        _ = shop.price
+    with pytest.raises(FieldConversionError, match=r"^Shop\.prices: Decimal"):
+        _ = shop.prices
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        shop.price = decimal.Decimal(value)
+    assert requests_mock.call_count == 0
+
+
+def test_decimal_field_rejects_exponents_beyond_decimals_own() -> None:
+    """An exponent that Decimal itself refuses raises a conversion error."""
+    shop = Shop(json={"id": 1, "price": "1e9999999999999999999"})
+
+    with pytest.raises(FieldConversionError, match="exponent beyond"):
+        _ = shop.price
+
+
+def test_zero_decimal_with_a_large_exponent_writes_one_digit() -> None:
+    """A zero with a positive exponent writes ``"0"``, so it reads."""
+    shop = Shop(json={"id": 1, "price": "0E+20000"})
+
+    assert shop.price == 0
+    shop.price = decimal.Decimal("-0E+20000")
+    assert shop.json["price"] == "-0"
+
+
+@pytest.mark.parametrize("value", [True, [1], {"amount": 1}])
+def test_decimal_field_rejects_other_json_types(value: Any) -> None:
+    """Only strings and numbers read as decimals. A boolean is not a number.
+
+    Args:
+        value: JSON value that is neither a string nor a number.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    with pytest.raises(FieldConversionError, match="strings or numbers"):
+        _ = shop.price
+
+
+def test_decimal_field_writes_strings_with_their_digits(
+    requests_mock: Any,
+) -> None:
+    """A decimal is written as DRF writes one: a string in positional form."""
+    patch = requests_mock.patch(SHOP_URL, status_code=204)
+    shop = Shop(json={"id": 1, "price": "1.10", "prices": ["1"]})
+
+    shop.price = decimal.Decimal("2.50")
+    shop.prices = [decimal.Decimal("1E+2"), decimal.Decimal("-0.001")]
+    shop.save()
+
+    assert patch.last_request.json() == {
+        "price": "2.50",
+        "prices": ["100", "-0.001"],
+    }
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_decimal_field_refuses_to_write_non_finite_values(
+    requests_mock: Any, value: str
+) -> None:
+    """A decimal that JSON and DRF cannot read is refused and not sent.
+
+    Args:
+        value: Text of a decimal that is not finite.
+    """
+    shop = Shop(json={"id": 1, "price": "1.10"})
+
+    with pytest.raises(FieldConversionError, match="finite"):
+        shop.price = decimal.Decimal(value)
+
+    assert shop.price == decimal.Decimal("1.10")
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("09:30", datetime.time(9, 30)),
+        ("09:30:15", datetime.time(9, 30, 15)),
+        ("09:30:15.5", datetime.time(9, 30, 15, 500000)),
+        ("09:30:15.123456", datetime.time(9, 30, 15, 123456)),
+        ("09:30Z", datetime.time(9, 30, tzinfo=datetime.timezone.utc)),
+        (
+            "09:30:00-05:30",
+            datetime.time(
+                9,
+                30,
+                tzinfo=datetime.timezone(
+                    -datetime.timedelta(hours=5, minutes=30)
+                ),
+            ),
+        ),
+    ],
+)
+def test_time_field_reads_iso_8601(
+    value: str, expected: datetime.time
+) -> None:
+    """A time reads from ISO 8601 alike on every supported Python.
+
+    Python 3.10's ``time.fromisoformat()`` rejects ``Z`` and fractions of
+    other than three or six digits.
+
+    Args:
+        value: ISO 8601 time.
+        expected: Time that the field reads.
+    """
+    shop = Shop(json={"id": 1, "opens": value})
+
+    assert shop.opens == expected
+    assert shop.opens.tzinfo == expected.tzinfo
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["9:30", "0930", "24:00", "09:60", "09:30:00.1234567", "09:30+24:00", ""],
+)
+def test_time_field_rejects_other_strings(value: str) -> None:
+    """A string that is not an ISO 8601 time, or is out of range, raises.
+
+    Args:
+        value: String that the field cannot read.
+    """
+    shop = Shop(json={"id": 1, "opens": value})
+
+    with pytest.raises(FieldConversionError, match=r"^Shop\.opens: "):
+        _ = shop.opens
+
+
+def test_time_field_rejects_numbers() -> None:
+    """A number is not read as seconds since midnight, as Pydantic reads it."""
+    shop = Shop(json={"id": 1, "opens": 3600})
+
+    with pytest.raises(FieldConversionError, match="must be strings"):
+        _ = shop.opens
+
+
+def test_time_field_writes_iso_8601(requests_mock: Any) -> None:
+    """A time is written in ISO 8601, and an offset with seconds is refused."""
+    patch = requests_mock.patch(SHOP_URL, status_code=204)
+    shop = Shop(json={"id": 1, "opens": "09:30:00"})
+    odd = datetime.timezone(datetime.timedelta(minutes=19, seconds=32))
+
+    with pytest.raises(FieldConversionError, match="whole minutes"):
+        shop.opens = datetime.time(8, tzinfo=odd)
+    shop.opens = datetime.time(8, 15, 0, 500)
+    shop.save()
+
+    assert patch.last_request.json() == {"opens": "08:15:00.000500"}
+
+
 def test_sequence_field_reads_as_tuple_of_converted_items(
     requests_mock: Any,
 ) -> None:
@@ -1258,7 +1482,7 @@ def test_constructor_decodes_uuid_primary_key(
 
 def test_constructor_rejects_invalid_uuid_primary_key() -> None:
     """A key that the field cannot decode fails when the object is made."""
-    with pytest.raises(ValueError, match="badly formed hexadecimal UUID"):
+    with pytest.raises(ValueError, match="UUID is not valid"):
         UUIDUser(key="not-a-uuid")
 
 
@@ -3246,6 +3470,8 @@ class Secretive(ModelBase):
     day: datetime.date
     length: datetime.timedelta
     status: IssueStatus
+    key: uuid.UUID
+    at: datetime.time
 
 
 SECRET = "TOP-SECRET-1234"
@@ -3257,10 +3483,18 @@ SECRET = "TOP-SECRET-1234"
         ("when", SECRET, "not in ISO 8601 format"),
         ("when", 1e300, "out of range"),
         ("day", SECRET, "not in ISO 8601 format"),
-        ("day", "2024-13-01", "month must be in 1..12"),
+        ("day", "2024-13-01", "Date has a year, month, or day out of range"),
         ("length", SECRET, "not in a supported format"),
         ("length", f"P{SECRET}", "not in ISO 8601 format"),
         ("status", SECRET, "not a valid IssueStatus"),
+        ("key", "secretsecretsecretsecretsecretab", "UUID is not valid"),
+        ("when", 253402300800, "Timestamp is out of range$"),
+        ("day", "1987-02-30", "Date has a year, month, or day out of range$"),
+        (
+            "at",
+            "07:61:00",
+            "Time has an hour, minute, or second out of range$",
+        ),
     ],
 )
 def test_field_conversion_error_does_not_quote_the_value(

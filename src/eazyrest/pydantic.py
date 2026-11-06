@@ -1,12 +1,13 @@
 """Pydantic types that convert values as eazyrest's fields do.
 
 Inside a Pydantic model, a ``TypedDict``, or a Pydantic dataclass, Pydantic's
-own rules convert ``datetime``, ``date``, ``timedelta``, and ``UUID`` values,
-and they differ from eazyrest's. For example, Pydantic reads ``"P1Y"`` as 365
-days and a large number as milliseconds since the Unix epoch. Annotate a value
-with one of these types to convert it as an eazyrest field of the corresponding
-type would: by the conversion table of the model whose field holds it, so that
-it follows that model's conversions, or by the default table outside a model.
+own rules convert ``datetime``, ``date``, ``time``, ``timedelta``, ``UUID``,
+and ``Decimal`` values, and they differ from eazyrest's. For example, Pydantic
+reads ``"P1Y"`` as 365 days and a large number as milliseconds since the Unix
+epoch. Annotate a value with one of these types to convert it as an eazyrest
+field of the corresponding type would: by the conversion table of the model
+whose field holds it, so that it follows that model's conversions, or by the
+default table outside a model.
 
 Importing this module requires Pydantic, which the ``pydantic`` extra installs.
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import decimal
 import enum
 import types
 import typing
@@ -57,7 +59,7 @@ from ._models import (
     lenient_issubclass,
 )
 
-__all__ = ["UUID", "Date", "Datetime", "Duration"]
+__all__ = ["UUID", "Date", "Datetime", "Decimal", "Duration", "Time"]
 
 
 def _validator(is_value: Callable[[Any], bool], ty: Any) -> PlainValidator:
@@ -167,6 +169,14 @@ def _is_uuid(value: Any) -> bool:
     return isinstance(value, uuid.UUID)
 
 
+def _is_time(value: Any) -> bool:
+    return isinstance(value, datetime.time)
+
+
+def _is_decimal(value: Any) -> bool:
+    return isinstance(value, decimal.Decimal)
+
+
 Datetime = Annotated[
     datetime.datetime,
     _validator(_is_datetime, datetime.datetime),
@@ -208,6 +218,43 @@ UUID = Annotated[
 ]
 """A ``UUID`` read from and written as a string."""
 
+Time = Annotated[
+    datetime.time,
+    _validator(_is_time, datetime.time),
+    _serializer(_is_time, datetime.time),
+    WithJsonSchema({"type": "string", "format": "time"}),
+]
+"""A ``time`` read from and written in ISO 8601, such as ``"09:30:00"``.
+
+A UTC offset becomes a ``datetime.timezone``. Pydantic would also read a number
+as seconds since midnight.
+"""
+
+Decimal = Annotated[
+    decimal.Decimal,
+    _validator(_is_decimal, decimal.Decimal),
+    _serializer(_is_decimal, decimal.Decimal),
+    WithJsonSchema(
+        {
+            "anyOf": [
+                {"type": "string", "format": "decimal"},
+                {"type": "number"},
+            ]
+        },
+        mode="validation",
+    ),
+    WithJsonSchema(
+        {"type": "string", "format": "decimal"}, mode="serialization"
+    ),
+]
+"""A ``Decimal`` read from a string or a number, and written as a string.
+
+It is written in positional notation with its digits, such as ``"1.10"``, as
+Django REST Framework writes a ``DecimalField``. Pydantic would also read
+strings with spaces or underscores, and would write ``Decimal("1E+2")`` as
+``"1E+2"`` rather than ``"100"``.
+"""
+
 
 def _enum_type(cls: type[enum.Enum]) -> Any:
     """Return an enum type that converts values as eazyrest does.
@@ -237,7 +284,9 @@ _IS_VALUE: dict[Any, Callable[[Any], bool]] = {
     datetime.datetime: _is_datetime,
     datetime.date: _is_date,
     datetime.timedelta: _is_timedelta,
+    datetime.time: _is_time,
     uuid.UUID: _is_uuid,
+    decimal.Decimal: _is_decimal,
 }
 """Whether a value has one of the types that this module replaces."""
 
@@ -284,7 +333,9 @@ _EAZYREST_TYPES: dict[Any, Any] = {
     datetime.datetime: Datetime,
     datetime.date: Date,
     datetime.timedelta: Duration,
+    datetime.time: Time,
     uuid.UUID: UUID,
+    decimal.Decimal: Decimal,
 }
 
 
@@ -579,10 +630,10 @@ def _check_extra(cls: Any) -> None:
 def _eazyrest_types(ty: Any) -> Any:
     """Return a type with eazyrest's conversions for the types it names.
 
-    ``datetime``, ``date``, ``timedelta``, ``UUID``, and enum types that ``ty``
-    names, also as type arguments or as the supertype of a ``NewType``, are
-    replaced by types that convert as eazyrest's fields do. Types inside a
-    class that ``ty`` names are left to that class.
+    ``datetime``, ``date``, ``time``, ``timedelta``, ``UUID``, ``Decimal``, and
+    enum types that ``ty`` names, also as type arguments or as the supertype
+    of a ``NewType``, are replaced by types that convert as eazyrest's fields
+    do. Types inside a class that ``ty`` names are left to that class.
 
     Args:
         ty: Field type to convert.

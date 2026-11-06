@@ -246,6 +246,13 @@ which DRF accepts as input. If your API requires another wire format, replace
 the `timedelta` conversion in a model's `conversions`, as the guide's
 [Custom field conversion](guide.md#custom-field-conversion) section shows.
 
+DRF `DecimalField` emits a string such as `"1.10"` by default, or a number when
+the `COERCE_DECIMAL_TO_STRING` setting is `False`. Annotate it as
+`decimal.Decimal`, which reads both and writes a string, which DRF accepts.
+Keep the default, because a number with more digits than a float holds loses
+them when the JSON is decoded. DRF `TimeField` emits ISO 8601 times, such as
+`09:30:00`, which a `datetime.time` field reads and writes.
+
 A serializer field with `write_only=True`, such as a password, appears in
 requests but never in responses. Declare it, and list it in
 `json_object(write_only=...)`, so that it can be assigned and saved like any
