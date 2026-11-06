@@ -96,6 +96,8 @@ user.refresh()
 print(user.name)
 ```
 
+An object built from JSON, such as an item that `filter()` returns or a related object embedded in another object's JSON, counts as loaded. Reading a field that its JSON lacks raises `AttributeError` rather than sending a request. An API whose collection returns summaries, with fewer fields than its detail endpoint, therefore gives objects that lack the other fields. Call `refresh()` on such an object to load its detail from its `url` at the next read.
+
 ## Resource URLs
 
 `url` returns the model resource path built from `class_url` and the primary key. `absolute_url` resolves that path against the registered API base URL using the same URL resolution as request methods:
@@ -144,7 +146,7 @@ A named type alias, such as `type Dates = list[datetime.datetime]` or a `typing_
 
 A value that a field cannot convert, when it is read, assigned, or passed to `create()` or a query, raises `FieldConversionError`. Its message names the model and field, as in `Booking.day: month must be in 1..12`, and the conversion's own error is its `__cause__`. It is both a `TypeError` and a `ValueError`, so code that catches either one keeps working.
 
-The messages of eazyrest's errors name models, fields, and query parameters, but they do not quote values, which can be secrets that the server sent or that the code assigned. A Pydantic error says where and why a value is invalid, as in `Asset.rating: Input should be greater than 0`, without the input. A mapping key that the input chose appears as `[key]`, and a value that Pydantic would quote, such as a discriminated union's unknown tag, appears as `[redacted]`. The error that eazyrest replaced remains the `__cause__`, and it can quote the value, so a logged traceback can still expose it. A message that your own conversion code or validator writes appears as written.
+The messages of eazyrest's errors name models, fields, and query parameters, but they do not quote values, which can be secrets that the server sent or that the code assigned. The exceptions are URLs: an HTTP error, a redirect error, and a pagination error name the URLs involved, with their query strings, so a query parameter's value can appear. Send a secret in a header or the body, not in the query. A Pydantic error says where and why a value is invalid, as in `Asset.rating: Input should be greater than 0`, without the input. A mapping key that the input chose appears as `[key]`, and a value that Pydantic would quote, such as a discriminated union's unknown tag, appears as `[redacted]`. The error that eazyrest replaced remains the `__cause__`, and it can quote the value, so a logged traceback can still expose it. A message that your own conversion code or validator writes appears as written.
 
 A JSON value that an enum lacks, such as a status that the server added after the client was written, raises `FieldConversionError`. Python calls an enum's `_missing_()` classmethod for a value it lacks, so an enum can map such values to a member of its own instead:
 
