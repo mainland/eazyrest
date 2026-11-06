@@ -656,7 +656,9 @@ class API:
     such as an API key or a CSRF token, and a 307 or 308 resends the body. A
     redirect to another origin raises ``RedirectError`` before anything is sent
     there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
-    the redirect.
+    the redirect. A raw request sent with ``allow_redirects=False`` follows
+    nothing, so it returns a redirect as it is, without these checks, unless
+    its ``Location`` cannot be parsed, which raises ``RedirectError``.
     """
 
     base_url: str
@@ -1033,7 +1035,10 @@ class API:
 
         url = self.resolve_url(uri)
         kwargs["hooks"] = self._guard_redirects(
-            url, kwargs.get("hooks"), budget
+            url,
+            kwargs.get("hooks"),
+            budget,
+            follow=bool(kwargs.get("allow_redirects", True)),
         )
         token = _request_budget.set(budget)
         try:
@@ -1061,6 +1066,7 @@ class API:
         url: str,
         hooks: dict[str, Any] | None,
         budget: _Budget | None = None,
+        follow: bool = True,
     ) -> dict[str, Any]:
         """Return request hooks that refuse unsafe redirects.
 
@@ -1069,6 +1075,14 @@ class API:
             hooks: Hooks passed with the request, if any.
             budget: Limits of the request, which each redirect's body and the
                 time to reach it must respect.
+            follow: Whether requests follows redirects. If not, the hook
+                refuses only a ``Location`` that requests cannot prepare
+                ``Response.next`` for. The hook runs the preparation itself, so
+                that the ``ValueError`` or ``UnicodeError`` that any of its
+                steps raises, for instance on a port that is out of range,
+                becomes a ``RedirectError``. Otherwise it refuses nothing,
+                because no redirect is followed, and a caller that cannot
+                accept an unfollowed redirect refuses it itself.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
@@ -1082,13 +1096,17 @@ class API:
 
             Args:
                 resp: Response, which may be a redirect.
-                kwargs: Other arguments that requests passes to response hooks,
-                    which are ignored.
+                kwargs: Arguments that requests passes to response hooks, which
+                    are those it sends the request with. They are passed on to
+                    prepare an unfollowed redirect's next request.
 
             Raises:
-                RedirectError: If ``resp`` redirects to an origin that is not
-                    allowed, or if requests would follow it without the
-                    request's body. The response is closed first.
+                RedirectError: If the ``Location`` of ``resp`` cannot be
+                    parsed, or requests cannot prepare the next request for it
+                    without following it, or if requests follows the redirect,
+                    and it leads to an origin that is not allowed or requests
+                    would follow it without the request's body. The response is
+                    closed first.
             """
             try:
                 target = self.session.get_redirect_target(resp)
@@ -1097,6 +1115,24 @@ class API:
                     return
                 destination = _redirect_destination(resp, target)
                 origins = _redirect_origins(resp, target)
+                if not follow:
+                    # Session.send() prepares Response.next in this way when it
+                    # does not follow redirects. Each step, such as the
+                    # comparison of ports to decide whether to strip
+                    # credentials, can raise a bare ValueError or UnicodeError
+                    # that no parse of the target here anticipates. Run the
+                    # preparation so that any such failure is refused here. It
+                    # sends nothing, and the repeat reads no more of the body
+                    # and closes the response, as requests does next.
+                    next(
+                        self.session.resolve_redirects(
+                            resp,
+                            resp.request,
+                            yield_requests=True,
+                            **kwargs,
+                        ),
+                        None,
+                    )
             except ValueError as err:
                 resp.close()
                 raise RedirectError(
@@ -1105,6 +1141,8 @@ class API:
                     "parsed, so it was not followed",
                     response=resp,
                 ) from err
+            if not follow:
+                return
             if origins <= allowed:
                 _check_write_redirect(resp, target)
                 if budget is not None:

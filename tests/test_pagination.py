@@ -239,6 +239,40 @@ def test_unrequestable_next_link_raises_pagination_error(
 
 
 @pytest.mark.parametrize("allow_other_origins", [False, True])
+@pytest.mark.parametrize(
+    "location", ["/v1/items/3", "https://other.example/v1/items/3"]
+)
+def test_unfollowed_page_redirect_raises_redirect_error(
+    requests_mock: Any, allow_other_origins: bool, location: str
+) -> None:
+    """A page redirect that is not followed raises ``RedirectError``.
+
+    The origin of the target does not matter, because nothing is followed, so
+    the error does not advise an option that would change nothing.
+
+    Args:
+        allow_other_origins: Whether links to other origins are followed.
+        location: The redirect's target, on the page's origin or another.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/2",
+        status_code=302,
+        headers={"Location": location},
+    )
+    first_page = {"next": "https://example.com/v1/items/2", "results": []}
+
+    with pytest.raises(RedirectError, match="returned status 302"):
+        list(
+            follow_next_links(
+                api._scoped({"allow_redirects": False}),
+                first_page,
+                allow_other_origins=allow_other_origins,
+            )
+        )
+
+
+@pytest.mark.parametrize("allow_other_origins", [False, True])
 def test_unparsable_page_redirect_raises_redirect_error(
     requests_mock: Any, allow_other_origins: bool
 ) -> None:

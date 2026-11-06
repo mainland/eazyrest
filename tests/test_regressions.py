@@ -888,6 +888,27 @@ def test_request_hooks_run_for_model_writes(requests_mock: Any) -> None:
     assert requests_mock.call_count == 2
 
 
+@pytest.mark.parametrize("location", ["/n\x85x", "http://[bad/", "//[::1"])
+def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
+    requests_mock: Any, location: str
+) -> None:
+    """A ``Location`` that cannot be parsed raises ``RedirectError``.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    requests_mock.post(
+        "https://mocked.example/docs/",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        MockedDoc.create(
+            title="new", request_options={"allow_redirects": False}
+        )
+
+
 def test_unfollowed_redirects_allow_a_completed_write(
     requests_mock: Any,
 ) -> None:

@@ -6,6 +6,7 @@ import http.server
 import json
 import re
 import threading
+from collections.abc import Callable
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -152,6 +153,72 @@ def test_unparsable_redirect_raises_redirect_error(
 
     with pytest.raises(RedirectError, match="cannot be parsed"):
         api.get("/r")
+
+
+UNPARSABLE_LOCATIONS = ["/n\x85x", "http://[bad/", "//[::1"]
+
+
+@pytest.mark.parametrize("location", UNPARSABLE_LOCATIONS)
+def test_unfollowed_unparsable_redirect_raises_redirect_error(
+    requests_mock: Any, location: str
+) -> None:
+    """A ``Location`` that cannot be parsed raises, though nothing follows it.
+
+    Requests parses the ``Location`` of an unfollowed redirect too, and raises
+    ``UnicodeDecodeError`` or ``ValueError`` out of ``send()``, where no caller
+    expects either.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/r",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        api.get("/r", allow_redirects=False)
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        api._scoped({"allow_redirects": False}).get("/r")
+
+
+# A port that urlsplit() accepts until it is read. requests reads it when it
+# compares the redirect's host with the request's to decide whether to strip
+# credentials, or to decide whether the host bypasses proxies.
+UNREADABLE_PORT_CASES = [
+    ("http://127.0.0.1:99999/x", "authorization"),
+    ("http://127.0.0.1:abc/x", "authorization"),
+    ("http://localhost:99999/x", "no_proxy"),
+    ("http://localhost:abc/x", "no_proxy"),
+]
+
+
+@pytest.mark.parametrize(("location", "setup"), UNREADABLE_PORT_CASES)
+def test_unfollowed_redirect_with_an_unreadable_port_raises_redirect_error(
+    redirect_server: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    setup: str,
+) -> None:
+    """Requests cannot prepare the next request, so the redirect is refused.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        setup: ``authorization`` for a session that sends credentials, or
+            ``no_proxy`` for an environment that lists hosts to reach directly.
+    """
+    api = API(redirect_server(location))
+    if setup == "authorization":
+        api.session.headers["Authorization"] = "Token dummy"
+    else:
+        monkeypatch.setenv("NO_PROXY", "example.invalid")
+
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        api.get("/r", allow_redirects=False)
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        api._scoped({"allow_redirects": False}).get("/r")
 
 
 def test_api_check_redirects_ignores_a_resent_401() -> None:
@@ -1063,6 +1130,46 @@ def test_scoped_client_refuses_a_final_redirect(
         api._scoped({"allow_redirects": False}).get("/items/")
 
     assert api.get("/items/", allow_redirects=False).status_code == status
+
+
+@pytest.mark.parametrize(
+    ("method", "status", "location"),
+    [
+        ("get", 302, "https://elsewhere.example.net/"),
+        ("post", 302, "/elsewhere/"),
+        ("post", 303, "/elsewhere/"),
+        ("patch", 301, "/elsewhere/"),
+    ],
+)
+def test_unfollowed_redirect_of_a_raw_request_is_returned(
+    requests_mock: Any, method: str, status: int, location: str
+) -> None:
+    """A raw request that follows nothing returns any redirect as it is.
+
+    The redirect guard refuses a redirect to another origin and one that
+    changes the method, but with ``allow_redirects=False`` neither happens. The
+    same redirect still raises for a request-scoped client, which expects a
+    final response.
+
+    Args:
+        method: Request method.
+        status: Redirect status.
+        location: Redirect target.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.register_uri(
+        method.upper(),
+        "https://example.com/v1/items/",
+        status_code=status,
+        headers={"Location": location},
+    )
+
+    resp = getattr(api, method)("/items/", allow_redirects=False)
+
+    assert resp.status_code == status
+    assert resp.headers["Location"] == location
+    with pytest.raises(RedirectError, match=f"returned status {status}"):
+        getattr(api._scoped({"allow_redirects": False}), method)("/items/")
 
 
 @pytest.mark.parametrize(

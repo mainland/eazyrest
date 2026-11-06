@@ -1162,6 +1162,21 @@ api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
 
+These checks guard the redirects that requests follows. A raw request sent with
+`allow_redirects=False` follows none, so it returns the 3xx response as it is,
+and the caller decides what to do with it. Requests does prepare
+`Response.next` even then, and raises its own `ValueError` or `UnicodeError`
+when it cannot. The request raises `RedirectError` instead, whether or not it
+follows redirects. A `Location` that requests prepares without error is
+returned. Requests cannot prepare a `Location` with a byte that is not UTF-8,
+or a host such as `http://[bad/`. It cannot prepare one with a port that is out
+of range either, when it must read the port: when the request carries an
+`Authorization` header and the redirect keeps the host, or when `NO_PROXY` is
+set and the redirect names a host that is not an IPv4 address. Without these,
+the same port is returned. A model write, and a client that a query's
+`request_options=` creates, expect a final response, so they raise
+`RedirectError` for any unfollowed 3xx.
+
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
 
@@ -1318,8 +1333,10 @@ exception type that it replaced, so code written for that type keeps working:
   object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
-- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect or an
-  unfollowed final 3xx on a model write. Its `response` is the redirect.
+- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect, a redirect
+  that requests cannot prepare a request for when it is not followed, or an
+  unfollowed final 3xx on a model write or a request-scoped client. Its
+  `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
