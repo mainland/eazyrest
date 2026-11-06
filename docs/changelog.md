@@ -111,6 +111,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   `pk=`, `field_map=`, or `exclude=` name that is not a field, and for two
   fields with the same JSON key. A class with decorated ancestors that are not
   subclasses of one another raises `TypeError`.
+- The `JSONObject` constructor takes `json` and `api` as keyword arguments
+  only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
 
 #### URLs and HTTP
