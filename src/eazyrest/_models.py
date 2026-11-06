@@ -1977,14 +1977,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         names under which its definitions were added.
     """
     own = dict(schema.pop("$defs", {}))
-    renamed: dict[str, str] = {}
-    for name, definition in own.items():
-        new = name
-        suffix = 2
-        while new in defs and defs[new] != definition:
-            new = f"{name}_{suffix}"
-            suffix += 1
-        renamed[name] = new
+    renamed = {name: name for name in own}
 
     def rewrite(value: Any) -> Any:
         """Return ``value`` with its definition references renamed.
@@ -2048,6 +2041,34 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
             return item
         # A new name only adds a suffix, which needs no escaping.
         return f"#/$defs/{token}{renamed[name][len(name) :]}{slash}{rest}"
+
+    def fits(name: str) -> bool:
+        """Return whether a definition can be added under its new name.
+
+        Args:
+            name: Name of one of the schema's own definitions.
+
+        Returns:
+            Whether no other definition takes the new name, or a shared one
+            with the same content after renaming does.
+        """
+        new = renamed[name]
+        if new in defs:
+            return bool(defs[new] == rewrite(own[name]))
+        return all(renamed[other] != new for other in own if other != name)
+
+    # Renaming a definition changes the definitions that refer to it, which
+    # may then collide in turn, so rename until every definition fits. Each
+    # rename takes a higher suffix, so this ends.
+    suffixes = dict.fromkeys(own, 1)
+    changed = True
+    while changed:
+        changed = False
+        for name in own:
+            while not fits(name):
+                suffixes[name] += 1
+                renamed[name] = f"{name}_{suffixes[name]}"
+                changed = True
 
     for name, definition in own.items():
         defs[renamed[name]] = rewrite(definition)
