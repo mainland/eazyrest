@@ -9,6 +9,10 @@ and every write must then fail before it sends anything. A related object
 changed but not saved must survive a load that leaves its JSON as it was. A
 save with a file sends the changes as form fields, which the fake server
 parses as Django REST Framework would.
+
+A second machine follows a related object that a note names by its URL, as
+``Hyperlinked()`` reads one: an object that knows only its URL, its load, its
+assignment by object or URL, pushed URLs, and loads of the note.
 A fake server records every write, and a model of the server, of the object's
 stored JSON, and of the values that reads return predicts the outcome of each
 step.
@@ -27,7 +31,8 @@ import email.message
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
+from urllib.parse import urljoin
 
 import hypothesis.strategies as st
 import pytest
@@ -45,6 +50,7 @@ from eazyrest import (
     API,
     APIError,
     FieldConversionError,
+    Hyperlinked,
     JSONObject,
     RedirectError,
     ResponseShapeError,
@@ -1223,3 +1229,393 @@ ObjectStateMachine.TestCase.settings = settings(
     suppress_health_check=[HealthCheck.too_slow],
 )
 test_object_state = ObjectStateMachine.TestCase
+
+
+@json_object
+class Person(StateBase):
+    """Related model that a note names by its URL."""
+
+    class_url = "/people/"
+
+    id: int
+    name: str
+
+
+@json_object
+class LinkedNote(StateBase):
+    """Model whose related object is a hyperlink, as DRF serializes one."""
+
+    class_url = "/notes/"
+
+    id: int
+    title: str
+    author: Annotated[Person, Hyperlinked()]
+
+
+NOTE_URL = f"{BASE}/notes/1/"
+PERSON_URL = re.compile(r"https://state\.example\.com/people/(\d+)/$")
+PEOPLE = {1: "ada", 2: "bob", 3: "cy"}
+"""The name of each person, which the server never changes."""
+
+
+def person_url(key: int, form: str) -> str:
+    """Return a person's URL in the form that a server or a caller uses.
+
+    Args:
+        key: The person's primary key.
+        form: ``"absolute"`` or ``"relative"``.
+
+    Returns:
+        The person's URL, absolute or as a path.
+    """
+    path = f"/people/{key}/"
+    return f"{BASE}{path}" if form == "absolute" else path
+
+
+class LinkedStateMachine(RuleBasedStateMachine):
+    """Compare a note's hyperlinked author with a model of its identity.
+
+    ``server_author`` is the key of the person that the server's note names,
+    and ``link_form`` how the server writes the URL. ``author_json`` is the
+    URL string that the note's JSON holds, or ``None`` when the note has no
+    JSON for the author, and ``pending`` the URL string assigned but not
+    saved.
+    """
+
+    def __init__(self) -> None:
+        """Start the fake server."""
+        super().__init__()
+        self.mocker = requests_mock.Mocker()
+        self.mocker.start()
+        self.mocker.get(NOTE_URL, text=self.handle_get)
+        self.mocker.patch(NOTE_URL, text=self.handle_patch)
+        self.mocker.register_uri(
+            requests_mock.ANY, PERSON_URL, text=self.handle_person
+        )
+        self.violations: list[str] = []
+        self.server_author = 1
+        self.link_form = "absolute"
+        self.author_json: str | None = None
+        self.pending: str | None = None
+        # A person whose name was changed but not saved, and the name.
+        self.dirty: Person | None = None
+        self.dirty_name = ""
+
+    def teardown(self) -> None:
+        """Stop the fake server."""
+        self.mocker.stop()
+
+    def served(self) -> str:
+        """Return the URL of the server's author as the server writes it.
+
+        Returns:
+            The URL, in the form that ``link_form`` names.
+        """
+        return person_url(self.server_author, self.link_form)
+
+    def handle_get(self, request: Any, context: Any) -> str:
+        """Return the server's note.
+
+        Args:
+            request: Request that the mock received, which is ignored.
+            context: Mock response context, which is left unchanged.
+
+        Returns:
+            JSON text of the note.
+        """
+        return json.dumps({"id": 1, "title": "t", "author": self.served()})
+
+    def handle_patch(self, request: Any, context: Any) -> str:
+        """Apply a PATCH, which names the author by its URL.
+
+        An assigned object is written as its absolute URL, but an assigned
+        URL string as it was given, so the server resolves a path against its
+        own origin, as Django REST Framework's hyperlinked fields do.
+
+        Args:
+            request: Request that the mock received.
+            context: Mock response context, which is left unchanged.
+
+        Returns:
+            JSON text of the updated note.
+        """
+        body = request.json()
+        if "author" in body:
+            match = PERSON_URL.match(urljoin(f"{BASE}/", body["author"]))
+            assert match is not None
+            self.server_author = int(match.group(1))
+        return self.handle_get(request, context)
+
+    def handle_person(self, request: Any, context: Any) -> str:
+        """Return a person, and refuse any write to one.
+
+        Args:
+            request: Request that the mock received.
+            context: Mock response context, whose status code becomes 405
+                for a write.
+
+        Returns:
+            JSON text of the person, or an error for a write.
+        """
+        if request.method != "GET":
+            self.violations.append(f"{request.method} sent to {request.url}")
+            context.status_code = 405
+            return ""
+        match = PERSON_URL.match(request.url)
+        assert match is not None
+        key = int(match.group(1))
+        return json.dumps({"id": key, "name": PEOPLE[key]})
+
+    @initialize(
+        how=st.sampled_from(["load", "json", "pushed"]),
+        form=st.sampled_from(["absolute", "relative"]),
+    )
+    def create_note(self, how: str, form: str) -> None:
+        """Make a note that is unloaded, loaded, or partial.
+
+        Args:
+            how: ``"load"`` for an unloaded note, ``"json"`` for one built
+                from the server's JSON, or ``"pushed"`` for one whose JSON
+                holds only a pushed author, so that it is partial.
+            form: How the server writes the author's URL.
+        """
+        self.link_form = form
+        if how == "load":
+            self.note = LinkedNote(id=1)
+        elif how == "json":
+            self.note = LinkedNote(
+                json={"id": 1, "title": "t", "author": self.served()}
+            )
+            self.author_json = self.served()
+        else:
+            self.note = LinkedNote(id=1)
+            self.note.update_from_json({"author": self.served()})
+            self.author_json = self.served()
+
+    def loaded(self) -> None:
+        """Model a load, which keeps a pending author."""
+        self.author_json = (
+            self.pending if self.pending is not None else self.served()
+        )
+
+    def expected_key(self) -> int:
+        """Return the key of the person that the note's JSON names.
+
+        Returns:
+            The key that ``author_json`` names.
+        """
+        assert self.author_json is not None
+        match = PERSON_URL.match(urljoin(f"{BASE}/", self.author_json))
+        assert match is not None
+        return int(match.group(1))
+
+    @rule()
+    def read_author(self) -> None:
+        """Reading the author gives an object that knows its URL.
+
+        A person read from a URL loads only when a field other than its URL
+        is read, so neither its URL nor its ``repr`` sends a request.
+        """
+        if self.author_json is None:
+            self.loaded()
+        author = self.note.author
+        before = len(self.mocker.request_history)
+        assert author.absolute_url == person_url(
+            self.expected_key(), "absolute"
+        )
+        repr(author)
+        assert len(self.mocker.request_history) == before
+
+    @rule()
+    def load_author(self) -> None:
+        """A URL-only person loads from its URL and then knows its key."""
+        if self.author_json is None:
+            self.loaded()
+        author = self.note.author
+        key = self.expected_key()
+        if author is not self.dirty:
+            assert author.name == PEOPLE[key]
+        assert author.pk == key
+
+    @rule(
+        key=st.sampled_from(sorted(PEOPLE)),
+        how=st.sampled_from(["object", "absolute", "relative"]),
+    )
+    def assign_author(self, key: int, how: str) -> None:
+        """Assign the author by an object or by a URL.
+
+        An object is written as its absolute URL, and a URL as it is given,
+        so the model compares the written string with the note's JSON.
+
+        Args:
+            key: Key of the person to assign.
+            how: ``"object"`` for a person object, or the form of a URL.
+        """
+        if self.author_json is None:
+            self.loaded()
+        value: Person | str
+        if how == "object":
+            value = Person(id=key)
+            written = person_url(key, "absolute")
+        else:
+            value = written = person_url(key, how)
+        unchanged = written == self.author_json
+        # A hyperlinked field also accepts a URL, which its type omits.
+        self.note.author = value  # type: ignore[assignment]
+        if unchanged:
+            return
+        self.author_json = written
+        self.pending = written
+        if self.note.write_mode == "eager":
+            self.sent()
+
+    def sent(self) -> None:
+        """Model a successful write of the pending author."""
+        assert self.pending is not None
+        match = PERSON_URL.match(urljoin(f"{BASE}/", self.pending))
+        assert match is not None
+        self.server_author = int(match.group(1))
+        self.pending = None
+        # The response holds the server's form of the URL.
+        self.author_json = self.served()
+
+    @rule()
+    def save(self) -> None:
+        """Saving sends a pending author, which the server then names."""
+        self.note.save()
+        if self.pending is not None:
+            self.sent()
+
+    @rule(
+        key=st.sampled_from(sorted(PEOPLE)),
+        form=st.sampled_from(["absolute", "relative"]),
+    )
+    def push_author(self, key: int, form: str) -> None:
+        """A pushed URL replaces the author and any pending one.
+
+        Args:
+            key: Key of the person that the server now names.
+            form: Form of the pushed URL.
+        """
+        self.server_author = key
+        url = person_url(key, form)
+        self.note.update_from_json({"author": url})
+        self.author_json = url
+        self.pending = None
+
+    @rule(name=WORDS)
+    def modify_author(self, name: str) -> None:
+        """Change the author's name without saving it.
+
+        Args:
+            name: New name of the author.
+        """
+        if self.author_json is None:
+            self.loaded()
+        author = self.note.author
+        author.set_write_mode("lazy")
+        author.name = name
+        self.dirty = author
+        self.dirty_name = name
+
+    @precondition(
+        lambda self: (
+            vars(self.note).get("_json") is not None
+            and "title" not in vars(self.note)["_json"]
+        )
+    )
+    @rule(
+        name=st.none() | WORDS, form=st.sampled_from(["absolute", "relative"])
+    )
+    def load_partial_note(self, name: str | None, form: str) -> None:
+        """A load keeps an author whose URL string it does not change.
+
+        The same person's URL in another form is another string, so the load
+        then replaces the author.
+
+        Args:
+            name: New name to give the author before the load, or ``None`` to
+                leave it unchanged.
+            form: How the server writes the author's URL in the load.
+        """
+        author = self.note.author
+        if name is not None:
+            self.modify_author(name)
+        self.link_form = form
+        before = self.author_json
+
+        assert self.note.title == "t"
+        self.loaded()
+
+        kept = self.note._field_cache.get("author") is author
+        assert kept == (self.author_json == before)
+
+    @rule()
+    def refresh(self) -> None:
+        """Refresh discards the author and any pending change."""
+        self.note.refresh()
+        self.author_json = None
+        self.pending = None
+
+    @precondition(lambda self: vars(self.note).get("_json") is None)
+    @rule(
+        key=st.sampled_from(sorted(PEOPLE)),
+        form=st.sampled_from(["absolute", "relative"]),
+    )
+    def push_into_unloaded(self, key: int, form: str) -> None:
+        """A push into an unloaded note makes it partial.
+
+        Args:
+            key: Key of the person that the server now names.
+            form: Form of the pushed URL.
+        """
+        self.push_author(key, form)
+
+    @rule(form=st.sampled_from(["absolute", "relative"]))
+    def set_link_form(self, form: str) -> None:
+        """Change how the server writes the author's URL.
+
+        Args:
+            form: ``"absolute"`` or ``"relative"``.
+        """
+        self.link_form = form
+
+    @rule(mode=st.sampled_from(["lazy", "eager"]))
+    def set_write_mode(self, mode: WriteMode) -> None:
+        """Switching modes sends nothing by itself.
+
+        Args:
+            mode: Write mode to switch the note to.
+        """
+        self.note.set_write_mode(mode)
+
+    @invariant()
+    def json_matches_model(self) -> None:
+        """The note's JSON holds the URL string that the model expects."""
+        assert not self.violations
+        if not hasattr(self, "note"):
+            return
+        state = vars(self.note).get("_json")
+        if state is None or "author" not in state:
+            assert self.author_json is None or state is not None
+            return
+        assert state["author"] == self.author_json
+
+    @invariant()
+    def dirty_author_keeps_its_change(self) -> None:
+        """A changed author that the note holds keeps its change."""
+        author = self.dirty
+        if author is None:
+            return
+        held = self.note._field_cache.get("author") is author
+        if held:
+            assert author._pending_updates == {"name": self.dirty_name}
+
+
+LinkedStateMachine.TestCase.settings = settings(
+    max_examples=100,
+    stateful_step_count=20,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+test_linked_state = LinkedStateMachine.TestCase
