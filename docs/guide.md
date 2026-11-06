@@ -537,6 +537,34 @@ class GitHubObject(JSONObject):
         return follow_link_headers(api, resp)
 ```
 
+### Pages
+
+`filter()` iterates every page of a collection. To show one page at a time instead, as a paginated view does, call `get_page()`, which takes the same arguments as `filter()` and returns a `Page` of objects. Its `count` is the size of the whole collection, if the page reports it, and `next_url` and `previous_url` are the URLs of the pages around it. `next_page()` and `previous_page()` request those pages with the same API, request options, and prefetch, and return `None` at either end:
+
+```python
+page = Todo.get_page(completed=False)
+for todo in page:
+    print(todo.title)
+print(page.count, page.next_url)
+older = page.next_page()
+```
+
+`get_page(url=...)` fetches a page by a URL saved from `next_url` or `previous_url`. The URL must have the origin of the API's base URL, and it cannot be combined with query parameters, because a page's URL holds its query.
+
+The `collection_page()` hook reads each page. By default it returns `next_links_page(api, resp)`, which reads Django REST Framework's `results`, `next`, `previous`, and `count` members. Pass other member names to `next_links_page()`, or return `link_headers_page(api, resp)` for an API that links its pages in `Link` headers with `next` and `prev` relations:
+
+```python
+from eazyrest import JSONObject, link_headers_page
+
+
+class GitHubObject(JSONObject):
+    @classmethod
+    def collection_page(cls, resp, *, api):
+        return link_headers_page(api, resp)
+```
+
+Links are checked as `follow_next_links()` checks them. A link to another origin raises `PaginationError` unless the helper was given `allow_other_origins=True`. A link back to a page already read in the same direction raises `PaginationError`, and reading more than `max_pages` pages in one direction raises `LimitExceeded`, while going forward and back again is allowed. A page with more items than `max_items` raises `LimitExceeded`. A page that a hook builds itself with `Page(...)` holds its items, but cannot read other pages.
+
 ## Write modes
 
 APIs use lazy writes by default. Assignments update local state and queue a pending patch until `save()` is called.

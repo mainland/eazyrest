@@ -763,3 +763,28 @@ def test_hyperlink_prefetch_recipe_loads_relations_in_one_request(
     assert sorted(map(int, parse_qs(bulk.query)["id"])) == sorted(
         {permission.content_type_id for permission in stored}
     )
+
+
+def test_get_page_navigates_a_drf_page_number_collection(api: API) -> None:
+    """Pages of a DRF collection link both ways, and end at both ends."""
+    total = Permission.objects.count()
+
+    first = PermissionModel.get_page()
+
+    assert first.count == total
+    assert len(first) == 5
+    assert first.previous_page() is None
+    second = first.next_page()
+    assert second is not None
+    assert {p.pk for p in second}.isdisjoint({p.pk for p in first})
+    back = second.previous_page()
+    assert back is not None
+    assert [p.pk for p in back] == [p.pk for p in first]
+
+    page = first
+    seen = [p.pk for p in page]
+    while (following := page.next_page()) is not None:
+        page = following
+        seen.extend(p.pk for p in page)
+    assert page.next_url is None
+    assert seen == sorted(Permission.objects.values_list("pk", flat=True))
