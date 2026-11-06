@@ -42,11 +42,12 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - A `timedelta` field writes an ISO 8601 duration. `parse_duration()` rejects years and months, whose length varies, no longer reads the `:SS` and `D:HH:MM:SS` forms, and reads microseconds. A value out of range raises `ValueError` rather than `OverflowError`.
 - A value that a field cannot convert raises `FieldConversionError`, which is both a `TypeError` and a `ValueError`. Its message names the model and field but not the value.
 - Assigning a non-collection to a collection field, or a `datetime` to a `date` field, raises.
-- `to_json()` is a classmethod. `create_related()` is private.
+- `from_json()` and `to_json()` receive an `AnalyzedType` that describes the field's annotation, rather than the declared type, and `to_json()` is a classmethod. Match the type with a pattern such as `case BaseType(decimal.Decimal):` rather than comparing it with the type, as the guide's Custom field conversion section shows. `from_json()` also receives the field's name as `field=`, so an override must accept `*, field=None` and pass it on to `super().from_json()`. `create_related()` is private.
 
 #### Declarations
 
 - `json_object()` takes its options as keyword arguments only. It raises `ValueError` for a field that would replace a `JSONObject` attribute, for a `pk=`, `field_map=`, or `exclude=` name that is not a field, and for two fields with the same JSON key. A class with decorated ancestors that are not subclasses of one another raises `TypeError`.
+- The `JSONObject` constructor takes `json` and `api` as keyword arguments only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
 - Redeclaring a field also preserves its read and write keys and, when those options are omitted, its write-only and read-only policies. Explicit mappings or policy sets override those defaults.
 
@@ -67,7 +68,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 
 - Lazy loading of objects and related objects, and explicit bulk prefetch through `prefetch=` and `bulk_get_by_pks()`.
 - Pagination helpers `follow_next_links()`, for Django REST Framework's page shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the `collection_items_from_response()` hook. The collection hooks receive the query's client as `api`, so a hook reads later pages with the API that the query used. Page navigation with `get_page()`, which returns a `Page` whose `next_page()` and `previous_page()` request the pages around it, read by the `collection_page()` hook with `next_links_page()` or `link_headers_page()`.
-- Pydantic conversion of fields whose types use Pydantic, through the `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`, `Duration`, and `UUID`. A type that would drop the keys it does not declare is rejected, and a field must read back what it writes.
+- Pydantic conversion of fields whose types use Pydantic, through the `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`, `Duration`, and `UUID`. A type that would drop the keys it does not declare is rejected, and a field must read back what it writes, so a secret such as a `SecretStr`, which Pydantic writes as a mask, is refused unless a serializer reveals it. Models are written by their fields' aliases.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the `type` statement.
 - `json_schema()`, the JSON schema of what a model reads or writes.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`, detection of in-place changes to field values, and `merge_response()`.

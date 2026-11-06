@@ -275,6 +275,25 @@ eazyrest still handles related objects, `T | None`, and collections around a typ
 
 Assigning a value, or passing it to `create()` or a query, writes the JSON value that Pydantic serializes for a round trip, so a field typed as `pydantic.Json[dict[str, int]]` writes JSON text, as it reads. A value of another type, such as a `dict` assigned to a field typed as a Pydantic model, is validated first. A field typed as `Base64Bytes` therefore writes both `b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not read back raises `FieldConversionError` and sends nothing. This includes a value that breaks a constraint, such as `0` for a field typed as `Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as `null`.
 
+A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a model whose config sets `alias_generator=to_camel` writes `darkMode` rather than `dark_mode`. A value must also read back as the value written. Pydantic writes a `SecretStr` or `SecretBytes` as `"**********"`, so writing one raises `FieldConversionError`, and so does reading one, because a read encodes the value to detect changes made in place. To send a secret, annotate its type with a serializer that reveals it:
+
+```python
+from typing import Annotated
+
+from pydantic import PlainSerializer, SecretStr
+
+RevealedSecret = Annotated[
+    SecretStr,
+    PlainSerializer(
+        lambda secret: secret.get_secret_value(),
+        return_type=str,
+        when_used="json",
+    ),
+]
+```
+
+A field typed as `RevealedSecret` writes the secret itself, and its `repr()` still hides it.
+
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`, `datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's conversion reads and writes the value and Pydantic applies the metadata. `Logo.published` therefore reads as a plain `datetime.datetime` field would, a constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value, and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every type that the annotation names, such as the items of `Annotated[list[datetime.datetime], Field(max_length=3)]`.
 
 Inside a class that the annotation names, such as a Pydantic model or a `TypedDict`, Pydantic's own rules apply, and they differ from eazyrest's:
@@ -638,7 +657,7 @@ with todo.write_options(headers={"If-Match": etag}):
     todo.title = "new"
 ```
 
-The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take `request_options=` too, for every request that the query sends: the collection request, the requests for later pages that a collection hook sends with its `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only when its API has the origin of the query's own, so that a header such as `Authorization` never reaches another host. A query sends no body and builds its own parameters, so its options cannot set `json`, `data`, `files`, or `params`, and it reads every response, so they cannot enable `stream=True`. The objects that a query returns do not keep its options:
+The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take `request_options=` too, for every request that the query sends: the collection request, the requests for later pages that a collection hook sends with its `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only when its API has the origin of the query's own, so that a header such as `Authorization` does not reach another model's host. The options otherwise go where the session's own headers go: a collection hook that reads pages with `allow_other_origins=True` sends them to the pages' origin, and `bulk_get_by_urls()` may send them to an origin in its API's `redirect_origins`, as reading a hyperlinked field sends the session's headers there. A query sends no body and builds its own parameters, so its options cannot set `json`, `data`, `files`, or `params`, and it reads every response, so they cannot enable `stream=True`. The objects that a query returns do not keep its options:
 
 ```python
 todos = Todo.filter(

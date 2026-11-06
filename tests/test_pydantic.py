@@ -27,6 +27,7 @@ from pydantic import (
     TypeAdapter,
     with_config,
 )
+from pydantic.alias_generators import to_camel
 from pydantic_core import PydanticSerializationError
 from typing_extensions import TypeAliasType, TypedDict
 
@@ -426,6 +427,168 @@ def test_pydantic_field_changed_in_place_is_saved(requests_mock: Any) -> None:
     asset.save()
 
     assert patch.last_request.json() == {"origin": {"x": 7, "y": 2}}
+
+
+class Display(pydantic.BaseModel):
+    """Pydantic model whose fields have aliases."""
+
+    model_config = ConfigDict(alias_generator=to_camel)
+
+    dark_mode: bool
+    font_size: int = Field(alias="size")
+
+
+@json_object
+class Profile(PydanticBase):
+    """Model with a field whose model has aliases."""
+
+    class_url = "/profiles/"
+
+    id: int
+    display: Display
+
+
+def test_pydantic_fields_write_by_alias(requests_mock: Any) -> None:
+    """A model with aliases is read and written by its aliases."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/profiles/1/", status_code=204
+    )
+    post = requests_mock.post(
+        "https://pydantic.example.com/profiles/",
+        json={"id": 2, "display": {"darkMode": False, "size": 9}},
+    )
+    profile = Profile(
+        json={"id": 1, "display": {"darkMode": True, "size": 12}}
+    )
+
+    profile.display.font_size = 14
+    profile.save()
+    Profile.create(
+        display=Display.model_validate({"darkMode": False, "size": 9})
+    )
+
+    assert patch.last_request.json() == {
+        "display": {"darkMode": True, "size": 14}
+    }
+    assert post.last_request.json() == {
+        "display": {"darkMode": False, "size": 9}
+    }
+
+
+class Login(pydantic.BaseModel):
+    """Pydantic model with a secret."""
+
+    password: pydantic.SecretStr
+
+
+@json_object(write_only={"password", "key", "login", "token"})
+class Account(PydanticBase):
+    """Model with secret fields, whose writes would send their masks."""
+
+    class_url = "/accounts/"
+
+    id: int
+    password: pydantic.SecretStr
+    key: pydantic.SecretBytes
+    login: Login
+    token: Annotated[
+        pydantic.SecretStr,
+        PlainSerializer(
+            lambda secret: secret.get_secret_value(),
+            return_type=str,
+            when_used="json",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("password", pydantic.SecretStr("hunter2")),
+        ("password", "hunter2"),
+        ("key", pydantic.SecretBytes(b"hunter2")),
+        ("login", Login(password=pydantic.SecretStr("hunter2"))),
+    ],
+)
+def test_pydantic_fields_refuse_to_write_secrets(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A secret, which Pydantic writes as a mask, is not sent.
+
+    Args:
+        field: Name of the ``Account`` field to write.
+        value: Value whose secret would be written as a mask.
+    """
+    account = Account(json={"id": 1})
+
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        setattr(account, field, value)
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        Account.create(fields={field: value})
+
+    assert requests_mock.call_count == 0
+
+
+def test_pydantic_field_writes_a_revealed_secret(requests_mock: Any) -> None:
+    """A secret whose serializer reveals it is written."""
+    post = requests_mock.post(
+        "https://pydantic.example.com/accounts/", json={"id": 2}
+    )
+
+    Account.create(token=pydantic.SecretStr("hunter2"))
+
+    assert post.last_request.json() == {"token": "hunter2"}
+
+
+@json_object
+class Vault(PydanticBase):
+    """Model with a readable secret field."""
+
+    id: int
+    secret: pydantic.SecretStr
+
+
+def test_pydantic_field_refuses_to_read_a_secret() -> None:
+    """A secret field cannot be read, since its changes could not be saved."""
+    vault = Vault(json={"id": 1, "secret": "hunter2"})
+
+    with pytest.raises(FieldConversionError, match=r"^Vault.secret: "):
+        _ = vault.secret
+
+
+class Cached(pydantic.BaseModel):
+    """Pydantic model with a private attribute, which is not written."""
+
+    model_config = ConfigDict(extra="allow")
+
+    x: int
+    _hits: int = pydantic.PrivateAttr(default=0)
+
+
+@json_object
+class Counter(PydanticBase):
+    """Model with a field whose model has a private attribute."""
+
+    class_url = "/counters/"
+
+    id: int
+    cached: Cached
+
+
+def test_pydantic_field_writes_a_model_with_private_state(
+    requests_mock: Any,
+) -> None:
+    """A model's private attributes do not stop it from being written."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/counters/1/", status_code=204
+    )
+    counter = Counter(json={"id": 1, "cached": {"x": 1}})
+
+    counter.cached._hits = 3
+    counter.cached.x = 2
+    counter.save()
+
+    assert patch.last_request.json() == {"cached": {"x": 2}}
 
 
 @pytest.mark.parametrize(
@@ -1137,6 +1300,77 @@ def test_json_schema_hoists_pydantic_definitions() -> None:
     assert sorted(defs["Point"]["properties"]) == ["x", "y"]
     assert sorted(defs["Point_2"]["properties"]) == ["x", "z"]
     assert properties["image"] == {"format": "base64", "type": "string"}
+
+
+def _make_tree(leaf: type) -> type[BaseModel]:
+    """Return models named ``Tree``, ``Branch``, and ``Leaf``.
+
+    Args:
+        leaf: Type of the leaf's value, which tells two trees apart.
+
+    Returns:
+        ``Tree``, whose JSON schema defines ``Branch`` and ``Leaf``.
+    """
+    config = ConfigDict(extra="allow")
+    leaf_model = pydantic.create_model(
+        "Leaf", __config__=config, v=(leaf, ...)
+    )
+    branch = pydantic.create_model(
+        "Branch", __config__=config, a=(leaf_model, ...)
+    )
+    model: type[BaseModel] = pydantic.create_model(
+        "Tree", __config__=config, x=(branch, ...)
+    )
+    return model
+
+
+IntTree = _make_tree(int)
+StrTree = _make_tree(str)
+
+
+@json_object
+class Forest(PydanticBase):
+    """Model whose definitions differ only below their first level."""
+
+    id: int
+    first: IntTree  # type: ignore[valid-type]
+    second: StrTree  # type: ignore[valid-type]
+
+
+def _resolve(schema: Any, defs: dict[str, Any]) -> Any:
+    """Return a schema with its references replaced by their definitions.
+
+    Args:
+        schema: Part of a JSON schema without recursive definitions.
+        defs: Definitions that the references name.
+
+    Returns:
+        ``schema`` without references or ``$defs``.
+    """
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            return _resolve(
+                defs[schema["$ref"].removeprefix("#/$defs/")], defs
+            )
+        return {
+            key: _resolve(value, defs)
+            for key, value in schema.items()
+            if key != "$defs"
+        }
+    if isinstance(schema, list):
+        return [_resolve(item, defs) for item in schema]
+    return schema
+
+
+def test_json_schema_renames_definitions_that_refer_to_renamed_ones() -> None:
+    """A definition whose dependency is renamed is renamed too."""
+    schema = Forest.json_schema()
+
+    for field, tree in [("first", IntTree), ("second", StrTree)]:
+        own = tree.model_json_schema()
+        assert _resolve(schema["properties"][field], schema["$defs"]) == (
+            _resolve(own, own["$defs"])
+        )
 
 
 def test_json_schema_without_pydantic_raises(

@@ -185,9 +185,12 @@ class _Query:
         """Return the client for a bulk lookup of related objects.
 
         The lookup uses the query's ``api=``, or else the related model's own
-        API. It sends the query's request options only to the origin of the
-        query's own client, so that credentials in them, such as an
-        ``Authorization`` header, never reach another host.
+        API. It gets the query's request options only when that API has the
+        origin of the query's own client, so that credentials in them, such as
+        an ``Authorization`` header, do not reach another model's host. A
+        hyperlink lookup may still send them to an origin in that API's
+        ``redirect_origins``, as reading the field sends the session's
+        headers there.
 
         Args:
             model: Class of the related objects.
@@ -1915,14 +1918,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         names under which its definitions were added.
     """
     own = dict(schema.pop("$defs", {}))
-    renamed: dict[str, str] = {}
-    for name, definition in own.items():
-        new = name
-        suffix = 2
-        while new in defs and defs[new] != definition:
-            new = f"{name}_{suffix}"
-            suffix += 1
-        renamed[name] = new
+    renamed = {name: name for name in own}
 
     def rewrite(value: Any) -> Any:
         """Return ``value`` with its definition references renamed.
@@ -1947,6 +1943,34 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         if isinstance(value, list):
             return [rewrite(item) for item in value]
         return value
+
+    def fits(name: str) -> bool:
+        """Return whether a definition can be added under its new name.
+
+        Args:
+            name: Name of one of the schema's own definitions.
+
+        Returns:
+            Whether no other definition takes the new name, or a shared one
+            with the same content after renaming does.
+        """
+        new = renamed[name]
+        if new in defs:
+            return bool(defs[new] == rewrite(own[name]))
+        return all(renamed[other] != new for other in own if other != name)
+
+    # Renaming a definition changes the definitions that refer to it, which
+    # may then collide in turn, so rename until every definition fits. Each
+    # rename takes a higher suffix, so this ends.
+    suffixes = dict.fromkeys(own, 1)
+    changed = True
+    while changed:
+        changed = False
+        for name in own:
+            while not fits(name):
+                suffixes[name] += 1
+                renamed[name] = f"{name}_{suffixes[name]}"
+                changed = True
 
     for name, definition in own.items():
         defs[renamed[name]] = rewrite(definition)
@@ -4006,13 +4030,14 @@ class JSONObject:
             raise ValueError(f"mode must be 'read' or 'write', got {mode!r}")
 
         # Declaration order, base classes first. A redeclared field keeps its
-        # first position.
+        # first position. The annotations give the order, because a class's
+        # namespace holds a field with a default where the class declares it
+        # but gains a field without one only when json_object() adds it.
+        json_fields = getattr(cls, "_json_fields", ())
         fields: dict[str, None] = {}
         for base in reversed(cls.__mro__):
-            for name, value in vars(base).items():
-                if isinstance(value, JSONProperty) and name in getattr(
-                    cls, "_json_fields", ()
-                ):
+            for name in _annotations(base):
+                if name in json_fields:
                     fields.setdefault(name)
 
         defs: dict[str, Any] = {}

@@ -5749,6 +5749,36 @@ def test_json_schema_describes_what_a_model_writes() -> None:
     assert list(properties)[:3] == ["id", "name", "score"]
 
 
+def test_json_schema_follows_declaration_order() -> None:
+    """Properties follow declaration order, with or without defaults.
+
+    A field with a default stays in the class's namespace where the class
+    declares it, while ``json_object()`` adds a field without one at the end.
+    """
+
+    @json_object
+    class Base(ModelBase):
+        class_url = "/ordered/"
+
+        id: int
+        a: str
+        b: int = 0
+
+    @json_object
+    class Ordered(Base):
+        c: str = ""
+        d: str
+        a: str
+
+    assert list(Ordered.json_schema()["properties"]) == [
+        "id",
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+
+
 def test_json_schema_rejects_an_unknown_mode() -> None:
     """Only the read and write modes exist."""
     with pytest.raises(ValueError, match="mode must be"):
