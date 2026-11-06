@@ -4270,13 +4270,14 @@ class JSONObject:
             raise ValueError(f"mode must be 'read' or 'write', got {mode!r}")
 
         # Declaration order, base classes first. A redeclared field keeps its
-        # first position.
+        # first position. The annotations give the order, because a class's
+        # namespace holds a field with a default where the class declares it
+        # but gains a field without one only when json_object() adds it.
+        json_fields = getattr(cls, "_json_fields", ())
         fields: dict[str, None] = {}
         for base in reversed(cls.__mro__):
-            for name, value in vars(base).items():
-                if isinstance(value, JSONProperty) and name in getattr(
-                    cls, "_json_fields", ()
-                ):
+            for name in _annotations(base):
+                if name in json_fields:
                     fields.setdefault(name)
 
         defs: dict[str, Any] = {}
