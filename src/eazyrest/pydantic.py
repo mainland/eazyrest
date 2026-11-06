@@ -512,7 +512,8 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
     validated as input first, so that a field typed as ``Base64Bytes``, for
     example, writes both ``b"hello"`` and its encoding, ``"aGVsbG8="``, as
     ``"aGVsbG8="``. Validating every value first would fail for such a type,
-    which would decode raw bytes as base64.
+    which would decode raw bytes as base64. Models are written by their
+    fields' aliases, which is how they are read.
 
     Args:
         adapter: ``TypeAdapter`` for the field's type.
@@ -531,11 +532,18 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
     # JSON text of a pydantic.Json field rather than the value it holds.
     try:
         encoded = adapter.dump_python(
-            value, mode="json", round_trip=True, warnings="error"
+            value,
+            mode="json",
+            round_trip=True,
+            by_alias=True,
+            warnings="error",
         )
     except PydanticSerializationError:
         encoded = adapter.dump_python(
-            _decode(adapter, value), mode="json", round_trip=True
+            _decode(adapter, value),
+            mode="json",
+            round_trip=True,
+            by_alias=True,
         )
 
     _decode(adapter, encoded)

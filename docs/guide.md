@@ -275,6 +275,8 @@ eazyrest still handles related objects, `T | None`, and collections around a typ
 
 Assigning a value, or passing it to `create()` or a query, writes the JSON value that Pydantic serializes for a round trip, so a field typed as `pydantic.Json[dict[str, int]]` writes JSON text, as it reads. A value of another type, such as a `dict` assigned to a field typed as a Pydantic model, is validated first. A field typed as `Base64Bytes` therefore writes both `b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not read back raises `FieldConversionError` and sends nothing. This includes a value that breaks a constraint, such as `0` for a field typed as `Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as `null`.
 
+A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a model whose config sets `alias_generator=to_camel` writes `darkMode` rather than `dark_mode`.
+
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`, `datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's conversion reads and writes the value and Pydantic applies the metadata. `Logo.published` therefore reads as a plain `datetime.datetime` field would, a constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value, and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every type that the annotation names, such as the items of `Annotated[list[datetime.datetime], Field(max_length=3)]`.
 
 Inside a class that the annotation names, such as a Pydantic model or a `TypedDict`, Pydantic's own rules apply, and they differ from eazyrest's:

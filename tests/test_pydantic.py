@@ -27,6 +27,7 @@ from pydantic import (
     TypeAdapter,
     with_config,
 )
+from pydantic.alias_generators import to_camel
 from pydantic_core import PydanticSerializationError
 from typing_extensions import TypeAliasType, TypedDict
 
@@ -426,6 +427,52 @@ def test_pydantic_field_changed_in_place_is_saved(requests_mock: Any) -> None:
     asset.save()
 
     assert patch.last_request.json() == {"origin": {"x": 7, "y": 2}}
+
+
+class Display(pydantic.BaseModel):
+    """Pydantic model whose fields have aliases."""
+
+    model_config = ConfigDict(alias_generator=to_camel)
+
+    dark_mode: bool
+    font_size: int = Field(alias="size")
+
+
+@json_object
+class Profile(PydanticBase):
+    """Model with a field whose model has aliases."""
+
+    class_url = "/profiles/"
+
+    id: int
+    display: Display
+
+
+def test_pydantic_fields_write_by_alias(requests_mock: Any) -> None:
+    """A model with aliases is read and written by its aliases."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/profiles/1/", status_code=204
+    )
+    post = requests_mock.post(
+        "https://pydantic.example.com/profiles/",
+        json={"id": 2, "display": {"darkMode": False, "size": 9}},
+    )
+    profile = Profile(
+        json={"id": 1, "display": {"darkMode": True, "size": 12}}
+    )
+
+    profile.display.font_size = 14
+    profile.save()
+    Profile.create(
+        display=Display.model_validate({"darkMode": False, "size": 9})
+    )
+
+    assert patch.last_request.json() == {
+        "display": {"darkMode": True, "size": 14}
+    }
+    assert post.last_request.json() == {
+        "display": {"darkMode": False, "size": 9}
+    }
 
 
 @pytest.mark.parametrize(
