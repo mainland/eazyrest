@@ -3771,6 +3771,8 @@ class JSONObject:
                 in ``params``, or a keyword argument is reserved.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
+            RedirectError: If the response is a redirect that was not
+                followed, such as a 304.
         """
         _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
@@ -3781,7 +3783,10 @@ class JSONObject:
             cls._prefetch_info(field)
 
         client = cls.api if api is None else api
-        resp = client.get(cls.class_url, params=cls._encode_query(query))
+        resp = _check_final_response(
+            client.get(cls.class_url, params=cls._encode_query(query)),
+            "the query has no collection to read",
+        )
         token = _query_api.set((cls, client))
         try:
             items = cls.collection_items_from_response(resp, api=client)

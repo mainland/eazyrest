@@ -33,6 +33,7 @@ from eazyrest import (
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
+    RedirectError,
     WriteMode,
     json_object,
 )
@@ -5568,3 +5569,20 @@ def test_hyperlinked_field_takes_urls_and_objects_only(
     assert patch.last_request.json() == {
         "author": "https://example.com/v1/users/7/"
     }
+
+
+@pytest.mark.parametrize("status", [300, 304])
+def test_filter_refuses_a_collection_redirect(
+    requests_mock: Any, status: int
+) -> None:
+    """A collection answered with an unfollowed redirect has no items.
+
+    Args:
+        status: Redirect status that requests does not follow.
+    """
+    requests_mock.get(
+        "https://example.com/v1/todos/", status_code=status, json=[{"id": 1}]
+    )
+
+    with pytest.raises(RedirectError, match=f"status {status}"):
+        Todo.filter()

@@ -54,6 +54,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   sent when they are called. Call `list()` on the result to iterate it more
   than once. The iterator is a `Results`, whose `count` is the collection's
   size when the response reports it.
+- A collection request answered with a redirect that is not followed, such as a
+  `304 Not Modified`, raises `RedirectError` rather than reading its body as
+  the collection.
 - `filter(url=...)` is removed. Override `class_url`, or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()`
   encodes them: renamed by `field_map`, converted to JSON, and with booleans
