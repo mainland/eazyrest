@@ -56,7 +56,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   size when the response reports it.
 - A collection request answered with a redirect that is not followed, such as a
   `304 Not Modified`, raises `RedirectError` rather than reading its body as
-  the collection.
+  the collection. This holds for a next-page request that names another origin
+  too, where `PaginationError` advised `allow_other_origins=True`, though that
+  option would follow nothing.
 - `filter(url=...)` is removed. Override `class_url`, or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()`
   encodes them: renamed by `field_map`, converted to JSON, and with booleans

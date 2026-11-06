@@ -12,6 +12,7 @@ from eazyrest import (
     API,
     JSONObject,
     RedirectError,
+    ResponseShapeError,
     Results,
     follow_link_headers,
     follow_next_links,
@@ -181,6 +182,41 @@ def test_next_page_is_requested_only_when_reached(requests_mock: Any) -> None:
     assert calls_before_next_page == 0
     assert rest == [{"id": 3}]
     assert requests_mock.call_count == 1
+
+
+def test_session_parameters_are_not_repeated_on_links(
+    requests_mock: Any,
+) -> None:
+    """A link that carries a session parameter is requested as it is.
+
+    A server builds each link from the URL it received, which already holds
+    the session's parameters, so adding them again would repeat them on
+    every page until the URL grew too long.
+    """
+    api = API("https://example.com/v1/")
+    api.session.params = {"api_key": "k"}
+    for page, following in ((2, 3), (3, None)):
+        requests_mock.get(
+            f"https://example.com/v1/items/?api_key=k&page={page}",
+            complete_qs=True,
+            json={
+                "next": following
+                and f"https://example.com/v1/items/?api_key=k&page={following}",
+                "results": [{"id": page}],
+            },
+        )
+    first_page = {
+        "next": "https://example.com/v1/items/?api_key=k&page=2",
+        "results": [{"id": 1}],
+    }
+
+    items = list(follow_next_links(api, first_page))
+
+    assert items == [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert [request.qs for request in requests_mock.request_history] == [
+        {"api_key": ["k"], "page": ["2"]},
+        {"api_key": ["k"], "page": ["3"]},
+    ]
 
 
 def test_path_next_link_resolves_against_origin(requests_mock: Any) -> None:
@@ -1090,3 +1126,18 @@ def test_query_request_options_reach_later_pages(requests_mock: Any) -> None:
     assert first.last_request.headers["X-Trace"] == "t"
     assert second.last_request.headers["X-Trace"] == "t"
     assert all(item._api_override is None for item in items)
+
+
+@pytest.mark.parametrize("link", [5, ["/v1/items/?page=2"], {"href": "x"}])
+def test_next_link_that_is_not_a_string_is_a_shape_error(link: Any) -> None:
+    """A next link that is not a URL fails as a misshapen page.
+
+    Args:
+        link: Next-page member that is neither a URL nor empty.
+    """
+    api = API("https://example.com/v1/")
+    items = follow_next_links(api, {"next": link, "results": [{"id": 1}]})
+
+    assert next(items) == {"id": 1}
+    with pytest.raises(ResponseShapeError, match="must be a URL"):
+        next(items)

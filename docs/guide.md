@@ -938,7 +938,10 @@ The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
 With `allow_other_origins=True`, a redirect is checked as for every other
 request: it must lead to the origin of the page request or to one of the API's
-`redirect_origins`.
+`redirect_origins`. A query's client that does not follow redirects, because of
+`request_options={"allow_redirects": False}`, skips the check, since nothing is
+followed, and raises `RedirectError` for a redirect from a next-page request,
+whichever origin it names.
 
 Some APIs, such as GitHub's, return each page as a JSON list and name the next
 page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from
