@@ -319,9 +319,9 @@ A relation that the API represents by the related object's URL rather than its
 primary key, as Django REST Framework's hyperlinked fields do, is annotated
 with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
 gives an object that loads from that URL, and writing it sends the object's
-absolute URL. Queries send its primary key, as DRF relation filters expect. A
-URL on an origin that the related model's API does not allow raises
-`FieldConversionError`. The
+absolute URL, or a URL assigned as a string as given. Queries send its primary
+key, as DRF relation filters expect. A URL on an origin that the related
+model's API does not allow raises `FieldConversionError`. The
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 
