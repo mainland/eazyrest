@@ -4838,28 +4838,131 @@ def test_name_given_both_ways_raises(requests_mock: Any, call: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+def test_query_request_options_reach_the_query_and_bulk_lookup(
+    requests_mock: Any,
+) -> None:
+    """A query's options reach its own request and a same-origin bulk lookup.
+
+    The objects that the query returns, and their related objects, do not
+    keep the options.
+    """
+    todos = requests_mock.get(
+        "https://example.com/v1/todos/", json=[TENANT_TODO]
+    )
+    users = requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    options = {"headers": {"X-Trace": "t1"}, "timeout": 5}
+
+    (todo,) = Todo.filter(prefetch="user", request_options=options)
+
+    assert todos.last_request.headers["X-Trace"] == "t1"
+    assert todos.last_request.timeout == 5
+    assert users.last_request.headers["X-Trace"] == "t1"
+    assert todo.user.name == "Ada"
+    assert todo._api_override is None
+    assert todo.user._api_override is None
+
+    detail = requests_mock.get(
+        "https://example.com/v1/todos/1/", json=TENANT_TODO
+    )
+    todo.refresh()
+    assert todo.title == "a"
+    assert "X-Trace" not in detail.last_request.headers
+
+
+def test_query_request_options_stay_on_the_query_origin(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bulk lookup on another origin does not receive the query's options."""
+    monkeypatch.setattr(User, "api", API("https://users.example.net/"))
+    requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
+    users = requests_mock.get(
+        "https://users.example.net/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+
+    list(
+        Todo.filter(
+            prefetch="user",
+            request_options={"headers": {"Authorization": "Bearer t"}},
+        )
+    )
+
+    assert users.called
+    assert "Authorization" not in users.last_request.headers
+
+
 @pytest.mark.parametrize(
-    "call",
+    ("options", "match"),
     [
-        lambda: Todo.filter(request_options={"headers": {}}),
-        lambda: Todo.get(request_options={"headers": {}}),
-        lambda: Todo.get_or_create(request_options={"headers": {}}),
+        ({"json": {}}, "cannot set json"),
+        ({"data": "x"}, "cannot set data"),
+        ({"files": {}}, "cannot set files"),
+        ({"params": {"a": 1}}, "cannot set params"),
+        ({"stream": True}, "stream"),
+        ({"method": "POST"}, "cannot set method"),
+        ([("headers", {})], "must be a mapping"),
     ],
 )
-def test_query_methods_reserve_request_options(
-    requests_mock: Any, call: Any
+def test_query_rejects_invalid_request_options(
+    requests_mock: Any, options: Any, match: str
 ) -> None:
-    """A query method rejects ``request_options`` rather than sending it.
-
-    Taking it later, as ``save()`` does, must not change what a call sends.
+    """Options that a query cannot send raise before any request.
 
     Args:
-        call: Callable that passes ``request_options`` as a keyword argument.
+        options: Request options that a query rejects.
+        match: Pattern that the ``TypeError`` message should match.
     """
-    with pytest.raises(TypeError, match="reserve the keyword argument"):
-        call()
+    for call in (
+        lambda: Todo.filter(request_options=options),
+        lambda: Todo.all(request_options=options),
+        lambda: Todo.get(request_options=options),
+        lambda: Todo.get_or_create(title="a", request_options=options),
+    ):
+        with pytest.raises(TypeError, match=match):
+            call()
 
     assert requests_mock.call_count == 0
+
+
+def test_query_accepts_stream_false(requests_mock: Any) -> None:
+    """``stream=False`` asks for what a query does anyway, so it is allowed."""
+    requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
+
+    (todo,) = Todo.filter(request_options={"stream": False})
+
+    assert todo.title == "a"
+
+
+def test_query_with_unfollowed_redirect_raises(requests_mock: Any) -> None:
+    """``allow_redirects=False`` with a redirect leaves no collection."""
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        status_code=302,
+        headers={"Location": "/v1/elsewhere/"},
+    )
+
+    with pytest.raises(RedirectError, match="status 302"):
+        Todo.filter(request_options={"allow_redirects": False})
+
+
+def test_get_or_create_sends_request_options_to_both_requests(
+    requests_mock: Any,
+) -> None:
+    """``get_or_create()`` sends its options with the lookup and creation."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+    post = requests_mock.post(
+        "https://example.com/v1/todos/", json={"id": 3, "title": "a"}
+    )
+
+    todo, created = Todo.get_or_create(
+        title="a", request_options={"headers": {"X-Trace": "t2"}}
+    )
+
+    assert created
+    assert todo.id == 3
+    assert lookup.last_request.headers["X-Trace"] == "t2"
+    assert post.last_request.headers["X-Trace"] == "t2"
 
 
 def test_params_sends_request_options_parameter(requests_mock: Any) -> None:

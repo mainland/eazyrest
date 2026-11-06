@@ -948,26 +948,69 @@ def _query_params(
     return {**params, **kwargs}
 
 
-# Keyword arguments that the query methods reserve without yet taking them, so
-# that taking them later does not change what an existing call sends.
-_RESERVED_QUERY_KEYWORDS = frozenset({"request_options"})
+# Request arguments that a query may set. A query sends no body, builds its
+# parameters itself, and reads every response.
+_QUERY_OPTION_NAMES = frozenset(
+    {
+        "allow_redirects",
+        "auth",
+        "cert",
+        "cookies",
+        "headers",
+        "hooks",
+        "proxies",
+        "timeout",
+        "verify",
+    }
+)
 
 
-def _check_query_keywords(kwargs: Mapping[str, Any]) -> None:
-    """Reject query keyword arguments that the query methods reserve.
+def _query_request_options(
+    options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the request options of a query, checked.
 
     Args:
-        kwargs: Keyword arguments passed to a query method.
+        options: Keyword arguments for the query's requests, such as
+            ``headers``, as ``requests.Session.request()`` takes them.
+
+    Returns:
+        A copy of ``options`` without ``stream=False``, or an empty dict.
 
     Raises:
-        TypeError: If a keyword argument is reserved.
+        TypeError: If ``options`` is not a mapping, sets a body or the query
+            parameters, enables streaming, or names an argument that is not
+            a request option.
     """
-    reserved = sorted(_RESERVED_QUERY_KEYWORDS.intersection(kwargs))
-    if reserved:
+    if options is None:
+        return {}
+    if not isinstance(options, Mapping):
         raise TypeError(
-            f"The query methods reserve the keyword argument {reserved[0]}. "
-            "Pass a query parameter of that name in params."
+            f"request_options must be a mapping, got {type(options).__name__}"
         )
+    body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
+    if body:
+        raise TypeError(
+            f"request_options cannot set {', '.join(body)}, because a query "
+            "sends no body"
+        )
+    if "params" in options:
+        raise TypeError(
+            "request_options cannot set params. Pass query parameters as "
+            "keyword arguments or in params."
+        )
+    if options.get("stream"):
+        raise TypeError(
+            "Queries read their responses, so request_options cannot enable "
+            "stream"
+        )
+    unknown = sorted(set(options) - _QUERY_OPTION_NAMES - {"stream"})
+    if unknown:
+        raise TypeError(
+            f"request_options cannot set {', '.join(unknown)}, which are not "
+            "request options"
+        )
+    return {name: value for name, value in options.items() if name != "stream"}
 
 
 # Request arguments that eazyrest sets itself for a write.
@@ -3467,8 +3510,11 @@ class JSONObject:
         does.
 
         ``api`` is the API that the query passed as ``api=``, or the class's
-        registered API. While ``filter()`` calls this hook, ``cls.api`` is
-        that API too.
+        registered API, and it sends the query's ``request_options`` with
+        every request. With options, it is a copy that shares the API's
+        session, so use it to send requests, not to configure, close, or
+        compare the API. While ``filter()`` calls this hook, ``cls.api`` is
+        ``api`` too.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.
@@ -3760,6 +3806,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Results[Self]:
@@ -3783,10 +3830,14 @@ class JSONObject:
         iterable other than a string, bytes, or a mapping, such as a generator
         or a ``deque``, is a collection.
 
-        The keyword arguments ``api``, ``prefetch``, ``defaults``, and
-        ``params`` of the query methods are not query parameters, and the
-        query methods reserve ``request_options``. Pass a parameter with one
-        of these names in ``params``.
+        The keyword arguments ``api``, ``prefetch``, ``defaults``,
+        ``request_options``, and ``params`` of the query methods are not query
+        parameters. Pass a parameter with one of these names in ``params``.
+
+        ``request_options`` are sent with every request of the query: the
+        collection request, the requests for later pages that the collection
+        hooks send with their ``api``, and the bulk lookups of ``prefetch``
+        on the same origin. Returned objects do not keep them.
 
         Args:
             prefetch: Optional related field name or field names to bulk-load
@@ -3795,10 +3846,14 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. Returned objects keep it as their
                 API, so their later requests use it too.
+            request_options: Optional keyword arguments for the query's
+                requests, such as ``headers`` or ``timeout``, as ``requests``
+                takes them. They cannot set a body or ``params``, or enable
+                response streaming.
             params: Optional query parameters as a mapping, encoded as the
                 keyword arguments are. A name in it may be anything, including
-                ``api``, ``prefetch``, ``defaults``, or ``params``, which the
-                query methods reserve for themselves.
+                ``api``, ``prefetch``, ``defaults``, ``request_options``, or
+                ``params``, which the query methods take for themselves.
             **kwargs: Query string parameters.
 
         Returns:
@@ -3812,13 +3867,14 @@ class JSONObject:
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or a keyword argument is reserved.
+                in ``params``, or ``request_options`` is not valid for a
+                query.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
         """
-        _check_query_keywords(kwargs)
+        options = _query_request_options(request_options)
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
@@ -3826,8 +3882,9 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
-        client = cls.api if api is None else api
-        context = _Query(api, client, {})
+        base = cls.api if api is None else api
+        client = base._scoped(options) if options else base
+        context = _Query(api, client, options)
         resp = _check_final_response(
             client.get(cls.class_url, params=cls._encode_query(query)),
             "the query has no collection to read",
@@ -3855,6 +3912,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
     ) -> Results[Self]:
         """Return all objects for this resource type.
 
@@ -3865,6 +3923,8 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. Returned objects keep it as their
                 API, so their later requests use it too.
+            request_options: Optional keyword arguments for the query's
+                requests, as for ``filter()``.
 
         Returns:
             Iterator over all objects, with ``count`` as for ``filter()``.
@@ -3872,10 +3932,15 @@ class JSONObject:
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field.
+            TypeError: If ``request_options`` is not valid for a query.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
+            RedirectError: If the response is a redirect that was not
+                followed, such as a 304.
         """
-        return cls.filter(prefetch=prefetch, api=api)
+        return cls.filter(
+            prefetch=prefetch, api=api, request_options=request_options
+        )
 
     @classmethod
     def get(
@@ -3883,6 +3948,7 @@ class JSONObject:
         *,
         prefetch: PrefetchFields = None,
         api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Self:
@@ -3903,6 +3969,8 @@ class JSONObject:
             api: Optional API to send the request with, instead of the API
                 registered for the class. The returned object keeps it as their
                 API, so their later requests use it too.
+            request_options: Optional keyword arguments for the query's
+                requests, as for ``filter()``.
             params: Optional query parameters as a mapping, as for
                 ``filter()``.
             **kwargs: Query string parameters.
@@ -3917,13 +3985,22 @@ class JSONObject:
                 related-object field, or if a parameter has a value that
                 requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or a keyword argument is reserved.
+                in ``params``, or ``request_options`` is not valid for a
+                query.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
+            RedirectError: If the response is a redirect that was not
+                followed, such as a 304.
         """
-        _check_query_keywords(kwargs)
         query = _query_params(params, kwargs)
-        results = iter(cls.filter(prefetch=prefetch, api=api, params=query))
+        results = iter(
+            cls.filter(
+                prefetch=prefetch,
+                api=api,
+                request_options=request_options,
+                params=query,
+            )
+        )
         first = next(results, None)
         if first is None:
             raise DoesNotExist(f"No {_describe_lookup(cls, query)} exists")
@@ -3942,6 +4019,7 @@ class JSONObject:
         defaults: Mapping[str, Any] | None = None,
         *,
         api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
@@ -3980,9 +4058,13 @@ class JSONObject:
             api: Optional API to send the lookup and any creation with, instead
                 of the API registered for the class. The returned object keeps
                 it as its API, so its later requests use it too.
+            request_options: Optional keyword arguments for the lookup's
+                requests, as for ``filter()``, and for any creation, as for
+                ``create()``.
             params: Optional fields and lookups as a mapping, used as the
                 keyword arguments are. A name in it may be anything, including
-                one that the query methods reserve, such as ``api``.
+                one that the query methods take for themselves, such as
+                ``api``.
             **kwargs: Fields used for lookup and included in creation.
 
         Returns:
@@ -3994,9 +4076,13 @@ class JSONObject:
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or a keyword argument is reserved.
+                in ``params``, or ``request_options`` is not valid for a
+                query and a creation.
+            RedirectError: If a response is a redirect that was not followed.
         """
-        _check_query_keywords(kwargs)
+        # Check the options for both requests before sending either.
+        _query_request_options(request_options)
+        _request_options(request_options)
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once.
         kwargs = {
@@ -4006,7 +4092,9 @@ class JSONObject:
             else value
             for name, value in _query_params(params, kwargs).items()
         }
-        results = cls.filter(api=api, params=kwargs)
+        results = cls.filter(
+            api=api, request_options=request_options, params=kwargs
+        )
         first = next(results, None)
         if first is not None:
             second = next(results, None)
@@ -4026,4 +4114,9 @@ class JSONObject:
         if defaults is not None:
             create_kwargs.update(defaults)
 
-        return cls.create(api=api, fields=create_kwargs), True
+        return (
+            cls.create(
+                api=api, fields=create_kwargs, request_options=request_options
+            ),
+            True,
+        )

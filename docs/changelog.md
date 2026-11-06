@@ -66,11 +66,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   mapping, or a collection holding `None` or another collection. In 0.9.0, such
   a constraint was silently omitted, so `get()` could return an object that
   does not match it.
-- The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the
-  query methods are their own options, and they reserve `request_options`. Pass
-  a query parameter with one of these names in `params=`. `create()` likewise
-  reserves `api`, `fields`, `files`, and `request_options`, and takes field
-  values with those names in `fields=`.
+- The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
+  `params` of the query methods are their own options. Pass a query parameter
+  with one of these names in `params=`. `create()` likewise reserves `api`,
+  `fields`, `files`, and `request_options`, and takes field values with those
+  names in `fields=`.
 - `get_or_create()` returns an existing object as the server sent it. 0.9.0
   assigned every keyword argument to the object it found, which sent a `PATCH`.
   To change the object, assign its fields and call `save()`.
@@ -195,7 +195,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   for returned values that writes omit, `Hyperlinked()` for relations
   represented by URLs, file uploads with `files=` on `create()` and `save()`,
   full updates with `save(full=True)`, request options such as headers with
-  `request_options=` on `save()`, `create()`, and `delete()`, the collection's
+  `request_options=` on `save()`, `create()`, `delete()`, and the query
+  methods, which send them with every request of the query, the collection's
   size as `count`, and `APIError` with the parsed error body. Hyperlinked
   writes send URLs and relation queries send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`,
