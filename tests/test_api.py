@@ -955,3 +955,89 @@ def test_total_timeout_caps_request_timeout(
 
     assert budget.timeout(timeout) == pytest.approx(expected, abs=0.5)
     assert _Budget(None, None).timeout(timeout) == timeout
+
+
+def test_scoped_client_sends_its_options_with_every_request(
+    requests_mock: Any,
+) -> None:
+    """A request-scoped copy adds its options, and a call's own options win."""
+    api = API("https://example.com/v1/")
+    get = requests_mock.get("https://example.com/v1/items/", json=[])
+    scoped = api._scoped(
+        {"headers": {"X-Tenant": "a", "Accept": "text/plain"}, "timeout": 3}
+    )
+
+    scoped.get("/items/", headers={"accept": "application/json"})
+
+    headers = get.last_request.headers
+    assert headers["X-Tenant"] == "a"
+    assert headers["Accept"] == "application/json"
+    assert get.last_request.timeout == 3
+
+    api.get("/items/")
+
+    assert "X-Tenant" not in get.last_request.headers
+    assert get.last_request.timeout == api.timeout
+
+
+def test_scoped_client_shares_its_session() -> None:
+    """The copy shares the session and leaves the original's options alone."""
+    api = API("https://example.com/v1/")
+
+    scoped = api._scoped({"headers": {"X-Tenant": "a"}})
+
+    assert scoped.session is api.session
+    assert scoped._request_scoped
+    assert not api._request_scoped
+    assert dict(api._request_options) == {}
+    assert api._scoped({})._scoped({"timeout": 1})._request_options == {
+        "timeout": 1
+    }
+
+
+def test_scoped_client_runs_option_hooks_before_its_guard(
+    requests_mock: Any,
+) -> None:
+    """Option hooks run first, then the call's, then the redirect guard."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        status_code=302,
+        headers={"Location": "https://other.example/items/"},
+    )
+    other = requests_mock.get("https://other.example/items/", json=[])
+    seen: list[str] = []
+    scoped = api._scoped(
+        {"hooks": {"response": [lambda resp, **_: seen.append("option")]}}
+    )
+
+    with pytest.raises(RedirectError, match="origin"):
+        scoped.get(
+            "/items/",
+            hooks={"response": [lambda resp, **_: seen.append("call")]},
+        )
+
+    assert seen == ["option", "call"]
+    assert not other.called
+
+
+@pytest.mark.parametrize("status", [300, 302, 304, 307])
+def test_scoped_client_refuses_a_final_redirect(
+    requests_mock: Any, status: int
+) -> None:
+    """A scoped request expects a response to read, not an unfollowed redirect.
+
+    Args:
+        status: Final redirect status.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        status_code=status,
+        headers={"Location": "/elsewhere/"},
+    )
+
+    with pytest.raises(RedirectError, match=f"status {status}"):
+        api._scoped({"allow_redirects": False}).get("/items/")
+
+    assert api.get("/items/", allow_redirects=False).status_code == status

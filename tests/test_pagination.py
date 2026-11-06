@@ -11,6 +11,7 @@ import requests
 from eazyrest import (
     API,
     JSONObject,
+    RedirectError,
     Results,
     follow_link_headers,
     follow_next_links,
@@ -992,3 +993,48 @@ def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
     assert items.count == 42
     assert [item.id for item in items] == [1]
     assert Custom.all().count == 42
+
+
+def test_scoped_option_hooks_replace_session_hooks_on_every_page(
+    requests_mock: Any,
+) -> None:
+    """Option hooks replace the session's, on later pages as on the first."""
+    api = API("https://example.com/v1/")
+    seen: list[str] = []
+    api.session.hooks["response"] = [lambda resp, **_: seen.append("session")]
+    scoped = api._scoped(
+        {"hooks": {"response": [lambda resp, **_: seen.append("option")]}}
+    )
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = list(
+        follow_next_links(
+            scoped, {"next": "/v1/items/?page=2", "results": [{"id": 1}]}
+        )
+    )
+
+    assert items == [{"id": 1}, {"id": 2}]
+    assert seen == ["option"]
+
+
+def test_unfollowed_redirect_of_a_later_page_raises(
+    requests_mock: Any,
+) -> None:
+    """A page answered with a redirect that is not followed has no items."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        status_code=304,
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = follow_next_links(
+        api, {"next": "/v1/items/?page=2", "results": [{"id": 1}]}
+    )
+
+    assert next(items) == {"id": 1}
+    with pytest.raises(RedirectError, match="status 304"):
+        next(items)

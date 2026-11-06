@@ -16,6 +16,7 @@ from ._errors import (
 from ._results import Results
 from .api import (
     API,
+    _check_final_response,
     _origin,
     _redirect_destination,
     _redirect_origins,
@@ -167,13 +168,20 @@ class _PageReader:
                     "allow_other_origins=True to follow it."
                 )
 
-        # Request hooks replace session hooks, so preserve the existing ones.
-        # Run the guard after any hook that might change the response.
-        hooks = [
-            *_response_hooks(self.api.session.hooks.get("response")),
-            check_redirect,
-        ]
-        resp = self.api.get(url, hooks={"response": hooks})
+        # Request hooks replace session hooks, so preserve the existing ones,
+        # unless the API's request options carry hooks, which replace them as
+        # they do for the first page. Run the guard after any hook that might
+        # change the response.
+        session_hooks = (
+            None
+            if self.api._request_options.get("hooks")
+            else self.api.session.hooks.get("response")
+        )
+        hooks = [*_response_hooks(session_hooks), check_redirect]
+        resp = _check_final_response(
+            self.api.get(url, hooks={"response": hooks}),
+            "the page has no response to read",
+        )
         # After a redirect, a page's links are relative to its final URL.
         self.read_urls.update((url, resp.url))
         return resp
