@@ -195,14 +195,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   unless a serializer reveals it. Models are written by their fields' aliases.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the
   `type` statement.
+- `json_schema()`, the JSON schema of what a model reads or writes.
 - Conversion tables: a model's `conversions` maps a type to a `Conversion` that
-  reads and writes its JSON form, which the `eazyrest.pydantic` types follow
-  inside the model's Pydantic fields, merged over its bases' and the default
-  table, so a shared base model can convert a type of its own, such as
-  `IPv4Address`, or replace a default, such as writing datetimes as timestamps.
-  `DEFAULT_CONVERSIONS` holds the default table. A class checks its table when
-  it is defined, and refuses a key that is a model or a type that eazyrest
-  converts itself, such as `int`, whose entry would also convert `bool`.
+  reads and writes its JSON form, and gives its JSON schema, which the
+  `eazyrest.pydantic` types follow inside the model's Pydantic fields, merged
+  over its bases' and the default table, so a shared base model can convert a
+  type of its own, such as `IPv4Address`, or replace a default, such as writing
+  datetimes as timestamps. `DEFAULT_CONVERSIONS` holds the default table. A
+  class checks its table when it is defined, and refuses a key that is a model
+  or a type that eazyrest converts itself, such as `int`, whose entry would
+  also convert `bool`.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`,
   detection of in-place changes to field values, and `merge_response()`.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and

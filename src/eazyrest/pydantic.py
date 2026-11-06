@@ -36,26 +36,35 @@ except ImportError as err:
 import typing_extensions
 from pydantic import (
     BaseModel,
+    GetJsonSchemaHandler,
     PlainSerializer,
     PlainValidator,
     PydanticUserError,
     TypeAdapter,
     ValidationError,
-    WithJsonSchema,
 )
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import (
+    CoreSchema,
     ErrorDetails,
     PydanticKnownError,
     PydanticSerializationError,
+    core_schema,
 )
 from typing_extensions import get_type_hints, is_typeddict
 
-from ._conversion import _current_conversion, _final_supertype, _supertype
+from ._conversion import (
+    _current_conversion,
+    _final_supertype,
+    _schema_of_entry,
+    _supertype,
+)
 from ._models import (
     JSONObject,
     _is_named_tuple,
     _is_type_alias,
     _resolve_alias_value,
+    _seal,
     lenient_issubclass,
 )
 
@@ -102,6 +111,10 @@ def _validator(is_value: Callable[[Any], bool], ty: Any) -> PlainValidator:
     return PlainValidator(validate)
 
 
+_TABLE_SERIALIZERS: set[Callable[[Any], Any]] = set()
+"""The serializers of the types in this module, which encode by the table."""
+
+
 # The exceptions that the encode functions of table conversions raise during
 # one of eazyrest's dumps. A table serializer encodes only values of its type,
 # so a TypeError or ValueError is the conversion's refusal of the value, and
@@ -146,9 +159,112 @@ def _serializer(is_value: Callable[[Any], bool], ty: Any) -> PlainSerializer:
                 bugs.append(err)
             raise
 
+    _TABLE_SERIALIZERS.add(serialize)
     # A model's table may write any JSON value, such as a timestamp for a
-    # datetime.
+    # datetime, and each type's JSON schema is given separately.
     return PlainSerializer(serialize, return_type=Any)
+
+
+class _TableSchema:
+    """JSON schema of a type, from the conversion table in use.
+
+    In a model's field, the table is the model's. Elsewhere, it is the
+    default one. Pydantic's validation schema is the read form, and its
+    serialization schema the written form.
+    """
+
+    def __init__(self, ty: type[Any]) -> None:
+        """Give the schema of a type.
+
+        Args:
+            ty: A type that the default table converts, such as ``datetime``.
+        """
+        self.ty = ty
+
+    def __get_pydantic_json_schema__(
+        self, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> dict[str, Any]:
+        """Return the schema of the type's JSON form.
+
+        Args:
+            core_schema: Pydantic's core schema of the type.
+            handler: Pydantic's schema handler, whose mode gives the form.
+
+        Returns:
+            The schema of the type's conversion, or, for the written form of
+            a value that another serializer writes, that serializer's schema.
+        """
+        mode = "read" if handler.mode == "validation" else "write"
+        serialization = core_schema.get("serialization")
+        if (
+            mode == "write"
+            and serialization is not None
+            and serialization.get("function") not in _TABLE_SERIALIZERS
+        ):
+            return handler(core_schema)
+        found = _current_conversion(self.ty)
+        return _seal(_schema_of_entry(found.entry, found.declared, mode))
+
+
+class _WriteSchema(GenerateJsonSchema):
+    """Generates the JSON schema of what eazyrest writes.
+
+    eazyrest writes a round trip's serialization, which differs from what
+    Pydantic's serialization schema describes in two ways: a
+    ``pydantic.Json`` field writes its JSON text, as it reads, and a
+    computed field is not written.
+    """
+
+    def json_schema(self, schema: core_schema.JsonSchema) -> JsonSchemaValue:
+        """Describe a ``pydantic.Json`` field as the JSON text it writes.
+
+        Args:
+            schema: Core schema of the field.
+
+        Returns:
+            The schema of a string that holds JSON of the field's type.
+        """
+        content = self.generate_inner(
+            schema.get("schema") or core_schema.any_schema()
+        )
+        return {
+            "type": "string",
+            "contentMediaType": "application/json",
+            "contentSchema": content,
+        }
+
+    @staticmethod
+    def _name_required_computed_fields(
+        computed_fields: list[core_schema.ComputedField],
+    ) -> list[tuple[str, bool, core_schema.ComputedField]]:
+        """Leave out computed fields, which a round trip does not write.
+
+        Args:
+            computed_fields: The computed fields, unused.
+
+        Returns:
+            No fields.
+        """
+        del computed_fields
+        return []
+
+
+def _json_schema(adapter: TypeAdapter[Any], mode: str) -> dict[str, Any]:
+    """Return the JSON schema of what a Pydantic field reads or writes.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        mode: ``"read"`` or ``"write"``.
+
+    Returns:
+        Pydantic's validation schema for ``"read"``. For ``"write"``, its
+        serialization schema, adjusted to what a round trip writes.
+    """
+    if mode == "read":
+        return adapter.json_schema(mode="validation")
+    return adapter.json_schema(
+        mode="serialization", schema_generator=_WriteSchema
+    )
 
 
 def _is_datetime(value: Any) -> bool:
@@ -181,7 +297,7 @@ Datetime = Annotated[
     datetime.datetime,
     _validator(_is_datetime, datetime.datetime),
     _serializer(_is_datetime, datetime.datetime),
-    WithJsonSchema({"type": "string", "format": "date-time"}),
+    _TableSchema(datetime.datetime),
 ]
 """A ``datetime`` read from ISO 8601 text or a Unix timestamp in seconds.
 
@@ -192,7 +308,7 @@ Date = Annotated[
     datetime.date,
     _validator(_is_date, datetime.date),
     _serializer(_is_date, datetime.date),
-    WithJsonSchema({"type": "string", "format": "date"}),
+    _TableSchema(datetime.date),
 ]
 """A ``date`` read from and written in ISO 8601.
 
@@ -203,7 +319,7 @@ Duration = Annotated[
     datetime.timedelta,
     _validator(_is_timedelta, datetime.timedelta),
     _serializer(_is_timedelta, datetime.timedelta),
-    WithJsonSchema({"type": "string", "format": "duration"}),
+    _TableSchema(datetime.timedelta),
 ]
 """A ``timedelta`` read by ``parse_duration()`` and written in ISO 8601.
 
@@ -214,7 +330,7 @@ UUID = Annotated[
     uuid.UUID,
     _validator(_is_uuid, uuid.UUID),
     _serializer(_is_uuid, uuid.UUID),
-    WithJsonSchema({"type": "string", "format": "uuid"}),
+    _TableSchema(uuid.UUID),
 ]
 """A ``UUID`` read from and written as a string."""
 
@@ -222,7 +338,7 @@ Time = Annotated[
     datetime.time,
     _validator(_is_time, datetime.time),
     _serializer(_is_time, datetime.time),
-    WithJsonSchema({"type": "string", "format": "time"}),
+    _TableSchema(datetime.time),
 ]
 """A ``time`` read from and written in ISO 8601, such as ``"09:30:00"``.
 
@@ -234,18 +350,7 @@ Decimal = Annotated[
     decimal.Decimal,
     _validator(_is_decimal, decimal.Decimal),
     _serializer(_is_decimal, decimal.Decimal),
-    WithJsonSchema(
-        {
-            "anyOf": [
-                {"type": "string", "format": "decimal"},
-                {"type": "number"},
-            ]
-        },
-        mode="validation",
-    ),
-    WithJsonSchema(
-        {"type": "string", "format": "decimal"}, mode="serialization"
-    ),
+    _TableSchema(decimal.Decimal),
 ]
 """A ``Decimal`` read from a string or a number, and written as a string.
 
@@ -277,6 +382,9 @@ def _enum_type(cls: type[enum.Enum]) -> Any:
         cls,
         _validator(is_member, cls),
         _serializer(is_member, cls),
+        # The validator and serializer are plain functions, whose schema says
+        # nothing about the values, so the table's conversion gives it.
+        _TableSchema(cls),
     ]
 
 
@@ -291,7 +399,7 @@ _IS_VALUE: dict[Any, Callable[[Any], bool]] = {
 """Whether a value has one of the types that this module replaces."""
 
 
-def _table_type(base: type[Any], key: Any, replaced: Any) -> Any:
+def _table_type(base: type[Any], key: Any) -> Any:
     """Return a type whose values convert by a table entry, as a field's do.
 
     Args:
@@ -300,12 +408,10 @@ def _table_type(base: type[Any], key: Any, replaced: Any) -> Any:
         key: The type whose conversion in the active table converts them,
             ``base`` or a ``NewType`` of it, which converts as ``base`` if it
             has no entry of its own.
-        replaced: The type that replaces ``base``, whose JSON schema the new
-            type keeps.
 
     Returns:
-        ``base``, annotated with a validator and a serializer that use the
-        conversion of ``key``.
+        ``base``, annotated with a validator, a serializer, and a schema that
+        use the conversion of ``key``.
     """
     is_value = _IS_VALUE.get(base)
     if is_value is None:
@@ -313,20 +419,12 @@ def _table_type(base: type[Any], key: Any, replaced: Any) -> Any:
         def is_value(value: Any) -> bool:
             return isinstance(value, base)
 
-    schemas = tuple(
-        metadata
-        for metadata in typing.get_args(replaced)[1:]
-        if not isinstance(metadata, (PlainValidator, PlainSerializer))
-    )
-    # Mypy targeting Python 3.10 rejects a starred tuple inside a subscript,
-    # even in parentheses, so build the tuple first.
-    params = (
+    return Annotated[
         base,
         _validator(is_value, key),
         _serializer(is_value, key),
-        *schemas,
-    )
-    return Annotated[params]
+        _TableSchema(key),
+    ]
 
 
 _EAZYREST_TYPES: dict[Any, Any] = {
@@ -665,7 +763,7 @@ def _eazyrest_types(ty: Any) -> Any:
         if isinstance(supertype, type) and (
             supertype in _IS_VALUE or issubclass(supertype, enum.Enum)
         ):
-            return _table_type(supertype, ty, replaced)
+            return _table_type(supertype, ty)
         return replaced
 
     origin = typing.get_origin(ty)

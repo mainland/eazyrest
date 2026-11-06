@@ -15,6 +15,7 @@ import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
+from ipaddress import IPv4Address
 from typing import Annotated, Any, ClassVar, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -1341,6 +1342,26 @@ def test_time_field_writes_iso_8601(requests_mock: Any) -> None:
     shop.save()
 
     assert patch.last_request.json() == {"opens": "08:15:00.000500"}
+
+
+def test_json_schema_describes_decimal_and_time_fields() -> None:
+    """A decimal reads a string or a number and writes a string."""
+    written = {"type": "string", "format": "decimal"}
+
+    read = Shop.json_schema()["properties"]
+    write = Shop.json_schema("write")["properties"]
+
+    assert read["price"] == {"anyOf": [written, {"type": "number"}]}
+    assert write["price"] == written
+    assert write["prices"] == {"type": "array", "items": written}
+    assert (
+        read["opens"]
+        == write["opens"]
+        == {
+            "type": "string",
+            "format": "time",
+        }
+    )
 
 
 def test_sequence_field_reads_as_tuple_of_converted_items(
@@ -5467,6 +5488,58 @@ def test_write_only_must_name_a_readable_field(
             name: str
 
 
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"read_only": {"nope"}}, "names \\['nope'\\]"),
+        (
+            {"read_only": {"name"}, "write_only": {"name"}},
+            "both read-only and write-only",
+        ),
+    ],
+)
+def test_read_only_must_name_a_field_that_is_not_write_only(
+    options: dict[str, Any], match: str
+) -> None:
+    """``read_only`` must name fields of the class that are not write-only.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str
+
+
+def test_redeclared_field_inherits_read_only() -> None:
+    """A redeclared field stays read-only unless ``read_only=`` says not."""
+
+    @json_object(read_only={"created"})
+    class Stamped(ModelBase):
+        class_url = "/stamped/"
+
+        id: int
+        created: str
+
+    @json_object
+    class Inherits(Stamped):
+        created: str
+
+    @json_object(read_only=set())
+    class Clears(Stamped):
+        created: str
+
+    with pytest.raises(AttributeError, match="read-only"):
+        Inherits(json={"id": 1, "created": "a"}).created = "x"
+    clears = Clears(json={"id": 1, "created": "a"}, write_mode="lazy")
+    clears.created = "x"
+    assert clears._pending_updates == {"created": "x"}
+
+
 @json_object(write_map={"owner": "owner_id"})
 class Chore(ModelBase):
     """Model whose relation is read nested and written as a primary key."""
@@ -5911,6 +5984,87 @@ def test_hyperlinked_prefetch_loads_each_url_once(
     assert requests_mock.call_count == 1
 
 
+def test_hyperlinked_prefetch_skips_values_it_cannot_load(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An embedded object, a key, and refused URLs send no bulk lookup.
+
+    The embedded author is read as the object it is, and the refused reader
+    still raises when it is read.
+    """
+    calls: list[set[str]] = []
+
+    def bulk_get_by_urls(
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
+    ) -> dict[str, User]:
+        calls.append(urls)
+        return {}
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get(
+        "https://example.com/v1/notes/",
+        json=[
+            {
+                **NOTE_JSON,
+                "author": {"id": 2, "name": "Ada"},
+                "readers": ["https://other.example/users/5/", "mailto:x", 7],
+            }
+        ],
+    )
+
+    (note,) = Note.filter(prefetch=["author", "readers"])
+
+    assert calls == []
+    assert note.author.name == "Ada"
+    with pytest.raises(FieldConversionError):
+        _ = note.readers
+    assert requests_mock.call_count == 1
+
+
+def test_hyperlinked_prefetch_ignores_urls_it_did_not_request(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup's extra objects are dropped, and an object keeps its own URL.
+
+    An object that a lookup returns with a URL of its own, such as one it
+    read from a hyperlink, keeps that URL rather than the requested one.
+    """
+
+    def bulk_get_by_urls(
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
+    ) -> dict[str, User]:
+        found = {url: _user_from_url(url, api) for url in urls}
+        for user in found.values():
+            user._url_override = f"https://example.com/v1/people/{user.id}/"
+        found["https://example.com/v1/users/99/"] = _user_from_url(
+            "https://example.com/v1/users/99/", api
+        )
+        return found
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
+
+    (note,) = Note.filter(prefetch="author")
+
+    assert note.author.name == "user2"
+    assert note.author.url == "https://example.com/v1/people/2/"
+    assert requests_mock.call_count == 1
+
+
 def test_hyperlinked_applies_only_to_related_types() -> None:
     """``Hyperlinked()`` on a type without a related model raises."""
 
@@ -6122,3 +6276,185 @@ def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
     assert review.editor.name == "user7"
     assert [user.name for user in review.watchers] == ["user8", "user9"]
     assert requests_mock.call_count == 1
+
+
+class Shade(enum.Enum):
+    """Enum whose JSON values are strings."""
+
+    LIGHT = "light"
+    DARK = "dark"
+
+
+@json_object(
+    field_map={"kind": "type"},
+    write_map={"owner": "owner_id"},
+    write_only={"secret"},
+    read_only={"created"},
+)
+class Specimen(ModelBase):
+    """Model whose fields cover each kind of JSON schema."""
+
+    class_url = "/specimens/"
+
+    id: int
+    name: str
+    score: float
+    flag: bool
+    when: datetime.datetime
+    day: datetime.date
+    token: uuid.UUID
+    length: datetime.timedelta
+    shade: Shade
+    kind: typing.Literal["a", "b"]
+    tags: list[str]
+    labels: set[str]
+    note: str | None
+    extra: dict[str, Any]
+    owner: User
+    link: Annotated[User, Hyperlinked()]
+    secret: str
+    created: datetime.datetime
+
+
+def test_json_schema_describes_what_a_model_reads() -> None:
+    """The read schema uses read keys and omits write-only fields."""
+    owner = {"anyOf": [{"type": "integer"}, {"type": "object"}]}
+    link = {"anyOf": [{"type": "string", "format": "uri"}, {"type": "object"}]}
+
+    assert Specimen.json_schema() == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Specimen",
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+            "score": {"type": "number"},
+            "flag": {"type": "boolean"},
+            "when": {"type": "string", "format": "date-time"},
+            "day": {"type": "string", "format": "date"},
+            "token": {"type": "string", "format": "uuid"},
+            "length": {"type": "string", "format": "duration"},
+            "shade": {"enum": ["light", "dark"]},
+            "type": {"enum": ["a", "b"]},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+            "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "extra": {},
+            "owner": owner,
+            "link": link,
+            "created": {"type": "string", "format": "date-time"},
+        },
+        "additionalProperties": True,
+    }
+
+
+def test_json_schema_describes_what_a_model_writes() -> None:
+    """The write schema uses write keys and keeps only writable fields."""
+    properties = Specimen.json_schema("write")["properties"]
+
+    assert "created" not in properties
+    assert properties["secret"] == {"type": "string"}
+    assert properties["owner_id"] == {"type": "integer"}
+    assert "owner" not in properties
+    assert properties["link"] == {"type": "string", "format": "uri"}
+    assert list(properties)[:3] == ["id", "name", "score"]
+
+
+def test_json_schema_follows_declaration_order() -> None:
+    """Properties follow declaration order, with or without defaults.
+
+    A field with a default stays in the class's namespace where the class
+    declares it, while ``json_object()`` adds a field without one at the end.
+    """
+
+    @json_object
+    class Base(ModelBase):
+        class_url = "/ordered/"
+
+        id: int
+        a: str
+        b: int = 0
+
+    @json_object
+    class Ordered(Base):
+        c: str = ""
+        d: str
+        a: str
+
+    assert list(Ordered.json_schema()["properties"]) == [
+        "id",
+        "a",
+        "b",
+        "c",
+        "d",
+    ]
+
+
+@json_object
+class Keyless(ModelBase):
+    """Model without a primary key, such as an embedded value."""
+
+    name: str
+
+
+@json_object(pk="partner")
+class Left(ModelBase):
+    """Model whose primary key is a related object, which names it back."""
+
+    partner: Right
+
+
+@json_object(pk="partner")
+class Right(ModelBase):
+    """Model whose primary key is a ``Left``."""
+
+    partner: Left
+
+
+@json_object
+class Odd(ModelBase):
+    """Model with relations whose keys have no schema, and an unknown type."""
+
+    class_url = "/odd/"
+
+    id: int
+    keyless: Keyless
+    left: Left
+    address: IPv4Address
+
+
+def test_json_schema_allows_any_key_it_cannot_describe() -> None:
+    """A relation without a key, or in a cycle of keys, accepts any key.
+
+    So does a type that eazyrest does not convert, whose JSON form it does
+    not know.
+    """
+    properties = Odd.json_schema("write")["properties"]
+
+    assert properties["keyless"] == {}
+    assert properties["left"] == {}
+    assert properties["address"] == {}
+
+
+def test_json_schema_rejects_an_unknown_mode() -> None:
+    """Only the read and write modes exist."""
+    with pytest.raises(ValueError, match="mode must be"):
+        Specimen.json_schema("both")  # type: ignore[arg-type]
+
+
+def test_json_schema_reports_an_unresolvable_annotation() -> None:
+    """A field whose annotation does not resolve fails as a read does."""
+
+    @json_object
+    class Broken(ModelBase):
+        class_url = "/broken/"
+
+        id: int
+        missing: NoSuchType  # type: ignore[name-defined]  # noqa: F821
+
+    with pytest.raises(NameError, match="NoSuchType"):
+        Broken.json_schema()

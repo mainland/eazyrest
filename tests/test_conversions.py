@@ -8,7 +8,7 @@ import enum
 import ipaddress
 import uuid
 from collections.abc import Mapping
-from typing import Any, ClassVar, NewType, Protocol
+from typing import Any, ClassVar, Literal, NewType, Protocol
 
 import pytest
 
@@ -334,3 +334,246 @@ def test_subclasses_and_new_types_of_own_types_can_be_keys() -> None:
     assert price.amount == 125
     assert price.flag is True
     assert price.id == 1
+
+
+class SchemaBase(JSONObject):
+    """Base whose conversions give schemas, as a mapping and a function."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        ipaddress.IPv4Address: Conversion(
+            decode=lambda value, cls: cls(value),
+            encode=lambda value, cls: str(value),
+            schema={"type": "string", "format": "ipv4"},
+        ),
+        Stamp: Conversion(
+            decode=lambda value, cls: value,
+            encode=lambda value, cls: value,
+            schema=lambda cls, mode: {"title": f"{cls.__name__} {mode}"},
+        ),
+    }
+
+
+@json_object
+class Schemas(SchemaBase):
+    """Model whose fields' schemas come from conversions."""
+
+    class_url = "/schemas/"
+
+    id: int
+    address: ipaddress.IPv4Address
+    addresses: list[ipaddress.IPv4Address]
+    stamp: Stamp
+    when: datetime.datetime
+    user: UserId
+    start: Start
+    plain: uuid.UUID
+
+
+def test_schemas_come_from_conversions() -> None:
+    """A conversion's schema, a mapping or a function of type and mode.
+
+    A ``NewType`` without an entry has its supertype's schema, and a type
+    with no schema in its conversion allows any value.
+    """
+    read = Schemas.json_schema()["properties"]
+    write = Schemas.json_schema("write")["properties"]
+
+    assert read["address"] == {"type": "string", "format": "ipv4"}
+    assert read["addresses"] == {
+        "type": "array",
+        "items": {"type": "string", "format": "ipv4"},
+    }
+    assert read["stamp"] == {"title": "Stamp read"}
+    assert write["stamp"] == {"title": "Stamp write"}
+    assert read["when"] == {"type": "string", "format": "date-time"}
+    assert read["user"] == {"type": "integer"}
+    assert read["start"] == {"type": "string", "format": "date-time"}
+    assert read["plain"] == {"type": "string", "format": "uuid"}
+    # The base's address conversion gives no schema.
+    assert Host.json_schema()["properties"]["address"] == {}
+
+
+class Token:
+    """A value whose conversion's schema has a definition of its own."""
+
+    def __init__(self, part: int) -> None:
+        """Make a token.
+
+        Args:
+            part: Its part.
+        """
+        self.part = part
+
+
+class Chain:
+    """A value whose conversion's schema defines a recursive ``Part``."""
+
+    def __init__(self, links: list[Any]) -> None:
+        """Make a chain.
+
+        Args:
+            links: Its links, as JSON.
+        """
+        self.links = links
+
+
+@json_object
+class Defined(JSONObject):
+    """Model whose conversions' schemas define the same name differently."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Token: Conversion(
+            decode=lambda value, cls: cls(value["part"]),
+            encode=lambda value, cls: {"part": value.part},
+            schema={
+                "type": "object",
+                "properties": {"part": {"$ref": "#/$defs/Part"}},
+                "$defs": {"Part": {"type": "integer"}},
+            },
+        ),
+        Chain: Conversion(
+            decode=lambda value, cls: cls(value),
+            encode=lambda value, cls: value.links,
+            schema={
+                "$ref": "#/$defs/Part",
+                "$defs": {
+                    "Part": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/Part"},
+                    }
+                },
+            },
+        ),
+    }
+
+    id: int
+    token: Token
+    tokens: list[Token]
+    chain: Chain | None
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_conversion_schemas_keep_their_definitions(
+    mode: Literal["read", "write"],
+) -> None:
+    """A conversion's own ``$defs`` move into the model's, renamed apart.
+
+    Its references keep naming its own definitions, also when another
+    conversion defines the same name, or a definition refers to itself.
+
+    Args:
+        mode: Schema mode.
+    """
+    schema = Defined.json_schema(mode)
+    properties = schema["properties"]
+
+    assert sorted(schema["$defs"]) == ["Part", "Part_2"]
+    assert properties["token"]["properties"]["part"] == {
+        "$ref": "#/$defs/Part"
+    }
+    assert properties["tokens"]["items"] == properties["token"]
+    assert properties["chain"]["anyOf"][0] == {"$ref": "#/$defs/Part_2"}
+    assert schema["$defs"]["Part_2"]["items"] == {"$ref": "#/$defs/Part_2"}
+
+
+class FirstCode(str):
+    """String whose conversion's schema defines a name."""
+
+
+class SecondCode(str):
+    """String whose conversion's schema defines the same name differently."""
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+@pytest.mark.parametrize(
+    ("first", "second", "value", "renamed"),
+    [
+        (
+            {"$defs": {"Part": {"type": "integer"}}, "$ref": "#/$defs/Part"},
+            {
+                "$defs": {
+                    "Part": {"properties": {"value": {"type": "string"}}}
+                },
+                "$ref": "#/$defs/Part/properties/value",
+            },
+            "ok",
+            {"$ref": "#/$defs/Part_2/properties/value"},
+        ),
+        (
+            {"$defs": {"a/b": {"type": "integer"}}, "$ref": "#/$defs/a~1b"},
+            {"$defs": {"a/b": {"type": "string"}}, "$ref": "#/$defs/a~1b"},
+            "ok",
+            {"$ref": "#/$defs/a~1b_2"},
+        ),
+        (
+            {"$defs": {"Part": {"type": "integer"}}, "$ref": "#/$defs/Part"},
+            {
+                "$defs": {"Part": {"type": "string"}},
+                "const": {"$ref": "#/$defs/Part"},
+            },
+            {"$ref": "#/$defs/Part"},
+            {"const": {"$ref": "#/$defs/Part"}},
+        ),
+        (
+            {"$defs": {"Part": {"type": "integer"}}, "$ref": "#/$defs/Part"},
+            {
+                "$defs": {"Part": {"type": "string"}},
+                "type": "object",
+                "properties": {"$ref": {"$ref": "#/$defs/Part"}},
+            },
+            {"$ref": "x"},
+            {
+                "type": "object",
+                "properties": {"$ref": {"$ref": "#/$defs/Part_2"}},
+            },
+        ),
+    ],
+    ids=["pointer", "escaped", "const", "property"],
+)
+def test_renamed_definitions_keep_what_their_schemas_mean(
+    first: dict[str, Any],
+    second: dict[str, Any],
+    value: Any,
+    renamed: dict[str, Any],
+    mode: Literal["read", "write"],
+) -> None:
+    """A model's schema accepts what each conversion's own schema accepts.
+
+    Renaming a definition renames it in a reference into the definition and
+    in one escaped as a JSON Pointer, and leaves alone a ``const``, which is
+    data, and a property named ``$ref``.
+
+    Args:
+        first: Schema of ``FirstCode``, which accepts 1.
+        second: Schema of ``SecondCode``, which defines a name that
+            ``first`` does, and accepts ``value``.
+        value: JSON of a ``SecondCode``.
+        renamed: Schema of ``SecondCode`` in the model's schema, where its
+            definition is renamed.
+        mode: Schema mode.
+    """
+    model: Any = json_object(
+        type(
+            "Codes",
+            (JSONObject,),
+            {
+                "__annotations__": {"a": FirstCode, "b": SecondCode},
+                "conversions": {
+                    FirstCode: Conversion(
+                        decode=lambda value, cls: value,
+                        encode=lambda value, cls: value,
+                        schema=first,
+                    ),
+                    SecondCode: Conversion(
+                        decode=lambda value, cls: value,
+                        encode=lambda value, cls: value,
+                        schema=second,
+                    ),
+                },
+            },
+        )
+    )
+
+    schema = model.json_schema(mode)
+
+    assert schema["properties"]["b"] == renamed

@@ -187,6 +187,13 @@ def test_constraints_apply_after_eazyrest_conversion() -> None:
         adapter.validate_python("-PT1M")
 
 
+def test_enum_converted_by_pydantic_lists_its_values() -> None:
+    """An enum inside a Pydantic type keeps its values in the JSON schema."""
+    adapter = PydanticType(list[Level]).adapter
+
+    assert adapter.json_schema()["items"] == {"enum": [1, 2]}
+
+
 @with_config(ConfigDict(extra="allow"))
 class Till(TypedDict):
     """Mapping with decimal and time values that eazyrest converts."""
@@ -1319,6 +1326,293 @@ def test_pydantic_user_error_is_a_field_conversion_error() -> None:
     assert isinstance(info.value.__cause__, TypeError)
 
 
+def _make_point(extra: str) -> type[BaseModel]:
+    """Return a Pydantic model named ``Point`` with one more field.
+
+    Args:
+        extra: Name of the field that tells two such models apart.
+
+    Returns:
+        The model, whose JSON schema definition is named ``Point``.
+    """
+    fields: dict[str, Any] = {"x": (int, ...), extra: (int, ...)}
+    model: type[BaseModel] = pydantic.create_model(
+        "Point", __config__=ConfigDict(extra="allow"), **fields
+    )
+    return model
+
+
+PlanePoint = _make_point("y")
+DepthPoint = _make_point("z")
+
+
+class PlaneWrapper(BaseModel):
+    """Pydantic model that nests a model named ``Point``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    a: PlanePoint  # type: ignore[valid-type]
+
+
+class DepthWrapper(BaseModel):
+    """Pydantic model that nests another model named ``Point``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    b: DepthPoint  # type: ignore[valid-type]
+
+
+@json_object
+class Charted(PydanticBase):
+    """Model whose Pydantic fields share and collide in definitions."""
+
+    id: int
+    first: PlaneWrapper
+    second: PlaneWrapper
+    third: DepthWrapper
+    image: Base64Bytes
+
+
+def test_json_schema_hoists_pydantic_definitions() -> None:
+    """Pydantic fields share ``$defs``, renamed when two names collide."""
+    schema = Charted.json_schema()
+    properties = schema["properties"]
+    defs = schema["$defs"]
+
+    assert properties["first"]["properties"]["a"] == {"$ref": "#/$defs/Point"}
+    assert properties["second"] == properties["first"]
+    assert properties["third"]["properties"]["b"] == {
+        "$ref": "#/$defs/Point_2"
+    }
+    assert sorted(defs) == ["Point", "Point_2"]
+    assert sorted(defs["Point"]["properties"]) == ["x", "y"]
+    assert sorted(defs["Point_2"]["properties"]) == ["x", "z"]
+    assert properties["image"] == {"format": "base64", "type": "string"}
+
+
+_STAMP_WITH_DEFS = Conversion(
+    decode=lambda value, cls: datetime.datetime.fromisoformat(value["at"]),
+    encode=lambda value, cls: {"at": value.isoformat()},
+    schema={
+        "type": "object",
+        "properties": {"at": {"$ref": "#/$defs/Part"}},
+        "$defs": {"Part": {"type": "string"}},
+    },
+)
+
+
+# A Pydantic model named Part, with a type that follows the model's table.
+StampedPart = pydantic.create_model("Part", when=(Datetime, ...), n=(int, ...))
+
+
+class DefinedStampBase(PydanticBase):
+    """Base whose ``datetime`` conversion's schema has its own ``$defs``."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        datetime.datetime: _STAMP_WITH_DEFS
+    }
+
+
+@json_object
+class DefinedStamps(DefinedStampBase):
+    """Model with that conversion inside and outside a Pydantic field."""
+
+    id: int
+    plain: datetime.datetime
+    parts: Annotated[list[StampedPart], Field()]  # type: ignore[valid-type]
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_json_schema_hoists_a_conversions_definitions_from_pydantic(
+    mode: Literal["read", "write"],
+) -> None:
+    """A table schema's ``$defs`` move out of a Pydantic schema too.
+
+    Pydantic's own ``Part`` keeps its name, and the conversion's is renamed,
+    with its references, inside and outside the Pydantic field.
+
+    Args:
+        mode: Schema mode.
+    """
+    schema = DefinedStamps.json_schema(mode)
+    defs = schema["$defs"]
+    stamp = {
+        "type": "object",
+        "properties": {"at": {"$ref": "#/$defs/Part_2"}},
+    }
+
+    assert sorted(defs) == ["Part", "Part_2"]
+    assert defs["Part_2"] == {"type": "string"}
+    assert schema["properties"]["plain"] == stamp
+    assert schema["properties"]["parts"]["items"] == {"$ref": "#/$defs/Part"}
+    assert {
+        key: value
+        for key, value in defs["Part"]["properties"]["when"].items()
+        if key != "title"
+    } == stamp
+    assert "x-eazyrest" not in str(schema)
+
+
+def _first_cat() -> type[BaseModel]:
+    """Return a model named ``Cat`` that requires ``a``.
+
+    Returns:
+        The model.
+    """
+
+    class Cat(BaseModel):
+        kind: Literal["cat"] = "cat"
+        a: int
+
+    return Cat
+
+
+def _second_cat() -> type[BaseModel]:
+    """Return another model named ``Cat``, which requires ``b``.
+
+    Returns:
+        The model.
+    """
+
+    class Cat(BaseModel):
+        kind: Literal["cat"] = "cat"
+        b: str
+
+    return Cat
+
+
+class Dog(BaseModel):
+    """The other member of the discriminated union."""
+
+    kind: Literal["dog"] = "dog"
+    b: str
+
+
+FirstCat = _first_cat()
+SecondCat = _second_cat()
+
+
+@json_object
+class Pets(PydanticBase):
+    """Model whose second ``Cat`` is renamed inside a discriminated union."""
+
+    id: int
+    first: Annotated[list[FirstCat], Field()]  # type: ignore[valid-type]
+    pet: Annotated[
+        SecondCat | Dog,  # type: ignore[valid-type]
+        Field(discriminator="kind"),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_json_schema_renames_discriminator_targets(
+    mode: Literal["read", "write"],
+) -> None:
+    """A discriminator's mapping names the renamed definition.
+
+    Args:
+        mode: Schema mode.
+    """
+    schema = Pets.json_schema(mode)
+    pet = schema["properties"]["pet"]
+
+    assert pet["oneOf"][0] == {"$ref": "#/$defs/Cat_2"}
+    assert pet["discriminator"]["mapping"] == {
+        "cat": "#/$defs/Cat_2",
+        "dog": "#/$defs/Dog",
+    }
+    assert schema["$defs"]["Cat"]["required"] == ["a"]
+    assert schema["$defs"]["Cat_2"]["required"] == ["b"]
+
+
+def _make_tree(leaf: type) -> type[BaseModel]:
+    """Return models named ``Tree``, ``Branch``, and ``Leaf``.
+
+    Args:
+        leaf: Type of the leaf's value, which tells two trees apart.
+
+    Returns:
+        ``Tree``, whose JSON schema defines ``Branch`` and ``Leaf``.
+    """
+    config = ConfigDict(extra="allow")
+    leaf_model = pydantic.create_model(
+        "Leaf", __config__=config, v=(leaf, ...)
+    )
+    branch = pydantic.create_model(
+        "Branch", __config__=config, a=(leaf_model, ...)
+    )
+    model: type[BaseModel] = pydantic.create_model(
+        "Tree", __config__=config, x=(branch, ...)
+    )
+    return model
+
+
+IntTree = _make_tree(int)
+StrTree = _make_tree(str)
+
+
+@json_object
+class Forest(PydanticBase):
+    """Model whose definitions differ only below their first level."""
+
+    id: int
+    first: IntTree  # type: ignore[valid-type]
+    second: StrTree  # type: ignore[valid-type]
+
+
+def _resolve(schema: Any, defs: dict[str, Any]) -> Any:
+    """Return a schema with its references replaced by their definitions.
+
+    Args:
+        schema: Part of a JSON schema without recursive definitions.
+        defs: Definitions that the references name.
+
+    Returns:
+        ``schema`` without references or ``$defs``.
+    """
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            return _resolve(
+                defs[schema["$ref"].removeprefix("#/$defs/")], defs
+            )
+        return {
+            key: _resolve(value, defs)
+            for key, value in schema.items()
+            if key != "$defs"
+        }
+    if isinstance(schema, list):
+        return [_resolve(item, defs) for item in schema]
+    return schema
+
+
+def test_json_schema_renames_definitions_that_refer_to_renamed_ones() -> None:
+    """A definition whose dependency is renamed is renamed too."""
+    schema = Forest.json_schema()
+
+    for field, tree in [("first", IntTree), ("second", StrTree)]:
+        own = tree.model_json_schema()
+        assert _resolve(schema["properties"][field], schema["$defs"]) == (
+            _resolve(own, own["$defs"])
+        )
+
+
+def test_json_schema_without_pydantic_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schema of a field that needs Pydantic says how to install it."""
+    monkeypatch.setitem(sys.modules, "eazyrest.pydantic", None)
+
+    @json_object
+    class Located(PydanticBase):
+        """Model whose field needs Pydantic."""
+
+        id: int
+        point: Point
+
+    with pytest.raises(FieldConversionError, match=r"eazyrest\[pydantic\]"):
+        Located.json_schema()
+
+
 @with_config(ConfigDict(extra="ignore"))
 class IgnoringInner(TypedDict):
     """``TypedDict`` that drops the keys it does not declare."""
@@ -1716,6 +2010,88 @@ def test_pydantic_types_convert_by_the_models_table() -> None:
     }
 
 
+class SchemaTimestampBase(PydanticBase):
+    """Base whose datetimes are timestamps, with a schema that says so."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        datetime.datetime: Conversion(
+            decode=lambda value, cls: datetime.datetime.fromtimestamp(
+                value, UTC
+            ),
+            encode=_to_timestamp,
+            schema={"type": "number"},
+        )
+    }
+
+
+class Slot(BaseModel):
+    """Pydantic model that holds eazyrest's types."""
+
+    start: Datetime
+    price: DecimalType
+
+
+@json_object
+class TimestampSlot(SchemaTimestampBase):
+    """Model whose ``Slot`` datetimes are timestamps."""
+
+    class_url = "/timestamp-slots/"
+
+    id: int
+    slot: Slot
+
+
+@json_object
+class IsoSlot(PydanticBase):
+    """Model whose ``Slot`` datetimes are ISO 8601."""
+
+    class_url = "/iso-slots/"
+
+    id: int
+    slot: Slot
+
+
+def test_pydantic_types_schemas_follow_the_models_table() -> None:
+    """An ``eazyrest.pydantic`` type's schema is its conversion's, by mode.
+
+    Two models with different tables give one Pydantic class different
+    schemas, and outside a model it has the default table's.
+    """
+
+    def slot(model: Any, mode: str) -> dict[str, Any]:
+        properties = model.json_schema(mode)["properties"]["slot"]
+        return {
+            name: {
+                key: value for key, value in schema.items() if key != "title"
+            }
+            for name, schema in properties["properties"].items()
+        }
+
+    assert slot(TimestampSlot, "read")["start"] == {"type": "number"}
+    assert slot(IsoSlot, "read")["start"] == {
+        "type": "string",
+        "format": "date-time",
+    }
+    assert slot(IsoSlot, "read")["price"] == {
+        "anyOf": [{"type": "string", "format": "decimal"}, {"type": "number"}]
+    }
+    assert slot(IsoSlot, "write")["price"] == {
+        "type": "string",
+        "format": "decimal",
+    }
+    outside = TypeAdapter(Slot).json_schema(mode="serialization")
+    assert outside["properties"]["start"] == {
+        "title": "Start",
+        "type": "string",
+        "format": "date-time",
+    }
+    assert outside["properties"]["price"] == {
+        "title": "Price",
+        "type": "string",
+        "format": "decimal",
+    }
+
+
 Opened = NewType("Opened", datetime.datetime)
 
 
@@ -2104,58 +2480,100 @@ def test_conversion_errors_propagate_through_pydantic(
             setattr(event, field, when)
 
 
-_Millis = NewType("_Millis", datetime.datetime)
-_Plain = NewType("_Plain", datetime.datetime)
+class Gauge(BaseModel):
+    """Pydantic model with a computed field, which a round trip omits."""
+
+    level: int
+
+    @pydantic.computed_field  # type: ignore[prop-decorator]
+    @property
+    def doubled(self) -> int:
+        """Return twice the level."""
+        return self.level * 2
 
 
-def test_a_new_types_entry_applies_under_pydantic() -> None:
-    """A ``NewType``'s own entry converts it under Pydantic, as in a field.
+@json_object
+class Dial(PydanticBase):
+    """Model whose Pydantic fields write forms that differ from their reads."""
 
-    A ``NewType`` without one converts as its supertype, by the table's
-    entry for that.
+    class_url = "/dials/"
+
+    id: int
+    stamp: Annotated[
+        datetime.datetime,
+        PlainSerializer(lambda value: value.timestamp(), return_type=float),
+    ]
+    payload: pydantic.Json[list[int]]
+    gauge: Gauge
+
+
+def test_write_schemas_describe_what_pydantic_fields_write() -> None:
+    """A Pydantic field's write schema accepts the value that it writes.
+
+    A serializer's return type gives the written form. A ``Json`` field
+    writes its JSON text, and a computed field is not written.
     """
-
-    class MillisBase(PydanticBase):
-        conversions: ClassVar[Mapping[Any, Conversion]] = {
-            _Millis: Conversion(
-                decode=lambda value, cls: datetime.datetime.fromtimestamp(
-                    value / 1000, datetime.timezone.utc
-                ),
-                encode=lambda value, cls: value.timestamp() * 1000,
-            )
-        }
-
-    @json_object
-    class Mark(MillisBase):
-        class_url = "/marks/"
-
-        id: int
-        plain: _Millis
-        annotated: Annotated[_Millis, Field()]
-        listed: Annotated[list[_Millis], Field()]
-        other: Annotated[_Plain, Field()]
-
-    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
-    mark = Mark(
+    jsonschema = pytest.importorskip("jsonschema")
+    dial = Dial(
         json={
             "id": 1,
-            "plain": 0,
-            "annotated": 1577836800000.0,
-            "listed": [],
-            "other": "2020-01-01T00:00:00Z",
+            "stamp": "2020-01-01T00:00:00Z",
+            "payload": "[]",
+            "gauge": {"level": 0},
         }
     )
+    dial.stamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    dial.payload = [1, 2]
+    dial.gauge = Gauge(level=3)
+    written = Dial.json_schema("write")
+    read = Dial.json_schema("read")
 
-    assert mark.annotated == when
-    assert mark.other == when
-    mark.plain = _Millis(when)
-    mark.annotated = _Millis(when)
-    mark.listed = [_Millis(when)]
-    mark.other = _Plain(when)
-    assert mark.json["plain"] == 1577836800000.0
-    assert mark.json["annotated"] == 1577836800000.0
-    assert mark.json["listed"] == [1577836800000.0]
-    assert mark.json["other"] == "2020-01-01T00:00:00+00:00"
+    assert dial.json["stamp"] == 1577836800.0
+    assert dial.json["payload"] == "[1,2]"
+    assert dial.json["gauge"] == {"level": 3}
+    jsonschema.validate(dial.json, written)
+    assert written["properties"]["stamp"] == {"type": "number"}
+    assert read["properties"]["stamp"] == {
+        "type": "string",
+        "format": "date-time",
+    }
+    assert "doubled" not in str(written)
+
+
+class _DecimalHook:
+    """Type whose schema hook asks for a serialization schema itself."""
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: Any, handler: pydantic.GetCoreSchemaHandler
+    ) -> pydantic_core.CoreSchema:
+        """Validate and serialize as an integer."""
+        del source
+        return handler(int)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, schema: Any, handler: pydantic.GetJsonSchemaHandler
+    ) -> dict[str, Any]:
+        """Return the serialization schema of ``eazyrest.pydantic.Decimal``."""
+        del schema, handler
+        return TypeAdapter(DecimalType).json_schema(mode="serialization")
+
+
+def test_a_nested_schema_keeps_its_own_mode() -> None:
+    """A schema that a hook builds in a mode of its own keeps that mode."""
+
+    @json_object
+    class Hooked(PydanticBase):
+        class_url = "/hooked/"
+
+        id: int
+        value: _DecimalHook
+
+    expected = TypeAdapter(DecimalType).json_schema(mode="serialization")
+    assert expected == {"type": "string", "format": "decimal"}
+    for mode in ("read", "write"):
+        assert Hooked.json_schema(mode)["properties"]["value"] == expected
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -2197,3 +2615,60 @@ def test_dataclasses_must_reject_keys_that_pydantic_would_drop() -> None:
     with pytest.raises(FieldConversionError, match=r"^Holder\.strict: "):
         _ = holder.strict
     assert Holder(json={"id": 1, "strict": {"a": 3}}).strict == _Base(3)
+
+
+_Millis = NewType("_Millis", datetime.datetime)
+_Plain = NewType("_Plain", datetime.datetime)
+
+
+def test_a_new_types_entry_applies_under_pydantic() -> None:
+    """A ``NewType``'s own entry converts it under Pydantic, as in a field.
+
+    A ``NewType`` without one converts as its supertype, by the table's
+    entry for that.
+    """
+
+    class MillisBase(PydanticBase):
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            _Millis: Conversion(
+                decode=lambda value, cls: datetime.datetime.fromtimestamp(
+                    value / 1000, datetime.timezone.utc
+                ),
+                encode=lambda value, cls: value.timestamp() * 1000,
+                schema={"type": "number"},
+            )
+        }
+
+    @json_object
+    class Mark(MillisBase):
+        class_url = "/marks/"
+
+        id: int
+        plain: _Millis
+        annotated: Annotated[_Millis, Field()]
+        listed: Annotated[list[_Millis], Field()]
+        other: Annotated[_Plain, Field()]
+
+    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    mark = Mark(
+        json={
+            "id": 1,
+            "plain": 0,
+            "annotated": 1577836800000.0,
+            "listed": [],
+            "other": "2020-01-01T00:00:00Z",
+        }
+    )
+
+    assert mark.annotated == when
+    assert mark.other == when
+    mark.plain = _Millis(when)
+    mark.annotated = _Millis(when)
+    mark.listed = [_Millis(when)]
+    mark.other = _Plain(when)
+    assert mark.json["plain"] == 1577836800000.0
+    assert mark.json["annotated"] == 1577836800000.0
+    assert mark.json["listed"] == [1577836800000.0]
+    assert mark.json["other"] == "2020-01-01T00:00:00+00:00"
+    write = Mark.json_schema("write")["properties"]
+    assert write["annotated"] == {"type": "number"}

@@ -555,8 +555,9 @@ with `Datetime`, `Date`, `Time`, `Duration`, `UUID`, or `Decimal` from
 `eazyrest.pydantic`, as `Rendering.timeout` is above. These types convert by
 the [conversion table](#custom-field-conversion) of the model whose field holds
 them, so they follow its conversions, such as one that writes datetimes as
-timestamps. Outside a model, they convert by the default table. Pydantic's own
-types, such as `AwareDatetime`, keep Pydantic's rules.
+timestamps, and take their [JSON schemas](#json-schemas) from those conversions
+too. Outside a model, they convert by the default table. Pydantic's own types,
+such as `AwareDatetime`, keep Pydantic's rules.
 
 A server may send keys that a `TypedDict` or a Pydantic model does not declare,
 and saving a value that dropped them would delete them on the server. A `PATCH`
@@ -616,13 +617,16 @@ class Host(APIObject):
 ```
 
 `decode` reads a JSON value as the declared type, and `encode` writes a value
-of the declared type as JSON. Both receive the declared type, so one conversion
-can serve a family of types, as the default one for enums does. The conversion
-applies wherever its type appears, so `Host.allowed` converts each item. `null`
-reads as `None` and `None` writes as `null` without a conversion, and `encode`
-is called only for instances of the type that the entry is keyed by: any other
-value, such as a string assigned to `Host.address`, is written as it is.
-`decode` and `encode` report a value that they cannot convert by raising
+of the declared type as JSON. `schema`, which is optional, is the JSON schema
+of the JSON form, for [`json_schema()`](#json-schemas), or a function of the
+declared type and the mode, `"read"` or `"write"`, that returns it. Without
+one, the type's schema allows any value. Both receive the declared type, so one
+conversion can serve a family of types, as the default one for enums does. The
+conversion applies wherever its type appears, so `Host.allowed` converts each
+item. `null` reads as `None` and `None` writes as `null` without a conversion,
+and `encode` is called only for instances of the type that the entry is keyed
+by: any other value, such as a string assigned to `Host.address`, is written as
+it is. `decode` and `encode` report a value that they cannot convert by raising
 `TypeError` or `ValueError`, which reaches the caller as a
 `FieldConversionError` that names the field, with the error as its cause. Their
 messages should not quote the value, which may be a secret. Any other exception
@@ -643,7 +647,7 @@ fields, so to convert some integers differently, key the entry by a `NewType`,
 such as `Cents = NewType("Cents", int)`. Declare `conversions` in the class
 body, because a class merges and checks its table when it is defined, and
 raises `TypeError` for a bad entry. `DEFAULT_CONVERSIONS` holds the default
-table, so an entry can reuse a default's `decode` or `encode`.
+table, so an entry can reuse a default's `decode`, `encode`, or `schema`.
 
 Pydantic conversion can replace a custom one: a field typed as
 `Annotated[IPv4Address, pydantic.Field()]` reads and writes addresses as
@@ -667,6 +671,69 @@ class TimestampObject(JSONObject):
         ),
     }
 ```
+
+## JSON schemas
+
+`json_schema()` returns a JSON schema of the objects that a class reads, or
+with `mode="write"`, of what its writes send, so a client can check its models
+against a server's OpenAPI schema:
+
+```python
+schema = Todo.json_schema()
+assert schema["properties"]["userId"] == {
+    "anyOf": [{"type": "integer"}, {"type": "object"}]
+}
+```
+
+The read schema's properties are the JSON keys after `field_map`, without
+write-only fields. The write schema's are the keys after `write_map`, without
+read-only fields and with write-only ones. A type with a conversion has the
+conversion's schema, so a built-in one gives its JSON form, such as a string
+with `format` `date-time` for `datetime.datetime` and an enum the values of its
+members, and a `Literal` gives its values. `T | None` also allows `null`, and a
+collection is an array, whose items are unique for a set. A relation is the
+related model's primary key, or a URL for a `Hyperlinked()` relation, and a
+read also accepts the related object embedded as JSON. A field that Pydantic
+converts gives Pydantic's validation schema in a read schema, and its
+serialization schema in a write schema, so that a serializer's return type
+describes what it writes, except that a `pydantic.Json` field is the JSON text
+that it writes and a computed field, which a write does not send, is left out.
+Its definitions, like those of a conversion's schema, move into the schema's
+`$defs`, renamed with the references to them when two share a name. A type
+whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
+
+`eazyrest` has no required fields, so the schema lists none. Every field reads
+`null` as `None`, but the schema allows `null` only where the annotation does,
+so that it describes the declared types, as a server's schema does. It allows
+properties that the class does not declare, which a server may send.
+
+The schema is in the JSON Schema 2020-12 dialect, which its `$schema` names.
+OpenAPI 3.1 uses the same dialect, but OpenAPI 3.0, which Django REST
+Framework's schema generator writes, uses an older one, which has no
+`prefixItems`, the keyword of a fixed-length tuple's items, and no `$defs`.
+Compare such a schema property by property, rather than validating with it.
+
+### Finding fields that the server never sends
+
+A declared field that the server does not send raises `AttributeError` only
+when it is read, so a misspelled or removed field can go unnoticed. To find
+such fields, read many objects and report the read keys that none of them
+holds. A key missing from only some objects is a field that the server leaves
+out of some, not drift, so it is not reported:
+
+```python
+def fields_never_sent(model, objects):
+    """Return the read keys of model that no object's JSON holds."""
+    keys = set(model.json_schema()["properties"])
+    for obj in objects:
+        keys -= obj.json.keys()
+    return keys
+```
+
+For example, `fields_never_sent(Machine, Machine.filter())` in a deployment
+test compares every machine that the list endpoint returns. A list endpoint
+whose serializer leaves out fields that the detail endpoint sends reports those
+fields too, so compare objects loaded from the detail endpoint for such an API.
 
 ## Collections
 
