@@ -5,7 +5,10 @@
 eazyrest 1.0 is the first stable release. From 1.0 on, the names that the
 `eazyrest` package exports, the `eazyrest.pydantic` types, and the behavior
 that the guide documents follow semantic versioning. A breaking change waits
-for 2.0.
+for 2.0. A minor release may add attributes to `JSONObject`, such as methods
+and hooks, so a model with a field of a new attribute's name raises
+`ValueError` when it is decorated, until `field_map=` gives the field another
+attribute name.
 
 The tags `v1.0.0a1` through `v1.0.0a4` name commits from an earlier history
 that was later rewritten. They are not ancestors of 1.0.0.
@@ -56,8 +59,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   size when the response reports it.
 - A collection request answered with a redirect that is not followed, such as a
   `304 Not Modified`, raises `RedirectError` rather than reading its body as
-  the collection.
-- `filter(url=...)` is removed. Override `class_url`, or call the API directly.
+  the collection. This holds for a next-page request that names another origin
+  too, where `PaginationError` advised `allow_other_origins=True`, though that
+  option would follow nothing.
+- `filter(url=...)` is removed, and raises `TypeError`. Override `class_url`,
+  or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()`
   encodes them: renamed by `field_map`, converted to JSON, and with booleans
   sent as `true` and `false`.
@@ -66,11 +72,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   mapping, or a collection holding `None` or another collection. In 0.9.0, such
   a constraint was silently omitted, so `get()` could return an object that
   does not match it.
-- The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
-  `params` of the query methods are their own options. Pass a query parameter
-  with one of these names in `params=`. `create()` likewise reserves `api`,
-  `fields`, `files`, and `request_options`, and takes field values with those
-  names in `fields=`.
+- The keyword arguments `api`, `prefetch`, `defaults`, `request_options`,
+  `params`, and `url` of the query methods are their own options. Pass a query
+  parameter with one of these names in `params=`. `create()` likewise reserves
+  `api`, `fields`, `files`, and `request_options`, and takes field values with
+  those names in `fields=`.
 - `get_or_create()` returns an existing object as the server sent it. 0.9.0
   assigned every keyword argument to the object it found, which sent a `PATCH`.
   To change the object, assign its fields and call `save()`.
@@ -167,11 +173,20 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 - Lazy loading of objects and related objects, and explicit bulk prefetch
   through `prefetch=` and `bulk_get_by_pks()`.
+- `filter()` and `all()` read every page of a collection in Django REST
+  Framework's page shapes by default, through the default
+  `collection_items_from_response()`. A class that overrides
+  `collection_items()` keeps its own paging.
 - Pagination helpers `follow_next_links()`, for Django REST Framework's page
   shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the
   `collection_items_from_response()` hook. The collection hooks receive the
   query's client as `api`, so a hook reads later pages with the API that the
-  query used.
+  query used. The hooks that take `api` also take `**kwargs`, for context that
+  a later 1.x release may pass, and an override must accept it, which
+  `json_object()` checks when it decorates the class. Page navigation with
+  `get_page()`, which returns a `Page` whose `next_page()` and
+  `previous_page()` request the pages around it, read by the
+  `collection_page()` hook with `next_links_page()` or `link_headers_page()`.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
   `Time`, `Duration`, `UUID`, and `Decimal`. A type that would drop the keys it

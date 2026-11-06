@@ -59,6 +59,11 @@ class User(JSONObject):
     resource_url: str
 ```
 
+A minor release of eazyrest may add attributes to `JSONObject`, such as methods
+and hooks. A model with a field of the same name then raises `ValueError` when
+it is decorated, and `field_map=` keeps the field under another attribute name,
+as above.
+
 Use `write_map=` for a field that the API returns under one key and accepts
 under another, such as a related object returned nested under `user` and
 written as its primary key under `user_id`. Reads, queries, and the object's
@@ -686,9 +691,10 @@ admins = User.filter(role="admin")
 print(f"{admins.count} admins")
 ```
 
-`filter()` takes `count` from the iterable that `collection_items()` returns.
-`follow_next_links()` returns one with the first page's `count` member, and a
-hook of your own can return any iterable with an integer `count` attribute.
+`filter()` takes `count` from the iterable that the collection hooks return.
+`follow_next_links()`, which reads pages by default, returns one with the first
+page's `count` member, and a hook of your own can return any iterable with an
+integer `count` attribute.
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed
 field with the same JSON field name and conversion as `create()`. For example,
@@ -707,13 +713,14 @@ repeated ones, so join the values yourself, as in
 `Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
 `Todo.filter(ordering="due,-priority")`.
 
-The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
-`params` of the query methods are their own options, not query parameters. Pass
-a query parameter of any name, including one of these, in the `params=`
-mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode
-keyword arguments. `create()` likewise takes field values in `fields=`, for a
-key such as `api`, `fields`, or `request_options`, which `create()` reserves
-for itself:
+The keyword arguments `api`, `prefetch`, `defaults`, `request_options`,
+`params`, and `url` of the query methods are their own options, not query
+parameters. Each query method reserves the ones that it does not take, so
+`filter(url=...)` and `filter(defaults=...)` raise `TypeError`. Pass a query
+parameter of any name, including one of these, in the `params=` mapping, which
+`filter()`, `get()`, and `get_or_create()` encode as they encode keyword
+arguments. `create()` likewise takes field values in `fields=`, for a key such
+as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -806,7 +813,7 @@ class User(JSONObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api):
+    def bulk_get_by_pks(cls, pks, *, api, **kwargs):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
@@ -826,10 +833,10 @@ more than once in a prefetch batch, parent objects share the same related
 instance.
 
 A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
-its related model implements `bulk_get_by_urls(cls, urls, *, api)` instead,
-which receives the absolute URLs and returns the objects keyed by URL. A URL is
-checked as reading the field checks it, so a URL on an origin that the API does
-not allow is not loaded, and reading the field still raises
+its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`
+instead, which receives the absolute URLs and returns the objects keyed by URL.
+A URL is checked as reading the field checks it, so a URL on an origin that the
+API does not allow is not loaded, and reading the field still raises
 `FieldConversionError`. Two spellings of one URL, such as a relative and an
 absolute one, name the same object.
 
@@ -869,25 +876,55 @@ query passed as `api=` or the class's registered API. Send any request for
 later pages with it, so that a query with `api=` reads every page from that
 API.
 
+When the query has `request_options=`, `api` is a copy of the API that adds
+them to every request and shares the API's session. Use it to send requests,
+not to configure, close, or compare the API. Like a model write, the copy
+raises `RedirectError` for a redirect that it did not follow, so a hook that
+sends `allow_redirects=False` and reads the 3xx response itself works only in a
+query without options. The copy is made with `copy.copy()`, so a subclass of
+`API` that changes its own state while it sends requests, such as a refreshed
+token, must keep that state on the session, which the copy shares.
+
+Every hook may receive more keyword arguments in later 1.x releases, to tell it
+more about the query or the write: those that take `api`, which are
+`collection_items()`, `collection_items_from_response()`, `collection_page()`,
+`bulk_get_by_pks()`, and `bulk_get_by_urls()`, and also `object_json()`,
+`merge_response()`, and `API.raise_for_response()`. An override must therefore
+accept `**kwargs`, and pass them on when it calls another hook or `super()`, as
+the examples here do. A class that overrides a hook without `**kwargs`, also an
+undecorated base class, raises `TypeError` when it is defined, rather than when
+a query first calls the hook.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:
 
 ```python
 @classmethod
-def collection_items(cls, payload, *, api):
+def collection_items(cls, payload, *, api, **kwargs):
     return payload["results"]
 
 
 @classmethod
-def object_json(cls, payload):
+def object_json(cls, payload, **kwargs):
     return payload["result"]
 ```
 
+### Following pages
+
 When a collection endpoint splits its results into pages linked by a next-page
-URL, return `follow_next_links()` from `collection_items()`. It yields the
-items of each page and requests the next page only when iteration reaches it,
-so `filter()` and `all()` stay lazy:
+URL, as Django REST Framework's paginators do, `filter()` and `all()` read
+every page by default. The default `collection_items_from_response()` returns
+`follow_next_links(api, api.json(resp), url=resp.url)`, which yields the items
+of each page and requests the next page only when iteration reaches it, so
+`filter()` and `all()` stay lazy. A list payload is a single unpaginated page.
+With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
+objects ahead of iteration to fill each batch, so they can request later pages
+early.
+
+`follow_next_links()` reads a page's items from `results` and the next page's
+URL from `next`, as Django REST Framework does. For other names, override
+`collection_items_from_response()` and pass `results_key=` and `next_key=`:
 
 ```python
 from eazyrest import JSONObject, follow_next_links
@@ -895,37 +932,34 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload, *, api):
-        return follow_next_links(api, payload)
+    def collection_items_from_response(cls, resp, *, api, **kwargs):
+        return follow_next_links(
+            api,
+            api.json(resp),
+            url=resp.url,
+            results_key="items",
+            next_key="next_page",
+        )
 ```
 
-With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
-objects ahead of iteration to fill each batch, so they can request later pages
-early.
+A page whose next link is null, empty, or absent is the last page. A next link
+to a page that was already read raises `PaginationError`, rather than reading
+the same pages forever. A page that is not JSON, or whose results are not a
+list, raises `ResponseShapeError`, as does a payload that is neither a list nor
+a page.
 
-By default, `follow_next_links()` reads a page's items from `results` and the
-next page's URL from `next`, as Django REST Framework does. Pass `results_key=`
-and `next_key=` for other names. A list payload is a single unpaginated page. A
-page whose next link is null, empty, or absent is the last page. A next link to
-a page that was already read raises `PaginationError`, rather than reading the
-same pages forever. A page that is not JSON, or whose results are not a list,
-raises `ResponseShapeError`.
+A class that overrides `collection_items()` replaces this default: the default
+`collection_items_from_response()` then passes the decoded payload to it, and
+pages only if it does. The default `collection_items()` accepts only a list, so
+code that reads a collection itself, such as a `bulk_get_by_pks()` hook, should
+call `filter()` rather than `collection_items()`.
 
 A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
 sends, is used as is. A path such as `/v1/items/?page=2` is resolved against
-the server's origin, and a query such as `?page=2` against the page's path.
-`collection_items()` receives only the payload, so links in the first page are
-resolved against `base_url` unless you pass `url=`. For an API that sends
-query-only links, override `collection_items_from_response()`, which receives
-the response, and pass the URL of the first page:
-
-```python
-class PagedObject(JSONObject):
-    @classmethod
-    def collection_items_from_response(cls, resp, *, api):
-        return follow_next_links(api, api.json(resp), url=resp.url)
-```
+the server's origin, and a query such as `?page=2` against the page's path. A
+call of `follow_next_links()` without `url=` resolves links in the first page
+against `base_url`, so pass the URL of the first page, as the default does.
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose
 scheme, host, or port differs from `base_url`, because the session would send
@@ -938,7 +972,10 @@ The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.
 With `allow_other_origins=True`, a redirect is checked as for every other
 request: it must lead to the origin of the page request or to one of the API's
-`redirect_origins`.
+`redirect_origins`. A query's client that does not follow redirects, because of
+`request_options={"allow_redirects": False}`, skips the check, since nothing is
+followed, and raises `RedirectError` for a redirect from a next-page request,
+whichever origin it names.
 
 Some APIs, such as GitHub's, return each page as a JSON list and name the next
 page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from
@@ -951,9 +988,60 @@ from eazyrest import JSONObject, follow_link_headers
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp, *, api):
+    def collection_items_from_response(cls, resp, *, api, **kwargs):
         return follow_link_headers(api, resp)
 ```
+
+### Pages
+
+`filter()` iterates every page of a collection. To show one page at a time
+instead, as a paginated view does, call `get_page()`, which takes the same
+arguments as `filter()`, and `url=`, and returns a `Page` of objects. Its
+`count` is the size of the whole collection, if the page reports it, and
+`next_url` and `previous_url` are the URLs of the pages around it.
+`next_page()` and `previous_page()` request those pages with the same API,
+request options, and prefetch, and return `None` at either end:
+
+```python
+page = Todo.get_page(completed=False)
+for todo in page:
+    print(todo.title)
+print(page.count, page.next_url)
+older = page.next_page()
+```
+
+`len(page)` is the number of items on the page, so a page without items is
+false, even when its `next_url` names another page. Loop over pages with
+`while page is not None:`, not `while page:`, which would stop at such a page.
+
+`get_page(url=...)` fetches a page by a URL saved from `next_url` or
+`previous_url`. The URL must have the origin of the API's base URL, and it
+cannot be combined with query parameters, because a page's URL holds its query.
+
+The `collection_page()` hook reads each page. By default it returns
+`next_links_page(api, resp)`, which reads Django REST Framework's `results`,
+`next`, `previous`, and `count` members. Pass other member names to
+`next_links_page()`, or return `link_headers_page(api, resp)` for an API that
+links its pages in `Link` headers with `next` and `prev` relations:
+
+```python
+from eazyrest import JSONObject, link_headers_page
+
+
+class GitHubObject(JSONObject):
+    @classmethod
+    def collection_page(cls, resp, *, api, **kwargs):
+        return link_headers_page(api, resp)
+```
+
+Links are checked as `follow_next_links()` checks them. A link to another
+origin raises `PaginationError` unless the helper was given
+`allow_other_origins=True`. A link back to a page already read in the same
+direction raises `PaginationError`, and reading more than `max_pages` pages in
+one direction raises `LimitExceeded`, while going forward and back again is
+allowed. A page with more items than `max_items` raises `LimitExceeded`. A page
+that a hook builds itself with `Page(...)` holds its items, but cannot read
+other pages.
 
 ## Write modes
 
@@ -1095,7 +1183,7 @@ from eazyrest import JSONObject
 
 
 class StatusObject(JSONObject):
-    def merge_response(self, resp, current, sent):
+    def merge_response(self, resp, current, sent, **kwargs):
         # The body is {"status": "ok"}, not the object.
         return {**current, **sent}
 ```
@@ -1158,6 +1246,21 @@ list that origin in `redirect_origins`:
 api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
+
+These checks guard the redirects that requests follows. A raw request sent with
+`allow_redirects=False` follows none, so it returns the 3xx response as it is,
+and the caller decides what to do with it. Requests does prepare
+`Response.next` even then, and raises its own `ValueError` or `UnicodeError`
+when it cannot. The request raises `RedirectError` instead, whether or not it
+follows redirects. A `Location` that requests prepares without error is
+returned. Requests cannot prepare a `Location` with a byte that is not UTF-8,
+or a host such as `http://[bad/`. It cannot prepare one with a port that is out
+of range either, when it must read the port: when the request carries an
+`Authorization` header and the redirect keeps the host, or when `NO_PROXY` is
+set and the redirect names a host that is not an IPv4 address. Without these,
+the same port is returned. A model write, and a client that a query's
+`request_options=` creates, expect a final response, so they raise
+`RedirectError` for any unfollowed 3xx.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
@@ -1315,8 +1418,10 @@ exception type that it replaced, so code written for that type keeps working:
   object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
-- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect or an
-  unfollowed final 3xx on a model write. Its `response` is the redirect.
+- `RedirectError`, a `requests.HTTPError`, for an unsafe redirect, a redirect
+  that requests cannot prepare a request for when it is not followed, or an
+  unfollowed final 3xx on a model write or a request-scoped client. Its
+  `response` is the redirect.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that

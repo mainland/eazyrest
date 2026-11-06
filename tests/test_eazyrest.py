@@ -7,6 +7,7 @@ import decimal
 import email
 import email.message
 import enum
+import inspect
 import sys
 import types
 import typing
@@ -34,6 +35,7 @@ from eazyrest import (
     MultipleObjectsReturned,
     PrefetchNotSupported,
     RedirectError,
+    ResponseShapeError,
     WriteMode,
     json_object,
 )
@@ -66,6 +68,7 @@ class User(ModelBase):
         pks: set[Any],
         *,
         api: API | None = None,
+        **kwargs: Any,
     ) -> dict[Any, User]:
         """Load users in one request for explicit prefetch support.
 
@@ -172,7 +175,7 @@ class SearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Extract wrapped collection items for this test model.
 
         Args:
@@ -185,7 +188,7 @@ class SearchResult(ModelBase):
         return payload["results"]
 
     @classmethod
-    def object_json(cls, payload: Any) -> Any:
+    def object_json(cls, payload: Any, **kwargs: Any) -> Any:
         """Extract a wrapped single object for this test model.
 
         Args:
@@ -207,7 +210,7 @@ class PaginatedSearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Follow ``next`` links and yield items across all pages.
 
         Args:
@@ -587,17 +590,44 @@ def test_filter_returns_iterable_and_preserves_base_path_prefix(
     assert [todo.id for todo in todos] == [1, 2]
 
 
-def test_default_collection_items_rejects_non_list_payload(
-    requests_mock: Any,
-) -> None:
-    """Default collection extraction should reject envelope payloads."""
+def test_default_filter_reads_every_page(requests_mock: Any) -> None:
+    """By default, ``filter()`` follows next links from the collection URL.
+
+    A query-only link resolves against the collection's URL, not the base URL,
+    so the default passes the response's URL to ``follow_next_links()``.
+    """
     requests_mock.get(
         "https://example.com/v1/todos/",
-        json={"results": [{"id": 1, "userId": 2, "title": "a"}]},
+        complete_qs=True,
+        json={
+            "count": 2,
+            "next": "?page=2",
+            "results": [{"id": 1, "userId": 2, "title": "a"}],
+        },
+    )
+    requests_mock.get(
+        "https://example.com/v1/todos/?page=2",
+        json={"next": None, "results": [{"id": 2, "userId": 2, "title": "b"}]},
     )
 
-    with pytest.raises(TypeError):
+    todos = Todo.filter()
+
+    assert todos.count == 2
+    assert [todo.id for todo in todos] == [1, 2]
+
+
+def test_default_filter_rejects_other_payloads(requests_mock: Any) -> None:
+    """A payload that is neither a list nor a page raises."""
+    requests_mock.get("https://example.com/v1/todos/", json={"items": []})
+
+    with pytest.raises(ResponseShapeError):
         list(Todo.filter())
+
+
+def test_default_collection_items_does_not_page() -> None:
+    """The default ``collection_items()`` itself accepts only a list."""
+    with pytest.raises(ResponseShapeError, match="expected a list"):
+        Todo.collection_items({"results": []}, api=test_api)
 
 
 def test_collection_and_object_hooks_support_envelope_responses(
@@ -1343,7 +1373,7 @@ class UUIDUser(ModelBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, UUIDUser]:
         """Load users and key the result by their decoded primary keys.
 
@@ -4165,6 +4195,91 @@ def test_creation_uses_the_api_passed_to_it(requests_mock: Any) -> None:
     }
 
 
+def test_default_hooks_accept_and_pass_on_keyword_arguments(
+    requests_mock: Any,
+) -> None:
+    """Context that a later release passes reaches overrides through ``super``.
+
+    The default hooks accept keyword arguments they do not know, and
+    ``collection_items_from_response()`` passes them to
+    ``collection_items()``.
+    """
+    seen: list[dict[str, Any]] = []
+
+    @json_object
+    class Probe(ModelBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: API, **kwargs: Any
+        ) -> Any:
+            seen.append(kwargs)
+            return super().collection_items(payload, api=api, **kwargs)
+
+    requests_mock.get("https://example.com/v1/probes/", json=[{"id": 1}])
+    resp = test_api.get(Probe.class_url)
+
+    items = Probe.collection_items_from_response(resp, api=test_api, hint=1)
+    page = Probe.collection_page(resp, api=test_api, hint=1)
+
+    assert list(items) == [{"id": 1}]
+    assert seen == [{"hint": 1}]
+    assert page.items == [{"id": 1}]
+    with pytest.raises(PrefetchNotSupported):
+        Probe.bulk_get_by_pks({1}, api=test_api, hint=1)
+    with pytest.raises(PrefetchNotSupported):
+        Probe.bulk_get_by_urls({"https://example.com/"}, api=test_api, hint=1)
+
+
+@pytest.mark.parametrize(
+    "hook",
+    [
+        "bulk_get_by_pks",
+        "bulk_get_by_urls",
+        "collection_page",
+        "collection_items_from_response",
+        "collection_items",
+    ],
+)
+def test_decorating_refuses_hook_overrides_without_kwargs(hook: str) -> None:
+    """An override without ``**kwargs`` raises when its class is decorated.
+
+    The override is on an undecorated base class, as a shared hook is, so the
+    decorated subclass inherits it. Without the check, the override would fail
+    only when a query first called it.
+    """
+
+    def override(cls: type[JSONObject], value: Any, *, api: API) -> None:
+        del cls, value, api
+
+    class Base(ModelBase):
+        pass
+
+    setattr(Base, hook, classmethod(override))
+
+    with pytest.raises(
+        TypeError, match=rf"Base\.{hook}\(\) must accept api= and \*\*kwargs"
+    ):
+
+        @json_object
+        class Old(Base):
+            class_url = "/old/"
+
+            id: int
+
+
+def test_hook_overrides_whose_signature_is_hidden_are_accepted() -> None:
+    """A hook whose signature cannot be read, such as a builtin, is valid."""
+
+    class Wrapped(JSONObject):
+        object_json = cast(Any, staticmethod(dict))
+
+    assert Wrapped.object_json({"a": 1}) == {"a": 1}
+
+
 def test_prefetch_passes_the_query_api_to_bulk_lookup(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4173,7 +4288,12 @@ def test_prefetch_passes_the_query_api_to_bulk_lookup(
     seen: list[API | None] = []
 
     def bulk_get_by_pks(
-        cls: type[User], pks: set[Any], *, api: API | None = None
+        cls: type[User],
+        /,
+        pks: set[Any],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[Any, User]:
         seen.append(api)
         return {pk: cls(json={"id": pk, "name": "Ada"}, api=api) for pk in pks}
@@ -4526,6 +4646,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
             resp: requests.Response,
             current: Mapping[str, Any],
             sent: Mapping[str, Any],
+            **kwargs: Any,
         ) -> dict[str, Any]:
             """Ignore the status body.
 
@@ -4533,6 +4654,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
                 resp: Response to the write, whose body is a status.
                 current: JSON of the object before the write.
                 sent: Fields that the write sent.
+                **kwargs: Other arguments, which are ignored.
 
             Returns:
                 ``current`` updated with ``sent``.
@@ -4793,13 +4915,76 @@ def test_params_sends_reserved_names(requests_mock: Any) -> None:
     """``params=`` sends a parameter that a query method reserves."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(params={"api": "v2", "prefetch": "1"}, title="a"))
+    list(
+        Todo.filter(
+            params={"api": "v2", "prefetch": "1", "defaults": "d", "url": "u"},
+            title="a",
+        )
+    )
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
         "api": ["v2"],
         "prefetch": ["1"],
+        "defaults": ["d"],
+        "url": ["u"],
         "title": ["a"],
     }
+
+
+_QUERY_OPTIONS = (
+    "api",
+    "prefetch",
+    "defaults",
+    "request_options",
+    "params",
+    "url",
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "name"),
+    [
+        (method, name)
+        for method in ("filter", "get", "get_or_create", "get_page")
+        for name in _QUERY_OPTIONS
+        if name not in inspect.signature(getattr(Todo, method)).parameters
+    ],
+)
+def test_query_methods_reserve_the_options_they_do_not_take(
+    requests_mock: Any, method: str, name: str
+) -> None:
+    """Every query method refuses each option that it does not take.
+
+    In 0.9.0, ``filter(url=...)`` queried another URL. Sending an option as
+    a query parameter would also change what a call sends once a later
+    release gives the option to that method.
+
+    Args:
+        method: Name of the query method.
+        name: Option that the method does not take.
+    """
+    with pytest.raises(TypeError, match=rf"^{name}= is reserved\. .*params="):
+        getattr(Todo, method)(**{name: "wire"})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("name", ["object_json", "merge_response"])
+def test_hooks_without_kwargs_are_refused(name: str) -> None:
+    """An override of any hook must accept the keywords of later releases.
+
+    The check runs when the class is defined, also for a mixin that is never
+    decorated.
+
+    Args:
+        name: Hook to override.
+    """
+
+    def hook(self: Any, *args: Any) -> Any:
+        return {}
+
+    with pytest.raises(TypeError, match=rf"{name}\(\) must accept \*\*kwargs"):
+        type("Mixin", (JSONObject,), {name: hook})
 
 
 def test_params_are_encoded_as_keyword_arguments(requests_mock: Any) -> None:
@@ -5677,7 +5862,12 @@ def test_hyperlinked_prefetch_loads_each_url_once(
     calls: list[tuple[set[str], API | None]] = []
 
     def bulk_get_by_urls(
-        cls: type[User], urls: set[str], *, api: API | None = None
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[str, User]:
         calls.append((urls, api))
         # Return each URL in another spelling, to check matching.
@@ -5903,7 +6093,12 @@ def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
     """Optional and lazy hyperlinked fields read prefetched objects too."""
 
     def bulk_get_by_urls(
-        cls: type[User], urls: set[str], *, api: API | None = None
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[str, User]:
         return {url: _user_from_url(url, api) for url in urls}
 

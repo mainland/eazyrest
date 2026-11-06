@@ -12,8 +12,10 @@ top of a single large API response. DRF's built-in pagination classes are
 DRF apps, the best setup is:
 
 - Paginate collection endpoints in DRF.
-- Let each `eazyrest` request consume one page at a time.
-- Iterate through pages lazily in model code if you need a full stream.
+- Let `filter()` and `all()` read the pages. Each request fetches one page.
+  `filter()` requests the first page when it is called, and each later page
+  only when iteration reaches it.
+- Call `get_page()` if you need to show one page at a time.
 
 In practice, all three built-in DRF pagination classes can work with `eazyrest`
 because they expose `next`, `previous`, and `results` in the response body.
@@ -23,7 +25,7 @@ because it gives stable traversal without large offsets.
 offsets. `PageNumberPagination` is useful for smaller or more user-facing
 collections where page numbers are part of the API contract.
 
-## Unwrap DRF collections with `collection_items()`
+## Read paginated DRF collections
 
 Many DRF list endpoints return an envelope such as:
 
@@ -38,33 +40,19 @@ Many DRF list endpoints return an envelope such as:
 ```
 
 If DRF pagination is not configured, list endpoints usually return a plain JSON
-list, which `JSONObject.collection_items()` already handles. If pagination is
-configured, each response holds one page, so return `follow_next_links()` from
-`collection_items()` to read every page:
+list. If pagination is configured, each response holds one page. `filter()` and
+`all()` read both by default: their default `collection_items_from_response()`
+hook returns `follow_next_links()`, which handles unpaginated list responses as
+well as paginated responses from `PageNumberPagination`,
+`LimitOffsetPagination`, and `CursorPagination`. It requests the next page only
+when iteration reaches it. With `prefetch=`, iteration reads ahead by up to
+`prefetch_batch_size` objects, so a batch can span pages.
 
-```python
-from eazyrest import JSONObject, follow_next_links, json_object
-
-
-class DRFModel(JSONObject):
-    @classmethod
-    def collection_items(cls, payload, *, api):
-        return follow_next_links(api, payload)
-
-
-@json_object
-class User(DRFModel):
-    class_url = "/users/"
-
-    id: int
-    name: str
-```
-
-`follow_next_links()` handles unpaginated list responses as well as paginated
-responses from `PageNumberPagination`, `LimitOffsetPagination`, and
-`CursorPagination`. It requests the next page only when iteration reaches it.
-With `prefetch=`, iteration reads ahead by up to `prefetch_batch_size` objects,
-so a batch can span pages.
+To show one page at a time, call `get_page()`, whose default
+`collection_page()` hook reads the same page shapes. The page's `count`,
+`next_url`, and `previous_url` come from DRF's `count`, `next`, and `previous`
+members, and `next_page()` and `previous_page()` follow them.
+`CursorPagination` reports no `count`.
 
 With `PageNumberPagination`, a response usually looks like:
 
@@ -110,18 +98,16 @@ how DRF encodes that URL.
 
 ## Add a base model for DRF conventions
 
-It usually helps to centralize DRF-specific behavior on one base class. Start
-with pagination and response-shape handling there, then add serializer field
-conversions or API-specific helpers as needed:
+It usually helps to centralize DRF-specific behavior, such as serializer field
+conversions, hooks, or API-specific helpers, on one base class, and to register
+the API there:
 
 ```python
-from eazyrest import API, JSONObject, follow_next_links
+from eazyrest import API, JSONObject
 
 
 class DRFObject(JSONObject):
-    @classmethod
-    def collection_items(cls, payload, *, api):
-        return follow_next_links(api, payload)
+    pass
 
 
 api = API("https://api.example.com/")
@@ -348,7 +334,7 @@ For query parameters that are not valid Python identifiers, pass a dictionary
 with `**`:
 
 ```python
-users = User.filter(**{"created__gte": "2026-01-01T00:00:00Z"})
+users = User.filter(**{"created-after": "2026-01-01T00:00:00Z"})
 ```
 
 On the DRF side, keep sensitive filtering and ordering fields explicit. For
@@ -539,9 +525,9 @@ class DRFNotFound(DRFAPIError, NotFound):
 
 
 class DRFAPI(API):
-    def raise_for_response(self, resp):
+    def raise_for_response(self, resp, **kwargs):
         try:
-            super().raise_for_response(resp)
+            super().raise_for_response(resp, **kwargs)
         except NotFound as err:
             raise DRFNotFound(str(err), response=resp, data=err.data) from None
         except APIError as err:
@@ -568,7 +554,7 @@ class User(DRFObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api):
+    def bulk_get_by_pks(cls, pks, *, api, **kwargs):
         users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
@@ -636,7 +622,7 @@ Then your client model can implement:
 
 ```python
 @classmethod
-def bulk_get_by_pks(cls, pks, *, api):
+def bulk_get_by_pks(cls, pks, *, api, **kwargs):
     resp = api.get("/users/bulk/", params={"id": sorted(pks)})
     return {
         user.pk: user
@@ -657,22 +643,30 @@ can take the keys from the URLs and reuse the bulk lookup by key:
 
 ```python
 @classmethod
-def bulk_get_by_urls(cls, urls, *, api):
+def bulk_get_by_urls(cls, urls, *, api, **kwargs):
     prefix = api.resolve_url(cls.class_url)
     pks = {
         url.removeprefix(prefix).strip("/")
         for url in urls
         if url.startswith(prefix)
     }
-    objects = cls.bulk_get_by_pks(pks, api=api)
+    if not pks:
+        return {}
+    objects = cls.bulk_get_by_pks(pks, api=api, **kwargs)
     return {obj.absolute_url: obj for obj in objects.values()}
 ```
 
 Return the objects keyed by URL. eazyrest matches the keys after resolving them
 against the API's base URL and normalizing their case and default ports. A URL
-outside the model's `class_url`, such as one of a serializer with another
-`lookup_field`, is not loaded here, and the object loads lazily when it is
-read.
+outside the model's `class_url`, such as `/members/7/` for a model whose
+`class_url` is `/users/`, is not loaded here, and the object loads lazily when
+it is read. The recipe returns `{}` for a batch in which no URL is under
+`class_url`. It compares the prefix as text, so a URL whose host differs in
+case from the base URL's is not loaded here either.
+
+A serializer with another `lookup_field` gives URLs under `class_url`, such as
+`/users/ada/`, and the recipe would take `ada` for a primary key. For such a
+serializer, look the objects up in bulk by that field instead.
 
 ## Preserve laziness with batch prefetch
 
@@ -710,10 +704,10 @@ With `PageNumberPagination` and `LimitOffsetPagination`, the iterator that
 `filter()` returns has the collection's size as `count`, from the first page.
 `CursorPagination` does not report a size, so `count` is `None`.
 
-Follow `next` links in `collection_items()`, as `follow_next_links()` does,
-rather than in related-field conversion. Related fields should describe one
-object's payload. Page traversal should describe how to walk a collection
-endpoint.
+Follow `next` links in the collection hooks, as the default does with
+`follow_next_links()`, rather than in related-field conversion. Related fields
+should describe one object's payload. Page traversal should describe how to
+walk a collection endpoint.
 
 ## Recommended DRF server-side setup
 

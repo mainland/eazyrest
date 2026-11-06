@@ -44,7 +44,7 @@ class MockedUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, MockedUser]:
         """Return loaded users for the requested keys.
 
@@ -804,7 +804,7 @@ class PagedMockedBase(MockedBase):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the response's URL.
 
@@ -888,6 +888,27 @@ def test_request_hooks_run_for_model_writes(requests_mock: Any) -> None:
     assert requests_mock.call_count == 2
 
 
+@pytest.mark.parametrize("location", ["/n\x85x", "http://[bad/", "//[::1"])
+def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
+    requests_mock: Any, location: str
+) -> None:
+    """A ``Location`` that cannot be parsed raises ``RedirectError``.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    requests_mock.post(
+        "https://mocked.example/docs/",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        MockedDoc.create(
+            title="new", request_options={"allow_redirects": False}
+        )
+
+
 def test_unfollowed_redirects_allow_a_completed_write(
     requests_mock: Any,
 ) -> None:
@@ -913,7 +934,7 @@ class CountingUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, CountingUser]:
         """Return loaded users for every key except 99.
 
@@ -942,7 +963,7 @@ class Profile(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, Profile]:
         """Return loaded profiles for the requested keys.
 

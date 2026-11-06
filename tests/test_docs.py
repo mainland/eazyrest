@@ -6,7 +6,7 @@ import datetime
 import re
 from ipaddress import IPv4Address
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 
@@ -14,6 +14,7 @@ from eazyrest import (
     API,
     APIError,
     DoesNotExist,
+    Hyperlinked,
     JSONObject,
     json_object,
 )
@@ -165,6 +166,59 @@ def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
     assert lookup.last_request.qs == {"id": ["2"]}
     assert users[2].name == "Ada"
     assert users[2].api is override
+
+
+class _RecipeBase(JSONObject):
+    """Base model for the DRF notes' bulk lookup recipes."""
+
+
+_RecipeBase.register_api(API("https://api.example.com/"))
+_BulkByPks = run_guide_example(
+    "cls.filter(id=sorted(pks)",
+    doc=DRF,
+    json_object=json_object,
+    DRFObject=_RecipeBase,
+)["User"]
+
+
+@json_object
+class _LinkedUser(_BulkByPks):  # type: ignore[misc,valid-type]
+    """User with the notes' hook for hyperlinked relations."""
+
+    bulk_get_by_urls = run_guide_example(
+        "def bulk_get_by_urls(cls, urls, *, api, **kwargs):", doc=DRF
+    )["bulk_get_by_urls"]
+
+
+@json_object
+class _OwnedTodo(_RecipeBase):
+    """Todo whose owner is a hyperlink."""
+
+    class_url = "/todos/"
+
+    id: int
+    owner: Annotated[_LinkedUser, Hyperlinked()]
+
+
+def test_drf_hyperlink_recipe_skips_urls_outside_class_url(
+    requests_mock: Any,
+) -> None:
+    """URLs outside class_url prefetch nothing and load lazily."""
+    requests_mock.get(
+        "https://api.example.com/todos/",
+        json=[{"id": 1, "owner": "https://api.example.com/members/7/"}],
+    )
+    requests_mock.get(
+        "https://api.example.com/members/7/", json={"id": 7, "name": "Ada"}
+    )
+
+    todos = list(_OwnedTodo.filter(prefetch="owner"))
+
+    assert todos[0].owner.name == "Ada"
+    assert [r.path for r in requests_mock.request_history] == [
+        "/todos/",
+        "/members/7/",
+    ]
 
 
 README = DOCS.parent / "README.md"

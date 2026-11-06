@@ -69,6 +69,14 @@ from .api import (
     _merge_request_options,
     _origin,
 )
+from .pagination import (
+    Page,
+    _check_page_size,
+    _PageSource,
+    _request_page,
+    follow_next_links,
+    next_links_page,
+)
 from .write_mode import WriteMode, validate_write_mode
 
 if sys.version_info >= (3, 11):
@@ -205,6 +213,88 @@ class _Query:
         ):
             return base._scoped(self.options)
         return base
+
+
+class _ModelPageSource(_PageSource[Any]):
+    """Reads pages of a model's collection as pages of objects."""
+
+    def __init__(
+        self,
+        model: type[JSONObject],
+        query: _Query,
+        prefetch: Sequence[str],
+    ) -> None:
+        """Read the pages of ``model``'s collection for one query.
+
+        Args:
+            model: Class whose collection the pages hold.
+            query: The query, whose client requests the pages.
+            prefetch: Related fields to prefetch on each page.
+        """
+        self.api = query.client
+        self._model = model
+        self._query = query
+        self._prefetch = prefetch
+
+    def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
+        """Request and read the page at ``url``.
+
+        Args:
+            url: Absolute URL of the page.
+            allow_other_origins: Whether the page may have another origin.
+
+        Returns:
+            The page of objects.
+        """
+        return self.page(_request_page(self.api, url, allow_other_origins))
+
+    def page(self, resp: requests.Response) -> Page[Any]:
+        """Read a page of objects from its response.
+
+        Args:
+            resp: Response for the page.
+
+        Returns:
+            The page of objects, which can read the pages it links to when
+            the model's ``collection_page()`` returned a page that can.
+
+        Raises:
+            TypeError: If ``collection_page()`` does not return a ``Page``.
+        """
+        model = self._model
+        token = _query_api.set((model, self.api))
+        try:
+            raw = model.collection_page(resp, api=self.api)
+        finally:
+            _query_api.reset(token)
+        if not isinstance(raw, Page):
+            raise TypeError(
+                f"{model.__name__}.collection_page() must return a Page, got "
+                f"{type(raw).__name__}"
+            )
+        _check_page_size(self.api, raw.items)
+        if self._prefetch:
+            objects: list[JSONObject] = list(
+                model._prefetched_filter(
+                    raw.items, self._prefetch, self._query
+                )
+            )
+        else:
+            objects = [
+                model(json=_OwnedJSON(item), api=self._query.api)
+                for item in raw.items
+            ]
+        page: Page[Any] = Page(
+            objects,
+            url=raw.url,
+            count=raw.count,
+            next_url=raw.next_url,
+            previous_url=raw.previous_url,
+        )
+        if raw._source is not None:
+            page._source = self
+            page._allow_other_origins = raw._allow_other_origins
+        return page
 
 
 class APIDescriptor:
@@ -925,11 +1015,20 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+# The options of the query methods. Each method reserves those it does not
+# take, so that a later release can give any of them to any method without
+# changing what a call that works now sends. 0.9.0's filter() took url.
+_QUERY_OPTIONS = frozenset(
+    {"api", "prefetch", "defaults", "request_options", "params", "url"}
+)
+
+
 def _query_params(
     params: Mapping[str, Any] | None,
     kwargs: Mapping[str, Any],
     kind: str = "Query parameter",
     argument: str = "params",
+    reserved: AbstractSet[str] = _QUERY_OPTIONS,
 ) -> dict[str, Any]:
     """Return the parameters given as a mapping and as keywords.
 
@@ -939,13 +1038,24 @@ def _query_params(
         kwargs: Parameters passed as keyword arguments.
         kind: What a parameter is, for the error message.
         argument: Name of the mapping argument, for the error message.
+        reserved: Names that a keyword argument may not have, although the
+            method does not use them. The query methods reserve all of their
+            options, those that a method takes being keyword arguments of its
+            own.
 
     Returns:
         Every parameter, keyed by name.
 
     Raises:
-        TypeError: If a name is given both ways.
+        TypeError: If a name is given both ways, or a keyword argument has a
+            reserved name.
     """
+    clash = sorted(reserved & set(kwargs))
+    if clash:
+        raise TypeError(
+            f"{clash[0]}= is reserved. Pass a {kind.lower()} named "
+            f"{clash[0]} in {argument}={{{clash[0]!r}: ...}}"
+        )
     if params is None:
         return dict(kwargs)
     both = sorted(set(params) & set(kwargs))
@@ -1519,6 +1629,71 @@ def _check_options(
         )
 
 
+_API_HOOKS = (
+    "bulk_get_by_pks",
+    "bulk_get_by_urls",
+    "collection_page",
+    "collection_items_from_response",
+    "collection_items",
+)
+"""The hooks that take ``api``, and the keywords that later releases add."""
+
+_KWARGS_HOOKS = ("merge_response", "object_json")
+"""The other hooks, which take the keywords that later releases add."""
+
+
+def _check_hook_signatures(cls: type[JSONObject]) -> None:
+    """Check that the hooks a class overrides accept what eazyrest passes.
+
+    eazyrest passes the hooks that take ``api`` the client as ``api=``, and
+    later 1.x releases may pass more keyword arguments to every hook, so an
+    override must have a ``**kwargs`` parameter. Checking when the class is
+    defined, also for a mixin that is never decorated, reports an override
+    without one at import, rather than when a query first calls it.
+
+    Args:
+        cls: Class being defined.
+
+    Raises:
+        TypeError: If the class overrides one of these hooks with a method
+            that takes no ``**kwargs``.
+    """
+    for name in (*_API_HOOKS, *_KWARGS_HOOKS):
+        if not cls._overrides_hook(name):
+            continue
+        owner = next(base for base in cls.__mro__ if name in vars(base))
+        if not _takes_kwargs(vars(owner)[name]):
+            takes = "api= and **kwargs" if name in _API_HOOKS else "**kwargs"
+            raise TypeError(
+                f"{owner.__name__}.{name}() must accept {takes}, which "
+                "eazyrest passes to it, and pass them on when it calls "
+                "another hook"
+            )
+
+
+def _takes_kwargs(method: Any) -> bool:
+    """Return whether a method has a ``**kwargs`` parameter.
+
+    Args:
+        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
+            object.
+
+    Returns:
+        Whether it takes any keyword argument. A callable whose signature
+        cannot be read, such as a builtin, is taken to.
+    """
+    if isinstance(method, (classmethod, staticmethod)):
+        method = method.__func__
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 @overload
 def json_object(
     cls: type[T],
@@ -1611,6 +1786,8 @@ def json_object(
             on the class, if ``exclude`` names no annotated attribute of the
             class, or if two fields, declared or inherited, map to the same
             JSON key.
+        TypeError: If the class overrides a hook that takes ``api``, such as
+            ``collection_items()``, with a method that takes no ``**kwargs``.
     """
     if field_map is None:
         field_map = {}
@@ -2177,6 +2354,7 @@ class JSONObject:
                 ancestors of the class are not subclasses of one another.
         """
         super().__init_subclass__(**kwargs)
+        _check_hook_signatures(cls)
 
         for base in cls.__mro__:
             own = vars(base).get("conversions")
@@ -2867,6 +3045,7 @@ class JSONObject:
         resp: requests.Response,
         current: Mapping[str, Any],
         sent: Mapping[str, Any],
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Return this object's JSON after a successful write.
 
@@ -2893,6 +3072,8 @@ class JSONObject:
             sent: JSON fields that the write sent. For ``create()``, these are
                 only the JSON-backed fields, so that an extra key such as a
                 write-only password is not kept in the object's JSON.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Returns:
             The object's JSON after the write.
@@ -3511,7 +3692,9 @@ class JSONObject:
         """
         options = _request_options(request_options)
         payload = cls._encode_fields(
-            _query_params(fields, kwargs, "Field", "fields")
+            _query_params(
+                fields, kwargs, "Field", "fields", reserved=frozenset()
+            )
         )
         client = cls.api if api is None else api
         resp = _check_model_write(
@@ -3541,7 +3724,8 @@ class JSONObject:
         cls: type[Self],
         pks: set[Any],
         *,
-        api: API | None = None,
+        api: API,
+        **kwargs: Any,
     ) -> Mapping[Any, Self]:
         """Bulk-load objects by primary key for explicit prefetch support.
 
@@ -3550,9 +3734,10 @@ class JSONObject:
 
         Args:
             pks: Primary keys to load.
-            api: The client to send the bulk request with. Prefetch always
-                passes it: the API that the query passed as ``api=``, or else
-                this class's registered API.
+            api: The client to send the bulk request with: the API that the
+                query passed as ``api=``, or else this class's registered API.
+            **kwargs: Context that later 1.x releases may pass. An override
+                must accept it, and pass it on when it calls another hook.
 
         Returns:
             Mapping from primary key to loaded object.
@@ -3560,7 +3745,7 @@ class JSONObject:
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
         """
-        del pks, api
+        del pks, api, kwargs
         raise PrefetchNotSupported(
             f"{cls.__name__} does not support bulk prefetch"
         )
@@ -3570,7 +3755,8 @@ class JSONObject:
         cls: type[Self],
         urls: set[str],
         *,
-        api: API | None = None,
+        api: API,
+        **kwargs: Any,
     ) -> Mapping[str, Self]:
         """Bulk-load objects by URL to prefetch a hyperlinked relation.
 
@@ -3585,6 +3771,8 @@ class JSONObject:
             urls: Absolute URLs of the objects to load.
             api: The client to send the bulk request with, as for
                 ``bulk_get_by_pks()``.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``bulk_get_by_pks()``.
 
         Returns:
             Mapping from URL to loaded object. URLs are matched after
@@ -3594,47 +3782,91 @@ class JSONObject:
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
         """
-        del urls, api
+        del urls, api, kwargs
         raise PrefetchNotSupported(
             f"{cls.__name__} does not support bulk prefetch by URL"
         )
 
     @classmethod
+    def collection_page(
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
+    ) -> Page[Any]:
+        """Read one page of a collection response for ``get_page()``.
+
+        The default reads Django REST Framework's page shape with
+        ``next_links_page()``. Override it to return
+        ``link_headers_page(api, resp)`` for an API that links pages in Link
+        headers, or ``next_links_page()`` with other member names. A page
+        built another way holds its items, but cannot read other pages.
+
+        Args:
+            resp: Response for the page.
+            api: The query's client, as for ``collection_items()``, which the
+                page uses to read the pages it links to.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``collection_items()``.
+
+        Returns:
+            The page of JSON objects.
+        """
+        del kwargs
+        return next_links_page(api, resp)
+
+    @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 
         ``filter()`` calls this hook with the response to its request. The
-        default passes the decoded payload to ``collection_items()``. Override
-        this hook instead when the items or the later pages depend on more than
-        the payload, such as a ``Link`` header or the URL of the response.
+        default reads every page of Django REST Framework's page shape, with
+        ``follow_next_links(api, api.json(resp), url=resp.url)``, and a list
+        payload as a single page. If the class overrides
+        ``collection_items()``, the default passes the decoded payload to it
+        instead. Override this hook when the items or the later pages depend
+        on more than the payload, such as a ``Link`` header.
 
         Args:
             resp: Response to the collection request.
             api: The query's client, as for ``collection_items()``.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``collection_items()``. The default passes it on.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
+
+        Raises:
+            ResponseShapeError: If the payload is neither a list nor a page.
         """
-        return cls.collection_items(api.json(resp), api=api)
+        payload = api.json(resp)
+        if cls._overrides_hook("collection_items"):
+            return cls.collection_items(payload, api=api, **kwargs)
+        return follow_next_links(api, payload, url=resp.url)
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Iterable[Any]:
+    def collection_items(
+        cls, payload: Any, *, api: API, **kwargs: Any
+    ) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
-        The default implementation yields items from a list response directly.
-        Subclasses can override this hook to unwrap envelope responses or
-        follow pagination links by issuing additional requests through
-        ``api``, the query's client, as ``follow_next_links(api, payload)``
-        does.
+        The default accepts only a list, and does not follow pages. A class
+        that overrides this hook replaces the default paging of
+        ``collection_items_from_response()``, which then passes it the decoded
+        payload. Override it to unwrap envelope responses, or to follow
+        pagination links by issuing additional requests through ``api``, the
+        query's client. Code that reads a collection itself should call
+        ``filter()``, or ``follow_next_links()`` with ``url=``, rather than
+        this hook.
 
         ``api`` is the API that the query passed as ``api=``, or the class's
         registered API, and it sends the query's ``request_options`` with
         every request. With options, it is a copy that shares the API's
         session, so use it to send requests, not to configure, close, or
-        compare the API. While ``filter()`` calls this hook, ``cls.api`` is
-        ``api`` too.
+        compare the API. The copy raises ``RedirectError`` for a redirect that
+        it did not follow, even with ``allow_redirects=False``, and a subclass
+        of ``API`` that changes its own state, such as a refreshed token, must
+        keep that state on the session. While ``filter()`` calls this hook,
+        ``cls.api`` is ``api`` too.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.
@@ -3642,6 +3874,9 @@ class JSONObject:
         Args:
             payload: Decoded JSON payload returned by a collection request.
             api: The query's client, for requests for later pages.
+            **kwargs: Context that later 1.x releases may pass, to tell the
+                hook more about the query. An override must accept it, and
+                pass it on when it calls another hook or ``super()``.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
@@ -3650,6 +3885,7 @@ class JSONObject:
             ResponseShapeError: If the payload is not a supported collection
                 response.
         """
+        del kwargs
         if isinstance(payload, list):
             return payload
 
@@ -3659,7 +3895,7 @@ class JSONObject:
         )
 
     @classmethod
-    def object_json(cls, payload: Any) -> Any:
+    def object_json(cls, payload: Any, **kwargs: Any) -> Any:
         """Return the JSON object contained in a single-object response.
 
         Subclasses can override this hook when an API wraps single-object
@@ -3667,6 +3903,8 @@ class JSONObject:
 
         Args:
             payload: Decoded JSON payload returned by the object endpoint.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Returns:
             JSON object used to populate a model instance.
@@ -4003,8 +4241,10 @@ class JSONObject:
         or a ``deque``, is a collection.
 
         The keyword arguments ``api``, ``prefetch``, ``defaults``,
-        ``request_options``, and ``params`` of the query methods are not query
-        parameters. Pass a parameter with one of these names in ``params``.
+        ``request_options``, ``params``, and ``url`` of the query methods are
+        not query parameters. ``get_page()`` takes ``url``, and the other
+        methods reserve it, so ``filter(url=...)`` raises ``TypeError``. Pass a
+        parameter with one of these names in ``params``.
 
         ``request_options`` are sent with every request of the query: the
         collection request, the requests for later pages that the collection
@@ -4113,6 +4353,85 @@ class JSONObject:
         return cls.filter(
             prefetch=prefetch, api=api, request_options=request_options
         )
+
+    @classmethod
+    def get_page(
+        cls: type[Self],
+        *,
+        url: str | None = None,
+        prefetch: PrefetchFields = None,
+        api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Page[Self]:
+        """Fetch one page of objects matching query parameters.
+
+        Without ``url``, this sends the query as ``filter()`` does and returns
+        the collection's first page. With ``url``, it requests that page, such
+        as a page URL saved from ``next_url``, which must have the origin of
+        the API's base URL. ``collection_page()`` reads each page.
+
+        The page's ``next_page()`` and ``previous_page()`` request the pages
+        around it with the same API, request options, and prefetch, and
+        return pages of objects too.
+
+        Args:
+            url: Optional URL of the page to fetch, absolute or relative to the
+                API's base URL. A page's URL holds its query, so ``url`` cannot
+                be combined with query parameters.
+            prefetch: Optional related field name or field names to bulk-load
+                explicitly, for each page, as for ``filter()``.
+            api: Optional API to send the requests with, as for ``filter()``.
+            request_options: Optional keyword arguments for the requests, as
+                for ``filter()``.
+            params: Optional query parameters as a mapping, as for
+                ``filter()``.
+            **kwargs: Query string parameters, as for ``filter()``.
+
+        Returns:
+            The page of objects.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field, or if a parameter has a value that
+                requests would not send intact.
+            TypeError: If ``url`` is given with query parameters, a parameter
+                is given both as a keyword argument and in ``params``,
+                ``request_options`` is not valid for a query, or
+                ``collection_page()`` does not return a ``Page``.
+            PrefetchNotSupported: If the related model of a ``prefetch`` field
+                does not implement its bulk lookup.
+            PaginationError: If ``url`` has another origin.
+            RedirectError: If the response is a redirect that was not
+                followed, such as a 304.
+        """
+        options = _query_request_options(request_options)
+        query = _query_params(params, kwargs)
+        if url is not None and query:
+            raise TypeError(
+                "get_page() takes url= or query parameters, not both, because "
+                "a page's URL holds its query"
+            )
+        prefetch_fields = _normalize_prefetch(prefetch)
+        for field in prefetch_fields:
+            cls._prefetch_info(field)
+
+        base = cls.api if api is None else api
+        client = base._scoped(options) if options else base
+        source = _ModelPageSource(
+            cls, _Query(api, client, options), prefetch_fields
+        )
+        if url is None:
+            resp = _check_final_response(
+                client.get(cls.class_url, params=cls._encode_query(query)),
+                "the query has no collection to read",
+            )
+        else:
+            resp = _request_page(
+                client, client.resolve_url(url), allow_other_origins=False
+            )
+        return cast("Page[Self]", source.page(resp))
 
     @classmethod
     def get(

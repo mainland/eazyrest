@@ -54,7 +54,6 @@ from eazyrest import (
     Hyperlinked,
     JSONObject,
     NotFound,
-    follow_next_links,
     json_object,
 )
 
@@ -397,12 +396,7 @@ def api() -> Iterator[API]:
 
 
 class DRFBase(JSONObject):
-    """Base model that reads every page of a DRF collection."""
-
-    @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
-        """Read every page, following next links."""
-        return follow_next_links(api, payload)
+    """Base model, which reads every page of a DRF collection by default."""
 
 
 @json_object
@@ -443,7 +437,7 @@ class HyperPermissionModel(DRFBase):
 # The DRF guide's client recipe for bulk_get_by_urls(), run as the guide
 # writes it.
 bulk_by_urls_recipe = run_guide_example(
-    "def bulk_get_by_urls(cls, urls, *, api):", doc=DRF
+    "def bulk_get_by_urls(cls, urls, *, api, **kwargs):", doc=DRF
 )["bulk_get_by_urls"]
 
 
@@ -453,7 +447,7 @@ class LinkedContentTypeModel(ContentTypeModel):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, LinkedContentTypeModel]:
         """Load content types by key from the list view.
 
@@ -904,3 +898,28 @@ def test_hyperlink_prefetch_recipe_loads_relations_in_one_request(
     assert sorted(map(int, parse_qs(bulk.query)["id"])) == sorted(
         {permission.content_type_id for permission in stored}
     )
+
+
+def test_get_page_navigates_a_drf_page_number_collection(api: API) -> None:
+    """Pages of a DRF collection link both ways, and end at both ends."""
+    total = Permission.objects.count()
+
+    first = PermissionModel.get_page()
+
+    assert first.count == total
+    assert len(first) == 5
+    assert first.previous_page() is None
+    second = first.next_page()
+    assert second is not None
+    assert {p.pk for p in second}.isdisjoint({p.pk for p in first})
+    back = second.previous_page()
+    assert back is not None
+    assert [p.pk for p in back] == [p.pk for p in first]
+
+    page = first
+    seen = [p.pk for p in page]
+    while (following := page.next_page()) is not None:
+        page = following
+        seen.extend(p.pk for p in page)
+    assert page.next_url is None
+    assert seen == sorted(Permission.objects.values_list("pk", flat=True))
