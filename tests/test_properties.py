@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime
+import decimal
 import enum
 import http.server
 import importlib.util
@@ -191,6 +192,8 @@ class Codecs(PropertyBase):
     token: uuid.UUID
     length: datetime.timedelta
     color: Color
+    opens: datetime.time
+    price: decimal.Decimal
 
 
 # Every UTC offset that Python allows, including offsets with seconds and
@@ -216,6 +219,16 @@ _CODEC_VALUES = st.one_of(
     st.tuples(st.just("token"), st.uuids()),
     st.tuples(st.just("length"), st.timedeltas()),
     st.tuples(st.just("color"), st.sampled_from(Color)),
+    st.tuples(st.just("opens"), st.times(timezones=st.none() | _UTC_OFFSETS)),
+    st.tuples(
+        st.just("price"),
+        st.decimals(
+            min_value=-(10**30),
+            max_value=10**30,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
 )
 
 
@@ -226,8 +239,9 @@ def test_built_in_conversions_read_back_what_they_write(
 ) -> None:
     """A field reads back the value whose JSON it writes, or refuses it.
 
-    A datetime whose UTC offset is not a whole number of minutes has no ISO
-    8601 form, so encoding it raises.
+    A datetime or time whose UTC offset is not a whole number of minutes has
+    no ISO 8601 form, so encoding it raises. A decimal reads back equal, with
+    the same digits unless it had an exponent.
 
     Args:
         field_and_value: Name of a ``Codecs`` field and a value of its type.
@@ -235,7 +249,9 @@ def test_built_in_conversions_read_back_what_they_write(
     field, value = field_and_value
     conversion = getattr(Codecs, field).analyzed_type
     offset = (
-        value.utcoffset() if isinstance(value, datetime.datetime) else None
+        value.utcoffset()
+        if isinstance(value, (datetime.datetime, datetime.time))
+        else None
     )
     if offset is not None and offset % datetime.timedelta(minutes=1):
         with pytest.raises(ValueError, match="whole minutes"):
@@ -249,8 +265,10 @@ def test_built_in_conversions_read_back_what_they_write(
 
     assert decoded == value
     assert type(decoded) is type(value)
-    if isinstance(value, datetime.datetime):
+    if isinstance(value, (datetime.datetime, datetime.time)):
         assert decoded.utcoffset() == value.utcoffset()
+    if isinstance(value, decimal.Decimal) and "E" not in str(value):
+        assert str(decoded) == str(value)
 
 
 @settings(max_examples=200)
@@ -1233,7 +1251,21 @@ def _from_hex(value: Any) -> int:
 
 
 if HAVE_PYDANTIC:
-    from pydantic import Base64Bytes, PlainSerializer, PlainValidator
+    from pydantic import (
+        Base64Bytes,
+        BaseModel,
+        ConfigDict,
+        PlainSerializer,
+        PlainValidator,
+    )
+    from pydantic.alias_generators import to_camel
+
+    class Corner(BaseModel):
+        """Pydantic model read and written by its aliases."""
+
+        model_config = ConfigDict(alias_generator=to_camel, extra="allow")
+
+        top_left: int
 
     @json_object
     class Encoded(PropertyBase):
@@ -1245,9 +1277,16 @@ if HAVE_PYDANTIC:
         text: PydanticJson[dict[str, int]]
         blob: Base64Bytes
         hexed: Annotated[int, PlainValidator(_from_hex), PlainSerializer(hex)]
+        corner: Corner
 
 
-ENCODED_JSON = {"id": 1, "text": '{"a": 1}', "blob": "AA==", "hexed": "0x1"}
+ENCODED_JSON = {
+    "id": 1,
+    "text": '{"a": 1}',
+    "blob": "AA==",
+    "hexed": "0x1",
+    "corner": {"topLeft": 1},
+}
 
 # Values assigned to Encoded's fields, each of the field's type or not.
 _ENCODED_VALUES = {
@@ -1260,6 +1299,7 @@ _ENCODED_VALUES = {
     "hexed": st.one_of(
         st.integers(), st.floats(allow_nan=False), st.text(max_size=3)
     ),
+    "corner": st.integers().map(lambda n: {"topLeft": n}),
 }
 
 
@@ -1282,6 +1322,8 @@ def _of_field_type(field: str, value: Any) -> bool:
         )
     if field == "blob":
         return isinstance(value, bytes)
+    if field == "corner":
+        return False
     return type(value) is int
 
 
@@ -1331,6 +1373,8 @@ def test_accepted_pydantic_writes_read_back(
     try:
         setattr(obj, field, value)
     except FieldConversionError:
+        # Every corner is valid input, by its alias, so it must be written.
+        assert field != "corner"
         assert obj._pending_updates == {}
         assert obj.json == ENCODED_JSON
         return
