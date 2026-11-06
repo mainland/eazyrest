@@ -16,7 +16,7 @@ import json
 import re
 import typing
 import uuid
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 from urllib.parse import parse_qsl, urlparse
 
 import isodate
@@ -29,6 +29,8 @@ from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
+    DEFAULT_CONVERSIONS,
+    Conversion,
     FieldConversionError,
     JSONObject,
     ResponseShapeError,
@@ -1085,3 +1087,121 @@ def test_neutral_metadata_leaves_conversion_unchanged(
     annotated = _field_model(pair.aliased)
     bare = _field_model(pair.expanded)
     assert _read_outcome(annotated, value) == _read_outcome(bare, value)
+
+
+_UNWRITABLE_DATE = datetime.date(2000, 1, 1)
+"""Date that ``Fragile`` reads but cannot write."""
+
+
+def _encode_fragile_date(value: datetime.date) -> str:
+    """Write a date, except the one that ``Fragile`` cannot write.
+
+    Args:
+        value: The date.
+
+    Returns:
+        Its ISO 8601 form.
+
+    Raises:
+        ValueError: If ``value`` is the unwritable date.
+    """
+    if value == _UNWRITABLE_DATE:
+        raise ValueError("This date cannot be written")
+    return value.isoformat()
+
+
+@json_object
+class Fragile(PropertyBase):
+    """Model whose fields can fail to read, by decoding or by encoding."""
+
+    class_url = "/fragile/"
+
+    id: int
+    name: str
+    day: datetime.date
+    when: datetime.datetime
+    token: uuid.UUID
+    length: datetime.timedelta
+    color: Color
+    owner: Owner
+    days: list[datetime.date]
+    lengths: list[datetime.timedelta]
+
+    # A changeable value, such as a list, is encoded when it is read, to
+    # record its encoding for change detection, so a date that cannot be
+    # written makes a read fail after decoding.
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        datetime.date: Conversion(
+            decode=DEFAULT_CONVERSIONS[datetime.date].decode,
+            encode=lambda value, cls: _encode_fragile_date(value),
+        )
+    }
+
+
+_FRAGILE_FIELDS = (
+    "day",
+    "when",
+    "token",
+    "length",
+    "color",
+    "owner",
+    "days",
+    "lengths",
+)
+
+# Values that fields read, fail to decode, or decode but fail to encode.
+_FRAGILE_LEAVES = st.one_of(
+    _JSON_SCALARS,
+    st.sampled_from(
+        [
+            "2000-01-01",
+            "2024-02-30",
+            "2024-01-01",
+            "2024-01-01T00:00:00Z",
+            "red",
+            "P1D",
+            "1:30",
+            str(uuid.UUID(int=1)),
+            "x",
+        ]
+    ),
+)
+_FRAGILE_VALUES = st.one_of(
+    _FRAGILE_LEAVES,
+    st.lists(_FRAGILE_LEAVES, max_size=3),
+    st.dictionaries(st.text(max_size=2), _FRAGILE_LEAVES, max_size=2),
+)
+
+
+@settings(max_examples=200)
+@given(field=st.sampled_from(_FRAGILE_FIELDS), value=_FRAGILE_VALUES)
+def test_failed_read_leaves_no_cached_value(field: str, value: Any) -> None:
+    """A read that fails caches nothing, and fails again the next time.
+
+    A value is cached, with the snapshot that detects changes to it, only
+    once it has been decoded and, if it can be changed in place, encoded.
+    Either step can fail, and then the field's next read must fail the same
+    way rather than return a value that ``save()`` would mishandle.
+
+    Args:
+        field: Name of the ``Fragile`` field to read.
+        value: JSON value of the field.
+    """
+    obj = Fragile(json={"id": 1, "name": "n", field: value})
+
+    try:
+        getattr(obj, field)
+    except FieldConversionError:
+        pass
+    else:
+        assert field in obj._field_cache
+        return
+
+    assert field not in obj._field_cache
+    assert field not in obj._field_snapshots
+    with pytest.raises(
+        FieldConversionError, match=re.escape(f"Fragile.{field}")
+    ):
+        getattr(obj, field)
+    assert obj.name == "n"
+    assert obj._pending_updates == {}
