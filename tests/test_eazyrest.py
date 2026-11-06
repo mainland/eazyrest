@@ -15,6 +15,7 @@ import uuid
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
+from ipaddress import IPv4Address
 from typing import Annotated, Any, ClassVar, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
@@ -5487,6 +5488,58 @@ def test_write_only_must_name_a_readable_field(
             name: str
 
 
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"read_only": {"nope"}}, "names \\['nope'\\]"),
+        (
+            {"read_only": {"name"}, "write_only": {"name"}},
+            "both read-only and write-only",
+        ),
+    ],
+)
+def test_read_only_must_name_a_field_that_is_not_write_only(
+    options: dict[str, Any], match: str
+) -> None:
+    """``read_only`` must name fields of the class that are not write-only.
+
+    Args:
+        options: Options for ``json_object()``.
+        match: Pattern that the ``ValueError`` message should match.
+    """
+    with pytest.raises(ValueError, match=match):
+
+        @json_object(**options)
+        class Broken(ModelBase):
+            id: int
+            name: str
+
+
+def test_redeclared_field_inherits_read_only() -> None:
+    """A redeclared field stays read-only unless ``read_only=`` says not."""
+
+    @json_object(read_only={"created"})
+    class Stamped(ModelBase):
+        class_url = "/stamped/"
+
+        id: int
+        created: str
+
+    @json_object
+    class Inherits(Stamped):
+        created: str
+
+    @json_object(read_only=set())
+    class Clears(Stamped):
+        created: str
+
+    with pytest.raises(AttributeError, match="read-only"):
+        Inherits(json={"id": 1, "created": "a"}).created = "x"
+    clears = Clears(json={"id": 1, "created": "a"}, write_mode="lazy")
+    clears.created = "x"
+    assert clears._pending_updates == {"created": "x"}
+
+
 @json_object(write_map={"owner": "owner_id"})
 class Chore(ModelBase):
     """Model whose relation is read nested and written as a primary key."""
@@ -5931,6 +5984,87 @@ def test_hyperlinked_prefetch_loads_each_url_once(
     assert requests_mock.call_count == 1
 
 
+def test_hyperlinked_prefetch_skips_values_it_cannot_load(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An embedded object, a key, and refused URLs send no bulk lookup.
+
+    The embedded author is read as the object it is, and the refused reader
+    still raises when it is read.
+    """
+    calls: list[set[str]] = []
+
+    def bulk_get_by_urls(
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
+    ) -> dict[str, User]:
+        calls.append(urls)
+        return {}
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get(
+        "https://example.com/v1/notes/",
+        json=[
+            {
+                **NOTE_JSON,
+                "author": {"id": 2, "name": "Ada"},
+                "readers": ["https://other.example/users/5/", "mailto:x", 7],
+            }
+        ],
+    )
+
+    (note,) = Note.filter(prefetch=["author", "readers"])
+
+    assert calls == []
+    assert note.author.name == "Ada"
+    with pytest.raises(FieldConversionError):
+        _ = note.readers
+    assert requests_mock.call_count == 1
+
+
+def test_hyperlinked_prefetch_ignores_urls_it_did_not_request(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup's extra objects are dropped, and an object keeps its own URL.
+
+    An object that a lookup returns with a URL of its own, such as one it
+    read from a hyperlink, keeps that URL rather than the requested one.
+    """
+
+    def bulk_get_by_urls(
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
+    ) -> dict[str, User]:
+        found = {url: _user_from_url(url, api) for url in urls}
+        for user in found.values():
+            user._url_override = f"https://example.com/v1/people/{user.id}/"
+        found["https://example.com/v1/users/99/"] = _user_from_url(
+            "https://example.com/v1/users/99/", api
+        )
+        return found
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
+
+    (note,) = Note.filter(prefetch="author")
+
+    assert note.author.name == "user2"
+    assert note.author.url == "https://example.com/v1/people/2/"
+    assert requests_mock.call_count == 1
+
+
 def test_hyperlinked_applies_only_to_related_types() -> None:
     """``Hyperlinked()`` on a type without a related model raises."""
 
@@ -6258,6 +6392,52 @@ def test_json_schema_follows_declaration_order() -> None:
         "c",
         "d",
     ]
+
+
+@json_object
+class Keyless(ModelBase):
+    """Model without a primary key, such as an embedded value."""
+
+    name: str
+
+
+@json_object(pk="partner")
+class Left(ModelBase):
+    """Model whose primary key is a related object, which names it back."""
+
+    partner: Right
+
+
+@json_object(pk="partner")
+class Right(ModelBase):
+    """Model whose primary key is a ``Left``."""
+
+    partner: Left
+
+
+@json_object
+class Odd(ModelBase):
+    """Model with relations whose keys have no schema, and an unknown type."""
+
+    class_url = "/odd/"
+
+    id: int
+    keyless: Keyless
+    left: Left
+    address: IPv4Address
+
+
+def test_json_schema_allows_any_key_it_cannot_describe() -> None:
+    """A relation without a key, or in a cycle of keys, accepts any key.
+
+    So does a type that eazyrest does not convert, whose JSON form it does
+    not know.
+    """
+    properties = Odd.json_schema("write")["properties"]
+
+    assert properties["keyless"] == {}
+    assert properties["left"] == {}
+    assert properties["address"] == {}
 
 
 def test_json_schema_rejects_an_unknown_mode() -> None:

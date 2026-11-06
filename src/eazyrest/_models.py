@@ -3582,10 +3582,7 @@ class JSONObject:
         self._json.update(self._readable_json(payload))
 
         for field in self._json_fields:
-            descriptor = getattr(type(self), field, None)
-            if not isinstance(descriptor, JSONProperty):
-                continue
-
+            descriptor: JSONProperty = getattr(type(self), field)
             if descriptor.json_field not in payload:
                 continue
 
