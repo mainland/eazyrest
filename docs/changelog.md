@@ -26,6 +26,7 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 #### Queries
 
 - `filter()` and `all()` return iterators rather than lists, and the request is sent when they are called. Call `list()` on the result to iterate it more than once. The iterator is a `Results`, whose `count` is the collection's size when the response reports it.
+- A collection request answered with a redirect that is not followed, such as a `304 Not Modified`, raises `RedirectError` rather than reading its body as the collection.
 - `filter(url=...)` is removed. Override `class_url`, or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()` encodes them: renamed by `field_map`, converted to JSON, and with booleans sent as `true` and `false`.
 - A query parameter whose value requests would drop or change raises `ValueError` before the request: `None`, an empty collection or iterator, a mapping, or a collection holding `None` or another collection. In 0.9.0, such a constraint was silently omitted, so `get()` could return an object that does not match it.
