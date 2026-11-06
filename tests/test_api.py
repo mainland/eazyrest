@@ -7,16 +7,18 @@ import json
 import re
 import threading
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import pytest
 import requests
 import requests.auth
 import urllib3
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
+from requests_mock import Mocker, create_response
 
-from eazyrest import API
+from eazyrest import API, LimitExceeded, RedirectError
 from eazyrest.api import _redirect_destination
 
 
@@ -415,6 +417,243 @@ def test_api_redirect_guard_keeps_response_hooks(
         api.get("/users/1", **kwargs)
 
     assert seen == [302]
+
+
+def test_api_refuses_a_later_hop_that_drops_the_body(
+    requests_mock: Any,
+) -> None:
+    """Each hop of a chain is checked, not only the first.
+
+    A 307 resends a ``PATCH`` with its body, but a 301 after it would drop
+    the body, so the chain stops there, before the last URL is requested.
+    """
+    api = API("https://example.com/v1/")
+    first = requests_mock.patch(
+        "https://example.com/v1/a",
+        status_code=307,
+        headers={"Location": "/v1/b"},
+    )
+    second = requests_mock.patch(
+        "https://example.com/v1/b",
+        status_code=301,
+        headers={"Location": "/v1/c"},
+    )
+    last = requests_mock.patch("https://example.com/v1/c", json={})
+
+    with pytest.raises(RedirectError, match="without the request body"):
+        api.patch("a", json={"name": "Ada"})
+
+    assert first.call_count == 1
+    assert second.last_request.json() == {"name": "Ada"}
+    assert not last.called
+
+
+def test_api_follows_a_chain_that_keeps_the_request(
+    requests_mock: Any,
+) -> None:
+    """A chain of 307 and 308 redirects delivers the request unchanged."""
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://files.example.com"]
+    requests_mock.post(
+        "https://example.com/v1/a",
+        status_code=307,
+        headers={"Location": "https://files.example.com/b"},
+    )
+    requests_mock.post(
+        "https://files.example.com/b",
+        status_code=308,
+        headers={"Location": "https://example.com/v1/c"},
+    )
+    created = requests_mock.post(
+        "https://example.com/v1/c", status_code=201, json={"id": 1}
+    )
+
+    assert api.post("a", json={"name": "Ada"}).json() == {"id": 1}
+    assert created.last_request.json() == {"name": "Ada"}
+
+
+def test_redirect_guard_without_a_budget_checks_only_redirects(
+    requests_mock: Any,
+) -> None:
+    """The guard's hooks check origins and writes even without a budget.
+
+    ``API`` passes each request's budget, which also limits the body of a
+    redirect, as ``api.get()`` shows. Hooks made without one, for a request
+    sent through the session directly, still refuse an unsafe redirect but
+    leave the body alone.
+    """
+    api = API("https://example.com/v1/")
+    api.max_response_bytes = 10
+    requests_mock.get(
+        "https://example.com/v1/a",
+        status_code=302,
+        headers={"Location": "/v1/b"},
+        text="x" * 100,
+    )
+    requests_mock.get("https://example.com/v1/b", json={"id": 1})
+    requests_mock.get(
+        "https://example.com/v1/elsewhere",
+        status_code=302,
+        headers={"Location": "https://evil.example.net/"},
+    )
+    evil = requests_mock.get("https://evil.example.net/", json={})
+
+    with pytest.raises(LimitExceeded):
+        api.get("a")
+
+    url = "https://example.com/v1/a"
+    resp = api.session.get(url, hooks=api._guard_redirects(url, None))
+    assert resp.json() == {"id": 1}
+
+    url = "https://example.com/v1/elsewhere"
+    with pytest.raises(RedirectError, match="redirect_origins"):
+        api.session.get(url, hooks=api._guard_redirects(url, None))
+    assert not evil.called
+
+
+# Origins of the generated redirect chains: the API's own, one that the API
+# allows with redirect_origins, and one that it does not.
+_CHAIN_LOCATIONS = {
+    "same": "https://example.com/v1/hop{}",
+    "relative": "/v1/hop{}",
+    "listed": "https://files.example.com/hop{}",
+    "other": "https://evil.example.net/hop{}",
+}
+_ALLOWED_ORIGINS = {
+    ("https", "example.com", 443),
+    ("https", "files.example.com", 443),
+}
+
+_REDIRECT_CHAINS = st.lists(
+    st.tuples(
+        st.sampled_from([301, 302, 303, 307, 308]),
+        st.sampled_from(sorted(_CHAIN_LOCATIONS)),
+    ),
+    min_size=1,
+    max_size=4,
+)
+
+
+def _chain_origin(url: str) -> tuple[str, str | None, int | None]:
+    """Return a URL's scheme, host, and port, with the default port filled in.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        The URL's origin.
+    """
+    parts = urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port or 443
+
+
+def _send_through_chain(
+    send: Any, method: str, body: dict[str, str] | None, chain: list[Any]
+) -> tuple[list[tuple[str, str, bytes | None]], bool]:
+    """Send a request through a mocked redirect chain and record each hop.
+
+    Args:
+        send: Callable that takes a method and keyword arguments and sends
+            the request to ``https://example.com/v1/hop0``.
+        method: HTTP method of the request.
+        body: JSON body of the request, if any.
+        chain: Status and location kind of each redirect, in order.
+
+    Returns:
+        The method, URL, and body of each request sent, and whether the
+        sending raised ``RedirectError``.
+    """
+
+    def respond(request: Any) -> Any:
+        """Answer hop ``i`` with its redirect, or the last hop with 200.
+
+        Args:
+            request: Request that requests_mock received.
+
+        Returns:
+            The mocked response.
+        """
+        hop = int(urlsplit(request.url).path.rsplit("hop", 1)[1])
+        if hop == len(chain):
+            return create_response(request, json={})
+        status, kind = chain[hop]
+        location = _CHAIN_LOCATIONS[kind].format(hop + 1)
+        return create_response(
+            request, status_code=status, headers={"Location": location}
+        )
+
+    with Mocker() as mock:
+        mock.add_matcher(respond)
+        refused = False
+        try:
+            send(method, **({} if body is None else {"json": body}))
+        except RedirectError:
+            refused = True
+        sent = [
+            (
+                request.method,
+                request.url,
+                request.body
+                if request.body is None or isinstance(request.body, bytes)
+                else request.body.encode(),
+            )
+            for request in mock.request_history
+        ]
+    return sent, refused
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    method=st.sampled_from(["GET", "POST", "PATCH", "PUT", "DELETE"]),
+    with_body=st.booleans(),
+    chain=_REDIRECT_CHAINS,
+)
+def test_redirect_chains_deliver_the_request_or_stop_before_harm(
+    method: str, with_body: bool, chain: list[Any]
+) -> None:
+    """The client sends what requests would, up to the first unsafe hop.
+
+    Plain requests follows every hop of a generated chain. The client must
+    send exactly the requests that plain requests sends until the first one
+    that would go to an origin that the API does not allow, or that would
+    have another method or lack the original body. There it raises
+    ``RedirectError`` without sending that request. A chain without such a
+    request is followed to the end.
+
+    Args:
+        method: HTTP method of the original request.
+        with_body: Whether the original request has a JSON body.
+        chain: Status and location kind of each redirect, in order.
+    """
+    body = {"name": "Ada"} if with_body else None
+    url = "https://example.com/v1/hop0"
+    session = requests.Session()
+    plain, _ = _send_through_chain(
+        lambda m, **kw: session.request(m, url, **kw), method, body, chain
+    )
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://files.example.com"]
+    guarded, refused = _send_through_chain(
+        lambda m, **kw: getattr(api, m.lower())("hop0", **kw),
+        method,
+        body,
+        chain,
+    )
+
+    original = plain[0][2]
+    safe = 0
+    while safe < len(plain) and (
+        _chain_origin(plain[safe][1]) in _ALLOWED_ORIGINS
+        and plain[safe][0] == method
+        and plain[safe][2] == original
+    ):
+        safe += 1
+
+    assert guarded == plain[:safe]
+    assert refused == (safe < len(plain))
+    assert all(
+        _chain_origin(hop_url) in _ALLOWED_ORIGINS for _, hop_url, _ in guarded
+    )
 
 
 def test_api_closes_session_as_context_manager() -> None:
