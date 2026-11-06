@@ -1,8 +1,8 @@
 """Conversions between Python values and their JSON forms.
 
 A conversion describes one Python type's JSON form: how to read the type
-from JSON, and how to write it. The default table holds eazyrest's
-conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
+from JSON, how to write it, and its JSON schema. The default table holds
+eazyrest's conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
 ``UUID``, ``Decimal``, and enums. JSON scalars need none.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import datetime
 import decimal
 import enum
@@ -18,9 +19,9 @@ import typing
 import uuid
 import weakref
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import isodate
 
@@ -56,6 +57,97 @@ class Conversion:
     ``datetime`` read from a field declared as a subclass of ``datetime``
     writes back. Any other value, such as a string assigned to a
     ``datetime`` field, is written as it is."""
+
+    schema: (
+        Mapping[str, Any]
+        | Callable[[type[Any], Literal["read", "write"]], Mapping[str, Any]]
+    ) = field(default_factory=lambda: MappingProxyType({}))
+    """The JSON schema of the JSON form, for ``json_schema()``, or a function
+    of the declared type and the mode, ``"read"`` or ``"write"``, that
+    returns it. The default, an empty schema, allows any value.
+
+    ``json_schema()`` embeds the schema in a model's, and moves its
+    ``$defs`` into the model's, so its references may name only its own
+    definitions, as ``#/$defs/Name`` or a pointer into one. A schema with
+    another reference, such as ``#`` for a schema that refers to itself, or
+    with ``$id``, an anchor, or ``$defs`` below its root, raises
+    ``TypeError``, when the conversion is made or, for a function, when
+    ``json_schema()`` calls it. Put such a schema in ``$defs`` and refer to
+    it there."""
+
+    def __post_init__(self) -> None:
+        """Check a schema given as a mapping.
+
+        Raises:
+            TypeError: If the schema could not be embedded in a model's.
+        """
+        if not callable(self.schema):
+            _check_embeddable(self.schema)
+
+
+# Keywords whose values are JSON data rather than schemas, and keywords that
+# a schema embedded in a model's cannot keep, since they name its root or
+# its resource.
+_SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
+_UNEMBEDDABLE = frozenset(
+    {
+        "$id",
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$recursiveAnchor",
+        "$recursiveRef",
+    }
+)
+
+
+def _check_embeddable(schema: Any, *, root: bool = True) -> None:
+    """Check that a conversion's schema can be embedded in a model's.
+
+    Args:
+        schema: The schema, or part of it.
+        root: Whether ``schema`` is the whole schema.
+
+    Raises:
+        TypeError: If the schema has ``$id``, an anchor, ``$defs`` below its
+            root, or a reference other than to one of its own definitions.
+    """
+    if isinstance(schema, list):
+        for item in schema:
+            _check_embeddable(item, root=False)
+        return
+    if not isinstance(schema, Mapping):
+        return
+    for key, value in schema.items():
+        if key in _SCHEMA_DATA:
+            continue
+        if key in _UNEMBEDDABLE:
+            raise TypeError(
+                f"A conversion's schema with {key} cannot be embedded in a "
+                "model's schema"
+            )
+        if key == "$defs" and not root:
+            raise TypeError(
+                "A conversion's schema may have $defs only at its root"
+            )
+        if key == "$ref" and not (
+            isinstance(value, str) and value.startswith("#/$defs/")
+        ):
+            raise TypeError(
+                f"A conversion's schema may refer only to its own $defs, as "
+                f"#/$defs/Name, not to {value!r}"
+            )
+        if key in (
+            "properties",
+            "patternProperties",
+            "$defs",
+            "dependentSchemas",
+        ):
+            if isinstance(value, Mapping):
+                for item in value.values():
+                    _check_embeddable(item, root=False)
+            continue
+        _check_embeddable(value, root=False)
 
 
 def _decode_uuid(value: Any) -> uuid.UUID:
@@ -391,35 +483,105 @@ def _encode_enum(value: Any, cls: type[Any]) -> Any:
     return value.value
 
 
+def _string(form: str) -> Mapping[str, Any]:
+    """Return the schema of a string in a JSON schema format.
+
+    Args:
+        form: The format, such as ``"date-time"``.
+
+    Returns:
+        The schema.
+    """
+    return MappingProxyType({"type": "string", "format": form})
+
+
+def _decimal_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
+    """Return a ``Decimal``'s schema, which a read and a write differ in.
+
+    Args:
+        cls: The declared type.
+        mode: ``"read"`` or ``"write"``.
+
+    Returns:
+        A decimal string, or a JSON number too in a read.
+    """
+    del cls
+    written = {"type": "string", "format": "decimal"}
+    if mode == "read":
+        return {"anyOf": [written, {"type": "number"}]}
+    return written
+
+
+def _enum_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
+    """Return the schema of an enum: the values of its members.
+
+    Args:
+        cls: The declared enum type.
+        mode: ``"read"`` or ``"write"``, which an enum's schema does not
+            depend on.
+
+    Returns:
+        The schema.
+    """
+    del mode
+    return {"enum": [member.value for member in cls]}
+
+
+def _schema_of_entry(entry: Conversion, ty: Any, mode: str) -> dict[str, Any]:
+    """Return the schema that a conversion gives a declared type.
+
+    Args:
+        entry: The conversion.
+        ty: The type to pass to it.
+        mode: ``"read"`` or ``"write"``.
+
+    Returns:
+        A copy of the schema, which the caller may change.
+    """
+    if callable(entry.schema):
+        schema = entry.schema(ty, cast(Literal["read", "write"], mode))
+        _check_embeddable(schema)
+    else:
+        schema = entry.schema
+    return copy.deepcopy(dict(schema))
+
+
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
     {
         datetime.datetime: Conversion(
             decode=lambda value, _: parse_datetime(value),
             encode=lambda value, _: _encode_datetime(value),
+            schema=_string("date-time"),
         ),
         datetime.date: Conversion(
             decode=lambda value, _: _decode_date(value),
             encode=lambda value, _: _encode_date(value),
+            schema=_string("date"),
         ),
         uuid.UUID: Conversion(
             decode=lambda value, _: _decode_uuid(value),
             encode=lambda value, _: str(value),
+            schema=_string("uuid"),
         ),
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
             encode=lambda value, _: isodate.duration_isoformat(value),
+            schema=_string("duration"),
         ),
         datetime.time: Conversion(
             decode=lambda value, _: _decode_time(value),
             encode=lambda value, _: _encode_time(value),
+            schema=_string("time"),
         ),
         decimal.Decimal: Conversion(
             decode=lambda value, _: _decode_decimal(value),
             encode=lambda value, _: _encode_decimal(value),
+            schema=_decimal_schema,
         ),
         enum.Enum: Conversion(
             decode=_decode_enum_value,
             encode=_encode_enum,
+            schema=_enum_schema,
         ),
     }
 )

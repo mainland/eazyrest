@@ -1343,6 +1343,26 @@ def test_time_field_writes_iso_8601(requests_mock: Any) -> None:
     assert patch.last_request.json() == {"opens": "08:15:00.000500"}
 
 
+def test_json_schema_describes_decimal_and_time_fields() -> None:
+    """A decimal reads a string or a number and writes a string."""
+    written = {"type": "string", "format": "decimal"}
+
+    read = Shop.json_schema()["properties"]
+    write = Shop.json_schema("write")["properties"]
+
+    assert read["price"] == {"anyOf": [written, {"type": "number"}]}
+    assert write["price"] == written
+    assert write["prices"] == {"type": "array", "items": written}
+    assert (
+        read["opens"]
+        == write["opens"]
+        == {
+            "type": "string",
+            "format": "time",
+        }
+    )
+
+
 def test_sequence_field_reads_as_tuple_of_converted_items(
     requests_mock: Any,
 ) -> None:
@@ -6122,3 +6142,109 @@ def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
     assert review.editor.name == "user7"
     assert [user.name for user in review.watchers] == ["user8", "user9"]
     assert requests_mock.call_count == 1
+
+
+class Shade(enum.Enum):
+    """Enum whose JSON values are strings."""
+
+    LIGHT = "light"
+    DARK = "dark"
+
+
+@json_object(
+    field_map={"kind": "type"},
+    write_map={"owner": "owner_id"},
+    write_only={"secret"},
+    read_only={"created"},
+)
+class Specimen(ModelBase):
+    """Model whose fields cover each kind of JSON schema."""
+
+    class_url = "/specimens/"
+
+    id: int
+    name: str
+    score: float
+    flag: bool
+    when: datetime.datetime
+    day: datetime.date
+    token: uuid.UUID
+    length: datetime.timedelta
+    shade: Shade
+    kind: typing.Literal["a", "b"]
+    tags: list[str]
+    labels: set[str]
+    note: str | None
+    extra: dict[str, Any]
+    owner: User
+    link: Annotated[User, Hyperlinked()]
+    secret: str
+    created: datetime.datetime
+
+
+def test_json_schema_describes_what_a_model_reads() -> None:
+    """The read schema uses read keys and omits write-only fields."""
+    owner = {"anyOf": [{"type": "integer"}, {"type": "object"}]}
+    link = {"anyOf": [{"type": "string", "format": "uri"}, {"type": "object"}]}
+
+    assert Specimen.json_schema() == {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Specimen",
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer"},
+            "name": {"type": "string"},
+            "score": {"type": "number"},
+            "flag": {"type": "boolean"},
+            "when": {"type": "string", "format": "date-time"},
+            "day": {"type": "string", "format": "date"},
+            "token": {"type": "string", "format": "uuid"},
+            "length": {"type": "string", "format": "duration"},
+            "shade": {"enum": ["light", "dark"]},
+            "type": {"enum": ["a", "b"]},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "labels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            },
+            "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            "extra": {},
+            "owner": owner,
+            "link": link,
+            "created": {"type": "string", "format": "date-time"},
+        },
+        "additionalProperties": True,
+    }
+
+
+def test_json_schema_describes_what_a_model_writes() -> None:
+    """The write schema uses write keys and keeps only writable fields."""
+    properties = Specimen.json_schema("write")["properties"]
+
+    assert "created" not in properties
+    assert properties["secret"] == {"type": "string"}
+    assert properties["owner_id"] == {"type": "integer"}
+    assert "owner" not in properties
+    assert properties["link"] == {"type": "string", "format": "uri"}
+    assert list(properties)[:3] == ["id", "name", "score"]
+
+
+def test_json_schema_rejects_an_unknown_mode() -> None:
+    """Only the read and write modes exist."""
+    with pytest.raises(ValueError, match="mode must be"):
+        Specimen.json_schema("both")  # type: ignore[arg-type]
+
+
+def test_json_schema_reports_an_unresolvable_annotation() -> None:
+    """A field whose annotation does not resolve fails as a read does."""
+
+    @json_object
+    class Broken(ModelBase):
+        class_url = "/broken/"
+
+        id: int
+        missing: NoSuchType  # type: ignore[name-defined]  # noqa: F821
+
+    with pytest.raises(NameError, match="NoSuchType"):
+        Broken.json_schema()

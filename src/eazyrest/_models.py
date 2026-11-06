@@ -41,7 +41,7 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, unquote, urljoin
 
 import requests
 
@@ -51,6 +51,8 @@ from ._conversion import (
     _conversion_of,
     _final_supertype,
     _is_instance,
+    _schema_of_entry,
+    _supertype,
     _table_of,
 )
 from ._errors import (
@@ -1914,6 +1916,310 @@ def json_object(
 
     # We're called as @json_object without parens.
     return wrap(cls)
+
+
+def _base_schema(
+    ty: Any, mode: str, table: Mapping[Any, Conversion]
+) -> dict[str, Any]:
+    """Return the JSON schema of a leaf type.
+
+    A type with a conversion has its conversion's schema. A JSON scalar has
+    its JSON type, and a ``Literal`` its values.
+
+    Args:
+        ty: Declared type of a ``BaseType``.
+        mode: ``"read"`` or ``"write"``, which a conversion's schema may
+            depend on, as a ``Decimal``'s does.
+        table: Conversion table of the model whose field it is.
+
+    Returns:
+        The schema of the JSON value that the type reads and writes, or an
+        empty schema, which allows any value, for a type whose JSON form
+        eazyrest does not check, such as ``Any``.
+    """
+    if typing.get_origin(ty) is Literal:
+        return {
+            "enum": [
+                value.value if isinstance(value, enum.Enum) else value
+                for value in typing.get_args(ty)
+            ]
+        }
+    found = _conversion_of(ty, table)
+    if found is not None:
+        return _schema_of_entry(found.entry, found.declared, mode)
+    while _supertype(ty) is not None:
+        ty = _supertype(ty)
+    if not isinstance(ty, type):
+        return {}
+    # A bool is an int too, so it comes first.
+    formats: list[tuple[type, dict[str, Any]]] = [
+        (bool, {"type": "boolean"}),
+        (int, {"type": "integer"}),
+        (float, {"type": "number"}),
+        (str, {"type": "string"}),
+        (type(None), {"type": "null"}),
+    ]
+    for base, schema in formats:
+        if issubclass(ty, base):
+            return dict(schema)
+    return {}
+
+
+def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
+    """Move a schema's definitions into shared ones, renaming on collision.
+
+    Args:
+        schema: A Pydantic JSON schema, which may hold ``$defs``.
+        defs: Definitions shared by the model's schema, updated in place.
+
+    Returns:
+        ``schema`` without ``$defs``, with its references rewritten to the
+        names under which its definitions were added.
+    """
+    own = dict(schema.pop("$defs", {}))
+    renamed: dict[str, str] = {}
+    for name, definition in own.items():
+        new = name
+        suffix = 2
+        while new in defs and defs[new] != definition:
+            new = f"{name}_{suffix}"
+            suffix += 1
+        renamed[name] = new
+
+    def rewrite(value: Any) -> Any:
+        """Return ``value`` with its definition references renamed.
+
+        Args:
+            value: Part of a schema.
+
+        Returns:
+            The part, with each ``$ref`` to a renamed definition rewritten.
+        """
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for key, item in value.items():
+                if key in _SCHEMA_DATA:
+                    result[key] = item
+                elif key in _SCHEMA_MAPS and isinstance(item, dict):
+                    result[key] = {
+                        name: rewrite(schema) for name, schema in item.items()
+                    }
+                elif key == "$ref":
+                    result[key] = reference(item)
+                elif (
+                    key == "discriminator"
+                    and isinstance(item, dict)
+                    and isinstance(item.get("mapping"), dict)
+                ):
+                    # Pydantic's discriminator, from OpenAPI, maps each tag
+                    # to a reference too.
+                    result[key] = {
+                        **item,
+                        "mapping": {
+                            tag: reference(target)
+                            for tag, target in item["mapping"].items()
+                        },
+                    }
+                else:
+                    result[key] = rewrite(item)
+            return result
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        return value
+
+    def reference(item: Any) -> Any:
+        """Return a reference into a definition, renamed.
+
+        Args:
+            item: A reference, such as ``#/$defs/Cat`` or
+                ``#/$defs/Cat/properties/name``, whose first token after
+                ``$defs`` names the definition, escaped as a JSON Pointer
+                in a URI fragment.
+
+        Returns:
+            The reference with the definition's new name, or ``item`` if it
+            does not name one of the schema's definitions.
+        """
+        if not isinstance(item, str) or not item.startswith("#/$defs/"):
+            return item
+        token, slash, rest = item[8:].partition("/")
+        name = unquote(token).replace("~1", "/").replace("~0", "~")
+        if name not in renamed:
+            return item
+        # A new name only adds a suffix, which needs no escaping.
+        return f"#/$defs/{token}{renamed[name][len(name) :]}{slash}{rest}"
+
+    for name, definition in own.items():
+        defs[renamed[name]] = rewrite(definition)
+    return rewrite(schema)
+
+
+# The keys that stand for $defs and $ref in a sealed schema.
+_SEALED = {"$defs": "x-eazyrest-defs", "$ref": "x-eazyrest-ref"}
+_UNSEALED = {sealed: key for key, sealed in _SEALED.items()}
+
+
+def _rename_keys(value: Any, names: Mapping[str, str]) -> Any:
+    """Return a value with the keys of its objects renamed, at any depth.
+
+    Args:
+        value: Part of a schema.
+        names: New names of keys.
+
+    Returns:
+        ``value`` with each key in ``names`` renamed.
+    """
+    if isinstance(value, dict):
+        return {
+            names.get(key, key): _rename_keys(item, names)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_rename_keys(item, names) for item in value]
+    return value
+
+
+def _seal(schema: dict[str, Any]) -> dict[str, Any]:
+    """Hide a standalone schema's definitions and references from Pydantic.
+
+    Pydantic resolves each ``$ref`` in a schema that a type gives it against
+    its own definitions, so a conversion's schema with its own ``$defs`` is
+    sealed inside a Pydantic schema, and ``json_schema()`` unseals and hoists
+    it.
+
+    Args:
+        schema: A conversion's schema.
+
+    Returns:
+        ``schema``, with ``$defs`` and ``$ref`` renamed if it has
+        definitions.
+    """
+    if "$defs" not in schema:
+        return schema
+    result: dict[str, Any] = _rename_keys(schema, _SEALED)
+    return result
+
+
+# Keywords whose values map names to schemas, and keywords whose values are
+# JSON data rather than schemas.
+_SCHEMA_MAPS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs"}
+)
+_SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
+
+
+def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
+    """Move the definitions of schemas embedded in a schema into shared ones.
+
+    A conversion's schema is a standalone schema, whose local references,
+    such as ``#/$defs/Part``, name its own ``$defs``. Embedded in a model's
+    schema, also sealed inside a Pydantic schema, its definitions move into
+    the model's ``$defs``, renamed on collision, and only its own references
+    are rewritten.
+
+    Args:
+        value: Part of a schema, after the model's own definitions have been
+            hoisted.
+        defs: Definitions shared by the model's schema, updated in place.
+
+    Returns:
+        ``value`` with no ``$defs`` below it, and its references rewritten.
+    """
+    if isinstance(value, list):
+        return [_hoist_nested_defs(item, defs) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if _SEALED["$defs"] in value:
+        value = _rename_keys(value, _UNSEALED)
+    if "$defs" in value:
+        value = _hoist_defs(dict(value), defs)
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _SCHEMA_DATA:
+            result[key] = item
+        elif key in _SCHEMA_MAPS and isinstance(item, dict):
+            result[key] = {
+                name: _hoist_nested_defs(schema, defs)
+                for name, schema in item.items()
+            }
+        else:
+            result[key] = _hoist_nested_defs(item, defs)
+    return result
+
+
+def _json_schema_of(
+    analyzed: AnalyzedType,
+    mode: str,
+    defs: dict[str, Any],
+    seen: frozenset[type],
+    table: Mapping[Any, Conversion],
+) -> Any:
+    """Return the JSON schema of a field's analyzed type.
+
+    Args:
+        analyzed: Analyzed type of the field.
+        mode: ``"read"`` or ``"write"``.
+        defs: Definitions shared by the model's schema, updated in place.
+        seen: Models whose key schema is being built, to stop a cycle of
+            related primary keys.
+        table: Conversion table of the model whose field it is.
+
+    Returns:
+        The schema of the JSON value that the field reads or writes.
+
+    Raises:
+        TypeError: If a Pydantic-converted field needs Pydantic, which is not
+            installed, or another conversion error.
+    """
+    match analyzed:
+        case OptionalType(inner):
+            return {
+                "anyOf": [
+                    _json_schema_of(inner, mode, defs, seen, table),
+                    {"type": "null"},
+                ]
+            }
+        case CollectionType(collection_type, item_type):
+            schema: dict[str, Any] = {
+                "type": "array",
+                "items": _json_schema_of(item_type, mode, defs, seen, table),
+            }
+            if collection_type in (set, frozenset):
+                schema["uniqueItems"] = True
+            return schema
+        case RelatedType(model_type, hyperlinked):
+            if hyperlinked:
+                key: Any = {"type": "string", "format": "uri"}
+            else:
+                pk = getattr(model_type, "_pk", None)
+                if pk is None or model_type in seen:
+                    key = {}
+                else:
+                    with _converting(model_type, pk.field):
+                        key = _json_schema_of(
+                            pk.analyzed_type,
+                            "write",
+                            defs,
+                            seen | {model_type},
+                            _table_of(model_type),
+                        )
+            # A read also accepts the related object embedded as JSON.
+            if mode == "read":
+                return {"anyOf": [key, {"type": "object"}]}
+            return key
+        case PydanticType():
+            # Building the adapter reports a missing Pydantic.
+            adapter = analyzed.adapter
+            from .pydantic import _json_schema
+
+            # The eazyrest.pydantic types give the schemas of the model's
+            # conversions.
+            with _active_table(table):
+                schema = _json_schema(adapter, mode)
+            return _hoist_defs(schema, defs)
+        case BaseType(base_type):
+            return _base_schema(base_type, mode, table)
+    raise TypeError(f"Unsupported analyzed type {type(analyzed).__name__}")
 
 
 class JSONProperty:
@@ -3893,6 +4199,108 @@ class JSONObject:
             f"{cls.__name__}.collection_items() expected a list response, "
             f"got {type(payload).__name__}"
         )
+
+    @classmethod
+    def json_schema(
+        cls, mode: Literal["read", "write"] = "read"
+    ) -> dict[str, Any]:
+        """Return a JSON schema of the objects that this class reads or writes.
+
+        In ``"read"`` mode, the properties are the JSON keys that the class
+        reads, after ``field_map``, without write-only fields. In
+        ``"write"`` mode, they are the keys that writes send, after
+        ``write_map``, without read-only fields and with write-only ones.
+        Properties follow the declaration order, base classes first.
+
+        A built-in conversion gives its JSON form, such as a string with
+        ``format`` ``date-time`` for ``datetime.datetime``. ``T | None`` allows
+        ``null``, a collection is an array, and a relation is the related
+        model's primary key, or its URL for ``Hyperlinked()``, which a read
+        also accepts as an embedded object. A Pydantic-converted field gives
+        Pydantic's validation schema in ``"read"`` mode, and its serialization
+        schema in ``"write"`` mode, so that a serializer's return type
+        describes what it writes, except that a ``pydantic.Json`` field is the
+        JSON text that it writes and a computed field, which a write does not
+        send, is left out. Its definitions, like those of a conversion's
+        schema, move into the schema's ``$defs``, renamed with the references
+        to them when two share a name. A type whose JSON form eazyrest does not
+        check, such as ``Any``, allows any value.
+
+        eazyrest has no required fields, so the schema lists none, and allows
+        other properties, which a server may send. The schema is a JSON Schema
+        2020-12 schema, as its ``$schema`` says, which differs from the
+        dialect of OpenAPI 3.0, as in its ``prefixItems`` for a fixed-length
+        tuple.
+
+        Args:
+            mode: ``"read"`` or ``"write"``.
+
+        Returns:
+            The JSON schema, as a dict.
+
+        Raises:
+            ValueError: If ``mode`` is neither ``"read"`` nor ``"write"``.
+            NameError: If a field's annotation names a type that cannot be
+                resolved, as when the field is read.
+            FieldConversionError: If a Pydantic-converted field needs
+                Pydantic, which is not installed.
+        """
+        if mode not in ("read", "write"):
+            raise ValueError(f"mode must be 'read' or 'write', got {mode!r}")
+
+        # Declaration order, base classes first. A redeclared field keeps its
+        # first position.
+        fields: dict[str, None] = {}
+        for base in reversed(cls.__mro__):
+            for name, value in vars(base).items():
+                if isinstance(value, JSONProperty) and name in getattr(
+                    cls, "_json_fields", ()
+                ):
+                    fields.setdefault(name)
+
+        defs: dict[str, Any] = {}
+        properties: dict[str, Any] = {}
+        for field in fields:
+            descriptor: JSONProperty = getattr(cls, field)
+            if mode == "read":
+                if descriptor.write_only:
+                    continue
+                key = descriptor.json_field
+            else:
+                if descriptor.read_only:
+                    continue
+                key = descriptor.write_field
+            with _converting(cls, field):
+                properties[key] = _json_schema_of(
+                    descriptor.analyzed_type,
+                    mode,
+                    defs,
+                    frozenset({cls}),
+                    _table_of(cls),
+                )
+
+        # A conversion's schema may hold definitions of its own, also inside
+        # a definition, which move into the shared ones until none remain.
+        properties = {
+            key: _hoist_nested_defs(value, defs)
+            for key, value in properties.items()
+        }
+        done: set[str] = set()
+        while todo := [name for name in defs if name not in done]:
+            for name in todo:
+                defs[name] = _hoist_nested_defs(defs[name], defs)
+                done.add(name)
+
+        schema: dict[str, Any] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": cls.__name__,
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": True,
+        }
+        if defs:
+            schema["$defs"] = defs
+        return schema
 
     @classmethod
     def object_json(cls, payload: Any, **kwargs: Any) -> Any:
