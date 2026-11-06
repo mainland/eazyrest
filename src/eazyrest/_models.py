@@ -48,12 +48,11 @@ from ._errors import (
     EazyrestError,
     MultipleObjectsReturned,
     PrefetchNotSupported,
-    RedirectError,
     ResponseShapeError,
     UsageError,
 )
 from ._results import Results, _count_of
-from .api import API, _origin
+from .api import API, _check_final_response, _origin
 from .dateparse import parse_datetime, parse_duration
 from .write_mode import WriteMode, validate_write_mode
 
@@ -1068,14 +1067,7 @@ def _check_model_write(resp: requests.Response) -> requests.Response:
     Raises:
         RedirectError: If the response is a final 3xx status.
     """
-    if 300 <= resp.status_code < 400:
-        resp.close()
-        raise RedirectError(
-            f"{resp.request.method} {resp.url} returned status "
-            f"{resp.status_code}, so the model write was not confirmed",
-            response=resp,
-        )
-    return resp
+    return _check_final_response(resp, "the model write was not confirmed")
 
 
 def _query_type(conversion: AnalyzedType) -> AnalyzedType:
