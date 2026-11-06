@@ -169,6 +169,13 @@ def test_constraints_apply_after_eazyrest_conversion() -> None:
         adapter.validate_python("-PT1M")
 
 
+def test_enum_converted_by_pydantic_lists_its_values() -> None:
+    """An enum inside a Pydantic type keeps its values in the JSON schema."""
+    adapter = PydanticType(list[Level]).adapter
+
+    assert adapter.json_schema()["items"] == {"enum": [1, 2]}
+
+
 def test_types_have_json_schemas() -> None:
     """A model that uses the types still has a JSON schema."""
     properties = SCHEDULE.json_schema()["properties"]
@@ -1066,3 +1073,84 @@ def test_pydantic_user_error_is_a_field_conversion_error() -> None:
         _ = Pet(json={"id": 1, "pet": {"kind": "cat", "lives": 9}}).pet
 
     assert isinstance(info.value.__cause__, TypeError)
+
+
+def _make_point(extra: str) -> type[BaseModel]:
+    """Return a Pydantic model named ``Point`` with one more field.
+
+    Args:
+        extra: Name of the field that tells two such models apart.
+
+    Returns:
+        The model, whose JSON schema definition is named ``Point``.
+    """
+    fields: dict[str, Any] = {"x": (int, ...), extra: (int, ...)}
+    model: type[BaseModel] = pydantic.create_model(
+        "Point", __config__=ConfigDict(extra="allow"), **fields
+    )
+    return model
+
+
+PlanePoint = _make_point("y")
+DepthPoint = _make_point("z")
+
+
+class PlaneWrapper(BaseModel):
+    """Pydantic model that nests a model named ``Point``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    a: PlanePoint  # type: ignore[valid-type]
+
+
+class DepthWrapper(BaseModel):
+    """Pydantic model that nests another model named ``Point``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    b: DepthPoint  # type: ignore[valid-type]
+
+
+@json_object
+class Charted(PydanticBase):
+    """Model whose Pydantic fields share and collide in definitions."""
+
+    id: int
+    first: PlaneWrapper
+    second: PlaneWrapper
+    third: DepthWrapper
+    image: Base64Bytes
+
+
+def test_json_schema_hoists_pydantic_definitions() -> None:
+    """Pydantic fields share ``$defs``, renamed when two names collide."""
+    schema = Charted.json_schema()
+    properties = schema["properties"]
+    defs = schema["$defs"]
+
+    assert properties["first"]["properties"]["a"] == {"$ref": "#/$defs/Point"}
+    assert properties["second"] == properties["first"]
+    assert properties["third"]["properties"]["b"] == {
+        "$ref": "#/$defs/Point_2"
+    }
+    assert sorted(defs) == ["Point", "Point_2"]
+    assert sorted(defs["Point"]["properties"]) == ["x", "y"]
+    assert sorted(defs["Point_2"]["properties"]) == ["x", "z"]
+    assert properties["image"] == {"format": "base64", "type": "string"}
+
+
+def test_json_schema_without_pydantic_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schema of a field that needs Pydantic says how to install it."""
+    monkeypatch.setitem(sys.modules, "eazyrest.pydantic", None)
+
+    @json_object
+    class Located(PydanticBase):
+        """Model whose field needs Pydantic."""
+
+        id: int
+        point: Point
+
+    with pytest.raises(FieldConversionError, match=r"eazyrest\[pydantic\]"):
+        Located.json_schema()

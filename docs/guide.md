@@ -375,6 +375,21 @@ class TimestampObject(JSONObject):
         return super().to_json(value, conversion)
 ```
 
+## JSON schemas
+
+`json_schema()` returns a JSON schema of the objects that a class reads, or with `mode="write"`, of what its writes send, so a client can check its models against a server's OpenAPI schema:
+
+```python
+schema = Todo.json_schema()
+assert schema["properties"]["userId"] == {
+    "anyOf": [{"type": "integer"}, {"type": "object"}]
+}
+```
+
+The read schema's properties are the JSON keys after `field_map`, without write-only fields. The write schema's are the keys after `write_map`, without read-only fields and with write-only ones. A built-in conversion gives its JSON form, such as a string with `format` `date-time` for `datetime.datetime`, an enum the values of its members, and a `Literal` its values. `T | None` also allows `null`, and a collection is an array, whose items are unique for a set. A relation is the related model's primary key, or a URL for a `Hyperlinked()` relation, and a read also accepts the related object embedded as JSON. A field that Pydantic converts gives Pydantic's validation schema, and its definitions move into the schema's `$defs`, renamed when two share a name. A type whose JSON form `eazyrest` does not check, such as a plain `TypedDict` or `dict[str, Any]`, allows any value.
+
+`eazyrest` has no required fields, so the schema lists none. Every field reads `null` as `None`, but the schema allows `null` only where the annotation does, so that it describes the declared types, as a server's schema does. It allows properties that the class does not declare, which a server may send.
+
 ## Collections
 
 `filter()` and `all()` return iterators over model instances. The request is sent when `filter()` or `all()` is called, and model instances are created as the iterator advances. An iterator can be consumed only once, so convert it to a list to iterate more than once:
