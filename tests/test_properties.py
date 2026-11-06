@@ -17,7 +17,7 @@ import re
 import typing
 import uuid
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import isodate
 import pytest
@@ -33,8 +33,12 @@ from eazyrest import (
     Conversion,
     FieldConversionError,
     JSONObject,
+    LimitExceeded,
+    PaginationError,
     ResponseShapeError,
     WriteMode,
+    follow_link_headers,
+    follow_next_links,
     json_object,
     parse_duration,
 )
@@ -1333,3 +1337,224 @@ def test_accepted_pydantic_writes_read_back(
     assert _saved_json(field, read) == sent
     if _of_field_type(field, value):
         assert read == value
+
+
+_PAGES_ORIGIN = "https://pages.example"
+_OTHER_ORIGIN = "https://elsewhere.example"
+
+
+def _page_url(origin: str, index: int) -> str:
+    """Return the URL of a page of the generated collection.
+
+    Args:
+        origin: Scheme and host that serve the page.
+        index: Number of the page.
+
+    Returns:
+        Absolute URL of the page.
+    """
+    return f"{origin}/pages/?page={index}"
+
+
+class _PageGraph(typing.NamedTuple):
+    """A generated collection, and the limits it is read under."""
+
+    sizes: list[int]
+    """Number of items on each page."""
+    links: list[tuple[str, int]]
+    """Each page's next link, as its kind and the page it names."""
+    allow_other_origins: bool
+    max_pages: int | None
+    max_items: int | None
+
+
+@st.composite
+def _page_graphs(draw: st.DrawFn) -> _PageGraph:
+    """Draw a collection of up to six linked pages and the traversal limits.
+
+    A next link is absolute, a path, a query, on another origin, empty, or
+    absent. It can name any page, including one already read.
+
+    Args:
+        draw: Hypothesis draw function.
+
+    Returns:
+        The collection and limits.
+    """
+    count = draw(st.integers(1, 6))
+    targets = st.integers(0, count - 1)
+    links = st.one_of(
+        st.tuples(
+            st.sampled_from(["absolute", "path", "query", "other"]), targets
+        ),
+        st.tuples(st.sampled_from(["empty", "absent"]), st.just(0)),
+    )
+    return _PageGraph(
+        sizes=draw(
+            st.lists(st.integers(0, 3), min_size=count, max_size=count)
+        ),
+        links=draw(st.lists(links, min_size=count, max_size=count)),
+        allow_other_origins=draw(st.booleans()),
+        max_pages=draw(st.none() | st.integers(1, 6)),
+        max_items=draw(st.none() | st.integers(0, 10)),
+    )
+
+
+def _link_text(kind: str, target: int) -> str | None:
+    """Return a next link as a page holds it.
+
+    Args:
+        kind: Kind of link, as ``_page_graphs()`` draws it.
+        target: Number of the page that the link names.
+
+    Returns:
+        The link's text, or ``None`` for an absent link.
+    """
+    texts = {
+        "absolute": _page_url(_PAGES_ORIGIN, target),
+        "path": f"/pages/?page={target}",
+        "query": f"?page={target}",
+        "other": _page_url(_OTHER_ORIGIN, target),
+        "empty": "",
+    }
+    return texts.get(kind)
+
+
+def _page_items(index: int, size: int) -> list[str]:
+    """Return the items of a page.
+
+    Args:
+        index: Number of the page.
+        size: Number of items on it.
+
+    Returns:
+        Items that name their page and position.
+    """
+    return [f"{index}.{position}" for position in range(size)]
+
+
+def _expected_traversal(
+    graph: _PageGraph,
+) -> tuple[list[str], type[Exception] | None]:
+    """Predict what a traversal of a generated collection yields.
+
+    A page's items count against ``max_items`` before any is yielded. A next
+    link is followed only if it names no page already read, has the API's
+    origin unless other origins are allowed, and stays within ``max_pages``,
+    checked in that order.
+
+    Args:
+        graph: Generated collection and limits.
+
+    Returns:
+        The items yielded, and the error that ends the traversal, if any.
+    """
+    url = _page_url(_PAGES_ORIGIN, 0)
+    read = {url}
+    pages = 1
+    items: list[str] = []
+    index = 0
+    while True:
+        page_items = _page_items(index, graph.sizes[index])
+        if (
+            graph.max_items is not None
+            and len(items) + len(page_items) > graph.max_items
+        ):
+            return items, LimitExceeded
+        items.extend(page_items)
+        text = _link_text(*graph.links[index])
+        if not text:
+            return items, None
+        url = urljoin(url, text)
+        if url in read:
+            return items, PaginationError
+        if not graph.allow_other_origins and not url.startswith(
+            f"{_PAGES_ORIGIN}/"
+        ):
+            return items, PaginationError
+        if graph.max_pages is not None and pages >= graph.max_pages:
+            return items, LimitExceeded
+        pages += 1
+        read.add(url)
+        index = graph.links[index][1]
+
+
+def _serve_pages(
+    mock: requests_mock.Mocker, graph: _PageGraph, *, link_headers: bool
+) -> None:
+    """Serve every page of a collection from both origins.
+
+    Args:
+        mock: Mocker to register the pages with.
+        graph: Generated collection.
+        link_headers: Whether pages are JSON lists whose Link header names the
+            next page, rather than mappings with ``results`` and ``next``.
+    """
+    for index, size in enumerate(graph.sizes):
+        items = _page_items(index, size)
+        text = _link_text(*graph.links[index])
+        for origin in (_PAGES_ORIGIN, _OTHER_ORIGIN):
+            url = _page_url(origin, index)
+            if link_headers:
+                headers = (
+                    {} if text is None else {"Link": f'<{text}>; rel="next"'}
+                )
+                mock.get(url, json=items, headers=headers, complete_qs=True)
+            else:
+                body: dict[str, Any] = {"results": items}
+                if text is not None:
+                    body["next"] = text
+                mock.get(url, json=body, complete_qs=True)
+
+
+@settings(max_examples=150)
+@given(graph=_page_graphs(), link_headers=st.booleans())
+def test_traversal_follows_only_allowed_pages(
+    graph: _PageGraph, link_headers: bool
+) -> None:
+    """A traversal yields exactly the pages that its limits allow.
+
+    Generated collections link pages in chains and cycles, by absolute, path,
+    and query links, and to another origin. Every traversal yields the items
+    that the oracle predicts and ends as it predicts: after the last page,
+    with ``PaginationError`` for a page already read or another origin, or
+    with ``LimitExceeded`` for too many pages or items. No request reaches
+    another origin unless other origins are allowed.
+
+    Args:
+        graph: Generated collection and limits.
+        link_headers: Whether to read Link headers with
+            ``follow_link_headers()`` rather than ``next`` members with
+            ``follow_next_links()``.
+    """
+    api = API(f"{_PAGES_ORIGIN}/")
+    api.max_pages = graph.max_pages
+    api.max_items = graph.max_items
+    first = _page_url(_PAGES_ORIGIN, 0)
+    yielded: list[str] = []
+    error: type[Exception] | None = None
+
+    with requests_mock.Mocker() as mock:
+        _serve_pages(mock, graph, link_headers=link_headers)
+        if link_headers:
+            items = follow_link_headers(
+                api,
+                api.get(first),
+                allow_other_origins=graph.allow_other_origins,
+            )
+        else:
+            items = follow_next_links(
+                api,
+                api.json(api.get(first)),
+                url=first,
+                allow_other_origins=graph.allow_other_origins,
+            )
+        try:
+            yielded.extend(items)
+        except (PaginationError, LimitExceeded) as err:
+            error = type(err)
+        requested = [request.url for request in mock.request_history]
+
+    assert (yielded, error) == _expected_traversal(graph)
+    if not graph.allow_other_origins:
+        assert all(url.startswith(f"{_PAGES_ORIGIN}/") for url in requested)
