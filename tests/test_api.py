@@ -132,6 +132,28 @@ def test_api_check_redirects_rejects_followed_body_loss() -> None:
         API._check_redirects(final)
 
 
+@pytest.mark.parametrize(
+    "location", ["http://[::1/p", "http://example.com\uff0f.evil.test/p"]
+)
+def test_unparsable_redirect_raises_redirect_error(
+    requests_mock: Any, location: str
+) -> None:
+    """A redirect to a location that cannot be parsed raises RedirectError.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/r",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot be parsed"):
+        api.get("/r")
+
+
 def test_api_check_redirects_ignores_a_resent_401() -> None:
     """A 401 that an authentication handler resent is not a redirect.
 

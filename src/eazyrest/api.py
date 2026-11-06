@@ -1090,13 +1090,22 @@ class API:
                     allowed, or if requests would follow it without the
                     request's body. The response is closed first.
             """
-            target = self.session.get_redirect_target(resp)
-            # requests follows no redirect to an empty target.
-            if not target:
-                return
-
-            destination = _redirect_destination(resp, target)
-            if _redirect_origins(resp, target) <= allowed:
+            try:
+                target = self.session.get_redirect_target(resp)
+                # requests follows no redirect to an empty target.
+                if not target:
+                    return
+                destination = _redirect_destination(resp, target)
+                origins = _redirect_origins(resp, target)
+            except ValueError as err:
+                resp.close()
+                raise RedirectError(
+                    f"{resp.request.method} {resp.url} was redirected with "
+                    f"status {resp.status_code} to a location that cannot be "
+                    "parsed, so it was not followed",
+                    response=resp,
+                ) from err
+            if origins <= allowed:
                 _check_write_redirect(resp, target)
                 if budget is not None:
                     # requests reads a redirect's body before following it.

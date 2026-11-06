@@ -22,5 +22,18 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.Page
+   :members:
+```
+
+```{eval-rst}
+.. autofunction:: eazyrest.next_links_page
+```
+
+```{eval-rst}
+.. autofunction:: eazyrest.link_headers_page
+```
+
+```{eval-rst}
 .. autoexception:: eazyrest.PaginationError
 ```

@@ -25,7 +25,13 @@ from ._models import (
 from ._results import Results
 from .api import API
 from .dateparse import parse_datetime, parse_duration
-from .pagination import follow_link_headers, follow_next_links
+from .pagination import (
+    Page,
+    follow_link_headers,
+    follow_next_links,
+    link_headers_page,
+    next_links_page,
+)
 from .write_mode import WriteMode
 
 try:
@@ -47,6 +53,7 @@ __all__ = [
     "LimitExceeded",
     "MultipleObjectsReturned",
     "NotFound",
+    "Page",
     "PaginationError",
     "PrefetchNotSupported",
     "RedirectError",
@@ -57,6 +64,8 @@ __all__ = [
     "follow_link_headers",
     "follow_next_links",
     "json_object",
+    "link_headers_page",
+    "next_links_page",
     "parse_datetime",
     "parse_duration",
 ]
