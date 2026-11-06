@@ -15,7 +15,7 @@ from requests_mock import ANY as requests_mock_ANY
 from requests_mock import Mocker, create_response
 
 from eazyrest import API, LimitExceeded, RedirectError
-from eazyrest.api import _redirect_destination
+from eazyrest.api import _canonical_url, _redirect_destination
 
 
 def test_api_preserves_base_path_prefix_in_relative_requests(
@@ -962,3 +962,24 @@ def test_scoped_client_refuses_a_final_redirect(
         api._scoped({"allow_redirects": False}).get("/items/")
 
     assert api.get("/items/", allow_redirects=False).status_code == status
+
+
+@pytest.mark.parametrize(
+    ("url", "canonical"),
+    [
+        ("HTTPS://Example.COM:443/a/?b=1#c", "https://example.com/a/?b=1"),
+        ("http://example.com:8080", "http://example.com:8080/"),
+        ("https://[::1]:443/x", "https://[::1]/x"),
+        ("https://user@Example.com/x", "https://user@example.com/x"),
+    ],
+)
+def test_canonical_url_spells_one_resource_one_way(
+    url: str, canonical: str
+) -> None:
+    """Spellings of one URL that differ in case, port, or fragment agree.
+
+    Args:
+        url: URL to canonicalize.
+        canonical: Expected canonical spelling.
+    """
+    assert _canonical_url(url) == canonical

@@ -55,6 +55,7 @@ from ._errors import (
 from ._results import Results, _count_of
 from .api import (
     API,
+    _canonical_url,
     _check_final_response,
     _merge_request_options,
     _origin,
@@ -2356,8 +2357,15 @@ class JSONObject:
                     "Hyperlinked field values must be URLs or objects, got "
                     f"{type(arg).__name__}"
                 )
+            url = _checked_hyperlink(ty.api if api is None else api, arg)
+            if field is not None and field in self._prefetched_related:
+                prefetched = self._prefetched_related[field].get(
+                    _canonical_url(url)
+                )
+                if prefetched is not None:
+                    return cast(T, prefetched)
             related = ty(api=api, write_mode=self.write_mode)
-            related._url_override = _checked_hyperlink(related.api, arg)
+            related._url_override = url
             return related
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
@@ -3597,6 +3605,40 @@ class JSONObject:
         )
 
     @classmethod
+    def bulk_get_by_urls(
+        cls: type[Self],
+        urls: set[str],
+        *,
+        api: API | None = None,
+    ) -> dict[str, Self]:
+        """Bulk-load objects by URL to prefetch a hyperlinked relation.
+
+        Prefetching a field annotated ``Annotated[Model, Hyperlinked()]``
+        calls this hook on ``Model`` with the URLs that the parent objects
+        hold, after checking their origins as reading the field does. An
+        object returned without a URL of its own takes the URL that named
+        it. Prefetch keeps the objects under the API of the query that
+        prefetches, whatever API they were created with.
+
+        Args:
+            urls: Absolute URLs of the objects to load.
+            api: The client to send the bulk request with, as for
+                ``bulk_get_by_pks()``.
+
+        Returns:
+            Mapping from URL to loaded object. URLs are matched after
+            resolving them against the API's base URL and normalizing case
+            and default ports, and URLs that were not requested are ignored.
+
+        Raises:
+            PrefetchNotSupported: Always, unless overridden by a subclass.
+        """
+        del urls, api
+        raise PrefetchNotSupported(
+            f"{cls.__name__} does not support bulk prefetch by URL"
+        )
+
+    @classmethod
     def collection_items_from_response(
         cls, resp: requests.Response, *, api: API
     ) -> Iterable[Any]:
@@ -3728,7 +3770,8 @@ class JSONObject:
         Raises:
             ValueError: If ``field`` is not a JSON-backed related-object field.
             PrefetchNotSupported: If the related model does not override
-                ``bulk_get_by_pks()``.
+                ``bulk_get_by_pks()``, or ``bulk_get_by_urls()`` for a
+                hyperlinked field.
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
@@ -3749,32 +3792,32 @@ class JSONObject:
             raise ValueError(  # noqa: TRY004
                 f"{cls.__name__}.{field} is not a related-object field"
             )
-        if analyzed_type.hyperlinked:
-            raise ValueError(
-                f"{cls.__name__}.{field} is hyperlinked, and prefetching "
-                "needs primary keys"
-            )
-
         model_type = analyzed_type.model_type
-        if not model_type._supports_bulk_get():
+        hook = (
+            "bulk_get_by_urls"
+            if analyzed_type.hyperlinked
+            else "bulk_get_by_pks"
+        )
+        if not model_type._overrides_hook(hook):
             raise PrefetchNotSupported(
                 f"{cls.__name__}.{field} cannot be prefetched, because "
-                f"{model_type.__name__} does not implement bulk_get_by_pks()"
+                f"{model_type.__name__} does not implement {hook}()"
             )
 
         return descriptor, analyzed_type, collection_type
 
     @classmethod
-    def _supports_bulk_get(cls) -> bool:
-        """Return whether this class overrides ``bulk_get_by_pks()``.
+    def _overrides_hook(cls, name: str) -> bool:
+        """Return whether this class overrides one of ``JSONObject``'s hooks.
+
+        Args:
+            name: Name of the hook, such as ``"bulk_get_by_pks"``.
 
         Returns:
-            Whether the nearest class in the MRO that defines
-            ``bulk_get_by_pks()`` is not ``JSONObject``.
+            Whether the nearest class in the MRO that defines ``name`` is not
+            ``JSONObject``.
         """
-        owner = next(
-            base for base in cls.__mro__ if "bulk_get_by_pks" in vars(base)
-        )
+        owner = next(base for base in cls.__mro__ if name in vars(base))
         return owner is not JSONObject
 
     @classmethod
@@ -3852,6 +3895,11 @@ class JSONObject:
             # The related model loads through its own registered API, unless
             # the query passed api=.
             model_type = related_type.model_type
+            if related_type.hyperlinked:
+                prefetched_related[field] = cls._prefetch_hyperlinks(
+                    model_type, pks, query
+                )
+                continue
             related_objects = model_type.bulk_get_by_pks(
                 pks, api=query.related_client(model_type)
             )
@@ -3861,6 +3909,52 @@ class JSONObject:
             }
 
         return prefetched_related
+
+    @staticmethod
+    def _prefetch_hyperlinks(
+        model_type: type[JSONObject], values: set[Any], query: _Query
+    ) -> dict[str, JSONObject]:
+        """Bulk-load the objects that a hyperlinked field's URLs name.
+
+        Each URL is checked as reading the field checks it, against the API
+        that the parent objects give their related objects. A value that is
+        not a URL, or not one that the API allows, is not loaded, so reading
+        the field still raises.
+
+        Args:
+            model_type: Class of the related objects.
+            values: Hyperlinks that the parent objects hold.
+            query: The query that prefetches.
+
+        Returns:
+            The loaded objects, keyed by canonical absolute URL. Each has the
+            URL that named it, as an object that a hyperlink names does.
+        """
+        check_api = model_type.api if query.api is None else query.api
+        urls: dict[str, str] = {}
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            try:
+                url = _checked_hyperlink(check_api, value)
+            except ValueError:
+                continue
+            urls[_canonical_url(url)] = url
+        if not urls:
+            return {}
+
+        loaded = model_type.bulk_get_by_urls(
+            set(urls.values()), api=query.related_client(model_type)
+        )
+        prefetched: dict[str, JSONObject] = {}
+        for url, obj in loaded.items():
+            key = _canonical_url(urljoin(check_api.base_url, url))
+            if key not in urls:
+                continue
+            if obj._url_override is None:
+                obj._url_override = urls[key]
+            prefetched[key] = obj
+        return prefetched
 
     @classmethod
     def _prefetched_filter(

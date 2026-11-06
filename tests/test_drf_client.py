@@ -125,13 +125,6 @@ class Pages(pagination.PageNumberPagination):
     page_size = 5
 
 
-class ContentTypeViewSet(viewsets.ReadOnlyModelViewSet):
-    """Content types."""
-
-    queryset = ContentType.objects.order_by("id")
-    serializer_class = ContentTypeSerializer
-
-
 class PermissionViewSet(viewsets.ModelViewSet):
     """Permissions, paginated."""
 
@@ -220,6 +213,14 @@ FilteredUserViewSet = run_guide_example(
 )["UserViewSet"]
 BulkActionUserViewSet = run_guide_example(
     'url_path="bulk"', doc=DRF, User=User, UserSerializer=UserSerializer
+)["UserViewSet"]
+# The same list view for content types, which the hyperlink prefetch recipe
+# reads by key.
+ContentTypeViewSet = run_guide_example(
+    "queryset = queryset.filter(pk__in=ids)",
+    doc=DRF,
+    User=ContentType,
+    UserSerializer=ContentTypeSerializer,
 )["UserViewSet"]
 
 
@@ -374,6 +375,46 @@ class HyperPermissionModel(DRFBase):
     name: str
     codename: str
     content_type: Annotated[ContentTypeModel, Hyperlinked()]
+
+
+# The DRF guide's client recipe for bulk_get_by_urls(), run as the guide
+# writes it.
+bulk_by_urls_recipe = run_guide_example(
+    "def bulk_get_by_urls(cls, urls, *, api):", doc=DRF
+)["bulk_get_by_urls"]
+
+
+@json_object
+class LinkedContentTypeModel(ContentTypeModel):
+    """Content type whose hyperlinks prefetch through the guide's recipe."""
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: API | None = None
+    ) -> dict[Any, LinkedContentTypeModel]:
+        """Load content types by key from the list view.
+
+        Args:
+            pks: Keys of the content types.
+            api: Client to send the request with.
+
+        Returns:
+            The content types, keyed by primary key.
+        """
+        return {obj.pk: obj for obj in cls.filter(id=sorted(pks), api=api)}
+
+    bulk_get_by_urls = bulk_by_urls_recipe
+
+
+@json_object
+class LinkedPermissionModel(DRFBase):
+    """Permission whose hyperlinked content type can be prefetched."""
+
+    class_url = "/hyper-permissions/"
+
+    id: int
+    codename: str
+    content_type: Annotated[LinkedContentTypeModel, Hyperlinked()]
 
 
 @json_object(write_only={"password"})
@@ -695,3 +736,30 @@ def test_session_csrf_recipe_allows_unsafe_requests(api: API) -> None:
 
     assert response.status_code == 201
     assert client.json(response) == {"username": "session-user"}
+
+
+def test_hyperlink_prefetch_recipe_loads_relations_in_one_request(
+    api: API,
+) -> None:
+    """The guide's URL recipe loads every hyperlinked relation at once."""
+    stored = list(Permission.objects.select_related("content_type"))
+    expected = {
+        permission.pk: permission.content_type.model for permission in stored
+    }
+
+    with _recorded_urls(api) as urls:
+        permissions = list(
+            LinkedPermissionModel.filter(prefetch="content_type")
+        )
+        models = {
+            permission.pk: permission.content_type.model
+            for permission in permissions
+        }
+
+    assert models == expected
+    assert len(urls) == 2
+    bulk = urlsplit(urls[1])
+    assert bulk.path == "/contenttypes/"
+    assert sorted(map(int, parse_qs(bulk.query)["id"])) == sorted(
+        {permission.content_type_id for permission in stored}
+    )

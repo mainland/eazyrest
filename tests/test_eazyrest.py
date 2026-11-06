@@ -5372,10 +5372,88 @@ def test_hyperlinked_relation_writes_urls_and_queries_keys(
     assert lookup.last_request.qs == {"author": ["5"]}
 
 
-def test_hyperlinked_field_cannot_be_prefetched() -> None:
-    """Prefetching needs keys, which a hyperlink does not give."""
-    with pytest.raises(ValueError, match="hyperlinked"):
+def test_hyperlinked_prefetch_needs_bulk_get_by_urls(
+    requests_mock: Any,
+) -> None:
+    """A hyperlinked field prefetches through ``bulk_get_by_urls()``.
+
+    ``User`` implements only ``bulk_get_by_pks()``, so prefetching fails
+    before any request.
+    """
+    with pytest.raises(PrefetchNotSupported, match="bulk_get_by_urls"):
         Note.filter(prefetch="author")
+
+    assert requests_mock.call_count == 0
+
+
+def _user_from_url(url: str, api: API | None) -> User:
+    """Return the user that a hyperlink names, as a bulk lookup would.
+
+    Args:
+        url: Absolute URL of the user.
+        api: API to create the user with.
+
+    Returns:
+        A loaded user whose key is the URL's last path segment.
+    """
+    pk = int(url.rstrip("/").rsplit("/", 1)[1])
+    return User(json={"id": pk, "name": f"user{pk}"}, api=api)
+
+
+def test_hyperlinked_prefetch_loads_each_url_once(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hyperlinks load in one bulk call per field and read without a request.
+
+    Relative links and spellings that differ in host case or default port
+    name the same object. A link to another origin is not loaded, and
+    reading it still raises.
+    """
+    calls: list[tuple[set[str], API | None]] = []
+
+    def bulk_get_by_urls(
+        cls: type[User], urls: set[str], *, api: API | None = None
+    ) -> dict[str, User]:
+        calls.append((urls, api))
+        # Return each URL in another spelling, to check matching.
+        return {
+            url.replace("https://example.com/", "HTTPS://EXAMPLE.COM:443/"): (
+                _user_from_url(url, api)
+            )
+            for url in urls
+        }
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get(
+        "https://example.com/v1/notes/",
+        json=[
+            NOTE_JSON,
+            {
+                **NOTE_JSON,
+                "id": 2,
+                "author": "/v1/users/2/",
+                "readers": ["https://other.example/users/5/"],
+            },
+        ],
+    )
+
+    first, second = Note.filter(prefetch=["author", "readers"])
+
+    assert [sorted(urls) for urls, _ in calls] == [
+        ["https://example.com/v1/users/2/"],
+        ["https://example.com/v1/users/3/", "https://example.com/v1/users/4/"],
+    ]
+    assert all(api is User.api for _, api in calls)
+    assert first.author is second.author
+    assert first.author.name == "user2"
+    assert first.author.url == "https://example.com/v1/users/2/"
+    assert first.author._api_override is None
+    assert [reader.name for reader in first.readers] == ["user3", "user4"]
+    with pytest.raises(FieldConversionError, match="origin"):
+        _ = second.readers
+    assert requests_mock.call_count == 1
 
 
 def test_hyperlinked_applies_only_to_related_types() -> None:
@@ -5541,3 +5619,46 @@ def test_save_rejects_unknown_request_option(requests_mock: Any) -> None:
 
     assert requests_mock.call_count == 0
     assert todo._pending_updates == {"title": "b"}
+
+
+@json_object
+class Review(ModelBase):
+    """Model with an optional and a lazy hyperlinked relation."""
+
+    class_url = "/reviews/"
+
+    id: int
+    editor: Annotated[User | None, Hyperlinked()]
+    watchers: Iterable[Annotated[User, Hyperlinked()]]
+
+
+def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Optional and lazy hyperlinked fields read prefetched objects too."""
+
+    def bulk_get_by_urls(
+        cls: type[User], urls: set[str], *, api: API | None = None
+    ) -> dict[str, User]:
+        return {url: _user_from_url(url, api) for url in urls}
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get(
+        "https://example.com/v1/reviews/",
+        json=[
+            {
+                "id": 1,
+                "editor": "/v1/users/7/",
+                "watchers": ["/v1/users/8/", "/v1/users/9/"],
+            }
+        ],
+    )
+
+    (review,) = Review.filter(prefetch=["editor", "watchers"])
+
+    assert review.editor is not None
+    assert review.editor.name == "user7"
+    assert [user.name for user in review.watchers] == ["user8", "user9"]
+    assert requests_mock.call_count == 1
