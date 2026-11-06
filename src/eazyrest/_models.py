@@ -1810,8 +1810,10 @@ class JSONProperty:
                 self.analyzed_type,
                 field=self.field,
             )
-        # A related object saves its own changes.
-        changeable = not isinstance(
+        # A related object saves its own changes. A read-only value cannot be
+        # sent, so a change made to it in place is not tracked, and it would
+        # otherwise make every later write fail.
+        changeable = not self.read_only and not isinstance(
             value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
         )
         if changeable:
@@ -2518,17 +2520,8 @@ class JSONObject:
             if (descriptor := getattr(cls, field)).write_field
             != descriptor.json_field
         }
-        readonly = {
-            descriptor.json_field
-            for field in getattr(cls, "_json_fields", ())
-            if (descriptor := getattr(cls, field)).read_only
-        }
         wire = {}
         for key, value in payload.items():
-            if key in readonly:
-                raise AttributeError(
-                    f"{cls.__name__} field {key} is read-only"
-                )
             target = write_keys.get(key, key)
             if target in wire:
                 raise TypeError(f"Multiple fields write the JSON key {target}")

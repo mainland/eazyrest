@@ -101,9 +101,10 @@ example to share hooks such as `collection_items()`.
 Use `read_only=` for returned values that ordinary writes must omit, such as
 computed values and file URLs. These fields remain readable and usable in
 queries, but assigning them or passing their ordinary values to `create()`
-raises `AttributeError`. A read-only primary key can still identify a lazy
-object, as in `User(id=1)`. Explicit `files=` uploads are separate from the
-returned value and may name a read-only file field.
+raises `AttributeError`. A change made in place to a read-only value, such as
+appending to a list, is not tracked or sent. A read-only primary key can still
+identify a lazy object, as in `User(id=1)`. Explicit `files=` uploads are
+separate from the returned value and may name a read-only file field.
 
 ## Loading and caching
 

@@ -348,6 +348,37 @@ def test_read_only_fields_are_omitted_from_full_updates(
     assert b"upload" in requests_mock.last_request.body
 
 
+def test_read_only_value_changed_in_place_is_not_sent(
+    requests_mock: Any,
+) -> None:
+    """A read-only value changed in place does not block later writes.
+
+    It used to be queued, and then every ``save()`` raised
+    ``AttributeError``, whatever else it sent.
+    """
+
+    @json_object(read_only={"tags"})
+    class Tagged(MockedBase):
+        class_url = "/tagged/"
+
+        id: int
+        title: str
+        tags: list[str]
+
+    patch = requests_mock.patch(
+        "https://mocked.example/tagged/1/", status_code=204
+    )
+    tagged = Tagged(json={"id": 1, "title": "old", "tags": ["a"]})
+
+    tagged.tags.append("b")
+    tagged.save()
+    tagged.title = "new"
+    tagged.save()
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"title": "new"}
+
+
 @pytest.mark.parametrize("mode", ["lazy", "eager"])
 def test_hyperlink_key_assignment_updates_existing_identity(
     requests_mock: Any, mode: WriteMode
