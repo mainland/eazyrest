@@ -26,6 +26,7 @@ from collections.abc import (
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import cached_property
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -52,7 +53,12 @@ from ._errors import (
     UsageError,
 )
 from ._results import Results, _count_of
-from .api import API, _check_final_response, _origin
+from .api import (
+    API,
+    _check_final_response,
+    _merge_request_options,
+    _origin,
+)
 from .dateparse import parse_datetime, parse_duration
 from .write_mode import WriteMode, validate_write_mode
 
@@ -1082,7 +1088,8 @@ def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
 
     Raises:
         TypeError: If ``options`` sets the request body, which the write
-            builds itself, or enables streaming of the response.
+            builds itself, enables streaming of the response, or names an
+            argument that is not a request option.
     """
     if options is None:
         return {}
@@ -1096,6 +1103,12 @@ def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
         raise TypeError(
             f"request_options cannot set {', '.join(body)}, because the write "
             "builds the request body itself"
+        )
+    unknown = sorted(set(options) - _QUERY_OPTION_NAMES - {"params", "stream"})
+    if unknown:
+        raise TypeError(
+            f"request_options cannot set {', '.join(unknown)}, which are not "
+            "request options"
         )
     return dict(options)
 
@@ -2155,6 +2168,9 @@ class JSONObject:
     _url_override: str | None = None
     """The URL of an object that a hyperlinked relation named, if any."""
 
+    _write_options: Mapping[str, Any] = MappingProxyType({})
+    """Request options of the enclosing ``write_options()`` block, if any."""
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Reject a class that inherits fields from separate models.
 
@@ -2565,7 +2581,9 @@ class JSONObject:
         Args:
             request_options: Optional keyword arguments for the request, such
                 as ``headers={"If-Match": etag}``, as for ``save()``. They
-                cannot set the body or enable response streaming.
+                cannot set the body or enable response streaming, and are
+                merged over the options of an enclosing ``write_options()``
+                block.
 
         Raises:
             TypeError: If ``request_options`` sets the body or streams the
@@ -2574,7 +2592,9 @@ class JSONObject:
             RedirectError: If a redirect is unsafe or the final status is 3xx.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
-        options = _request_options(request_options)
+        options = _merge_request_options(
+            self._write_options, _request_options(request_options)
+        )
         _check_model_write(self.api.delete(self.url, **options))
 
     @property
@@ -2591,6 +2611,39 @@ class JSONObject:
         """
         self._write_mode = validate_write_mode(mode)
 
+    @contextlib.contextmanager
+    def write_options(self, **options: Any) -> Iterator[Self]:
+        """Send request options with every write of this object in a block.
+
+        Inside the ``with`` block, the ``PATCH`` of each eager assignment and
+        every ``save()`` and ``delete()`` of this object send ``options``,
+        keyword arguments for the request as ``requests`` takes them, such as
+        ``headers={"If-Match": etag}``. Options that ``save()`` or
+        ``delete()`` receive in ``request_options`` are merged over them. A
+        nested block merges its options over the outer block's, and the outer
+        block's options apply again when it ends. Loads and the writes of
+        related objects do not send them.
+
+        Args:
+            **options: Keyword arguments for the requests of the writes. They
+                cannot set the body or enable response streaming.
+
+        Yields:
+            This object.
+
+        Raises:
+            TypeError: If ``options`` set the body, enable streaming, or name
+                an argument that is not a request option. Nothing has changed
+                then.
+        """
+        checked = _request_options(options)
+        previous = self._write_options
+        self._write_options = _merge_request_options(previous, checked)
+        try:
+            yield self
+        finally:
+            self._write_options = previous
+
     def _update_json_field(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update using the configured write mode.
 
@@ -2602,7 +2655,9 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(self.url, json=self._to_wire(payload))
+            resp = self.api.patch(
+                self.url, json=self._to_wire(payload), **self._write_options
+            )
             self._apply_patch_response(resp, payload)
             return
 
@@ -2619,7 +2674,9 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(self.url, json=self._to_wire(payload))
+            resp = self.api.patch(
+                self.url, json=self._to_wire(payload), **self._write_options
+            )
             self._apply_patch_response(resp, payload)
             return
 
@@ -2929,7 +2986,9 @@ class JSONObject:
                 ``{"image": open("a.png", "rb")}``.
             request_options: Optional keyword arguments for the request, such
                 as ``headers={"If-Match": etag}``, as ``requests`` takes them.
-                They cannot set the body or enable response streaming.
+                They cannot set the body or enable response streaming. They
+                are merged over the options of an enclosing
+                ``write_options()`` block.
 
         Raises:
             ResponseShapeError: If the response body does not hold a JSON
@@ -2942,7 +3001,9 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
-        options = _request_options(request_options)
+        options = _merge_request_options(
+            self._write_options, _request_options(request_options)
+        )
         self._queue_in_place_changes()
         if full:
             payload = self._full_payload()

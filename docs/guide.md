@@ -585,7 +585,13 @@ todo.title = "new"
 todo.save(request_options={"headers": {"If-Match": etag}})
 ```
 
-An assignment in eager mode sends its `PATCH` with no options. Use lazy mode and `save()` for a write that needs them.
+An assignment in eager mode sends its `PATCH` at once, so there is no call to pass options to. Make the assignment inside a `write_options()` block instead. Every write of the object inside the block sends the block's options: each eager `PATCH`, and every `save()` and `delete()`, whose own `request_options` are merged over them. Loads, and the writes of related objects, do not send them. A nested block merges its options over the outer block's:
+
+```python
+todo.set_write_mode("eager")
+with todo.write_options(headers={"If-Match": etag}):
+    todo.title = "new"
+```
 
 The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take `request_options=` too, for every request that the query sends: the collection request, the requests for later pages that a collection hook sends with its `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only when its API has the origin of the query's own, so that a header such as `Authorization` never reaches another host. A query sends no body and builds its own parameters, so its options cannot set `json`, `data`, `files`, or `params`, and it reads every response, so they cannot enable `stream=True`. The objects that a query returns do not keep its options:
 
