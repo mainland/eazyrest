@@ -151,7 +151,9 @@ that can break code written for 0.9.0, followed by what to do about it.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
   `Duration`, and `UUID`. A type that would drop the keys it does not declare
-  is rejected, and a field must read back what it writes.
+  is rejected, and a field must read back what it writes, so a secret such as a
+  `SecretStr`, which Pydantic writes as a mask, is refused unless a serializer
+  reveals it. Models are written by their fields' aliases.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the
   `type` statement.
 - Conversion tables: a model's `conversions` maps a type to a `Conversion` that
