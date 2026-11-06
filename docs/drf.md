@@ -175,7 +175,7 @@ todo.owner = User(id=3)
 todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
 ```
 
-Reading the field gives a related object that loads from the URL when one of its other fields is read. Writing it sends the related object's absolute URL. A query sends its primary key, as django-filter's relation filters expect. Pass a related model instance or a bare primary key to the query. A relative URL is resolved against the related model's API. A URL whose origin is neither that API's nor one of its `redirect_origins` raises `FieldConversionError` when the field is read, so a server cannot send the client, with its credentials, to another host. A hyperlinked field can be prefetched when the related model implements `bulk_get_by_urls()`, which receives the URLs rather than primary keys.
+Reading the field gives a related object that loads from the URL when one of its other fields is read. Writing it sends the related object's absolute URL. A query sends its primary key, as django-filter's relation filters expect. Pass a related model instance or a bare primary key to the query. A relative URL is resolved against the related model's API. A URL whose origin is neither that API's nor one of its `redirect_origins` raises `FieldConversionError` when the field is read, so a server cannot send the client, with its credentials, to another host. A hyperlinked field can be prefetched when the related model implements `bulk_get_by_urls()`, which receives the URLs rather than primary keys, as [Prefetch hyperlinked relations](#prefetch-hyperlinked-relations) shows.
 
 ## Match DRF serializer fields
 
@@ -486,6 +486,25 @@ def bulk_get_by_pks(cls, pks, *, api):
 ```
 
 Server-side, continue using Django ORM `select_related()` and `prefetch_related()` inside the bulk endpoint when it helps serializers avoid database N+1 queries.
+
+## Prefetch hyperlinked relations
+
+A field annotated with `Hyperlinked()` holds URLs, so prefetching it calls `bulk_get_by_urls()` on the related model instead of `bulk_get_by_pks()`. With DRF's default `lookup_field`, each URL ends with the primary key, so the hook can take the keys from the URLs and reuse the bulk lookup by key:
+
+```python
+@classmethod
+def bulk_get_by_urls(cls, urls, *, api):
+    prefix = api.resolve_url(cls.class_url)
+    pks = {
+        url.removeprefix(prefix).strip("/")
+        for url in urls
+        if url.startswith(prefix)
+    }
+    objects = cls.bulk_get_by_pks(pks, api=api)
+    return {obj.absolute_url: obj for obj in objects.values()}
+```
+
+Return the objects keyed by URL. eazyrest matches the keys after resolving them against the API's base URL and normalizing their case and default ports. A URL outside the model's `class_url`, such as one of a serializer with another `lookup_field`, is not loaded here, and the object loads lazily when it is read.
 
 ## Preserve laziness with batch prefetch
 
