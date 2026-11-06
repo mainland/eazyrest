@@ -31,7 +31,7 @@ import email.message
 import json
 import re
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 from urllib.parse import urljoin
 
 import hypothesis.strategies as st
@@ -237,7 +237,44 @@ class ObjectStateMachine(RuleBasedStateMachine):
     object's JSON, and ``saved_key`` the key under which the object is saved,
     which differs from ``stored_key`` while a key change is pending. The fake
     server answers only at its object's current key.
+
+    A subclass can model a subclass of ``Doc`` with more fields by setting
+    the class attributes, adding rules for the new fields, and extending
+    ``python_value()``.
     """
+
+    MODEL: ClassVar[type[Doc]] = Doc
+    """Model of the object, ``Doc`` or a decorated subclass of it."""
+
+    FIELDS: ClassVar[tuple[str, ...]] = FIELDS
+    """Fields that the server returns, other than the key and the owner."""
+
+    DECLARED: ClassVar[tuple[str, ...]] = DECLARED
+    """Every field that the server returns, other than the key."""
+
+    VALUES: ClassVar[dict[str, st.SearchStrategy[Any]]] = VALUES
+    """JSON values of each field in ``DECLARED``."""
+
+    OWNED: ClassVar[tuple[str, ...]] = (
+        "title",
+        "count",
+        "tags",
+        "meta",
+        "extra",
+    )
+    """Fields whose JSON values a caller passes to ``create()`` as they are."""
+
+    def python_value(self, field: str, value: Any) -> Any:
+        """Return the Python value whose JSON is a field's JSON value.
+
+        Args:
+            field: Name of the field.
+            value: JSON value of the field.
+
+        Returns:
+            The value, as reading the field returns it.
+        """
+        return python_value(field, value)
 
     def __init__(self) -> None:
         """Start the fake server."""
@@ -554,7 +591,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 subset of the server's fields, so that it is partial.
             secret: Write-only value to pass to ``create()``, if any.
         """
-        self.fake = {field: data.draw(VALUES[field]) for field in DECLARED}
+        self.fake = {
+            field: data.draw(self.VALUES[field]) for field in self.DECLARED
+        }
         self.server: dict[str, Any] = copy.deepcopy(self.fake)
         self.stored: dict[str, Any] = copy.deepcopy(self.fake)
         self.expected: dict[str, Any] = copy.deepcopy(self.fake)
@@ -570,11 +609,11 @@ class ObjectStateMachine(RuleBasedStateMachine):
         # The values passed to create(), which the caller still holds.
         self.caller: dict[str, Any] = {}
         if how == "load":
-            self.obj = Doc(id=1)
+            self.obj = self.MODEL(id=1)
             return
         if how == "pushed":
-            self.obj = Doc(id=1)
-            fields = data.draw(st.sets(st.sampled_from(DECLARED)))
+            self.obj = self.MODEL(id=1)
+            fields = data.draw(st.sets(st.sampled_from(self.DECLARED)))
             pushed = self.representation(
                 {name: copy.deepcopy(self.fake[name]) for name in fields}
             )
@@ -585,15 +624,22 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return
 
         self.create_body = "full" if how == "create-full" else "key"
+        # The caller passes the fields that need no conversion as the JSON
+        # values themselves, so that changing them afterwards would change
+        # the object's JSON if create() kept them.
         self.caller = {
-            field: copy.deepcopy(self.fake[field]) for field in FIELDS
+            field: copy.deepcopy(self.fake[field]) for field in self.OWNED
+        }
+        converted = {
+            field: self.python_value(field, copy.deepcopy(self.fake[field]))
+            for field in self.FIELDS
+            if field not in self.OWNED
         }
         extra: dict[str, Any] = {"owner": Owner(id=self.fake["owner"])}
         if secret is not None:
             extra["secret"] = secret
             self.server_secret = secret
-        extra["days"] = python_value("days", self.caller.pop("days"))
-        self.obj = Doc.create(id=1, **self.caller, **extra)
+        self.obj = self.MODEL.create(id=1, **self.caller, **converted, **extra)
 
     def detect_in_place_changes(self) -> None:
         """Model the detection of in-place changes as pending updates.
@@ -627,7 +673,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def send_full(self) -> None:
         """Model a PUT of the whole object with its pending updates."""
         self.server = {
-            name: copy.deepcopy(self.stored[name]) for name in DECLARED
+            name: copy.deepcopy(self.stored[name]) for name in self.DECLARED
         }
         self.server_key = self.saved_key = self.stored_key
         if self.pending_secret is not None:
@@ -695,7 +741,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         """
         value = getattr(self.obj, field)
         if not (field == "days" and self.poisoned):
-            assert value == python_value(field, self.expected[field])
+            assert value == self.python_value(field, self.expected[field])
         self.cached.add(field)
 
     @rule()
@@ -720,7 +766,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         lambda self: (
             not self.poisoned
             and vars(self.obj).get("_json_is_partial", False)
-            and any(field not in vars(self.obj)["_json"] for field in FIELDS)
+            and any(
+                field not in vars(self.obj)["_json"] for field in self.FIELDS
+            )
         )
     )
     @rule(name=st.none() | WORDS)
@@ -736,7 +784,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 ``None`` to leave it unchanged.
         """
         state = vars(self.obj)["_json"]
-        field = next(field for field in FIELDS if field not in state)
+        field = next(field for field in self.FIELDS if field not in state)
         owner = None
         if "owner" in state:
             owner = self.obj.owner
@@ -769,15 +817,17 @@ class ObjectStateMachine(RuleBasedStateMachine):
             data: Hypothesis data object that draws the new value.
             field: Name of the field to assign.
         """
-        value = data.draw(VALUES[field])
+        value = data.draw(self.VALUES[field])
         unchanged = value == self.stored[field]
         if self.poisoned and self.sends(unchanged):
             self.refused(
-                lambda: setattr(self.obj, field, python_value(field, value))
+                lambda: setattr(
+                    self.obj, field, self.python_value(field, value)
+                )
             )
             return
 
-        setattr(self.obj, field, python_value(field, value))
+        setattr(self.obj, field, self.python_value(field, value))
         self.assign_value(field, value, unchanged)
         # The assigned value replaces the one changed in place.
         if field == "days":
@@ -1141,7 +1191,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 and whether a related object is pushed as its key.
             field: Name of the field that the server updates.
         """
-        value = data.draw(VALUES[field])
+        value = data.draw(self.VALUES[field])
         self.fake[field] = copy.deepcopy(value)
         self.server[field] = copy.deepcopy(value)
         pushed = self.representation({field: copy.deepcopy(value)})
@@ -1217,7 +1267,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if state is None:
             return
         assert "secret" not in state
-        for field in FIELDS:
+        for field in self.FIELDS:
             if field in state and field not in self.in_place:
                 assert state[field] == self.stored[field]
 
