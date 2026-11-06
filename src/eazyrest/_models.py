@@ -1794,10 +1794,16 @@ class JSONProperty:
 
         if (
             self._is_key_of(obj)
-            and obj._json is None
             and obj._url_override is None
+            and (
+                obj._json is None
+                or (obj._json_is_partial and self.json_field not in obj._json)
+            )
         ):
-            # An object created without a key has none until it loads.
+            # An object created without a key has none until it loads, and so
+            # has one whose partial JSON, from a push or a write response,
+            # lacks the key. Loading it would need its URL, which needs the
+            # key.
             return getattr(obj, "_pk_value", None)
 
         json = obj._json_with_field(self.json_field, self.field)
