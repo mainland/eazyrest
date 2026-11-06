@@ -7,14 +7,21 @@ here check them over generated values, payloads, and declarations.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime
+import decimal
 import enum
+import http.server
 import importlib.util
+import itertools
 import json
 import re
+import threading
+import time
+import typing
 import uuid
-from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlparse
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 import isodate
 import pytest
@@ -22,22 +29,38 @@ import requests
 import requests_mock
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
+from typing_extensions import TypeAliasType
+from urllib3.util import Retry
 
 from eazyrest import (
     API,
+    DEFAULT_CONVERSIONS,
+    Conversion,
     FieldConversionError,
     JSONObject,
+    LimitExceeded,
+    PaginationError,
     ResponseShapeError,
     WriteMode,
+    follow_link_headers,
+    follow_next_links,
     json_object,
     parse_duration,
 )
-from eazyrest._models import _json_equal
+from eazyrest._models import (
+    CollectionType,
+    OptionalType,
+    _json_equal,
+    analyze_type,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
 HAVE_PYDANTIC = importlib.util.find_spec("pydantic") is not None
+HAVE_ANNOTATED_TYPES = importlib.util.find_spec("annotated_types") is not None
+if HAVE_ANNOTATED_TYPES:
+    import annotated_types
 
 BASE_URL = "https://properties.example/"
 
@@ -169,6 +192,8 @@ class Codecs(PropertyBase):
     token: uuid.UUID
     length: datetime.timedelta
     color: Color
+    opens: datetime.time
+    price: decimal.Decimal
 
 
 # Every UTC offset that Python allows, including offsets with seconds and
@@ -194,6 +219,16 @@ _CODEC_VALUES = st.one_of(
     st.tuples(st.just("token"), st.uuids()),
     st.tuples(st.just("length"), st.timedeltas()),
     st.tuples(st.just("color"), st.sampled_from(Color)),
+    st.tuples(st.just("opens"), st.times(timezones=st.none() | _UTC_OFFSETS)),
+    st.tuples(
+        st.just("price"),
+        st.decimals(
+            min_value=-(10**30),
+            max_value=10**30,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+    ),
 )
 
 
@@ -204,8 +239,9 @@ def test_built_in_conversions_read_back_what_they_write(
 ) -> None:
     """A field reads back the value whose JSON it writes, or refuses it.
 
-    A datetime whose UTC offset is not a whole number of minutes has no ISO
-    8601 form, so encoding it raises.
+    A datetime or time whose UTC offset is not a whole number of minutes has
+    no ISO 8601 form, so encoding it raises. A decimal reads back equal, with
+    the same digits unless it had an exponent.
 
     Args:
         field_and_value: Name of a ``Codecs`` field and a value of its type.
@@ -213,7 +249,9 @@ def test_built_in_conversions_read_back_what_they_write(
     field, value = field_and_value
     conversion = getattr(Codecs, field).analyzed_type
     offset = (
-        value.utcoffset() if isinstance(value, datetime.datetime) else None
+        value.utcoffset()
+        if isinstance(value, (datetime.datetime, datetime.time))
+        else None
     )
     if offset is not None and offset % datetime.timedelta(minutes=1):
         with pytest.raises(ValueError, match="whole minutes"):
@@ -227,8 +265,10 @@ def test_built_in_conversions_read_back_what_they_write(
 
     assert decoded == value
     assert type(decoded) is type(value)
-    if isinstance(value, datetime.datetime):
+    if isinstance(value, (datetime.datetime, datetime.time)):
         assert decoded.utcoffset() == value.utcoffset()
+    if isinstance(value, decimal.Decimal) and "E" not in str(value):
+        assert str(decoded) == str(value)
 
 
 @settings(max_examples=200)
@@ -753,3 +793,966 @@ def test_pydantic_errors_never_quote_the_input(
         message = str(err)
 
     assert _SENTINEL not in message
+
+
+_ALIAS_NAMES = (f"Alias{n}" for n in itertools.count())
+"""Names for the aliases that the type strategies create."""
+
+_T = TypeVar("_T")
+_Box = TypeAliasType("_Box", list[_T], type_params=(_T,))
+"""Generic alias, which expands to a list of its argument."""
+
+# Recursive aliases, whose quoted references resolve in this module. A field
+# that reaches one cannot be converted.
+_Loop = TypeAliasType("_Loop", "list[_Loop] | int")
+_Ping = TypeAliasType("_Ping", "list[_Pong]")
+_Pong = TypeAliasType("_Pong", "_Ping | None")
+
+
+class _TypePair(typing.NamedTuple):
+    """A type that may use aliases, and the same type with them expanded."""
+
+    aliased: Any
+    expanded: Any
+    recursive: bool
+
+
+_LEAF_TYPES = st.sampled_from(
+    [
+        _TypePair(int, int, False),
+        _TypePair(str, str, False),
+        _TypePair(datetime.date, datetime.date, False),
+        _TypePair(Owner, Owner, False),
+    ]
+)
+_RECURSIVE_LEAVES = st.sampled_from(
+    [_TypePair(_Loop, None, True), _TypePair(_Ping, None, True)]
+)
+
+
+# Type constructors applied to types built at run time, which a type checker
+# would otherwise read as type expressions.
+_LIST: Any = list
+_TUPLE: Any = tuple
+_SET: Any = set
+_UNION: Any = typing.Union
+_ALIAS: Any = TypeAliasType
+_BOX: Any = _Box
+
+_CONSTRUCTORS = st.sampled_from(
+    [
+        lambda ty: _LIST[ty],
+        lambda ty: _TUPLE[ty, ...],
+        lambda ty: _SET[ty],
+        lambda ty: _UNION[ty, None],
+    ]
+)
+
+
+def _type_nodes(
+    children: st.SearchStrategy[_TypePair],
+) -> st.SearchStrategy[_TypePair]:
+    """Return pairs built from smaller pairs by one type constructor.
+
+    Args:
+        children: Strategy for the pairs to build on.
+
+    Returns:
+        Strategy for lists, tuples, sets, and optional types of the children,
+        each as written and as expanded.
+    """
+    return st.tuples(_CONSTRUCTORS, children).map(
+        lambda t: _TypePair(
+            t[0](t[1].aliased), t[0](t[1].expanded), t[1].recursive
+        )
+    )
+
+
+def _aliased(pair: _TypePair, how: str) -> _TypePair:
+    """Return a pair whose written type is wrapped in an alias.
+
+    Args:
+        pair: Pair to wrap.
+        how: ``"plain"`` for a named alias of the type, ``"generic"`` for the
+            generic list alias applied to it, or ``"none"`` to leave it.
+
+    Returns:
+        The wrapped pair, with the same expansion as the alias.
+    """
+    if how == "plain":
+        alias = _ALIAS(next(_ALIAS_NAMES), pair.aliased)
+        return _TypePair(alias, pair.expanded, pair.recursive)
+    if how == "generic":
+        return _TypePair(
+            _BOX[pair.aliased], _LIST[pair.expanded], pair.recursive
+        )
+    return pair
+
+
+def _alias_trees() -> st.SearchStrategy[_TypePair]:
+    """Return type pairs of up to three levels, with aliases at any level.
+
+    Returns:
+        Strategy for pairs whose written type uses aliases.
+    """
+    hows = st.sampled_from(["plain", "generic", "none", "none"])
+    leaves = st.one_of(_LEAF_TYPES, _RECURSIVE_LEAVES)
+    return st.recursive(
+        st.tuples(leaves, hows).map(lambda t: _aliased(*t)),
+        lambda children: st.tuples(_type_nodes(children), hows).map(
+            lambda t: _aliased(*t)
+        ),
+        max_leaves=3,
+    )
+
+
+def _field_model(annotation: Any) -> Any:
+    """Return a model whose ``value`` field has a type.
+
+    Args:
+        annotation: Type of the field.
+
+    Returns:
+        A decorated model with the fields ``id`` and ``value``.
+    """
+    return json_object(
+        type(
+            "Generated",
+            (PropertyBase,),
+            {
+                "__annotations__": {"id": int, "value": annotation},
+                "class_url": "/generated/",
+            },
+        )
+    )
+
+
+# JSON values that the leaf types accept, and some that they reject, nested in
+# lists as the collection types read them.
+_ALIAS_JSON = st.recursive(
+    st.one_of(
+        st.none(),
+        st.integers(-3, 3),
+        st.sampled_from(["a", "2024-01-01", "not a date", "1"]),
+    ),
+    lambda items: st.lists(items, max_size=3),
+    max_leaves=6,
+)
+
+
+def _plain(value: Any) -> Any:
+    """Return a value read from a field in a form that compares by content.
+
+    Args:
+        value: Value read from a field.
+
+    Returns:
+        ``value``, with each related object replaced by its class name and
+        primary key, and each collection tagged with its type, so that a list
+        and a tuple of the same items differ.
+    """
+    if isinstance(value, JSONObject):
+        return type(value).__name__, value.pk
+    if isinstance(value, (set, frozenset)):
+        return "set", sorted(repr(_plain(item)) for item in value)
+    if isinstance(value, (list, tuple)):
+        return type(value).__name__, [_plain(item) for item in value]
+    return value
+
+
+def _read_outcome(model: Any, value: Any) -> tuple[str, Any]:
+    """Read a ``value`` field, then write the result back as JSON.
+
+    Args:
+        model: Model from ``_field_model()``.
+        value: JSON value of the field.
+
+    Returns:
+        ``("ok", (read, reread))`` with the value read and the value read
+        again from the JSON that writing it gives, each in ``_plain()`` form,
+        so that a set compares regardless of its JSON order, or
+        ``("raise", type)`` with the type of the exception that reading or
+        writing raised.
+    """
+    obj = model(json={"id": 1, "value": copy.deepcopy(value)})
+    conversion = model.value.analyzed_type
+    try:
+        read = obj.value
+        written = model._to_json(read, conversion)
+        reread = model(json={"id": 1, "value": written}).value
+        return "ok", (_plain(read), _plain(reread))
+    except (FieldConversionError, TypeError, ValueError) as err:
+        return "raise", type(err)
+
+
+@settings(max_examples=150)
+@given(pair=_alias_trees(), value=_ALIAS_JSON)
+def test_named_type_aliases_convert_as_their_expansions(
+    pair: _TypePair, value: Any
+) -> None:
+    """A field typed by aliases converts as one typed by their expansion.
+
+    Named aliases, generic aliases, and aliases inside other types expand
+    before conversion. A field that reaches a recursive alias cannot be
+    converted, and raises when it is first read.
+
+    Args:
+        pair: Type as written with aliases and as expanded.
+        value: JSON value of the field.
+    """
+    aliased = _field_model(pair.aliased)
+
+    if pair.recursive:
+        with pytest.raises(FieldConversionError, match="refers to itself"):
+            _ = aliased(json={"id": 1, "value": value}).value
+        return
+
+    expanded = _field_model(pair.expanded)
+    assert _read_outcome(aliased, value) == _read_outcome(expanded, value)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Note:
+    """Metadata of another library, which eazyrest must ignore."""
+
+    text: str
+
+
+_ANNOTATED: Any = typing.Annotated
+
+# Metadata that is not for Pydantic. annotated_types constraints, which
+# Pydantic also reads, are not Pydantic's own, so they do not opt in either.
+_NEUTRAL_METADATA = st.one_of(
+    st.text(max_size=3),
+    st.integers(),
+    st.builds(_Note, st.text(max_size=3)),
+    *(
+        [st.sampled_from([annotated_types.Gt(0), annotated_types.MaxLen(3)])]
+        if HAVE_ANNOTATED_TYPES
+        else []
+    ),
+)
+
+
+def _annotated(pair: _TypePair, metadata: list[Any]) -> _TypePair:
+    """Return a pair whose written type carries neutral metadata.
+
+    Args:
+        pair: Pair to annotate, whose written type is the bare type.
+        metadata: Metadata to add, or nothing to leave the type bare.
+
+    Returns:
+        The pair, with its written type annotated and its bare type unchanged.
+    """
+    if not metadata:
+        return pair
+    return _TypePair(
+        _ANNOTATED[(pair.aliased, *metadata)], pair.expanded, pair.recursive
+    )
+
+
+def _annotated_trees() -> st.SearchStrategy[_TypePair]:
+    """Return type pairs of up to three levels, with metadata at any level.
+
+    Returns:
+        Strategy for pairs whose written type is annotated and whose other
+        type is the bare type.
+    """
+    metadata = st.lists(_NEUTRAL_METADATA, max_size=2)
+    return st.recursive(
+        st.tuples(_LEAF_TYPES, metadata).map(lambda t: _annotated(*t)),
+        lambda children: st.tuples(_type_nodes(children), metadata).map(
+            lambda t: _annotated(*t)
+        ),
+        max_leaves=3,
+    )
+
+
+def _collapsed(analyzed: Any) -> Any:
+    """Return analyzed type metadata with nested optional types collapsed.
+
+    ``Annotated`` keeps ``(T | None) | None`` from flattening as the bare union
+    does, and both convert the same way.
+
+    Args:
+        analyzed: Result of ``analyze_type()``.
+
+    Returns:
+        ``analyzed`` with each optional of an optional made one optional.
+    """
+    if isinstance(analyzed, OptionalType):
+        inner = _collapsed(analyzed.inner_type)
+        return (
+            inner if isinstance(inner, OptionalType) else OptionalType(inner)
+        )
+    if isinstance(analyzed, CollectionType):
+        return CollectionType(
+            analyzed.collection_type, _collapsed(analyzed.item_type)
+        )
+    return analyzed
+
+
+@settings(max_examples=150)
+@given(pair=_annotated_trees(), value=_ALIAS_JSON)
+def test_neutral_metadata_leaves_conversion_unchanged(
+    pair: _TypePair, value: Any
+) -> None:
+    """``Annotated`` metadata that is not for Pydantic changes nothing.
+
+    A field typed ``Annotated[T, m]`` analyzes as ``T``, so it never opts in
+    to Pydantic, and it reads and writes every value as ``T`` does.
+
+    Args:
+        pair: Type as written with metadata and as bare.
+        value: JSON value of the field.
+    """
+    assert _collapsed(analyze_type(pair.aliased)) == _collapsed(
+        analyze_type(pair.expanded)
+    )
+
+    annotated = _field_model(pair.aliased)
+    bare = _field_model(pair.expanded)
+    assert _read_outcome(annotated, value) == _read_outcome(bare, value)
+
+
+_UNWRITABLE_DATE = datetime.date(2000, 1, 1)
+"""Date that ``Fragile`` reads but cannot write."""
+
+
+def _encode_fragile_date(value: datetime.date) -> str:
+    """Write a date, except the one that ``Fragile`` cannot write.
+
+    Args:
+        value: The date.
+
+    Returns:
+        Its ISO 8601 form.
+
+    Raises:
+        ValueError: If ``value`` is the unwritable date.
+    """
+    if value == _UNWRITABLE_DATE:
+        raise ValueError("This date cannot be written")
+    return value.isoformat()
+
+
+@json_object
+class Fragile(PropertyBase):
+    """Model whose fields can fail to read, by decoding or by encoding."""
+
+    class_url = "/fragile/"
+
+    id: int
+    name: str
+    day: datetime.date
+    when: datetime.datetime
+    token: uuid.UUID
+    length: datetime.timedelta
+    color: Color
+    owner: Owner
+    days: list[datetime.date]
+    lengths: list[datetime.timedelta]
+
+    # A changeable value, such as a list, is encoded when it is read, to
+    # record its encoding for change detection, so a date that cannot be
+    # written makes a read fail after decoding.
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        datetime.date: Conversion(
+            decode=DEFAULT_CONVERSIONS[datetime.date].decode,
+            encode=lambda value, cls: _encode_fragile_date(value),
+        )
+    }
+
+
+_FRAGILE_FIELDS = (
+    "day",
+    "when",
+    "token",
+    "length",
+    "color",
+    "owner",
+    "days",
+    "lengths",
+)
+
+# Values that fields read, fail to decode, or decode but fail to encode.
+_FRAGILE_LEAVES = st.one_of(
+    _JSON_SCALARS,
+    st.sampled_from(
+        [
+            "2000-01-01",
+            "2024-02-30",
+            "2024-01-01",
+            "2024-01-01T00:00:00Z",
+            "red",
+            "P1D",
+            "1:30",
+            str(uuid.UUID(int=1)),
+            "x",
+        ]
+    ),
+)
+_FRAGILE_VALUES = st.one_of(
+    _FRAGILE_LEAVES,
+    st.lists(_FRAGILE_LEAVES, max_size=3),
+    st.dictionaries(st.text(max_size=2), _FRAGILE_LEAVES, max_size=2),
+)
+
+
+@settings(max_examples=200)
+@given(field=st.sampled_from(_FRAGILE_FIELDS), value=_FRAGILE_VALUES)
+def test_failed_read_leaves_no_cached_value(field: str, value: Any) -> None:
+    """A read that fails caches nothing, and fails again the next time.
+
+    A value is cached, with the snapshot that detects changes to it, only
+    once it has been decoded and, if it can be changed in place, encoded.
+    Either step can fail, and then the field's next read must fail the same
+    way rather than return a value that ``save()`` would mishandle.
+
+    Args:
+        field: Name of the ``Fragile`` field to read.
+        value: JSON value of the field.
+    """
+    obj = Fragile(json={"id": 1, "name": "n", field: value})
+
+    try:
+        getattr(obj, field)
+    except FieldConversionError:
+        pass
+    else:
+        assert field in obj._field_cache
+        return
+
+    assert field not in obj._field_cache
+    assert field not in obj._field_snapshots
+    with pytest.raises(
+        FieldConversionError, match=re.escape(f"Fragile.{field}")
+    ):
+        getattr(obj, field)
+    assert obj.name == "n"
+    assert obj._pending_updates == {}
+
+
+def _from_hex(value: Any) -> int:
+    """Read an integer from hexadecimal text, as a custom Pydantic type does.
+
+    Args:
+        value: Input value.
+
+    Returns:
+        The integer that ``value`` writes.
+
+    Raises:
+        ValueError: If ``value`` is not hexadecimal text.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Expected hexadecimal text")  # noqa: TRY004
+    return int(value, 16)
+
+
+if HAVE_PYDANTIC:
+    from pydantic import (
+        Base64Bytes,
+        BaseModel,
+        ConfigDict,
+        PlainSerializer,
+        PlainValidator,
+    )
+    from pydantic.alias_generators import to_camel
+
+    class Corner(BaseModel):
+        """Pydantic model read and written by its aliases."""
+
+        model_config = ConfigDict(alias_generator=to_camel, extra="allow")
+
+        top_left: int
+
+    @json_object
+    class Encoded(PropertyBase):
+        """Model whose Pydantic fields write values in other forms."""
+
+        class_url = "/encoded/"
+
+        id: int
+        text: PydanticJson[dict[str, int]]
+        blob: Base64Bytes
+        hexed: Annotated[int, PlainValidator(_from_hex), PlainSerializer(hex)]
+        corner: Corner
+
+
+ENCODED_JSON = {
+    "id": 1,
+    "text": '{"a": 1}',
+    "blob": "AA==",
+    "hexed": "0x1",
+    "corner": {"topLeft": 1},
+}
+
+# Values assigned to Encoded's fields, each of the field's type or not.
+_ENCODED_VALUES = {
+    "text": st.one_of(
+        st.dictionaries(st.text(max_size=3), st.integers(), max_size=3),
+        st.dictionaries(st.text(max_size=2), st.text(max_size=2), max_size=2),
+        st.integers(),
+    ),
+    "blob": st.one_of(st.binary(max_size=8), st.text(max_size=3)),
+    "hexed": st.one_of(
+        st.integers(), st.floats(allow_nan=False), st.text(max_size=3)
+    ),
+    "corner": st.integers().map(lambda n: {"topLeft": n}),
+}
+
+
+def _of_field_type(field: str, value: Any) -> bool:
+    """Return whether a value already has an ``Encoded`` field's type.
+
+    Pydantic also accepts values of other types, such as text for bytes, and
+    reads them back as the field's type instead.
+
+    Args:
+        field: Name of the ``Encoded`` field.
+        value: Value assigned to it.
+
+    Returns:
+        Whether the field reads ``value`` back unchanged.
+    """
+    if field == "text":
+        return isinstance(value, dict) and all(
+            type(item) is int for item in value.values()
+        )
+    if field == "blob":
+        return isinstance(value, bytes)
+    if field == "corner":
+        return False
+    return type(value) is int
+
+
+def _saved_json(field: str, value: Any) -> Any:
+    """Assign a value to a field of a loaded object, and save it.
+
+    Args:
+        field: Name of the ``Encoded`` field.
+        value: Value to assign.
+
+    Returns:
+        The field's JSON in the ``PATCH`` that ``save()`` sends, or the JSON
+        that the object already holds when the value encodes as it does, and
+        ``save()`` sends nothing.
+    """
+    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
+    setattr(obj, field, value)
+    if not obj._pending_updates:
+        return obj.json[field]
+    with requests_mock.Mocker() as mock:
+        patch = mock.patch(f"{BASE_URL}encoded/1/", status_code=204)
+        obj.save()
+        return patch.last_request.json()[field]
+
+
+@pytest.mark.skipif(not HAVE_PYDANTIC, reason="Pydantic is not installed")
+@settings(max_examples=150)
+@given(data=st.data(), field=st.sampled_from(sorted(_ENCODED_VALUES)))
+def test_accepted_pydantic_writes_read_back(
+    data: st.DataObject, field: str
+) -> None:
+    """A value that a Pydantic field accepts reads back from what it writes.
+
+    An assignment either raises and queues nothing, or the ``PATCH`` that
+    ``save()`` sends holds JSON that another object reads, and writing the
+    value read sends the same JSON again. The JSON differs from the value:
+    JSON text, base64 text, or hexadecimal text. A value of the field's type
+    reads back unchanged.
+
+    Args:
+        data: Hypothesis data, to draw a value for the field.
+        field: Name of the ``Encoded`` field to assign.
+    """
+    value = data.draw(_ENCODED_VALUES[field], label="value")
+    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
+
+    try:
+        setattr(obj, field, value)
+    except FieldConversionError:
+        # Every corner is valid input, by its alias, so it must be written.
+        assert field != "corner"
+        assert obj._pending_updates == {}
+        assert obj.json == ENCODED_JSON
+        return
+
+    sent = _saved_json(field, value)
+    read = getattr(Encoded(json={**ENCODED_JSON, field: sent}), field)
+
+    assert _saved_json(field, read) == sent
+    if _of_field_type(field, value):
+        assert read == value
+
+
+_PAGES_ORIGIN = "https://pages.example"
+_OTHER_ORIGIN = "https://elsewhere.example"
+
+
+def _page_url(origin: str, index: int) -> str:
+    """Return the URL of a page of the generated collection.
+
+    Args:
+        origin: Scheme and host that serve the page.
+        index: Number of the page.
+
+    Returns:
+        Absolute URL of the page.
+    """
+    return f"{origin}/pages/?page={index}"
+
+
+class _PageGraph(typing.NamedTuple):
+    """A generated collection, and the limits it is read under."""
+
+    sizes: list[int]
+    """Number of items on each page."""
+    links: list[tuple[str, int]]
+    """Each page's next link, as its kind and the page it names."""
+    allow_other_origins: bool
+    max_pages: int | None
+    max_items: int | None
+
+
+@st.composite
+def _page_graphs(draw: st.DrawFn) -> _PageGraph:
+    """Draw a collection of up to six linked pages and the traversal limits.
+
+    A next link is absolute, a path, a query, on another origin, empty, or
+    absent. It can name any page, including one already read.
+
+    Args:
+        draw: Hypothesis draw function.
+
+    Returns:
+        The collection and limits.
+    """
+    count = draw(st.integers(1, 6))
+    targets = st.integers(0, count - 1)
+    links = st.one_of(
+        st.tuples(
+            st.sampled_from(["absolute", "path", "query", "other"]), targets
+        ),
+        st.tuples(st.sampled_from(["empty", "absent"]), st.just(0)),
+    )
+    return _PageGraph(
+        sizes=draw(
+            st.lists(st.integers(0, 3), min_size=count, max_size=count)
+        ),
+        links=draw(st.lists(links, min_size=count, max_size=count)),
+        allow_other_origins=draw(st.booleans()),
+        max_pages=draw(st.none() | st.integers(1, 6)),
+        max_items=draw(st.none() | st.integers(0, 10)),
+    )
+
+
+def _link_text(kind: str, target: int) -> str | None:
+    """Return a next link as a page holds it.
+
+    Args:
+        kind: Kind of link, as ``_page_graphs()`` draws it.
+        target: Number of the page that the link names.
+
+    Returns:
+        The link's text, or ``None`` for an absent link.
+    """
+    texts = {
+        "absolute": _page_url(_PAGES_ORIGIN, target),
+        "path": f"/pages/?page={target}",
+        "query": f"?page={target}",
+        "other": _page_url(_OTHER_ORIGIN, target),
+        "empty": "",
+    }
+    return texts.get(kind)
+
+
+def _page_items(index: int, size: int) -> list[str]:
+    """Return the items of a page.
+
+    Args:
+        index: Number of the page.
+        size: Number of items on it.
+
+    Returns:
+        Items that name their page and position.
+    """
+    return [f"{index}.{position}" for position in range(size)]
+
+
+def _expected_traversal(
+    graph: _PageGraph,
+) -> tuple[list[str], type[Exception] | None]:
+    """Predict what a traversal of a generated collection yields.
+
+    A page's items count against ``max_items`` before any is yielded. A next
+    link is followed only if it names no page already read, has the API's
+    origin unless other origins are allowed, and stays within ``max_pages``,
+    checked in that order.
+
+    Args:
+        graph: Generated collection and limits.
+
+    Returns:
+        The items yielded, and the error that ends the traversal, if any.
+    """
+    url = _page_url(_PAGES_ORIGIN, 0)
+    read = {url}
+    pages = 1
+    items: list[str] = []
+    index = 0
+    while True:
+        page_items = _page_items(index, graph.sizes[index])
+        if (
+            graph.max_items is not None
+            and len(items) + len(page_items) > graph.max_items
+        ):
+            return items, LimitExceeded
+        items.extend(page_items)
+        text = _link_text(*graph.links[index])
+        if not text:
+            return items, None
+        url = urljoin(url, text)
+        if url in read:
+            return items, PaginationError
+        if not graph.allow_other_origins and not url.startswith(
+            f"{_PAGES_ORIGIN}/"
+        ):
+            return items, PaginationError
+        if graph.max_pages is not None and pages >= graph.max_pages:
+            return items, LimitExceeded
+        pages += 1
+        read.add(url)
+        index = graph.links[index][1]
+
+
+def _serve_pages(
+    mock: requests_mock.Mocker, graph: _PageGraph, *, link_headers: bool
+) -> None:
+    """Serve every page of a collection from both origins.
+
+    Args:
+        mock: Mocker to register the pages with.
+        graph: Generated collection.
+        link_headers: Whether pages are JSON lists whose Link header names the
+            next page, rather than mappings with ``results`` and ``next``.
+    """
+    for index, size in enumerate(graph.sizes):
+        items = _page_items(index, size)
+        text = _link_text(*graph.links[index])
+        for origin in (_PAGES_ORIGIN, _OTHER_ORIGIN):
+            url = _page_url(origin, index)
+            if link_headers:
+                headers = (
+                    {} if text is None else {"Link": f'<{text}>; rel="next"'}
+                )
+                mock.get(url, json=items, headers=headers, complete_qs=True)
+            else:
+                body: dict[str, Any] = {"results": items}
+                if text is not None:
+                    body["next"] = text
+                mock.get(url, json=body, complete_qs=True)
+
+
+@settings(max_examples=150)
+@given(graph=_page_graphs(), link_headers=st.booleans())
+def test_traversal_follows_only_allowed_pages(
+    graph: _PageGraph, link_headers: bool
+) -> None:
+    """A traversal yields exactly the pages that its limits allow.
+
+    Generated collections link pages in chains and cycles, by absolute, path,
+    and query links, and to another origin. Every traversal yields the items
+    that the oracle predicts and ends as it predicts: after the last page,
+    with ``PaginationError`` for a page already read or another origin, or
+    with ``LimitExceeded`` for too many pages or items. No request reaches
+    another origin unless other origins are allowed.
+
+    Args:
+        graph: Generated collection and limits.
+        link_headers: Whether to read Link headers with
+            ``follow_link_headers()`` rather than ``next`` members with
+            ``follow_next_links()``.
+    """
+    api = API(f"{_PAGES_ORIGIN}/")
+    api.max_pages = graph.max_pages
+    api.max_items = graph.max_items
+    first = _page_url(_PAGES_ORIGIN, 0)
+    yielded: list[str] = []
+    error: type[Exception] | None = None
+
+    with requests_mock.Mocker() as mock:
+        _serve_pages(mock, graph, link_headers=link_headers)
+        if link_headers:
+            items = follow_link_headers(
+                api,
+                api.get(first),
+                allow_other_origins=graph.allow_other_origins,
+            )
+        else:
+            items = follow_next_links(
+                api,
+                api.json(api.get(first)),
+                url=first,
+                allow_other_origins=graph.allow_other_origins,
+            )
+        try:
+            yielded.extend(items)
+        except (PaginationError, LimitExceeded) as err:
+            error = type(err)
+        requested = [request.url for request in mock.request_history]
+
+    assert (yielded, error) == _expected_traversal(graph)
+    if not graph.allow_other_origins:
+        assert all(url.startswith(f"{_PAGES_ORIGIN}/") for url in requested)
+
+
+class _Unavailable:
+    """Settings of the local server that answers 503 before it succeeds."""
+
+    def __init__(self) -> None:
+        """Start with a server that succeeds at once."""
+        self.failures = 0
+        """Number of attempts answered with 503 before one succeeds."""
+        self.retry_after = 0
+        """Retry-After of each 503 in seconds, or 0 for none."""
+        self.attempts = 0
+        """Number of attempts received."""
+
+
+@pytest.fixture(scope="module")
+def unavailable_server() -> Iterator[tuple[str, _Unavailable]]:
+    """Serve a local server whose first attempts fail, as each test sets.
+
+    urllib3 retries below requests' transport adapters, where requests_mock
+    replaces them, so retries need a real server.
+
+    Yields:
+        The server's base URL, and its settings.
+    """
+    settings_ = _Unavailable()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            settings_.attempts += 1
+            if settings_.attempts <= settings_.failures:
+                self.send_response(503)
+                if settings_.retry_after:
+                    self.send_header("Retry-After", str(settings_.retry_after))
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    ).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/", settings_
+    server.shutdown()
+    server.server_close()
+
+
+def _planned_sleeps(
+    failures: int, retry_after: int, total: int, backoff: float
+) -> list[float]:
+    """Return how long urllib3 sleeps before each retry it makes.
+
+    A positive Retry-After is slept as given. Otherwise the first retry
+    follows at once, and retry ``k`` after ``backoff * 2 ** (k - 1)`` seconds.
+
+    Args:
+        failures: Number of attempts answered with 503.
+        retry_after: Retry-After of each 503 in seconds, or 0 for none.
+        total: Number of retries allowed.
+        backoff: Backoff factor.
+
+    Returns:
+        The sleep before each retry, in order.
+    """
+    return [
+        float(retry_after)
+        if retry_after
+        else (0.0 if k == 1 else backoff * 2 ** (k - 1))
+        for k in range(1, min(failures, total) + 1)
+    ]
+
+
+# Slack for the time a local request and the checks themselves take.
+_TIME_SLACK = 0.25
+
+
+@settings(max_examples=10, deadline=None)
+@given(
+    failures=st.integers(0, 2),
+    retry_after=st.integers(0, 2),
+    total=st.integers(0, 3),
+    backoff=st.sampled_from([0.0, 0.5, 1.0]),
+    budget=st.floats(0.05, 0.2),
+)
+def test_retries_stay_within_the_request_budget(
+    unavailable_server: tuple[str, _Unavailable],
+    failures: int,
+    retry_after: int,
+    total: int,
+    backoff: float,
+    budget: float,
+) -> None:
+    """Retries end within the request's total time, however they are spaced.
+
+    An API created with ``max_retries`` retries a 503 after the delay that its
+    Retry-After or backoff asks for, unless the delay would outlast the
+    request's ``total_timeout``. The request succeeds, raises
+    ``RetryError`` once its retries are spent, or raises ``LimitExceeded`` at
+    the deadline, and it never sends more than ``total + 1`` attempts.
+
+    Args:
+        unavailable_server: Base URL and settings of the local server.
+        failures: Number of attempts answered with 503.
+        retry_after: Retry-After of each 503 in seconds, or 0 for none.
+        total: Number of retries allowed.
+        backoff: Backoff factor.
+        budget: The API's ``total_timeout``.
+    """
+    base, server = unavailable_server
+    server.failures, server.retry_after, server.attempts = (
+        failures,
+        retry_after,
+        0,
+    )
+    api = API(
+        base,
+        max_retries=Retry(
+            total=total, status_forcelist=[503], backoff_factor=backoff
+        ),
+    )
+    api.total_timeout = budget
+    api.timeout = 1.0
+    planned = sum(_planned_sleeps(failures, retry_after, total, backoff))
+    without_limit: type[Exception] | None = (
+        requests.exceptions.RetryError if failures > total else None
+    )
+
+    started = time.monotonic()
+    outcome: type[Exception] | None = None
+    try:
+        api.get("/retry").close()
+    except (requests.exceptions.RetryError, LimitExceeded) as err:
+        outcome = type(err)
+    elapsed = time.monotonic() - started
+
+    assert elapsed <= budget + _TIME_SLACK
+    assert server.attempts <= total + 1
+    if planned > budget + _TIME_SLACK:
+        assert outcome is LimitExceeded
+    elif planned < budget - _TIME_SLACK / 5:
+        assert outcome is without_limit
+        assert server.attempts == min(failures, total) + 1
+    else:
+        assert outcome in {without_limit, LimitExceeded}

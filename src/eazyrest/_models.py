@@ -2615,7 +2615,15 @@ class JSONObject:
         self._pending_updates[json_field] = value
 
     def _queue_in_place_changes(self) -> None:
-        """Queue updates for cached values that were changed in place."""
+        """Queue updates for cached values that were changed in place.
+
+        Every changed value is encoded before any is queued, so a value that
+        cannot be encoded leaves the pending updates as they were.
+
+        Raises:
+            FieldConversionError: If a changed value cannot be encoded.
+        """
+        changed: list[tuple[str, JSONProperty, Any]] = []
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
             with _converting(type(self), field):
@@ -2623,8 +2631,11 @@ class JSONObject:
                     self._field_cache[field], descriptor.analyzed_type
                 )
             if not _json_equal(encoded, snapshot):
-                self._queue_update(descriptor.json_field, _copy_json(encoded))
-                self._field_snapshots[field] = _copy_json(encoded)
+                changed.append((field, descriptor, encoded))
+
+        for field, descriptor, encoded in changed:
+            self._queue_update(descriptor.json_field, _copy_json(encoded))
+            self._field_snapshots[field] = _copy_json(encoded)
 
     def _apply_patch_response(
         self,
