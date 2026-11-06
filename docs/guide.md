@@ -431,7 +431,7 @@ for todo in todos:
     print(todo.title, todo.user.name)
 ```
 
-Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads and must return related objects keyed by primary key:
+Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads, and as `api` the client to request them with, which is the query's `api=` or else the related model's own API. It must return related objects keyed by primary key:
 
 ```python
 @json_object
@@ -442,8 +442,7 @@ class User(JSONObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api=None):
-        api = cls.api if api is None else api
+    def bulk_get_by_pks(cls, pks, *, api):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
@@ -718,7 +717,7 @@ Registering the API on a shared base class is the cleanest pattern. The API can 
 todos = Todo.filter(api=user_api, completed=False)
 ```
 
-Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, and the collection hooks receive the query's client as `api`, so a hook such as `follow_next_links(api, payload)` reads later pages with it. While `filter()` calls a collection hook, `cls.api` is the query's API too.
+Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, or else the related model's own API, and the collection hooks receive the query's client as `api`, so a hook such as `follow_next_links(api, payload)` reads later pages with it. While `filter()` calls a collection hook, `cls.api` is the query's API too.
 
 A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
 

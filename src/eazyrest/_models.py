@@ -154,6 +154,41 @@ _query_api: contextvars.ContextVar[tuple[type[JSONObject], API] | None] = (
 """The class and API of a query that passed ``api=``, while it reads items."""
 
 
+@dataclass(frozen=True)
+class _Query:
+    """The APIs and request options of one query."""
+
+    api: API | None
+    """The API that the query passed as ``api=``, which its objects keep."""
+
+    client: API
+    """The client that sends the query's own requests, with its options."""
+
+    options: Mapping[str, Any]
+    """Request options that the query's requests send."""
+
+    def related_client(self, model: type[JSONObject]) -> API:
+        """Return the client for a bulk lookup of related objects.
+
+        The lookup uses the query's ``api=``, or else the related model's own
+        API. It sends the query's request options only to the origin of the
+        query's own client, so that credentials in them, such as an
+        ``Authorization`` header, never reach another host.
+
+        Args:
+            model: Class of the related objects.
+
+        Returns:
+            The API for the lookup, request-scoped when the options apply.
+        """
+        base = model.api if self.api is None else self.api
+        if self.options and _origin(base.base_url) == _origin(
+            self.client.base_url
+        ):
+            return base._scoped(self.options)
+        return base
+
+
 class APIDescriptor:
     """Descriptor that resolves APIs from instance overrides or a registry."""
 
@@ -3437,11 +3472,14 @@ class JSONObject:
     ) -> dict[Any, Self]:
         """Bulk-load objects by primary key for explicit prefetch support.
 
+        Prefetch keeps the objects that this hook returns under the API of the
+        query that prefetches, whatever API they were created with.
+
         Args:
             pks: Primary keys to load.
-            api: The API of the query that prefetches, if it passed ``api=``.
-                Prefetch passes it only then, and the bulk request should use
-                it instead of the class's registered API.
+            api: The client to send the bulk request with. Prefetch always
+                passes it: the API that the query passed as ``api=``, or else
+                this class's registered API.
 
         Returns:
             Mapping from primary key to loaded object.
@@ -3637,14 +3675,14 @@ class JSONObject:
         cls: type[Self],
         items: Iterable[Any],
         fields: Sequence[str],
-        api: API | None = None,
+        query: _Query,
     ) -> PrefetchMap:
         """Bulk-load related objects for a batch of parent JSON items.
 
         Args:
             items: Parent JSON objects to scan for related-object primary keys.
             fields: Model attribute names to prefetch.
-            api: The API that the query passed as ``api=``, if any.
+            query: The query that prefetches.
 
         Returns:
             Mapping of each prefetched field name to related objects keyed by
@@ -3706,9 +3744,9 @@ class JSONObject:
 
             # The related model loads through its own registered API, unless
             # the query passed api=.
-            bulk_kwargs = {} if api is None else {"api": api}
-            related_objects = related_type.model_type.bulk_get_by_pks(
-                pks, **bulk_kwargs
+            model_type = related_type.model_type
+            related_objects = model_type.bulk_get_by_pks(
+                pks, api=query.related_client(model_type)
             )
             prefetched_related[field] = {
                 obj._normalize_pk(pk): obj
@@ -3722,14 +3760,14 @@ class JSONObject:
         cls: type[Self],
         items: Iterable[Any],
         fields: Sequence[str],
-        api: API | None = None,
+        query: _Query,
     ) -> Iterator[Self]:
         """Yield prefetched objects lazily in batches.
 
         Args:
             items: Parent JSON objects returned by a collection query.
             fields: Model attribute names to prefetch for each batch.
-            api: The API that the query passed as ``api=``, if any.
+            query: The query that prefetches.
 
         Yields:
             Model instances populated from ``items`` with prefetched related
@@ -3748,19 +3786,25 @@ class JSONObject:
             if len(batch_items) == 0:
                 return
 
-            prefetched_related = cls._apply_prefetch(batch_items, fields, api)
+            prefetched_related = cls._apply_prefetch(
+                batch_items, fields, query
+            )
             parents = [
-                cls(json=_OwnedJSON(item), api=api) for item in batch_items
+                cls(json=_OwnedJSON(item), api=query.api)
+                for item in batch_items
             ]
 
-            # Related objects inherit their parent's write mode. A prefetched
-            # object is shared by every parent in the batch, so set its mode
-            # once, from the mode the parents are created with, rather than
-            # when a parent reads it. Reading a relation through one parent
-            # must not change how it saves through another.
+            # Related objects inherit their parent's write mode and API. A
+            # prefetched object is shared by every parent in the batch, so set
+            # its mode once, from the mode the parents are created with, rather
+            # than when a parent reads it. Reading a relation through one
+            # parent must not change how it saves through another. A bulk hook
+            # creates its objects with the client it received, which carries
+            # the query's request options, so give them the query's API.
             for related_objects in prefetched_related.values():
                 for related in related_objects.values():
                     related.set_write_mode(parents[0].write_mode)
+                    related._api_override = query.api
 
             for obj in parents:
                 obj._set_prefetched_related(prefetched_related)
@@ -3839,6 +3883,7 @@ class JSONObject:
             cls._prefetch_info(field)
 
         client = cls.api if api is None else api
+        context = _Query(api, client, {})
         resp = _check_final_response(
             client.get(cls.class_url, params=cls._encode_query(query)),
             "the query has no collection to read",
@@ -3857,7 +3902,7 @@ class JSONObject:
             )
 
         return Results(
-            cls._prefetched_filter(items, prefetch_fields, api), count
+            cls._prefetched_filter(items, prefetch_fields, context), count
         )
 
     @classmethod

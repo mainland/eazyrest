@@ -414,12 +414,12 @@ class User(DRFObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api=None):
+    def bulk_get_by_pks(cls, pks, *, api):
         users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
 
-Pass `api` on to `filter()`. A query that was given `api=` passes its API here, so that the related objects load from the same server, such as the same tenant's, and keep that API.
+Pass `api` on to `filter()`. Prefetch passes the query's `api=` here, or else this class's registered API, so that the related objects load from the same server, such as the same tenant's. They keep the query's API.
 
 That works well when the DRF endpoint accepts requests like:
 
@@ -477,8 +477,7 @@ Then your client model can implement:
 
 ```python
 @classmethod
-def bulk_get_by_pks(cls, pks, *, api=None):
-    api = cls.api if api is None else api
+def bulk_get_by_pks(cls, pks, *, api):
     resp = api.get("/users/bulk/", params={"id": sorted(pks)})
     return {
         user.pk: user
