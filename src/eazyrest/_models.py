@@ -1014,11 +1014,20 @@ def _query_value(value: Any) -> Any:
     return value
 
 
+# The options of the query methods. Each method reserves those it does not
+# take, so that a later release can give any of them to any method without
+# changing what a call that works now sends. 0.9.0's filter() took url.
+_QUERY_OPTIONS = frozenset(
+    {"api", "prefetch", "defaults", "request_options", "params", "url"}
+)
+
+
 def _query_params(
     params: Mapping[str, Any] | None,
     kwargs: Mapping[str, Any],
     kind: str = "Query parameter",
     argument: str = "params",
+    reserved: AbstractSet[str] = _QUERY_OPTIONS,
 ) -> dict[str, Any]:
     """Return the parameters given as a mapping and as keywords.
 
@@ -1028,13 +1037,24 @@ def _query_params(
         kwargs: Parameters passed as keyword arguments.
         kind: What a parameter is, for the error message.
         argument: Name of the mapping argument, for the error message.
+        reserved: Names that a keyword argument may not have, although the
+            method does not use them. The query methods reserve all of their
+            options, those that a method takes being keyword arguments of its
+            own.
 
     Returns:
         Every parameter, keyed by name.
 
     Raises:
-        TypeError: If a name is given both ways.
+        TypeError: If a name is given both ways, or a keyword argument has a
+            reserved name.
     """
+    clash = sorted(reserved & set(kwargs))
+    if clash:
+        raise TypeError(
+            f"{clash[0]}= is reserved. Pass a {kind.lower()} named "
+            f"{clash[0]} in {argument}={{{clash[0]!r}: ...}}"
+        )
     if params is None:
         return dict(kwargs)
     both = sorted(set(params) & set(kwargs))
@@ -3600,7 +3620,9 @@ class JSONObject:
         """
         options = _request_options(request_options)
         payload = cls._encode_fields(
-            _query_params(fields, kwargs, "Field", "fields")
+            _query_params(
+                fields, kwargs, "Field", "fields", reserved=frozenset()
+            )
         )
         client = cls.api if api is None else api
         resp = _check_model_write(
@@ -4114,8 +4136,10 @@ class JSONObject:
         or a ``deque``, is a collection.
 
         The keyword arguments ``api``, ``prefetch``, ``defaults``,
-        ``request_options``, and ``params`` of the query methods are not query
-        parameters. Pass a parameter with one of these names in ``params``.
+        ``request_options``, ``params``, and ``url`` of the query methods are
+        not query parameters. ``get_page()`` takes ``url``, and the other
+        methods reserve it, so ``filter(url=...)`` raises ``TypeError``. Pass a
+        parameter with one of these names in ``params``.
 
         ``request_options`` are sent with every request of the query: the
         collection request, the requests for later pages that the collection

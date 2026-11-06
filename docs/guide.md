@@ -707,13 +707,14 @@ repeated ones, so join the values yourself, as in
 `Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
 `Todo.filter(ordering="due,-priority")`.
 
-The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
-`params` of the query methods are their own options, not query parameters. Pass
-a query parameter of any name, including one of these, in the `params=`
-mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode
-keyword arguments. `create()` likewise takes field values in `fields=`, for a
-key such as `api`, `fields`, or `request_options`, which `create()` reserves
-for itself:
+The keyword arguments `api`, `prefetch`, `defaults`, `request_options`,
+`params`, and `url` of the query methods are their own options, not query
+parameters. Each query method reserves the ones that it does not take, so
+`filter(url=...)` and `filter(defaults=...)` raise `TypeError`. Pass a query
+parameter of any name, including one of these, in the `params=` mapping, which
+`filter()`, `get()`, and `get_or_create()` encode as they encode keyword
+arguments. `create()` likewise takes field values in `fields=`, for a key such
+as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)

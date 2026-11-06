@@ -59,7 +59,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   the collection. This holds for a next-page request that names another origin
   too, where `PaginationError` advised `allow_other_origins=True`, though that
   option would follow nothing.
-- `filter(url=...)` is removed. Override `class_url`, or call the API directly.
+- `filter(url=...)` is removed, and raises `TypeError`. Override `class_url`,
+  or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()`
   encodes them: renamed by `field_map`, converted to JSON, and with booleans
   sent as `true` and `false`.
@@ -68,11 +69,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   mapping, or a collection holding `None` or another collection. In 0.9.0, such
   a constraint was silently omitted, so `get()` could return an object that
   does not match it.
-- The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
-  `params` of the query methods are their own options. Pass a query parameter
-  with one of these names in `params=`. `create()` likewise reserves `api`,
-  `fields`, `files`, and `request_options`, and takes field values with those
-  names in `fields=`.
+- The keyword arguments `api`, `prefetch`, `defaults`, `request_options`,
+  `params`, and `url` of the query methods are their own options. Pass a query
+  parameter with one of these names in `params=`. `create()` likewise reserves
+  `api`, `fields`, `files`, and `request_options`, and takes field values with
+  those names in `fields=`.
 - `get_or_create()` returns an existing object as the server sent it. 0.9.0
   assigned every keyword argument to the object it found, which sent a `PATCH`.
   To change the object, assign its fields and call `save()`.

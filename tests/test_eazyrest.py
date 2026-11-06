@@ -7,6 +7,7 @@ import decimal
 import email
 import email.message
 import enum
+import inspect
 import sys
 import types
 import typing
@@ -4793,13 +4794,58 @@ def test_params_sends_reserved_names(requests_mock: Any) -> None:
     """``params=`` sends a parameter that a query method reserves."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(params={"api": "v2", "prefetch": "1"}, title="a"))
+    list(
+        Todo.filter(
+            params={"api": "v2", "prefetch": "1", "defaults": "d", "url": "u"},
+            title="a",
+        )
+    )
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
         "api": ["v2"],
         "prefetch": ["1"],
+        "defaults": ["d"],
+        "url": ["u"],
         "title": ["a"],
     }
+
+
+_QUERY_OPTIONS = (
+    "api",
+    "prefetch",
+    "defaults",
+    "request_options",
+    "params",
+    "url",
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "name"),
+    [
+        (method, name)
+        for method in ("filter", "get", "get_or_create", "get_page")
+        for name in _QUERY_OPTIONS
+        if name not in inspect.signature(getattr(Todo, method)).parameters
+    ],
+)
+def test_query_methods_reserve_the_options_they_do_not_take(
+    requests_mock: Any, method: str, name: str
+) -> None:
+    """Every query method refuses each option that it does not take.
+
+    In 0.9.0, ``filter(url=...)`` queried another URL. Sending an option as
+    a query parameter would also change what a call sends once a later
+    release gives the option to that method.
+
+    Args:
+        method: Name of the query method.
+        name: Option that the method does not take.
+    """
+    with pytest.raises(TypeError, match=rf"^{name}= is reserved\. .*params="):
+        getattr(Todo, method)(**{name: "wire"})
+
+    assert requests_mock.call_count == 0
 
 
 def test_params_are_encoded_as_keyword_arguments(requests_mock: Any) -> None:
