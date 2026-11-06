@@ -66,6 +66,12 @@ responses from `PageNumberPagination`, `LimitOffsetPagination`, and
 With `prefetch=`, iteration reads ahead by up to `prefetch_batch_size` objects,
 so a batch can span pages.
 
+To show one page at a time, call `get_page()`, whose default
+`collection_page()` hook reads the same page shapes. The page's `count`,
+`next_url`, and `previous_url` come from DRF's `count`, `next`, and `previous`
+members, and `next_page()` and `previous_page()` follow them.
+`CursorPagination` reports no `count`.
+
 With `PageNumberPagination`, a response usually looks like:
 
 ```json

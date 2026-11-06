@@ -173,7 +173,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the
   `collection_items_from_response()` hook. The collection hooks receive the
   query's client as `api`, so a hook reads later pages with the API that the
-  query used.
+  query used. Page navigation with `get_page()`, which returns a `Page` whose
+  `next_page()` and `previous_page()` request the pages around it, read by the
+  `collection_page()` hook with `next_links_page()` or `link_headers_page()`.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
   `Time`, `Duration`, `UUID`, and `Decimal`. A type that would drop the keys it
