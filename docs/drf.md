@@ -225,8 +225,9 @@ expect. Pass a related model instance or a bare primary key to the query. A
 relative URL is resolved against the related model's API. A URL whose origin is
 neither that API's nor one of its `redirect_origins` raises
 `FieldConversionError` when the field is read, so a server cannot send the
-client, with its credentials, to another host. Prefetching needs primary keys,
-so a hyperlinked field cannot be prefetched.
+client, with its credentials, to another host. A hyperlinked field can be
+prefetched when the related model implements `bulk_get_by_urls()`, which
+receives the URLs rather than primary keys.
 
 ## Match DRF serializer fields
 
