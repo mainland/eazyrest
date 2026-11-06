@@ -59,6 +59,11 @@ class User(JSONObject):
     resource_url: str
 ```
 
+A minor release of eazyrest may add attributes to `JSONObject`, such as methods
+and hooks. A model with a field of the same name then raises `ValueError` when
+it is decorated, and `field_map=` keeps the field under another attribute name,
+as above.
+
 Use `write_map=` for a field that the API returns under one key and accepts
 under another, such as a related object returned nested under `user` and
 written as its primary key under `user_id`. Reads, queries, and the object's
@@ -870,6 +875,15 @@ query passed as `api=` or the class's registered API. Send any request for
 later pages with it, so that a query with `api=` reads every page from that
 API.
 
+When the query has `request_options=`, `api` is a copy of the API that adds
+them to every request and shares the API's session. Use it to send requests,
+not to configure, close, or compare the API. Like a model write, the copy
+raises `RedirectError` for a redirect that it did not follow, so a hook that
+sends `allow_redirects=False` and reads the 3xx response itself works only in a
+query without options. The copy is made with `copy.copy()`, so a subclass of
+`API` that changes its own state while it sends requests, such as a refreshed
+token, must keep that state on the session, which the copy shares.
+
 The hooks that take `api`, which are `collection_items()`,
 `collection_items_from_response()`, `collection_page()`, `bulk_get_by_pks()`,
 and `bulk_get_by_urls()`, may receive more keyword arguments in later 1.x
@@ -970,11 +984,11 @@ class GitHubObject(JSONObject):
 
 `filter()` iterates every page of a collection. To show one page at a time
 instead, as a paginated view does, call `get_page()`, which takes the same
-arguments as `filter()` and returns a `Page` of objects. Its `count` is the
-size of the whole collection, if the page reports it, and `next_url` and
-`previous_url` are the URLs of the pages around it. `next_page()` and
-`previous_page()` request those pages with the same API, request options, and
-prefetch, and return `None` at either end:
+arguments as `filter()`, and `url=`, and returns a `Page` of objects. Its
+`count` is the size of the whole collection, if the page reports it, and
+`next_url` and `previous_url` are the URLs of the pages around it.
+`next_page()` and `previous_page()` request those pages with the same API,
+request options, and prefetch, and return `None` at either end:
 
 ```python
 page = Todo.get_page(completed=False)
@@ -983,6 +997,10 @@ for todo in page:
 print(page.count, page.next_url)
 older = page.next_page()
 ```
+
+`len(page)` is the number of items on the page, so a page without items is
+false, even when its `next_url` names another page. Loop over pages with
+`while page is not None:`, not `while page:`, which would stop at such a page.
 
 `get_page(url=...)` fetches a page by a URL saved from `next_url` or
 `previous_url`. The URL must have the origin of the API's base URL, and it

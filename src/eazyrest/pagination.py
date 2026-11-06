@@ -582,6 +582,9 @@ class Page(Generic[T]):
     URL's unless the page allows other origins, a link to a page already read
     in the same direction raises ``PaginationError``, and reading more pages
     in one direction than the API's ``max_pages`` raises ``LimitExceeded``.
+
+    A page without items is false, even when it links to another page, so
+    loop over pages with ``while page is not None``.
     """
 
     items: list[T]

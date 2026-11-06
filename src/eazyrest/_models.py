@@ -3779,8 +3779,11 @@ class JSONObject:
         registered API, and it sends the query's ``request_options`` with
         every request. With options, it is a copy that shares the API's
         session, so use it to send requests, not to configure, close, or
-        compare the API. While ``filter()`` calls this hook, ``cls.api`` is
-        ``api`` too.
+        compare the API. The copy raises ``RedirectError`` for a redirect that
+        it did not follow, even with ``allow_redirects=False``, and a subclass
+        of ``API`` that changes its own state, such as a refreshed token, must
+        keep that state on the session. While ``filter()`` calls this hook,
+        ``cls.api`` is ``api`` too.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.

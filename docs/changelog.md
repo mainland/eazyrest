@@ -5,7 +5,10 @@
 eazyrest 1.0 is the first stable release. From 1.0 on, the names that the
 `eazyrest` package exports, the `eazyrest.pydantic` types, and the behavior
 that the guide documents follow semantic versioning. A breaking change waits
-for 2.0.
+for 2.0. A minor release may add attributes to `JSONObject`, such as methods
+and hooks, so a model with a field of a new attribute's name raises
+`ValueError` when it is decorated, until `field_map=` gives the field another
+attribute name.
 
 The tags `v1.0.0a1` through `v1.0.0a4` name commits from an earlier history
 that was later rewritten. They are not ancestors of 1.0.0.
