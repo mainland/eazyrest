@@ -277,6 +277,9 @@ def _enum_type(cls: type[enum.Enum]) -> Any:
         cls,
         _validator(is_member, cls),
         _serializer(is_member, cls),
+        # The validator and serializer are plain functions, whose schema says
+        # nothing about the values, so name the members' values.
+        WithJsonSchema({"enum": [member.value for member in cls]}),
     ]
 
 

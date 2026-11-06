@@ -187,6 +187,13 @@ def test_constraints_apply_after_eazyrest_conversion() -> None:
         adapter.validate_python("-PT1M")
 
 
+def test_enum_converted_by_pydantic_lists_its_values() -> None:
+    """An enum inside a Pydantic type keeps its values in the JSON schema."""
+    adapter = PydanticType(list[Level]).adapter
+
+    assert adapter.json_schema()["items"] == {"enum": [1, 2]}
+
+
 @with_config(ConfigDict(extra="allow"))
 class Till(TypedDict):
     """Mapping with decimal and time values that eazyrest converts."""
