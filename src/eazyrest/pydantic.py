@@ -19,11 +19,13 @@ import enum
 import types
 import typing
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Annotated, Any, Literal, Union, cast
 
 from pydantic import (
+    BaseModel,
     PlainSerializer,
     PlainValidator,
     PydanticUserError,
@@ -84,11 +86,12 @@ def _validator(is_value: Callable[[Any], bool], ty: Any) -> PlainValidator:
     return PlainValidator(validate)
 
 
-# The exceptions other than TypeError and ValueError that the encode
-# functions of table conversions raise during one of eazyrest's dumps. A
-# table serializer encodes only values of its type, so such an exception is a
-# bug in the conversion, whatever value is being written, and propagates
-# unchanged.
+# The exceptions that the encode functions of table conversions raise during
+# one of eazyrest's dumps. A table serializer encodes only values of its type,
+# so a TypeError or ValueError is the conversion's refusal of the value, and
+# any other exception is a bug in the conversion. Pydantic's union serializer
+# catches both and writes the value by another member, or by its inferred
+# type, so they are recorded here and raised after the dump.
 _ENCODE_BUGS: ContextVar[list[Exception] | None] = ContextVar(
     "_ENCODE_BUGS", default=None
 )
@@ -116,14 +119,12 @@ def _serializer(is_value: Callable[[Any], bool], ty: Any) -> PlainSerializer:
             raise TypeError(f"Unexpected value of type {type(value).__name__}")
         bugs = _ENCODE_BUGS.get()
         if bugs:
-            # A union's serializer tries its members again after a bug,
+            # A union's serializer tries its members again after a failure,
             # which no conversion should see.
             raise bugs[0]
         found = _current_conversion(ty)
         try:
             return found.entry.encode(value, found.declared)
-        except (TypeError, ValueError):
-            raise
         except Exception as err:
             if bugs is not None:
                 bugs.append(err)
@@ -605,9 +606,10 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
 
     Raises:
         ValueError: If the value is not valid input for the field, or the field
-            could not read its JSON value back, for example because the value
-            breaks a constraint that only validation checks. The message does
-            not quote the value.
+            could not read its JSON value back as the value written, for
+            example because the value breaks a constraint that only
+            validation checks, or because it is a ``SecretStr``, which writes
+            a mask. The message does not quote the value.
     """
     # A round trip writes a value that validation reads back, such as the
     # JSON text of a pydantic.Json field rather than the value it holds.
@@ -624,17 +626,202 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             by_alias=True,
             warnings="error",
         )
+        written = value
     except PydanticSerializationError:
+        written = _decode(adapter, value)
+        # Pydantic's warnings quote the value.
         encoded = _dump(
             adapter,
-            _decode(adapter, value),
+            written,
             mode="json",
             round_trip=True,
             by_alias=True,
+            warnings="none",
         )
 
-    _decode(adapter, encoded)
+    if not _same(adapter, written, _decode(adapter, encoded)):
+        raise ValueError("The value does not read back as written")
+
     return encoded
+
+
+def _same(adapter: TypeAdapter[Any], written: Any, read_back: Any) -> bool:
+    """Return whether a value read back as the value written.
+
+    The Python dumps are compared rather than the values, because a model's
+    equality also compares its private attributes, which are not written. A
+    secret dumps as itself, so a mask that reads back is still caught.
+    Pydantic dumps the items of a set into a set, which fails for an item
+    that dumps as a dict, such as a frozen dataclass, so then the values are
+    compared by their fields, keys, and items instead.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        written: The value written.
+        read_back: The value that its JSON reads as.
+
+    Returns:
+        Whether ``read_back`` is the same as ``written``.
+    """
+    try:
+        return bool(
+            _python_dump(adapter, read_back) == _python_dump(adapter, written)
+        )
+    except TypeError:
+        return _same_values(written, read_back)
+
+
+def _same_values(written: Any, read_back: Any) -> bool:
+    """Return whether two values are the same, field by field.
+
+    Models and dataclasses compare by their type and their written fields,
+    mappings by their keys and values, sequences item by item, and sets by
+    matching each item to a distinct item of the other. Other values compare
+    by equality, which compares a secret's value rather than its mask.
+
+    Args:
+        written: The value written.
+        read_back: The value that its JSON reads as.
+
+    Returns:
+        Whether the values are the same.
+    """
+    if isinstance(written, BaseModel):
+        names = set(type(written).model_fields) | set(
+            written.model_extra or {}
+        )
+        return (
+            type(read_back) is type(written)
+            and names
+            == set(type(read_back).model_fields)
+            | set(read_back.model_extra or {})
+            and all(
+                _same_values(getattr(written, name), getattr(read_back, name))
+                for name in names
+            )
+        )
+    if dataclasses.is_dataclass(written) and not isinstance(written, type):
+        return type(read_back) is type(written) and all(
+            _same_values(
+                getattr(written, field.name), getattr(read_back, field.name)
+            )
+            for field in dataclasses.fields(written)
+        )
+    if isinstance(written, Mapping):
+        return (
+            isinstance(read_back, Mapping)
+            and written.keys() == read_back.keys()
+            and all(
+                _same_values(item, read_back[key])
+                for key, item in written.items()
+            )
+        )
+    if isinstance(written, (list, tuple)):
+        return (
+            type(read_back) is type(written)
+            and len(read_back) == len(written)
+            and all(
+                _same_values(item, back)
+                for item, back in zip(written, read_back, strict=True)
+            )
+        )
+    if isinstance(written, (set, frozenset)):
+        if not isinstance(read_back, (set, frozenset)) or len(
+            read_back
+        ) != len(written):
+            return False
+        try:
+            return _items(written) == _items(read_back)
+        except TypeError:
+            # An unhashable value, which a set can hold inside a model,
+            # matches pairwise.
+            pass
+        unmatched = list(read_back)
+        for item in written:
+            match = next(
+                (
+                    i
+                    for i, back in enumerate(unmatched)
+                    if _same_values(item, back)
+                ),
+                None,
+            )
+            if match is None:
+                return False
+            del unmatched[match]
+        return True
+    return bool(written == read_back)
+
+
+def _items(values: Any) -> Counter[Any]:
+    """Count the items of a collection by their structural keys.
+
+    Args:
+        values: Items of a set.
+
+    Returns:
+        How many items have each key of ``_key()``.
+
+    Raises:
+        TypeError: If an item holds a value that cannot be hashed.
+    """
+    return Counter(_key(value) for value in values)
+
+
+def _key(value: Any) -> Any:
+    """Return a hashable key of a value that compares as ``_same_values()``.
+
+    Args:
+        value: Value to key.
+
+    Returns:
+        A key equal to that of another value exactly when ``_same_values()``
+        finds the two the same.
+
+    Raises:
+        TypeError: If the value holds a value that cannot be hashed.
+    """
+    if isinstance(value, BaseModel):
+        return (
+            type(value),
+            frozenset(
+                (name, _key(getattr(value, name)))
+                for name in set(type(value).model_fields)
+                | set(value.model_extra or {})
+            ),
+        )
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value),
+            tuple(
+                _key(getattr(value, field.name))
+                for field in dataclasses.fields(value)
+            ),
+        )
+    if isinstance(value, Mapping):
+        return (
+            Mapping,
+            frozenset((key, _key(item)) for key, item in value.items()),
+        )
+    if isinstance(value, (list, tuple)):
+        return (type(value), tuple(_key(item) for item in value))
+    if isinstance(value, (set, frozenset)):
+        return (set, frozenset(_items(value).items()))
+    hash(value)
+    return (None, value)
+
+
+def _python_dump(adapter: TypeAdapter[Any], value: Any) -> Any:
+    """Return the Python dump of a field value, for comparing values.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        value: Field value to dump.
+
+    Returns:
+        ``value`` dumped in Python mode.
+    """
+    return _dump(adapter, value, round_trip=True, by_alias=True)
 
 
 def _dump(
@@ -650,9 +837,11 @@ def _dump(
     ``PydanticSerializationError``, a ``ValueError``, usually with the
     exception as its cause. A conversion reports a value that it cannot
     convert with a ``TypeError`` or ``ValueError``, and any other exception
-    from its ``encode`` is a bug in it, which propagates unchanged, as it does
-    for a field without Pydantic, even when a union's serializer then writes
-    the value by another member.
+    from its ``encode`` is a bug in it. Either propagates unchanged, as it
+    does for a field without Pydantic, even when a union's serializer then
+    writes the value by another member, except that a refusal of a value
+    that is not yet valid fails the dump, so that the value is validated
+    first.
 
     Args:
         adapter: ``TypeAdapter`` for the field's type.
@@ -668,17 +857,32 @@ def _dump(
     Raises:
         PydanticSerializationError: If serializing ``value`` fails because
             of the value.
+        TypeError: If a conversion refuses a valid value, with its reason.
+        ValueError: If a conversion refuses a valid value, with its reason.
     """
     bugs: list[Exception] = []
     token = _ENCODE_BUGS.set(bugs)
+    failure: PydanticSerializationError | None = None
     try:
         result = adapter.dump_python(value, **options)
     except PydanticSerializationError as err:
-        # A union's serializer may try another member after a conversion's
-        # bug, and report its own failure without the bug as the cause.
-        if bugs:
-            raise bugs[0] from None
-        cause = err.__cause__
+        failure = err
+    finally:
+        _ENCODE_BUGS.reset(token)
+
+    # Raised outside the except block, an exception keeps its own cause.
+    for bug in bugs:
+        if not isinstance(bug, (TypeError, ValueError)):
+            raise bug
+    if bugs:
+        # A conversion refused a value of its type, which a union's
+        # serializer may then have written by another member. A value that
+        # is not yet valid is validated and dumped again.
+        if unvalidated:
+            raise PydanticSerializationError(str(bugs[0]))
+        raise bugs[0]
+    if failure is not None:
+        cause = failure.__cause__
         while isinstance(cause, PydanticSerializationError):
             cause = cause.__cause__
         if (
@@ -686,11 +890,6 @@ def _dump(
             and cause is not None
             and not isinstance(cause, (TypeError, ValueError))
         ):
-            raise cause from None
-        raise
-    finally:
-        _ENCODE_BUGS.reset(token)
-    if bugs:
-        # Another member of a union wrote the value after the bug.
-        raise bugs[0]
+            raise cause
+        raise failure
     return result

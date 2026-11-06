@@ -406,7 +406,29 @@ value that breaks a constraint, such as `0` for a field typed as
 
 A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a
 model whose config sets `alias_generator=to_camel` writes `darkMode` rather
-than `dark_mode`.
+than `dark_mode`. A value must also read back as the value written. Pydantic
+writes a `SecretStr` or `SecretBytes` as `"**********"`, so writing one raises
+`FieldConversionError`, and so does reading one, because a read encodes the
+value to detect changes made in place. To send a secret, annotate its type with
+a serializer that reveals it:
+
+```python
+from typing import Annotated
+
+from pydantic import PlainSerializer, SecretStr
+
+RevealedSecret = Annotated[
+    SecretStr,
+    PlainSerializer(
+        lambda secret: secret.get_secret_value(),
+        return_type=str,
+        when_used="json",
+    ),
+]
+```
+
+A field typed as `RevealedSecret` writes the secret itself, and its `repr()`
+still hides it.
 
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that
 conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,

@@ -39,6 +39,7 @@ from pydantic.alias_generators import to_camel
 from pydantic_core import PydanticSerializationError
 from typing_extensions import TypeAliasType, TypedDict
 
+import eazyrest.pydantic
 from eazyrest import (
     API,
     Conversion,
@@ -477,6 +478,122 @@ def test_pydantic_fields_write_by_alias(requests_mock: Any) -> None:
     assert post.last_request.json() == {
         "display": {"darkMode": False, "size": 9}
     }
+
+
+class Login(pydantic.BaseModel):
+    """Pydantic model with a secret."""
+
+    password: pydantic.SecretStr
+
+
+@json_object
+class Account(PydanticBase):
+    """Model with secret fields, whose writes would send their masks."""
+
+    class_url = "/accounts/"
+
+    id: int
+    password: pydantic.SecretStr
+    key: pydantic.SecretBytes
+    login: Login
+    token: Annotated[
+        pydantic.SecretStr,
+        PlainSerializer(
+            lambda secret: secret.get_secret_value(),
+            return_type=str,
+            when_used="json",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("password", pydantic.SecretStr("hunter2")),
+        ("password", "hunter2"),
+        ("key", pydantic.SecretBytes(b"hunter2")),
+        ("login", Login(password=pydantic.SecretStr("hunter2"))),
+    ],
+)
+def test_pydantic_fields_refuse_to_write_secrets(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A secret, which Pydantic writes as a mask, is not sent.
+
+    Args:
+        field: Name of the ``Account`` field to write.
+        value: Value whose secret would be written as a mask.
+    """
+    account = Account(json={"id": 1, field: None})
+
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        setattr(account, field, value)
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        Account.create(**{field: value})
+
+    assert requests_mock.call_count == 0
+
+
+def test_pydantic_field_writes_a_revealed_secret(requests_mock: Any) -> None:
+    """A secret whose serializer reveals it is written."""
+    post = requests_mock.post(
+        "https://pydantic.example.com/accounts/", json={"id": 2}
+    )
+
+    Account.create(token=pydantic.SecretStr("hunter2"))
+
+    assert post.last_request.json() == {"token": "hunter2"}
+
+
+@json_object
+class Vault(PydanticBase):
+    """Model with a readable secret field."""
+
+    id: int
+    secret: pydantic.SecretStr
+
+
+def test_pydantic_field_refuses_to_read_a_secret() -> None:
+    """A secret field cannot be read, since its changes could not be saved."""
+    vault = Vault(json={"id": 1, "secret": "hunter2"})
+
+    with pytest.raises(FieldConversionError, match=r"^Vault.secret: "):
+        _ = vault.secret
+
+
+class Cached(pydantic.BaseModel):
+    """Pydantic model with a private attribute, which is not written."""
+
+    model_config = ConfigDict(extra="allow")
+
+    x: int
+    _hits: int = pydantic.PrivateAttr(default=0)
+
+
+@json_object
+class Counter(PydanticBase):
+    """Model with a field whose model has a private attribute."""
+
+    class_url = "/counters/"
+
+    id: int
+    cached: Cached
+
+
+def test_pydantic_field_writes_a_model_with_private_state(
+    requests_mock: Any,
+) -> None:
+    """A model's private attributes do not stop it from being written."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/counters/1/", status_code=204
+    )
+    counter = Counter(json={"id": 1, "cached": {"x": 1}})
+
+    counter.cached._hits = 3
+    counter.cached.x = 2
+    counter.save()
+
+    assert patch.last_request.json() == {"cached": {"x": 2}}
 
 
 @pytest.mark.parametrize(
@@ -1193,6 +1310,99 @@ def test_a_conversion_bug_on_the_first_attempt_propagates(hint: Any) -> None:
     assert len(calls) == 1
 
 
+def _refuse_naive(value: datetime.datetime, cls: type[Any]) -> Any:
+    """Refuse a naive datetime, as a conversion refuses a value.
+
+    Args:
+        value: Datetime to encode.
+        cls: Ignored.
+
+    Returns:
+        The ISO 8601 text of an aware datetime.
+
+    Raises:
+        ValueError: For a naive datetime.
+    """
+    if value.tzinfo is None:
+        raise ValueError("Naive datetimes are not allowed")
+    return value.isoformat()
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        Annotated[datetime.datetime, Field()],
+        Annotated[datetime.datetime | Literal["never"], Field()],
+        Annotated[datetime.datetime | int, Field()],
+        Annotated[datetime.datetime | Any, Field()],
+        Annotated[list[datetime.datetime | Literal["never"]], Field()],
+    ],
+    ids=["plain", "literal", "scalar", "any", "list"],
+)
+def test_a_conversions_refusal_is_not_overruled_by_a_union(
+    hint: Any, recwarn: pytest.WarningsRecorder
+) -> None:
+    """A conversion's refusal reaches the caller, also inside a union.
+
+    Pydantic's union serializer would otherwise write the value by another
+    member, or by its inferred type, with a warning that quotes it.
+
+    Args:
+        hint: Type of the field.
+        recwarn: Fixture that records warnings.
+    """
+
+    class Strict(PydanticBase):
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            datetime.datetime: Conversion(
+                decode=lambda value, cls: datetime.datetime.fromisoformat(
+                    value
+                ),
+                encode=_refuse_naive,
+            )
+        }
+
+    model: Any = json_object(
+        type("Token", (Strict,), {"__annotations__": {"id": int, "at": hint}})
+    )
+    token: Any = model(json={"id": 1, "at": None})
+    naive = datetime.datetime(2030, 1, 1, 12, 0)  # noqa: DTZ001
+
+    with pytest.raises(FieldConversionError, match="Naive datetimes"):
+        token.at = [naive] if "list" in str(hint) else naive
+
+    assert not recwarn.list
+
+
+def test_a_conversion_bug_keeps_its_cause() -> None:
+    """A conversion's bug propagates through Pydantic with its own cause."""
+
+    def encode(value: datetime.datetime, cls: type[Any]) -> Any:
+        try:
+            return {"present": 1}["missing"]
+        except KeyError as err:
+            raise RuntimeError("bug in the conversion") from err
+
+    class Buggy(PydanticBase):
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            datetime.datetime: Conversion(
+                decode=lambda value, cls: value, encode=encode
+            )
+        }
+
+    for hint in (
+        Annotated[datetime.datetime, Field()],
+        Annotated[datetime.datetime | int, Field()],
+    ):
+        model: Any = json_object(
+            type("E", (Buggy,), {"__annotations__": {"id": int, "at": hint}})
+        )
+        event: Any = model(json={"id": 1, "at": None})
+        with pytest.raises(RuntimeError) as raised:
+            event.at = datetime.datetime(2024, 1, 1, tzinfo=UTC)
+        assert isinstance(raised.value.__cause__, KeyError)
+
+
 def test_a_serializer_given_unvalidated_input_is_retried() -> None:
     """A serializer that fails on a value not yet valid sees it validated.
 
@@ -1213,6 +1423,123 @@ def test_a_serializer_given_unvalidated_input_is_retried() -> None:
     counted.n = "5"
 
     assert counted.json["n"] == 5
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass(frozen=True)
+class SetItem:
+    """Hashable dataclass, which a set may hold."""
+
+    x: Annotated[int, Field(gt=0)]
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass(frozen=True)
+class SecretItem:
+    """Hashable dataclass with a secret, which Pydantic writes as a mask."""
+
+    token: pydantic.SecretStr
+
+
+@json_object
+class Sets(PydanticBase):
+    """Model with Pydantic sets of dataclasses."""
+
+    class_url = "/sets/"
+
+    id: int
+    items: Annotated[set[SetItem], Field()]
+    frozen: Annotated[frozenset[SetItem], Field()]
+
+
+def test_sets_of_dataclasses_read_and_write(requests_mock: Any) -> None:
+    """A set of hashable dataclasses reads, and writes as an array."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/sets/1/", json={}
+    )
+    sets = Sets(json={"id": 1, "items": [{"x": 1}], "frozen": [{"x": 2}]})
+
+    assert sets.items == {SetItem(1)}
+    assert sets.frozen == frozenset({SetItem(2)})
+    sets.items = {SetItem(1), SetItem(3)}
+    sets.frozen = frozenset({SetItem(4)})
+    sets.save()
+
+    body = patch.last_request.json()
+    assert sorted(item["x"] for item in body["items"]) == [1, 3]
+    assert body["frozen"] == [{"x": 4}]
+
+
+def test_sets_of_dataclasses_compare_in_linear_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A set read back is compared to the set written item by item, once.
+
+    A set left by deletions iterates in another order than the set that its
+    JSON reads as, which matching items pairwise would compare in quadratic
+    time.
+
+    Args:
+        monkeypatch: Fixture that counts the comparisons.
+    """
+    calls = 0
+    same_values = eazyrest.pydantic._same_values
+
+    def counted(written: Any, read_back: Any) -> bool:
+        nonlocal calls
+        calls += 1
+        return same_values(written, read_back)
+
+    monkeypatch.setattr(eazyrest.pydantic, "_same_values", counted)
+    value = {SetItem(n) for n in range(1, 2001)}
+    for n in range(501, 2001):
+        value.remove(SetItem(n))
+    sets = Sets(json={"id": 1, "items": [], "frozen": []})
+
+    sets.items = value
+
+    assert sorted(item["x"] for item in sets.json["items"]) == list(
+        range(1, 501)
+    )
+    assert calls < len(value)
+
+
+@pytest.mark.parametrize(
+    ("hint", "value"),
+    [
+        (set[SetItem], {SetItem(0)}),
+        (set[SecretItem], {SecretItem(pydantic.SecretStr("hunter2"))}),
+    ],
+    ids=["constraint", "secret"],
+)
+def test_sets_of_dataclasses_must_read_back(hint: Any, value: Any) -> None:
+    """A set item that breaks a constraint, or holds a secret, is refused.
+
+    A standard library dataclass is not validated when it is made, and
+    Pydantic writes a secret as a mask, so neither reads back as written.
+
+    Args:
+        hint: Type of the set.
+        value: Set that would not read back as written.
+    """
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "__annotations__": {
+                    "id": int,
+                    "value": Annotated[hint, Field()],
+                }
+            },
+        )
+    )
+    holder: Any = model(json={"id": 1, "value": []})
+
+    with pytest.raises(
+        FieldConversionError, match=r"read back as written|greater than 0"
+    ):
+        holder.value = value
 
 
 def _raise_key_error(value: Any, cls: type[Any]) -> Any:
