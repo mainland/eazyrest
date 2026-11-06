@@ -42,11 +42,12 @@ Much of the library changed between 0.9.0 and 1.0. Each item below is a change t
 - A `timedelta` field writes an ISO 8601 duration. `parse_duration()` rejects years and months, whose length varies, no longer reads the `:SS` and `D:HH:MM:SS` forms, and reads microseconds. A value out of range raises `ValueError` rather than `OverflowError`.
 - A value that a field cannot convert raises `FieldConversionError`, which is both a `TypeError` and a `ValueError`. Its message names the model and field but not the value.
 - Assigning a non-collection to a collection field, or a `datetime` to a `date` field, raises.
-- `to_json()` is a classmethod. `create_related()` is private.
+- `from_json()` and `to_json()` receive an `AnalyzedType` that describes the field's annotation, rather than the declared type, and `to_json()` is a classmethod. Match the type with a pattern such as `case BaseType(decimal.Decimal):` rather than comparing it with the type, as the guide's Custom field conversion section shows. `from_json()` also receives the field's name as `field=`, so an override must accept `*, field=None` and pass it on to `super().from_json()`. `create_related()` is private.
 
 #### Declarations
 
 - `json_object()` takes its options as keyword arguments only. It raises `ValueError` for a field that would replace a `JSONObject` attribute, for a `pk=`, `field_map=`, or `exclude=` name that is not a field, and for two fields with the same JSON key. A class with decorated ancestors that are not subclasses of one another raises `TypeError`.
+- The `JSONObject` constructor takes `json` and `api` as keyword arguments only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
 - Redeclaring a field also preserves its read and write keys and, when those options are omitted, its write-only and read-only policies. Explicit mappings or policy sets override those defaults.
 
