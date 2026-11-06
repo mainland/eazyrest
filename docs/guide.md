@@ -1024,8 +1024,18 @@ todo.title = "new"
 todo.save(request_options={"headers": {"If-Match": etag}})
 ```
 
-An assignment in eager mode sends its `PATCH` with no options. Use lazy mode
-and `save()` for a write that needs them.
+An assignment in eager mode sends its `PATCH` at once, so there is no call to
+pass options to. Make the assignment inside a `write_options()` block instead.
+Every write of the object inside the block sends the block's options: each
+eager `PATCH`, and every `save()` and `delete()`, whose own `request_options`
+are merged over them. Loads, and the writes of related objects, do not send
+them. A nested block merges its options over the outer block's:
+
+```python
+todo.set_write_mode("eager")
+with todo.write_options(headers={"If-Match": etag}):
+    todo.title = "new"
+```
 
 The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
 `request_options=` too, for every request that the query sends: the collection

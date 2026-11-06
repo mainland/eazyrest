@@ -5692,3 +5692,117 @@ def test_filter_refuses_a_collection_redirect(
 
     with pytest.raises(RedirectError, match=f"status {status}"):
         Todo.filter()
+
+
+TODO_URL = "https://example.com/v1/todos/1/"
+
+
+def test_write_options_reach_eager_assignments(requests_mock: Any) -> None:
+    """Each eager ``PATCH`` in the block sends the block's options."""
+    patch = requests_mock.patch(TODO_URL, status_code=204)
+    todo = Todo(json=TENANT_TODO, write_mode="eager")
+
+    with todo.write_options(headers={"If-Match": '"v1"'}) as same:
+        assert same is todo
+        todo.title = "b"
+
+    assert patch.last_request.headers["If-Match"] == '"v1"'
+
+    todo.title = "c"
+
+    assert "If-Match" not in patch.last_request.headers
+
+
+def test_write_options_reach_save_and_delete_but_not_loads(
+    requests_mock: Any,
+) -> None:
+    """A lazy object sends the block's options with ``save()``, ``delete()``.
+
+    Loading the object inside the block does not send them.
+    """
+    get = requests_mock.get(TODO_URL, json=TENANT_TODO)
+    patch = requests_mock.patch(TODO_URL, status_code=204)
+    delete = requests_mock.delete(TODO_URL, status_code=204)
+    todo = Todo(id=1)
+
+    with todo.write_options(headers={"If-Match": '"v1"'}):
+        todo.title = "b"
+        assert not patch.called
+        todo.save()
+        todo.delete()
+
+    assert "If-Match" not in get.last_request.headers
+    assert patch.last_request.headers["If-Match"] == '"v1"'
+    assert delete.last_request.headers["If-Match"] == '"v1"'
+
+
+def test_write_options_nest_and_yield_to_request_options(
+    requests_mock: Any,
+) -> None:
+    """Inner blocks and a call's ``request_options`` merge over outer ones."""
+    patch = requests_mock.patch(TODO_URL, status_code=204)
+    todo = Todo(json=TENANT_TODO)
+
+    with todo.write_options(headers={"X-Outer": "o", "X-Shared": "outer"}):
+        with todo.write_options(headers={"X-Shared": "inner"}, timeout=7):
+            todo.title = "b"
+            todo.save(request_options={"headers": {"X-Call": "c"}})
+            inner = patch.last_request
+        todo.title = "c"
+        todo.save()
+        outer = patch.last_request
+
+    assert inner.headers["X-Outer"] == "o"
+    assert inner.headers["X-Shared"] == "inner"
+    assert inner.headers["X-Call"] == "c"
+    assert inner.timeout == 7
+    assert outer.headers["X-Shared"] == "outer"
+    assert outer.timeout != 7
+    assert dict(todo._write_options) == {}
+
+
+def test_write_options_are_restored_when_the_block_raises() -> None:
+    """The block's options end with the block, even when it raises."""
+    todo = Todo(json=TENANT_TODO)
+
+    with pytest.raises(RuntimeError), todo.write_options(timeout=1):
+        raise RuntimeError
+
+    assert dict(todo._write_options) == {}
+
+
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"json": {}}, "cannot set json"),
+        ({"stream": True}, "stream"),
+        ({"method": "PUT"}, "cannot set method"),
+    ],
+)
+def test_write_options_reject_invalid_options(
+    options: dict[str, Any], match: str
+) -> None:
+    """Options that a write cannot send raise at the ``with`` statement.
+
+    Args:
+        options: Options that a write rejects.
+        match: Pattern that the ``TypeError`` message should match.
+    """
+    todo = Todo(json=TENANT_TODO)
+
+    with pytest.raises(TypeError, match=match), todo.write_options(**options):
+        pass
+
+    assert dict(todo._write_options) == {}
+
+
+def test_save_rejects_unknown_request_option(requests_mock: Any) -> None:
+    """A name that is not a request option fails before anything is sent."""
+    todo = Todo(json=TENANT_TODO)
+    todo.title = "b"
+
+    with pytest.raises(TypeError, match="cannot set method"):
+        todo.save(request_options={"method": "PUT"})
+
+    assert requests_mock.call_count == 0
+    assert todo._pending_updates == {"title": "b"}
