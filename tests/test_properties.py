@@ -11,10 +11,12 @@ import copy
 import datetime
 import enum
 import importlib.util
+import itertools
 import json
 import re
+import typing
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 from urllib.parse import parse_qsl, urlparse
 
 import isodate
@@ -23,6 +25,7 @@ import requests
 import requests_mock
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
+from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
@@ -754,3 +757,219 @@ def test_pydantic_errors_never_quote_the_input(
         message = str(err)
 
     assert _SENTINEL not in message
+
+
+_ALIAS_NAMES = (f"Alias{n}" for n in itertools.count())
+"""Names for the aliases that the type strategies create."""
+
+_T = TypeVar("_T")
+_Box = TypeAliasType("_Box", list[_T], type_params=(_T,))
+"""Generic alias, which expands to a list of its argument."""
+
+# Recursive aliases, whose quoted references resolve in this module. A field
+# that reaches one cannot be converted.
+_Loop = TypeAliasType("_Loop", "list[_Loop] | int")
+_Ping = TypeAliasType("_Ping", "list[_Pong]")
+_Pong = TypeAliasType("_Pong", "_Ping | None")
+
+
+class _TypePair(typing.NamedTuple):
+    """A type that may use aliases, and the same type with them expanded."""
+
+    aliased: Any
+    expanded: Any
+    recursive: bool
+
+
+_LEAF_TYPES = st.sampled_from(
+    [
+        _TypePair(int, int, False),
+        _TypePair(str, str, False),
+        _TypePair(datetime.date, datetime.date, False),
+        _TypePair(Owner, Owner, False),
+    ]
+)
+_RECURSIVE_LEAVES = st.sampled_from(
+    [_TypePair(_Loop, None, True), _TypePair(_Ping, None, True)]
+)
+
+
+# Type constructors applied to types built at run time, which a type checker
+# would otherwise read as type expressions.
+_LIST: Any = list
+_TUPLE: Any = tuple
+_SET: Any = set
+_UNION: Any = typing.Union
+_ALIAS: Any = TypeAliasType
+_BOX: Any = _Box
+
+_CONSTRUCTORS = st.sampled_from(
+    [
+        lambda ty: _LIST[ty],
+        lambda ty: _TUPLE[ty, ...],
+        lambda ty: _SET[ty],
+        lambda ty: _UNION[ty, None],
+    ]
+)
+
+
+def _type_nodes(
+    children: st.SearchStrategy[_TypePair],
+) -> st.SearchStrategy[_TypePair]:
+    """Return pairs built from smaller pairs by one type constructor.
+
+    Args:
+        children: Strategy for the pairs to build on.
+
+    Returns:
+        Strategy for lists, tuples, sets, and optional types of the children,
+        each as written and as expanded.
+    """
+    return st.tuples(_CONSTRUCTORS, children).map(
+        lambda t: _TypePair(
+            t[0](t[1].aliased), t[0](t[1].expanded), t[1].recursive
+        )
+    )
+
+
+def _aliased(pair: _TypePair, how: str) -> _TypePair:
+    """Return a pair whose written type is wrapped in an alias.
+
+    Args:
+        pair: Pair to wrap.
+        how: ``"plain"`` for a named alias of the type, ``"generic"`` for the
+            generic list alias applied to it, or ``"none"`` to leave it.
+
+    Returns:
+        The wrapped pair, with the same expansion as the alias.
+    """
+    if how == "plain":
+        alias = _ALIAS(next(_ALIAS_NAMES), pair.aliased)
+        return _TypePair(alias, pair.expanded, pair.recursive)
+    if how == "generic":
+        return _TypePair(
+            _BOX[pair.aliased], _LIST[pair.expanded], pair.recursive
+        )
+    return pair
+
+
+def _alias_trees() -> st.SearchStrategy[_TypePair]:
+    """Return type pairs of up to three levels, with aliases at any level.
+
+    Returns:
+        Strategy for pairs whose written type uses aliases.
+    """
+    hows = st.sampled_from(["plain", "generic", "none", "none"])
+    leaves = st.one_of(_LEAF_TYPES, _RECURSIVE_LEAVES)
+    return st.recursive(
+        st.tuples(leaves, hows).map(lambda t: _aliased(*t)),
+        lambda children: st.tuples(_type_nodes(children), hows).map(
+            lambda t: _aliased(*t)
+        ),
+        max_leaves=3,
+    )
+
+
+def _field_model(annotation: Any) -> Any:
+    """Return a model whose ``value`` field has a type.
+
+    Args:
+        annotation: Type of the field.
+
+    Returns:
+        A decorated model with the fields ``id`` and ``value``.
+    """
+    return json_object(
+        type(
+            "Generated",
+            (PropertyBase,),
+            {
+                "__annotations__": {"id": int, "value": annotation},
+                "class_url": "/generated/",
+            },
+        )
+    )
+
+
+# JSON values that the leaf types accept, and some that they reject, nested in
+# lists as the collection types read them.
+_ALIAS_JSON = st.recursive(
+    st.one_of(
+        st.none(),
+        st.integers(-3, 3),
+        st.sampled_from(["a", "2024-01-01", "not a date", "1"]),
+    ),
+    lambda items: st.lists(items, max_size=3),
+    max_leaves=6,
+)
+
+
+def _plain(value: Any) -> Any:
+    """Return a value read from a field in a form that compares by content.
+
+    Args:
+        value: Value read from a field.
+
+    Returns:
+        ``value``, with each related object replaced by its class name and
+        primary key, and each collection tagged with its type, so that a list
+        and a tuple of the same items differ.
+    """
+    if isinstance(value, JSONObject):
+        return type(value).__name__, value.pk
+    if isinstance(value, (set, frozenset)):
+        return "set", sorted(repr(_plain(item)) for item in value)
+    if isinstance(value, (list, tuple)):
+        return type(value).__name__, [_plain(item) for item in value]
+    return value
+
+
+def _read_outcome(model: Any, value: Any) -> tuple[str, Any]:
+    """Read a ``value`` field, then write the result back as JSON.
+
+    Args:
+        model: Model from ``_field_model()``.
+        value: JSON value of the field.
+
+    Returns:
+        ``("ok", (read, reread))`` with the value read and the value read
+        again from the JSON that writing it gives, each in ``_plain()`` form,
+        so that a set compares regardless of its JSON order, or
+        ``("raise", type)`` with the type of the exception that reading or
+        writing raised.
+    """
+    obj = model(json={"id": 1, "value": copy.deepcopy(value)})
+    conversion = model.value.analyzed_type
+    try:
+        read = obj.value
+        written = model.to_json(read, conversion)
+        reread = model(json={"id": 1, "value": written}).value
+        return "ok", (_plain(read), _plain(reread))
+    except (FieldConversionError, TypeError, ValueError) as err:
+        return "raise", type(err)
+
+
+@settings(max_examples=150)
+@given(pair=_alias_trees(), value=_ALIAS_JSON)
+def test_named_type_aliases_convert_as_their_expansions(
+    pair: _TypePair, value: Any
+) -> None:
+    """A field typed by aliases converts as one typed by their expansion.
+
+    Named aliases, generic aliases, and aliases inside other types expand
+    before conversion. A field that reaches a recursive alias cannot be
+    converted, and raises when it is first read.
+
+    Args:
+        pair: Type as written with aliases and as expanded.
+        value: JSON value of the field.
+    """
+    aliased = _field_model(pair.aliased)
+
+    if pair.recursive:
+        with pytest.raises(FieldConversionError, match="refers to itself"):
+            _ = aliased(json={"id": 1, "value": value}).value
+        return
+
+    expanded = _field_model(pair.expanded)
+    assert _read_outcome(aliased, value) == _read_outcome(expanded, value)
