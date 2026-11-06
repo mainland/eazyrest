@@ -404,6 +404,10 @@ value that breaks a constraint, such as `0` for a field typed as
 `Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as
 `null`.
 
+A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a
+model whose config sets `alias_generator=to_camel` writes `darkMode` rather
+than `dark_mode`.
+
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that
 conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,
 `datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's
