@@ -1163,3 +1163,52 @@ def test_unhashable_collection_prefetch_key_is_a_shape_error(
 
     with pytest.raises(ResponseShapeError, match=r"Team\.members"):
         list(Team.filter(prefetch="members"))
+
+
+@json_object
+class Diary(MockedBase):
+    """Resource with two collection fields that can be changed in place."""
+
+    class_url = "/diaries/"
+
+    id: int
+    tags: list[str]
+    days: list[datetime.date]
+
+
+@pytest.mark.parametrize("bad_first", [True, False])
+def test_failed_in_place_encoding_queues_nothing(
+    requests_mock: Any, bad_first: bool
+) -> None:
+    """A save that cannot encode one change queues none of them.
+
+    Args:
+        bad_first: Whether the unencodable change is made before the other.
+    """
+    patch = requests_mock.patch(
+        "https://mocked.example/diaries/1/", status_code=204
+    )
+    diary = Diary(json={"id": 1, "tags": ["a"], "days": ["2024-01-01"]})
+    tags, days = diary.tags, diary.days
+
+    def bad() -> None:
+        """Append a datetime, which a date field cannot write."""
+        days.append(datetime.datetime(2024, 1, 2, 3))  # noqa: DTZ001
+
+    if bad_first:
+        bad()
+    tags.append("b")
+    if not bad_first:
+        bad()
+
+    with pytest.raises(FieldConversionError, match=r"Diary\.days"):
+        diary.save()
+
+    assert diary._pending_updates == {}
+    assert not patch.called
+
+    days.pop()
+    diary.save()
+
+    assert patch.last_request.json() == {"tags": ["a", "b"]}
+    assert diary._pending_updates == {}
