@@ -4,7 +4,8 @@ A rule-based state machine applies random sequences of assignments, key
 changes, in-place changes, saves, full saves, failed and unconfirmed writes,
 refreshes, pushed updates, and write-mode changes to one object, which it
 loads, creates, or makes partial, and changes the values that the caller
-passed to ``create()``.
+passed to ``create()``. Some assigned and in-place values cannot be encoded,
+and every write must then fail before it sends anything.
 A fake server records every write, and a model of the server, of the object's
 stored JSON, and of the values that reads return predicts the outcome of each
 step.
@@ -17,11 +18,14 @@ write-only field that the server accepts but never returns.
 from __future__ import annotations
 
 import copy
+import datetime
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 import hypothesis.strategies as st
+import pytest
 import requests_mock
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import (
@@ -35,6 +39,7 @@ from hypothesis.stateful import (
 from eazyrest import (
     API,
     APIError,
+    FieldConversionError,
     JSONObject,
     RedirectError,
     ResponseShapeError,
@@ -76,13 +81,15 @@ class Doc(StateBase):
     meta: dict[str, int]
     # A bare dict is not converted, so its value is passed through as it is.
     extra: dict  # type: ignore[type-arg]
+    # Converted, so a value can fail to encode.
+    days: list[datetime.date]
     # Read as {"id": 1} and written as owner_id=1.
     owner: Owner
     # Accepted in writes but never returned.
     secret: str
 
 
-FIELDS = ("title", "count", "tags", "meta", "extra")
+FIELDS = ("title", "count", "tags", "meta", "extra", "days")
 """Plain fields that the machine reads and writes."""
 
 DECLARED = (*FIELDS, "owner")
@@ -99,8 +106,37 @@ VALUES = {
     "extra": st.dictionaries(
         WORDS, st.lists(st.integers(0, 3), max_size=2), max_size=2
     ),
+    "days": st.lists(
+        st.dates(datetime.date(2024, 1, 1), datetime.date(2024, 1, 9)).map(
+            datetime.date.isoformat
+        ),
+        max_size=2,
+    ),
     "owner": OWNERS,
 }
+"""JSON values of each field, which the model holds."""
+
+BAD_VALUES: dict[str, Any] = {
+    "tags": 5,
+    "days": [datetime.datetime(2024, 1, 2, 3)],  # noqa: DTZ001
+}
+"""A value of each converted collection field that cannot be encoded."""
+
+
+def python_value(field: str, value: Any) -> Any:
+    """Return the Python value whose JSON is a field's JSON value.
+
+    Args:
+        field: Name of the field.
+        value: JSON value of the field.
+
+    Returns:
+        The value, with the ISO 8601 strings of ``days`` as dates.
+    """
+    if field == "days":
+        return [datetime.date.fromisoformat(day) for day in value]
+    return copy.deepcopy(value)
+
 
 FAILURES: dict[str, type[Exception]] = {
     "error": APIError,
@@ -387,6 +423,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.in_place: set[str] = set()
         self.cached: set[str] = set()
         self.server_key = self.stored_key = self.saved_key = 1
+        # Whether the cached days hold a value changed in place that cannot
+        # be encoded, so that every write fails before sending anything.
+        self.poisoned = False
         # The values passed to create(), which the caller still holds.
         self.caller: dict[str, Any] = {}
         if how == "load":
@@ -410,6 +449,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if secret is not None:
             extra["secret"] = secret
             self.server_secret = secret
+        extra["days"] = python_value("days", self.caller.pop("days"))
         self.obj = Doc.create(id=1, **self.caller, **extra)
 
     def detect_in_place_changes(self) -> None:
@@ -471,6 +511,33 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending.clear()
         self.pending_secret = None
 
+    def refused(self, step: Callable[[], object]) -> None:
+        """Check that a step fails on the poisoned days and sends nothing.
+
+        Every write first detects the values changed in place, and the
+        poisoned days cannot be encoded, so the write raises before it sends
+        anything and leaves every change as it was.
+
+        Args:
+            step: Step that would send a write.
+        """
+        before = len(self.mocker.request_history)
+        with pytest.raises(FieldConversionError, match=r"Doc\.days"):
+            step()
+        assert len(self.mocker.request_history) == before
+
+    def sends(self, unchanged: bool = False) -> bool:
+        """Return whether an assignment sends a write at once.
+
+        Args:
+            unchanged: Whether the assignment leaves the object's JSON as it
+                is, so that it sends nothing.
+
+        Returns:
+            Whether the object is in eager mode and the assignment changes it.
+        """
+        return self.obj.write_mode == "eager" and not unchanged
+
     @rule(field=st.sampled_from(FIELDS))
     def read(self, field: str) -> None:
         """A read returns the expected value.
@@ -478,7 +545,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             field: Name of the field to read.
         """
-        assert getattr(self.obj, field) == self.expected[field]
+        value = getattr(self.obj, field)
+        if not (field == "days" and self.poisoned):
+            assert value == python_value(field, self.expected[field])
         self.cached.add(field)
 
     @rule()
@@ -495,8 +564,18 @@ class ObjectStateMachine(RuleBasedStateMachine):
             field: Name of the field to assign.
         """
         value = data.draw(VALUES[field])
-        setattr(self.obj, field, copy.deepcopy(value))
-        self.assign_value(field, value, value == self.stored[field])
+        unchanged = value == self.stored[field]
+        if self.poisoned and self.sends(unchanged):
+            self.refused(
+                lambda: setattr(self.obj, field, python_value(field, value))
+            )
+            return
+
+        setattr(self.obj, field, python_value(field, value))
+        self.assign_value(field, value, unchanged)
+        # The assigned value replaces the one changed in place.
+        if field == "days":
+            self.poisoned = False
 
     @rule(owner=OWNERS)
     def assign_owner(self, owner: int) -> None:
@@ -512,6 +591,10 @@ class ObjectStateMachine(RuleBasedStateMachine):
         """
         state = vars(self.obj).get("_json")
         unchanged = state is not None and state.get("owner") == owner
+        if self.poisoned and self.sends(unchanged):
+            self.refused(lambda: setattr(self.obj, "owner", Owner(id=owner)))
+            return
+
         self.obj.owner = Owner(id=owner)
         self.assign_value("owner", owner, unchanged)
 
@@ -522,6 +605,10 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             secret: Value to assign.
         """
+        if self.poisoned and self.sends():
+            self.refused(lambda: setattr(self.obj, "secret", secret))
+            return
+
         self.obj.secret = secret
         if self.obj.write_mode == "lazy":
             self.pending_secret = secret
@@ -543,6 +630,10 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             key: New primary key.
         """
+        if self.poisoned and self.sends(key == self.stored_key):
+            self.refused(lambda: setattr(self.obj, "id", key))
+            return
+
         self.obj.id = key
         if key == self.stored_key:
             return
@@ -597,9 +688,59 @@ class ObjectStateMachine(RuleBasedStateMachine):
         for items in self.caller["extra"].values():
             items.append(98)
 
+    @rule(field=st.sampled_from(sorted(BAD_VALUES)))
+    def assign_bad(self, field: str) -> None:
+        """Assigning a value that cannot be encoded changes nothing.
+
+        The assignment may load the object first, which the model already
+        expects, so only an object that holds the field is compared.
+
+        Args:
+            field: Name of the converted collection field to assign.
+        """
+        state = vars(self.obj).get("_json")
+        before = copy.deepcopy(state) if state and field in state else None
+        pending = copy.deepcopy(self.obj._pending_updates)
+        cached = dict(self.obj._field_cache)
+        with pytest.raises(FieldConversionError, match=rf"Doc\.{field}"):
+            setattr(self.obj, field, BAD_VALUES[field])
+
+        # A load queues in-place changes before it replaces the JSON, so
+        # pending updates are unchanged only when no load happened.
+        if before is not None:
+            assert vars(self.obj)["_json"] == before
+            assert self.obj._field_cache.keys() == cached.keys()
+            assert all(
+                self.obj._field_cache[name] is value
+                for name, value in cached.items()
+            )
+            assert self.obj._pending_updates == pending
+
+    @precondition(
+        lambda self: (
+            "days" in self.cached
+            and not self.poisoned
+            and not vars(self.obj).get("_json_is_partial", False)
+        )
+    )
+    @rule()
+    def poison_days(self) -> None:
+        """Change the cached days in place to a value that cannot be encoded.
+
+        A datetime is a date, so the list accepts it, but a date field cannot
+        write it. Only a complete object is poisoned, so that no read loads
+        it, because a load detects the change too.
+        """
+        self.obj.days.append(datetime.datetime(2024, 1, 2, 3))  # noqa: DTZ001
+        self.poisoned = True
+
     @rule()
     def save(self) -> None:
         """Save sends every change, including those made in place."""
+        if self.poisoned:
+            self.refused(self.obj.save)
+            return
+
         self.obj.save()
         self.detect_in_place_changes()
         self.send_pending()
@@ -614,6 +755,10 @@ class ObjectStateMachine(RuleBasedStateMachine):
         and keep its pending changes, or the server loses the fields that the
         object did not know.
         """
+        if self.poisoned:
+            self.refused(lambda: self.obj.save(full=True))
+            return
+
         self.obj.save(full=True)
         self.detect_in_place_changes()
         self.send_full()
@@ -646,6 +791,12 @@ class ObjectStateMachine(RuleBasedStateMachine):
         failure = data.draw(st.sampled_from(failures))
         before = len(self.mocker.request_history)
         options = {"allow_redirects": False} if failure == "redirect" else {}
+        if self.poisoned:
+            self.refused(
+                lambda: self.obj.save(full=full, request_options=options)
+            )
+            return
+
         self.failure = failure
         try:
             self.obj.save(full=full, request_options=options)
@@ -677,7 +828,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
 
     @rule()
     def refresh(self) -> None:
-        """Refresh discards every unsaved change."""
+        """Refresh discards every unsaved change, encodable or not."""
         self.obj.refresh()
         self.stored = copy.deepcopy(self.server)
         self.expected = copy.deepcopy(self.server)
@@ -686,6 +837,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending_secret = None
         self.in_place.clear()
         self.cached.clear()
+        self.poisoned = False
 
     @rule(data=st.data(), field=st.sampled_from(DECLARED))
     def push(self, data: st.DataObject, field: str) -> None:
@@ -706,6 +858,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending.discard(field)
         self.in_place.discard(field)
         self.cached.discard(field)
+        # The pushed value replaces the one changed in place.
+        if field == "days":
+            self.poisoned = False
 
     @rule(mode=st.sampled_from(["lazy", "eager"]))
     def set_write_mode(self, mode: WriteMode) -> None:
