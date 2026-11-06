@@ -707,13 +707,13 @@ repeated ones, so join the values yourself, as in
 `Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
 `Todo.filter(ordering="due,-priority")`.
 
-The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query
-methods are their own options, not query parameters. The query methods also
-reserve `request_options` and raise `TypeError` for it. Pass a query parameter
-of any name, including one of these, in the `params=` mapping, which
-`filter()`, `get()`, and `get_or_create()` encode as they encode keyword
-arguments. `create()` likewise takes field values in `fields=`, for a key such
-as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
+The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and
+`params` of the query methods are their own options, not query parameters. Pass
+a query parameter of any name, including one of these, in the `params=`
+mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode
+keyword arguments. `create()` likewise takes field values in `fields=`, for a
+key such as `api`, `fields`, or `request_options`, which `create()` reserves
+for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -793,8 +793,9 @@ for todo in todos:
 ```
 
 Explicit prefetch requires the related model to implement `bulk_get_by_pks()`.
-The method receives the primary keys found in the parent payloads and must
-return related objects keyed by primary key:
+The method receives the primary keys found in the parent payloads, and as `api`
+the client to request them with, which is the query's `api=` or else the
+related model's own API. It must return related objects keyed by primary key:
 
 ```python
 @json_object
@@ -805,8 +806,7 @@ class User(JSONObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api=None):
-        api = cls.api if api is None else api
+    def bulk_get_by_pks(cls, pks, *, api):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
@@ -856,13 +856,18 @@ Override these hooks if an API wraps responses in envelopes:
   later pages depend on the response itself, such as its headers or URL
 - `object_json()` for single-object endpoints
 
+The collection hooks receive the query's client as `api`, the API that the
+query passed as `api=` or the class's registered API. Send any request for
+later pages with it, so that a query with `api=` reads every page from that
+API.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:
 
 ```python
 @classmethod
-def collection_items(cls, payload):
+def collection_items(cls, payload, *, api):
     return payload["results"]
 
 
@@ -882,8 +887,8 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload)
+    def collection_items(cls, payload, *, api):
+        return follow_next_links(api, payload)
 ```
 
 With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
@@ -910,8 +915,8 @@ the response, and pass the URL of the first page:
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_next_links(api, api.json(resp), url=resp.url)
 ```
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose
@@ -938,8 +943,8 @@ from eazyrest import JSONObject, follow_link_headers
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_link_headers(cls.api, resp)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_link_headers(api, resp)
 ```
 
 ## Write modes
@@ -1021,6 +1026,32 @@ todo.save(request_options={"headers": {"If-Match": etag}})
 
 An assignment in eager mode sends its `PATCH` with no options. Use lazy mode
 and `save()` for a write that needs them.
+
+The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
+`request_options=` too, for every request that the query sends: the collection
+request, the requests for later pages that a collection hook sends with its
+`api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only
+when its API has the origin of the query's own, so that a header such as
+`Authorization` does not reach another model's host. The options otherwise go
+where the session's own headers go: a collection hook that reads pages with
+`allow_other_origins=True` sends them to the pages' origin, and
+`bulk_get_by_urls()` may send them to an origin in its API's
+`redirect_origins`, as reading a hyperlinked field sends the session's headers
+there. A query sends no body and builds its own parameters, so its options
+cannot set `json`, `data`, `files`, or `params`, and it reads every response,
+so they cannot enable `stream=True`. The objects that a query returns do not
+keep its options:
+
+```python
+todos = Todo.filter(
+    completed=False,
+    request_options={"headers": {"Accept-Language": "fr"}, "timeout": 30},
+)
+```
+
+`get_or_create()` sends its options with both the lookup and any creation. An
+unfollowed final 3xx raises `RedirectError`, as for writes, and so does a
+collection request answered with one, such as a `304 Not Modified`.
 
 ### Write responses
 
@@ -1240,9 +1271,11 @@ sends requests with different credentials, for example one `API` per user:
 todos = Todo.filter(api=user_api, completed=False)
 ```
 
-Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`. While
-`filter()` calls `collection_items()`, `cls.api` is the query's API, so a hook
-such as `follow_next_links(cls.api, payload)` reads later pages with it.
+Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, or else the
+related model's own API, and the collection hooks receive the query's client as
+`api`, so a hook such as `follow_next_links(api, payload)` reads later pages
+with it. While `filter()` calls a collection hook, `cls.api` is the query's API
+too.
 
 A related object loads through the API registered for its own class, so models
 served by different APIs can refer to each other. If the parent object has an

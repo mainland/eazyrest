@@ -11,6 +11,7 @@ import requests
 from eazyrest import (
     API,
     JSONObject,
+    RedirectError,
     Results,
     follow_link_headers,
     follow_next_links,
@@ -22,16 +23,17 @@ class PagedBase(JSONObject):
     """Base object for models with paginated collection responses."""
 
     @classmethod
-    def collection_items(cls, payload: Any) -> Any:
+    def collection_items(cls, payload: Any, *, api: API) -> Any:
         """Read every page of a collection response.
 
         Args:
             payload: Decoded JSON body of the collection's first page.
+            api: The query's client.
 
         Returns:
             An iterator over the items of every page, following next links.
         """
-        return follow_next_links(cls.api, payload)
+        return follow_next_links(api, payload)
 
 
 PagedBase.register_api(API("https://example.com/v1/"))
@@ -50,16 +52,19 @@ class ResponsePagedBase(JSONObject):
     """Base object whose collection hook reads the response."""
 
     @classmethod
-    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+    def collection_items_from_response(
+        cls, resp: requests.Response, *, api: API
+    ) -> Any:
         """Read every page, resolving links against the first page's URL.
 
         Args:
             resp: Response for the collection's first page.
+            api: The query's client.
 
         Returns:
             An iterator over the items of every page, following next links.
         """
-        return follow_next_links(cls.api, resp.json(), url=resp.url)
+        return follow_next_links(api, resp.json(), url=resp.url)
 
 
 ResponsePagedBase.register_api(API("https://example.com/v1/"))
@@ -78,17 +83,20 @@ class LinkPagedBase(JSONObject):
     """Base object whose collection pages are linked by Link headers."""
 
     @classmethod
-    def collection_items_from_response(cls, resp: requests.Response) -> Any:
+    def collection_items_from_response(
+        cls, resp: requests.Response, *, api: API
+    ) -> Any:
         """Read every page named by a Link header.
 
         Args:
             resp: Response for the collection's first page.
+            api: The query's client.
 
         Returns:
             An iterator over the items of every page, following ``Link``
             headers.
         """
-        return follow_link_headers(cls.api, resp)
+        return follow_link_headers(api, resp)
 
 
 LinkPagedBase.register_api(API("https://example.com/v1/"))
@@ -624,7 +632,7 @@ def test_redirect_to_other_origin_is_rejected_before_sending_credentials(
 
 
 def test_filter_with_api_reads_every_page_with_it(requests_mock: Any) -> None:
-    """``collection_items()`` sees the query's API as ``cls.api``."""
+    """``collection_items()`` reads later pages with the query's API."""
     tenant = API("https://tenant.example.com/v1/")
     requests_mock.get(
         "https://tenant.example.com/v1/items/",
@@ -980,7 +988,7 @@ def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
         id: int
 
         @classmethod
-        def collection_items(cls, payload: Any) -> Any:
+        def collection_items(cls, payload: Any, *, api: API) -> Any:
             return Counted(payload["data"])
 
     requests_mock.get(
@@ -992,3 +1000,93 @@ def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
     assert items.count == 42
     assert [item.id for item in items] == [1]
     assert Custom.all().count == 42
+
+
+def test_scoped_option_hooks_replace_session_hooks_on_every_page(
+    requests_mock: Any,
+) -> None:
+    """Option hooks replace the session's, on later pages as on the first."""
+    api = API("https://example.com/v1/")
+    seen: list[str] = []
+    api.session.hooks["response"] = [lambda resp, **_: seen.append("session")]
+    scoped = api._scoped(
+        {"hooks": {"response": [lambda resp, **_: seen.append("option")]}}
+    )
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = list(
+        follow_next_links(
+            scoped, {"next": "/v1/items/?page=2", "results": [{"id": 1}]}
+        )
+    )
+
+    assert items == [{"id": 1}, {"id": 2}]
+    assert seen == ["option"]
+
+
+def test_unfollowed_redirect_of_a_later_page_raises(
+    requests_mock: Any,
+) -> None:
+    """A page answered with a redirect that is not followed has no items."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        status_code=304,
+        json={"next": None, "results": [{"id": 2}]},
+    )
+
+    items = follow_next_links(
+        api, {"next": "/v1/items/?page=2", "results": [{"id": 1}]}
+    )
+
+    assert next(items) == {"id": 1}
+    with pytest.raises(RedirectError, match="status 304"):
+        next(items)
+
+
+def test_query_api_is_the_class_api_during_the_hook(
+    requests_mock: Any,
+) -> None:
+    """While a hook runs, ``cls.api`` is the query's API, as ``api`` is."""
+    tenant = API("https://tenant.example.com/v1/")
+    seen: list[tuple[API, API]] = []
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(cls, payload: Any, *, api: API) -> Any:
+            seen.append((cls.api, api))
+            return payload
+
+    requests_mock.get("https://tenant.example.com/v1/probes/", json=[])
+
+    list(Probe.filter(api=tenant))
+
+    assert seen == [(tenant, tenant)]
+    assert Probe.api is not tenant
+
+
+def test_query_request_options_reach_later_pages(requests_mock: Any) -> None:
+    """A query's options reach every page that its hook requests."""
+    first = requests_mock.get(
+        "https://example.com/v1/items/",
+        json={"results": [{"id": 1}], "next": "/v1/items/?page=2"},
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    items = list(Item.filter(request_options={"headers": {"X-Trace": "t"}}))
+
+    assert [item.id for item in items] == [1, 2]
+    assert first.last_request.headers["X-Trace"] == "t"
+    assert second.last_request.headers["X-Trace"] == "t"
+    assert all(item._api_override is None for item in items)
