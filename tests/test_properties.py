@@ -1205,3 +1205,131 @@ def test_failed_read_leaves_no_cached_value(field: str, value: Any) -> None:
         getattr(obj, field)
     assert obj.name == "n"
     assert obj._pending_updates == {}
+
+
+def _from_hex(value: Any) -> int:
+    """Read an integer from hexadecimal text, as a custom Pydantic type does.
+
+    Args:
+        value: Input value.
+
+    Returns:
+        The integer that ``value`` writes.
+
+    Raises:
+        ValueError: If ``value`` is not hexadecimal text.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Expected hexadecimal text")  # noqa: TRY004
+    return int(value, 16)
+
+
+if HAVE_PYDANTIC:
+    from pydantic import Base64Bytes, PlainSerializer, PlainValidator
+
+    @json_object
+    class Encoded(PropertyBase):
+        """Model whose Pydantic fields write values in other forms."""
+
+        class_url = "/encoded/"
+
+        id: int
+        text: PydanticJson[dict[str, int]]
+        blob: Base64Bytes
+        hexed: Annotated[int, PlainValidator(_from_hex), PlainSerializer(hex)]
+
+
+ENCODED_JSON = {"id": 1, "text": '{"a": 1}', "blob": "AA==", "hexed": "0x1"}
+
+# Values assigned to Encoded's fields, each of the field's type or not.
+_ENCODED_VALUES = {
+    "text": st.one_of(
+        st.dictionaries(st.text(max_size=3), st.integers(), max_size=3),
+        st.dictionaries(st.text(max_size=2), st.text(max_size=2), max_size=2),
+        st.integers(),
+    ),
+    "blob": st.one_of(st.binary(max_size=8), st.text(max_size=3)),
+    "hexed": st.one_of(
+        st.integers(), st.floats(allow_nan=False), st.text(max_size=3)
+    ),
+}
+
+
+def _of_field_type(field: str, value: Any) -> bool:
+    """Return whether a value already has an ``Encoded`` field's type.
+
+    Pydantic also accepts values of other types, such as text for bytes, and
+    reads them back as the field's type instead.
+
+    Args:
+        field: Name of the ``Encoded`` field.
+        value: Value assigned to it.
+
+    Returns:
+        Whether the field reads ``value`` back unchanged.
+    """
+    if field == "text":
+        return isinstance(value, dict) and all(
+            type(item) is int for item in value.values()
+        )
+    if field == "blob":
+        return isinstance(value, bytes)
+    return type(value) is int
+
+
+def _saved_json(field: str, value: Any) -> Any:
+    """Assign a value to a field of a loaded object, and save it.
+
+    Args:
+        field: Name of the ``Encoded`` field.
+        value: Value to assign.
+
+    Returns:
+        The field's JSON in the ``PATCH`` that ``save()`` sends, or the JSON
+        that the object already holds when the value encodes as it does, and
+        ``save()`` sends nothing.
+    """
+    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
+    setattr(obj, field, value)
+    if not obj._pending_updates:
+        return obj.json[field]
+    with requests_mock.Mocker() as mock:
+        patch = mock.patch(f"{BASE_URL}encoded/1/", status_code=204)
+        obj.save()
+        return patch.last_request.json()[field]
+
+
+@pytest.mark.skipif(not HAVE_PYDANTIC, reason="Pydantic is not installed")
+@settings(max_examples=150)
+@given(data=st.data(), field=st.sampled_from(sorted(_ENCODED_VALUES)))
+def test_accepted_pydantic_writes_read_back(
+    data: st.DataObject, field: str
+) -> None:
+    """A value that a Pydantic field accepts reads back from what it writes.
+
+    An assignment either raises and queues nothing, or the ``PATCH`` that
+    ``save()`` sends holds JSON that another object reads, and writing the
+    value read sends the same JSON again. The JSON differs from the value:
+    JSON text, base64 text, or hexadecimal text. A value of the field's type
+    reads back unchanged.
+
+    Args:
+        data: Hypothesis data, to draw a value for the field.
+        field: Name of the ``Encoded`` field to assign.
+    """
+    value = data.draw(_ENCODED_VALUES[field], label="value")
+    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
+
+    try:
+        setattr(obj, field, value)
+    except FieldConversionError:
+        assert obj._pending_updates == {}
+        assert obj.json == ENCODED_JSON
+        return
+
+    sent = _saved_json(field, value)
+    read = getattr(Encoded(json={**ENCODED_JSON, field: sent}), field)
+
+    assert _saved_json(field, read) == sent
+    if _of_field_type(field, value):
+        assert read == value
