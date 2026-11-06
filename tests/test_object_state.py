@@ -1,9 +1,10 @@
 """Stateful property tests of an object's local state against a server.
 
-A rule-based state machine applies random sequences of assignments, in-place
-changes, saves, full saves, failed and unconfirmed writes, refreshes, pushed
-updates, and write-mode changes to one object, which it loads, creates, or
-makes partial, and changes the values that the caller passed to ``create()``.
+A rule-based state machine applies random sequences of assignments, key
+changes, in-place changes, saves, full saves, failed and unconfirmed writes,
+refreshes, pushed updates, and write-mode changes to one object, which it
+loads, creates, or makes partial, and changes the values that the caller
+passed to ``create()``.
 A fake server records every write, and a model of the server, of the object's
 stored JSON, and of the values that reads return predicts the outcome of each
 step.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any
 
 import hypothesis.strategies as st
@@ -45,9 +47,11 @@ class StateBase(JSONObject):
     """Base object for the state machine's model."""
 
 
-StateBase.register_api(API("https://state.example.com/"))
+BASE = "https://state.example.com"
+StateBase.register_api(API(f"{BASE}/"))
 
-URL = "https://state.example.com/docs/1/"
+DOC_URL = re.compile(r"https://state\.example\.com/docs/(\d+)/(\?.*)?$")
+"""URL of a server object, whose key the fake server checks."""
 
 
 @json_object
@@ -86,6 +90,7 @@ DECLARED = (*FIELDS, "owner")
 
 WORDS = st.text(alphabet="abc", max_size=3)
 OWNERS = st.integers(min_value=1, max_value=3)
+KEYS = st.integers(min_value=1, max_value=4)
 VALUES = {
     "title": WORDS,
     "count": st.integers(min_value=-3, max_value=3),
@@ -116,6 +121,12 @@ class ObjectStateMachine(RuleBasedStateMachine):
     not been detected yet. ``pending`` names the fields assigned but not saved,
     ``pending_secret`` is the write-only value assigned but not saved, and
     ``in_place`` names the fields changed in place but not detected.
+
+    The object's key can change too. ``server_key`` is the key under which
+    the model says the server holds the object, ``stored_key`` the key in the
+    object's JSON, and ``saved_key`` the key under which the object is saved,
+    which differs from ``stored_key`` while a key change is pending. The fake
+    server answers only at its object's current key.
     """
 
     def __init__(self) -> None:
@@ -123,12 +134,12 @@ class ObjectStateMachine(RuleBasedStateMachine):
         super().__init__()
         self.mocker = requests_mock.Mocker()
         self.mocker.start()
-        self.mocker.get(URL, text=self.handle_get)
-        self.mocker.patch(URL, text=self.handle_patch)
-        self.mocker.put(URL, text=self.handle_put)
-        self.mocker.post(
-            "https://state.example.com/docs/", text=self.handle_post
-        )
+        self.mocker.get(DOC_URL, text=self.handle_get)
+        self.mocker.patch(DOC_URL, text=self.handle_patch)
+        self.mocker.put(DOC_URL, text=self.handle_put)
+        self.mocker.post(f"{BASE}/docs/", text=self.handle_post)
+        # The key of the fake server's object.
+        self.server_id = 1
         self.response_mode = "full"
         # How the next write fails, or None for a successful write.
         self.failure: str | None = None
@@ -179,17 +190,42 @@ class ObjectStateMachine(RuleBasedStateMachine):
             self.fake_secret = body.pop("secret")
         return body
 
+    def misaddressed(self, request: Any, context: Any) -> str | None:
+        """Refuse a request that names a key other than the object's.
+
+        Args:
+            request: Request that the mock received.
+            context: Mock response context, whose status code becomes 404
+                for a request to another key.
+
+        Returns:
+            The response text of a 404, or ``None`` if the request names the
+            server object's current key.
+        """
+        match = DOC_URL.match(request.url)
+        assert match is not None
+        if int(match.group(1)) == self.server_id:
+            return None
+        self.violations.append(f"{request.method} sent to {request.url}")
+        context.status_code = 404
+        return json.dumps({"detail": "Not found."})
+
     def handle_get(self, request: Any, context: Any) -> str:
         """Return the fake server's object.
 
         Args:
-            request: Request that the mock received, which is ignored.
-            context: Mock response context, which is left unchanged.
+            request: Request that the mock received.
+            context: Mock response context, set only for a 404.
 
         Returns:
-            JSON text of the fake server's object, with ``id`` 1.
+            JSON text of the fake server's object, with its key.
         """
-        return json.dumps({"id": 1, **self.representation(self.fake)})
+        refused = self.misaddressed(request, context)
+        if refused is not None:
+            return refused
+        return json.dumps(
+            {"id": self.server_id, **self.representation(self.fake)}
+        )
 
     def fail(self, context: Any) -> str | None:
         """Answer a write that ``failure`` says fails before it is applied.
@@ -207,7 +243,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return json.dumps({"detail": "Server error"})
         if self.failure == "redirect":
             context.status_code = 307
-            context.headers["Location"] = URL
+            context.headers["Location"] = f"{BASE}/docs/{self.server_id}/"
             return ""
         return None
 
@@ -236,10 +272,14 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return json.dumps(self.representation(body))
         if self.response_mode == "echo":
             return json.dumps(request.json())
-        return json.dumps({"id": 1, **self.representation(self.fake)})
+        return json.dumps(
+            {"id": self.server_id, **self.representation(self.fake)}
+        )
 
     def handle_patch(self, request: Any, context: Any) -> str:
         """Apply a PATCH and answer it.
+
+        A body that holds the key moves the object to that key.
 
         Args:
             request: Request that the mock received, whose JSON body holds the
@@ -248,20 +288,30 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 set.
 
         Returns:
-            The response text that ``fail()`` or ``answer()`` returns.
+            The response text that ``misaddressed()``, ``fail()``, or
+            ``answer()`` returns.
         """
+        refused = self.misaddressed(request, context)
+        if refused is not None:
+            return refused
         failed = self.fail(context)
         if failed is not None:
             return failed
         body = self.accept(request.json())
+        key = body.pop("id", None)
+        if key is not None:
+            self.server_id = key
         self.fake.update(body)
+        if key is not None:
+            body["id"] = key
         return self.answer(request, body, context)
 
     def handle_put(self, request: Any, context: Any) -> str:
         """Replace the whole object with a PUT and answer it.
 
         A field that the body lacks is removed, as an API that replaces the
-        whole object on ``PUT`` would clear it.
+        whole object on ``PUT`` would clear it, and the body's key moves the
+        object to that key.
 
         Args:
             request: Request that the mock received, whose JSON body holds the
@@ -270,16 +320,19 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 set.
 
         Returns:
-            The response text that ``fail()`` or ``answer()`` returns.
+            The response text that ``misaddressed()``, ``fail()``, or
+            ``answer()`` returns.
         """
+        refused = self.misaddressed(request, context)
+        if refused is not None:
+            return refused
         failed = self.fail(context)
         if failed is not None:
             return failed
         body = self.accept(request.json())
-        if body.pop("id", 1) != 1:
-            self.violations.append(f"PUT changed the key: {request.json()}")
+        self.server_id = body.pop("id", self.server_id)
         self.fake = body
-        return self.answer(request, body, context)
+        return self.answer(request, {"id": self.server_id, **body}, context)
 
     def handle_post(self, request: Any, context: Any) -> str:
         """Answer the creation of the server's object.
@@ -294,13 +347,15 @@ class ObjectStateMachine(RuleBasedStateMachine):
             and otherwise of its key only.
         """
         body = self.accept(request.json())
-        body.pop("id", None)
+        self.server_id = body.pop("id")
         if body != self.fake:
             self.violations.append(f"create() sent {request.json()}")
         context.status_code = 201
         if self.create_body == "full":
-            return json.dumps({"id": 1, **self.representation(self.fake)})
-        return json.dumps({"id": 1})
+            return json.dumps(
+                {"id": self.server_id, **self.representation(self.fake)}
+            )
+        return json.dumps({"id": self.server_id})
 
     @initialize(
         data=st.data(),
@@ -331,6 +386,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending_secret: str | None = None
         self.in_place: set[str] = set()
         self.cached: set[str] = set()
+        self.server_key = self.stored_key = self.saved_key = 1
         # The values passed to create(), which the caller still holds.
         self.caller: dict[str, Any] = {}
         if how == "load":
@@ -364,10 +420,19 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.in_place.clear()
 
     def send_pending(self) -> None:
-        """Model a PATCH of every pending update."""
+        """Model a PATCH of every pending update.
+
+        A pending key change moves the server's object, and the object is
+        saved under its new key from then on.
+        """
         self.server.update(
-            {name: copy.deepcopy(self.stored[name]) for name in self.pending}
+            {
+                name: copy.deepcopy(self.stored[name])
+                for name in self.pending - {"id"}
+            }
         )
+        if "id" in self.pending:
+            self.server_key = self.saved_key = self.stored_key
         if self.pending_secret is not None:
             self.server_secret = self.pending_secret
 
@@ -376,6 +441,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.server = {
             name: copy.deepcopy(self.stored[name]) for name in DECLARED
         }
+        self.server_key = self.saved_key = self.stored_key
         if self.pending_secret is not None:
             self.server_secret = self.pending_secret
 
@@ -467,6 +533,30 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending.clear()
         self.pending_secret = None
 
+    @rule(key=KEYS)
+    def change_key(self, key: int) -> None:
+        """Assign a new primary key, which a write sends to the saved key.
+
+        Until the change is sent, the object is saved under its old key, so a
+        write reaches the server's object, which then moves to the new key.
+
+        Args:
+            key: New primary key.
+        """
+        self.obj.id = key
+        if key == self.stored_key:
+            return
+
+        self.stored_key = key
+        self.pending.add("id")
+        if self.obj.write_mode == "lazy":
+            return
+
+        self.detect_in_place_changes()
+        self.send_pending()
+        self.pending.clear()
+        self.pending_secret = None
+
     @precondition(lambda self: "tags" in self.cached)
     @rule(word=WORDS)
     def append_tag(self, word: str) -> None:
@@ -530,20 +620,30 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending.clear()
         self.pending_secret = None
 
-    @rule(failure=st.sampled_from(sorted(FAILURES)), full=st.booleans())
-    def save_fails(self, failure: str, full: bool) -> None:
+    @rule(data=st.data(), full=st.booleans())
+    def save_fails(self, data: st.DataObject, full: bool) -> None:
         """A failed or unconfirmed save keeps every change pending.
 
         An HTTP error and an unfollowed 307 leave the server unchanged. A
         response that is not a JSON object follows an applied write, but the
         object cannot confirm it, so the changes stay pending too.
 
+        An unconfirmed write of a key change moves the server's object while
+        the object correctly keeps its saved key, which then names nothing.
+        The model cannot follow that, so it draws no such failure while a key
+        change is pending.
+
         Args:
-            failure: How the write fails: ``"error"`` for an HTTP error,
-                ``"redirect"`` for a 307 that the save does not follow, or
-                ``"shape"`` for a response body that is not a JSON object.
+            data: Hypothesis data object that draws how the write fails:
+                ``"error"`` for an HTTP error, ``"redirect"`` for a 307 that
+                the save does not follow, or ``"shape"`` for a response body
+                that is not a JSON object.
             full: Whether to save with ``full=True``.
         """
+        failures = sorted(FAILURES)
+        if "id" in self.pending:
+            failures.remove("shape")
+        failure = data.draw(st.sampled_from(failures))
         before = len(self.mocker.request_history)
         options = {"allow_redirects": False} if failure == "redirect" else {}
         self.failure = failure
@@ -581,6 +681,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.obj.refresh()
         self.stored = copy.deepcopy(self.server)
         self.expected = copy.deepcopy(self.server)
+        self.stored_key = self.saved_key
         self.pending.clear()
         self.pending_secret = None
         self.in_place.clear()
@@ -635,6 +736,20 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if hasattr(self, "server"):
             assert self.fake == self.server
             assert self.fake_secret == self.server_secret
+            assert self.server_id == self.server_key
+
+    @invariant()
+    def key_matches_model(self) -> None:
+        """The object reads its new key, and is saved under its saved key.
+
+        Neither reads loads the object.
+        """
+        if not hasattr(self, "obj"):
+            return
+        before = len(self.mocker.request_history)
+        assert self.obj.pk == self.stored_key
+        assert self.obj.url == f"/docs/{self.saved_key}/"
+        assert len(self.mocker.request_history) == before
 
     @invariant()
     def json_matches_model(self) -> None:
