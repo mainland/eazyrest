@@ -1071,3 +1071,22 @@ def test_query_api_is_the_class_api_during_the_hook(
 
     assert seen == [(tenant, tenant)]
     assert Probe.api is not tenant
+
+
+def test_query_request_options_reach_later_pages(requests_mock: Any) -> None:
+    """A query's options reach every page that its hook requests."""
+    first = requests_mock.get(
+        "https://example.com/v1/items/",
+        json={"results": [{"id": 1}], "next": "/v1/items/?page=2"},
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/items/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    items = list(Item.filter(request_options={"headers": {"X-Trace": "t"}}))
+
+    assert [item.id for item in items] == [1, 2]
+    assert first.last_request.headers["X-Trace"] == "t"
+    assert second.last_request.headers["X-Trace"] == "t"
+    assert all(item._api_override is None for item in items)

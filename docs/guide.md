@@ -395,7 +395,7 @@ print(f"{admins.count} admins")
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged, except that a model instance, also as an item of a collection, is sent as its primary key, so `Todo.filter(user__in=[ada, bob])` sends `user__in=1&user__in=2`.
 
-The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
+The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -586,6 +586,17 @@ todo.save(request_options={"headers": {"If-Match": etag}})
 ```
 
 An assignment in eager mode sends its `PATCH` with no options. Use lazy mode and `save()` for a write that needs them.
+
+The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take `request_options=` too, for every request that the query sends: the collection request, the requests for later pages that a collection hook sends with its `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only when its API has the origin of the query's own, so that a header such as `Authorization` never reaches another host. A query sends no body and builds its own parameters, so its options cannot set `json`, `data`, `files`, or `params`, and it reads every response, so they cannot enable `stream=True`. The objects that a query returns do not keep its options:
+
+```python
+todos = Todo.filter(
+    completed=False,
+    request_options={"headers": {"Accept-Language": "fr"}, "timeout": 30},
+)
+```
+
+`get_or_create()` sends its options with both the lookup and any creation. An unfollowed final 3xx raises `RedirectError`, as for writes, and so does a collection request answered with one, such as a `304 Not Modified`.
 
 ### Write responses
 
