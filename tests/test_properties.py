@@ -11,10 +11,13 @@ import copy
 import dataclasses
 import datetime
 import enum
+import http.server
 import importlib.util
 import itertools
 import json
 import re
+import threading
+import time
 import typing
 import uuid
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -27,6 +30,7 @@ import requests_mock
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 from typing_extensions import TypeAliasType
+from urllib3.util import Retry
 
 from eazyrest import (
     API,
@@ -46,7 +50,7 @@ from eazyrest import (
 from eazyrest._models import _json_equal, analyze_type
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterator, Mapping
 
 HAVE_PYDANTIC = importlib.util.find_spec("pydantic") is not None
 HAVE_ANNOTATED_TYPES = importlib.util.find_spec("annotated_types") is not None
@@ -1548,3 +1552,153 @@ def test_traversal_follows_only_allowed_pages(
     assert (yielded, error) == _expected_traversal(graph)
     if not graph.allow_other_origins:
         assert all(url.startswith(f"{_PAGES_ORIGIN}/") for url in requested)
+
+
+class _Unavailable:
+    """Settings of the local server that answers 503 before it succeeds."""
+
+    def __init__(self) -> None:
+        """Start with a server that succeeds at once."""
+        self.failures = 0
+        """Number of attempts answered with 503 before one succeeds."""
+        self.retry_after = 0
+        """Retry-After of each 503 in seconds, or 0 for none."""
+        self.attempts = 0
+        """Number of attempts received."""
+
+
+@pytest.fixture(scope="module")
+def unavailable_server() -> Iterator[tuple[str, _Unavailable]]:
+    """Serve a local server whose first attempts fail, as each test sets.
+
+    urllib3 retries below requests' transport adapters, where requests_mock
+    replaces them, so retries need a real server.
+
+    Yields:
+        The server's base URL, and its settings.
+    """
+    settings_ = _Unavailable()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            settings_.attempts += 1
+            if settings_.attempts <= settings_.failures:
+                self.send_response(503)
+                if settings_.retry_after:
+                    self.send_header("Retry-After", str(settings_.retry_after))
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    ).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/", settings_
+    server.shutdown()
+    server.server_close()
+
+
+def _planned_sleeps(
+    failures: int, retry_after: int, total: int, backoff: float
+) -> list[float]:
+    """Return how long urllib3 sleeps before each retry it makes.
+
+    A positive Retry-After is slept as given. Otherwise the first retry
+    follows at once, and retry ``k`` after ``backoff * 2 ** (k - 1)`` seconds.
+
+    Args:
+        failures: Number of attempts answered with 503.
+        retry_after: Retry-After of each 503 in seconds, or 0 for none.
+        total: Number of retries allowed.
+        backoff: Backoff factor.
+
+    Returns:
+        The sleep before each retry, in order.
+    """
+    return [
+        float(retry_after)
+        if retry_after
+        else (0.0 if k == 1 else backoff * 2 ** (k - 1))
+        for k in range(1, min(failures, total) + 1)
+    ]
+
+
+# Slack for the time a local request and the checks themselves take.
+_TIME_SLACK = 0.25
+
+
+@settings(max_examples=10, deadline=None)
+@given(
+    failures=st.integers(0, 2),
+    retry_after=st.integers(0, 2),
+    total=st.integers(0, 3),
+    backoff=st.sampled_from([0.0, 0.5, 1.0]),
+    budget=st.floats(0.05, 0.2),
+)
+def test_retries_stay_within_the_request_budget(
+    unavailable_server: tuple[str, _Unavailable],
+    failures: int,
+    retry_after: int,
+    total: int,
+    backoff: float,
+    budget: float,
+) -> None:
+    """Retries end within the request's total time, however they are spaced.
+
+    An API created with ``max_retries`` retries a 503 after the delay that its
+    Retry-After or backoff asks for, unless the delay would outlast the
+    request's ``total_timeout``. The request succeeds, raises
+    ``RetryError`` once its retries are spent, or raises ``LimitExceeded`` at
+    the deadline, and it never sends more than ``total + 1`` attempts.
+
+    Args:
+        unavailable_server: Base URL and settings of the local server.
+        failures: Number of attempts answered with 503.
+        retry_after: Retry-After of each 503 in seconds, or 0 for none.
+        total: Number of retries allowed.
+        backoff: Backoff factor.
+        budget: The API's ``total_timeout``.
+    """
+    base, server = unavailable_server
+    server.failures, server.retry_after, server.attempts = (
+        failures,
+        retry_after,
+        0,
+    )
+    api = API(
+        base,
+        max_retries=Retry(
+            total=total, status_forcelist=[503], backoff_factor=backoff
+        ),
+    )
+    api.total_timeout = budget
+    api.timeout = 1.0
+    planned = sum(_planned_sleeps(failures, retry_after, total, backoff))
+    without_limit: type[Exception] | None = (
+        requests.exceptions.RetryError if failures > total else None
+    )
+
+    started = time.monotonic()
+    outcome: type[Exception] | None = None
+    try:
+        api.get("/retry").close()
+    except (requests.exceptions.RetryError, LimitExceeded) as err:
+        outcome = type(err)
+    elapsed = time.monotonic() - started
+
+    assert elapsed <= budget + _TIME_SLACK
+    assert server.attempts <= total + 1
+    if planned > budget + _TIME_SLACK:
+        assert outcome is LimitExceeded
+    elif planned < budget - _TIME_SLACK / 5:
+        assert outcome is without_limit
+        assert server.attempts == min(failures, total) + 1
+    else:
+        assert outcome in {without_limit, LimitExceeded}
