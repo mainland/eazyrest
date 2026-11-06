@@ -175,7 +175,7 @@ todo.owner = User(id=3)
 todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
 ```
 
-Reading the field gives a related object that loads from the URL when one of its other fields is read. Writing it sends the related object's absolute URL. A query sends its primary key, as django-filter's relation filters expect. Pass a related model instance or a bare primary key to the query. A relative URL is resolved against the related model's API. A URL whose origin is neither that API's nor one of its `redirect_origins` raises `FieldConversionError` when the field is read, so a server cannot send the client, with its credentials, to another host. Prefetching needs primary keys, so a hyperlinked field cannot be prefetched.
+Reading the field gives a related object that loads from the URL when one of its other fields is read. Writing it sends the related object's absolute URL. A query sends its primary key, as django-filter's relation filters expect. Pass a related model instance or a bare primary key to the query. A relative URL is resolved against the related model's API. A URL whose origin is neither that API's nor one of its `redirect_origins` raises `FieldConversionError` when the field is read, so a server cannot send the client, with its credentials, to another host. A hyperlinked field can be prefetched when the related model implements `bulk_get_by_urls()`, which receives the URLs rather than primary keys.
 
 ## Match DRF serializer fields
 
