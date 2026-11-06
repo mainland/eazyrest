@@ -8,6 +8,8 @@ thread on a local port, and the client sends real HTTP requests to it.
 from __future__ import annotations
 
 import contextlib
+import datetime
+import decimal
 import threading
 from collections.abc import Generator, Iterator
 from typing import Annotated, Any, ClassVar
@@ -176,6 +178,48 @@ class UploadView(APIView):
         )
 
 
+class PriceSerializer(serializers.Serializer):
+    """A price and an opening time, as DRF's decimal and time fields."""
+
+    amount = serializers.DecimalField(max_digits=8, decimal_places=2)
+    opens = serializers.TimeField()
+
+
+class PriceView(APIView):
+    """Validate a price and return it as DRF represents it."""
+
+    stored: ClassVar[dict[str, Any]] = {}
+
+    def post(self, request: Request) -> Response:
+        """Create the price."""
+        return self._write(request, partial=False, status=201)
+
+    def patch(self, request: Request) -> Response:
+        """Update the supplied values."""
+        return self._write(request, partial=True)
+
+    def _write(
+        self, request: Request, *, partial: bool, status: int = 200
+    ) -> Response:
+        """Validate, store, and represent a write's values.
+
+        Args:
+            request: JSON request.
+            partial: Whether missing values are accepted.
+            status: Response status.
+
+        Returns:
+            The stored price, with its decimal as a string.
+        """
+        serializer = PriceSerializer(data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        values = {**self.stored, **serializer.validated_data}
+        type(self).stored = values
+        return Response(
+            {"id": 1, **PriceSerializer(values).data}, status=status
+        )
+
+
 # The DRF guide's two server-side bulk recipes, run as the guide writes them:
 # a list view that filters by repeated id parameters, and a bulk action.
 FilteredUserViewSet = run_guide_example(
@@ -252,6 +296,8 @@ router.register("teams", TeamViewSet, basename="team")
 
 urlpatterns = [
     path("uploads/", UploadView.as_view()),
+    path("prices/", PriceView.as_view()),
+    path("prices/1/", PriceView.as_view()),
     # The guide's bulk action, at the URL that its client recipe requests.
     # It comes before the router, whose detail route would read "bulk" as a
     # key.
@@ -357,6 +403,17 @@ class UploadModel(DRFBase):
     public: str
     image: str
     size: int
+
+
+@json_object
+class PriceModel(DRFBase):
+    """Price whose decimal and time convert as DRF writes them."""
+
+    class_url = "/prices/"
+
+    id: int
+    amount: decimal.Decimal
+    opens: datetime.time
 
 
 # The DRF guide's two client recipes for bulk_get_by_pks(), run as the guide
@@ -516,6 +573,24 @@ def test_validation_errors_and_missing_objects(api: API) -> None:
         _ = PermissionModel(id=999_999).name
 
     assert isinstance(missing.value, NotFound)
+
+
+def test_decimal_and_time_fields_match_drf(api: API) -> None:
+    """Decimals and times are written as DRF reads them, and read back."""
+    price = PriceModel.create(
+        amount=decimal.Decimal("12.3"), opens=datetime.time(9, 30)
+    )
+
+    assert price.json["amount"] == "12.30"
+    assert str(price.amount) == "12.30"
+    assert price.opens == datetime.time(9, 30)
+
+    price.amount = decimal.Decimal("1E+2")
+    price.opens = datetime.time(17, 0, 30)
+    price.save()
+
+    assert price.json == {"id": 1, "amount": "100.00", "opens": "17:00:30"}
+    assert price.amount == decimal.Decimal("100.00")
 
 
 def test_upload_sends_multipart(api: API) -> None:
