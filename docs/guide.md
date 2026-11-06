@@ -825,6 +825,14 @@ bulk-loads primary-key-style values. When the same related primary key appears
 more than once in a prefetch batch, parent objects share the same related
 instance.
 
+A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
+its related model implements `bulk_get_by_urls(cls, urls, *, api)` instead,
+which receives the absolute URLs and returns the objects keyed by URL. A URL is
+checked as reading the field checks it, so a URL on an origin that the API does
+not allow is not loaded, and reading the field still raises
+`FieldConversionError`. Two spellings of one URL, such as a relative and an
+absolute one, name the same object.
+
 Related objects inherit their parent's write mode, including when they are
 prefetched. Enabling prefetch preserves when assignments are saved, even if the
 related model's API has a different default write mode. A prefetched object is

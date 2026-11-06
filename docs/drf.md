@@ -180,8 +180,12 @@ request helpers. If a model's `class_url` is already absolute, `absolute_url`
 leaves it unchanged.
 
 `HyperlinkedModelSerializer` puts each object's own URL in a JSON field named
-`url`. That name is reserved for `JSONObject.url`, so map the field to another
-attribute name:
+`url`, in place of its primary key. eazyrest identifies an object by its key,
+so add the key to the serializer's fields, as in
+`fields = ["url", "id", "name"]`. Without it, an object that a query returns
+reads, but cannot be saved, deleted, or passed as a relation or a query value,
+because it has no key. `url` is reserved for `JSONObject.url`, so map the field
+to another attribute name:
 
 ```python
 @json_object(field_map={"resource_url": "url"})
@@ -191,6 +195,11 @@ class Todo(DRFObject):
     id: int
     resource_url: str
 ```
+
+If the server cannot add the key, an object can still be built from its URL's
+last segment, as in
+`Todo(id=int(todo.resource_url.rstrip("/").rsplit("/", 1)[-1]))`. A later 1.x
+release may let a model use its URL as its identity.
 
 A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every
 relation, represents a related object by its URL rather than its primary key.
@@ -225,8 +234,10 @@ expect. Pass a related model instance or a bare primary key to the query. A
 relative URL is resolved against the related model's API. A URL whose origin is
 neither that API's nor one of its `redirect_origins` raises
 `FieldConversionError` when the field is read, so a server cannot send the
-client, with its credentials, to another host. Prefetching needs primary keys,
-so a hyperlinked field cannot be prefetched.
+client, with its credentials, to another host. A hyperlinked field can be
+prefetched when the related model implements `bulk_get_by_urls()`, which
+receives the URLs rather than primary keys, as
+[Prefetch hyperlinked relations](#prefetch-hyperlinked-relations) shows.
 
 ## Match DRF serializer fields
 
@@ -636,6 +647,32 @@ def bulk_get_by_pks(cls, pks, *, api):
 Server-side, continue using Django ORM `select_related()` and
 `prefetch_related()` inside the bulk endpoint when it helps serializers avoid
 database N+1 queries.
+
+## Prefetch hyperlinked relations
+
+A field annotated with `Hyperlinked()` holds URLs, so prefetching it calls
+`bulk_get_by_urls()` on the related model instead of `bulk_get_by_pks()`. With
+DRF's default `lookup_field`, each URL ends with the primary key, so the hook
+can take the keys from the URLs and reuse the bulk lookup by key:
+
+```python
+@classmethod
+def bulk_get_by_urls(cls, urls, *, api):
+    prefix = api.resolve_url(cls.class_url)
+    pks = {
+        url.removeprefix(prefix).strip("/")
+        for url in urls
+        if url.startswith(prefix)
+    }
+    objects = cls.bulk_get_by_pks(pks, api=api)
+    return {obj.absolute_url: obj for obj in objects.values()}
+```
+
+Return the objects keyed by URL. eazyrest matches the keys after resolving them
+against the API's base URL and normalizing their case and default ports. A URL
+outside the model's `class_url`, such as one of a serializer with another
+`lookup_field`, is not loaded here, and the object loads lazily when it is
+read.
 
 ## Preserve laziness with batch prefetch
 

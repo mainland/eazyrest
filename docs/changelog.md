@@ -193,13 +193,14 @@ that can break code written for 0.9.0, followed by what to do about it.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and
   written by key, `write_only=` for a field such as a password, `read_only=`
   for returned values that writes omit, `Hyperlinked()` for relations
-  represented by URLs, file uploads with `files=` on `create()` and `save()`,
-  full updates with `save(full=True)`, request options such as headers with
-  `request_options=` on `save()`, `create()`, `delete()`, and the query
-  methods, which send them with every request of the query, and
-  `write_options()` for the writes of an object, eager ones included, the
-  collection's size as `count`, and `APIError` with the parsed error body.
-  Hyperlinked writes send URLs and relation queries send primary keys.
+  represented by URLs, which `bulk_get_by_urls()` can prefetch, file uploads
+  with `files=` on `create()` and `save()`, full updates with
+  `save(full=True)`, request options such as headers with `request_options=` on
+  `save()`, `create()`, `delete()`, and the query methods, which send them with
+  every request of the query, and `write_options()` for the writes of an
+  object, eager ones included, the collection's size as `count`, and `APIError`
+  with the parsed error body. Hyperlinked writes send URLs and relation queries
+  send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`,
   `resolve_url()`, `trailing_slash`, `redirect_origins`, `reset_session()` that
   keeps the session's configuration, `register_api()`, and `api=` on queries

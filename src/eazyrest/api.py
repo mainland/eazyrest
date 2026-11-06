@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import urljoin, urlparse, urlsplit
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
 from requests.structures import CaseInsensitiveDict
@@ -74,6 +74,34 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     parts = urlsplit(request.url)
     scheme = parts.scheme.lower()
     return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+
+
+def _canonical_url(url: str) -> str:
+    """Return an absolute URL in one spelling for each resource it names.
+
+    The URL is prepared as Requests would send it, and its scheme and host
+    are lowercased, a default port is dropped, and a fragment is removed, so
+    that two spellings of one hyperlink compare equal.
+
+    Args:
+        url: Absolute URL.
+
+    Returns:
+        The URL in its canonical spelling.
+    """
+    request = requests.PreparedRequest()
+    request.prepare_url(url, None)
+    assert request.url is not None
+    parts = urlsplit(request.url)
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(scheme):
+        host = f"{host}:{parts.port}"
+    userinfo, _, _ = parts.netloc.rpartition("@")
+    netloc = f"{userinfo}@{host}" if userinfo else host
+    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
 
 # Redirects that make requests resend the request body. requests drops the body
