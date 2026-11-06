@@ -61,6 +61,13 @@ from .api import (
     _origin,
 )
 from .dateparse import parse_datetime, parse_duration
+from .pagination import (
+    Page,
+    _check_page_size,
+    _PageSource,
+    _request_page,
+    next_links_page,
+)
 from .write_mode import WriteMode, validate_write_mode
 
 if sys.version_info >= (3, 11):
@@ -194,6 +201,88 @@ class _Query:
         ):
             return base._scoped(self.options)
         return base
+
+
+class _ModelPageSource(_PageSource[Any]):
+    """Reads pages of a model's collection as pages of objects."""
+
+    def __init__(
+        self,
+        model: type[JSONObject],
+        query: _Query,
+        prefetch: Sequence[str],
+    ) -> None:
+        """Read the pages of ``model``'s collection for one query.
+
+        Args:
+            model: Class whose collection the pages hold.
+            query: The query, whose client requests the pages.
+            prefetch: Related fields to prefetch on each page.
+        """
+        self.api = query.client
+        self._model = model
+        self._query = query
+        self._prefetch = prefetch
+
+    def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
+        """Request and read the page at ``url``.
+
+        Args:
+            url: Absolute URL of the page.
+            allow_other_origins: Whether the page may have another origin.
+
+        Returns:
+            The page of objects.
+        """
+        return self.page(_request_page(self.api, url, allow_other_origins))
+
+    def page(self, resp: requests.Response) -> Page[Any]:
+        """Read a page of objects from its response.
+
+        Args:
+            resp: Response for the page.
+
+        Returns:
+            The page of objects, which can read the pages it links to when
+            the model's ``collection_page()`` returned a page that can.
+
+        Raises:
+            TypeError: If ``collection_page()`` does not return a ``Page``.
+        """
+        model = self._model
+        token = _query_api.set((model, self.api))
+        try:
+            raw = model.collection_page(resp, api=self.api)
+        finally:
+            _query_api.reset(token)
+        if not isinstance(raw, Page):
+            raise TypeError(
+                f"{model.__name__}.collection_page() must return a Page, got "
+                f"{type(raw).__name__}"
+            )
+        _check_page_size(self.api, raw.items)
+        if self._prefetch:
+            objects: list[JSONObject] = list(
+                model._prefetched_filter(
+                    raw.items, self._prefetch, self._query
+                )
+            )
+        else:
+            objects = [
+                model(json=_OwnedJSON(item), api=self._query.api)
+                for item in raw.items
+            ]
+        page: Page[Any] = Page(
+            objects,
+            url=raw.url,
+            count=raw.count,
+            next_url=raw.next_url,
+            previous_url=raw.previous_url,
+        )
+        if raw._source is not None:
+            page._source = self
+            page._allow_other_origins = raw._allow_other_origins
+        return page
 
 
 class APIDescriptor:
@@ -3639,6 +3728,28 @@ class JSONObject:
         )
 
     @classmethod
+    def collection_page(
+        cls, resp: requests.Response, *, api: API
+    ) -> Page[Any]:
+        """Read one page of a collection response for ``get_page()``.
+
+        The default reads Django REST Framework's page shape with
+        ``next_links_page()``. Override it to return
+        ``link_headers_page(api, resp)`` for an API that links pages in Link
+        headers, or ``next_links_page()`` with other member names. A page
+        built another way holds its items, but cannot read other pages.
+
+        Args:
+            resp: Response for the page.
+            api: The query's client, as for ``collection_items()``, which the
+                page uses to read the pages it links to.
+
+        Returns:
+            The page of JSON objects.
+        """
+        return next_links_page(api, resp)
+
+    @classmethod
     def collection_items_from_response(
         cls, resp: requests.Response, *, api: API
     ) -> Iterable[Any]:
@@ -4152,6 +4263,85 @@ class JSONObject:
         return cls.filter(
             prefetch=prefetch, api=api, request_options=request_options
         )
+
+    @classmethod
+    def get_page(
+        cls: type[Self],
+        *,
+        url: str | None = None,
+        prefetch: PrefetchFields = None,
+        api: API | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Page[Self]:
+        """Fetch one page of objects matching query parameters.
+
+        Without ``url``, this sends the query as ``filter()`` does and returns
+        the collection's first page. With ``url``, it requests that page, such
+        as a page URL saved from ``next_url``, which must have the origin of
+        the API's base URL. ``collection_page()`` reads each page.
+
+        The page's ``next_page()`` and ``previous_page()`` request the pages
+        around it with the same API, request options, and prefetch, and
+        return pages of objects too.
+
+        Args:
+            url: Optional URL of the page to fetch, absolute or relative to the
+                API's base URL. A page's URL holds its query, so ``url`` cannot
+                be combined with query parameters.
+            prefetch: Optional related field name or field names to bulk-load
+                explicitly, for each page, as for ``filter()``.
+            api: Optional API to send the requests with, as for ``filter()``.
+            request_options: Optional keyword arguments for the requests, as
+                for ``filter()``.
+            params: Optional query parameters as a mapping, as for
+                ``filter()``.
+            **kwargs: Query string parameters, as for ``filter()``.
+
+        Returns:
+            The page of objects.
+
+        Raises:
+            ValueError: If a ``prefetch`` field is not a JSON-backed
+                related-object field, or if a parameter has a value that
+                requests would not send intact.
+            TypeError: If ``url`` is given with query parameters, a parameter
+                is given both as a keyword argument and in ``params``,
+                ``request_options`` is not valid for a query, or
+                ``collection_page()`` does not return a ``Page``.
+            PrefetchNotSupported: If the related model of a ``prefetch`` field
+                does not implement its bulk lookup.
+            PaginationError: If ``url`` has another origin.
+            RedirectError: If the response is a redirect that was not
+                followed, such as a 304.
+        """
+        options = _query_request_options(request_options)
+        query = _query_params(params, kwargs)
+        if url is not None and query:
+            raise TypeError(
+                "get_page() takes url= or query parameters, not both, because "
+                "a page's URL holds its query"
+            )
+        prefetch_fields = _normalize_prefetch(prefetch)
+        for field in prefetch_fields:
+            cls._prefetch_info(field)
+
+        base = cls.api if api is None else api
+        client = base._scoped(options) if options else base
+        source = _ModelPageSource(
+            cls, _Query(api, client, options), prefetch_fields
+        )
+        if url is None:
+            resp = _check_final_response(
+                client.get(cls.class_url, params=cls._encode_query(query)),
+                "the query has no collection to read",
+            )
+        else:
+            resp = _request_page(
+                client, client.resolve_url(url), allow_other_origins=False
+            )
+        return cast("Page[Self]", source.page(resp))
 
     @classmethod
     def get(

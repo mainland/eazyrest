@@ -1283,3 +1283,167 @@ def test_link_headers_page_must_be_a_list(requests_mock: Any) -> None:
 
     with pytest.raises(ResponseShapeError, match="JSON lists"):
         link_headers_page(api, api.get("/items/"))
+
+
+def _serve_two_pages(requests_mock: Any, path: str) -> None:
+    """Serve a two-page DRF collection at ``path``.
+
+    Args:
+        requests_mock: Mocker that serves the pages.
+        path: Path of the collection under the API's base URL.
+    """
+    base = f"https://example.com/v1{path}"
+    requests_mock.get(
+        base,
+        json={
+            "count": 3,
+            "results": [{"id": 1, "owner": 7}, {"id": 2, "owner": 8}],
+            "next": f"{base}?page=2",
+            "previous": None,
+        },
+    )
+    requests_mock.get(
+        f"{base}?page=2",
+        json={
+            "count": 3,
+            "results": [{"id": 3, "owner": 7}],
+            "next": None,
+            "previous": base,
+        },
+    )
+
+
+def test_get_page_reads_and_navigates_pages_of_objects(
+    requests_mock: Any,
+) -> None:
+    """``get_page()`` returns objects, and its links return objects too."""
+    _serve_two_pages(requests_mock, "/items/")
+
+    first = Item.get_page(request_options={"headers": {"X-Trace": "t"}})
+
+    assert [item.id for item in first] == [1, 2]
+    assert all(isinstance(item, Item) for item in first)
+    assert first.count == 3
+    assert first.previous_page() is None
+    second = first.next_page()
+    assert second is not None
+    assert [item.id for item in second] == [3]
+    assert all(item._api_override is None for item in second)
+    back = second.previous_page()
+    assert back is not None
+    assert [item.id for item in back] == [1, 2]
+    assert all(
+        request.headers["X-Trace"] == "t"
+        for request in requests_mock.request_history
+    )
+
+
+def test_get_page_prefetches_each_page(requests_mock: Any) -> None:
+    """Prefetch applies to each page that navigation reads."""
+    _serve_two_pages(requests_mock, "/owned-items/")
+
+    first = OwnedItem.get_page(prefetch="owner")
+    second = first.next_page()
+
+    assert second is not None
+    assert [item.owner.id for item in first] == [7, 8]
+    assert [item.owner.id for item in second] == [7]
+    assert requests_mock.call_count == 2
+
+
+def test_get_page_fetches_a_page_url(requests_mock: Any) -> None:
+    """A saved page URL fetches that page, but not with query parameters."""
+    _serve_two_pages(requests_mock, "/items/")
+    other = requests_mock.get("https://other.example/items/", json=[])
+
+    page = Item.get_page(url="/items/?page=2")
+
+    assert [item.id for item in page] == [3]
+    with pytest.raises(TypeError, match="not both"):
+        Item.get_page(url="/items/?page=2", id=3)
+    with pytest.raises(PaginationError, match="different origin"):
+        Item.get_page(url="https://other.example/items/")
+    assert not other.called
+
+
+def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
+    """A model reads Link-header pages by returning ``link_headers_page()``."""
+    seen: list[tuple[API, API]] = []
+    tenant = API("https://example.com/v1/")
+
+    @json_object
+    class Linked(PagedBase):
+        class_url = "/linked/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: requests.Response, *, api: API
+        ) -> Page[Any]:
+            seen.append((cls.api, api))
+            return link_headers_page(api, resp)
+
+    requests_mock.get(
+        "https://example.com/v1/linked/",
+        json=[{"id": 1}],
+        headers={"Link": '<?page=2>; rel="next"'},
+    )
+    requests_mock.get(
+        "https://example.com/v1/linked/?page=2",
+        json=[{"id": 2}],
+        headers={"Link": '</v1/linked/>; rel="prev"'},
+    )
+
+    page = Linked.get_page(api=tenant)
+    second = page.next_page()
+
+    assert second is not None
+    assert [item.id for item in second] == [2]
+    assert all(item.api is tenant for item in second)
+    assert seen == [(tenant, tenant), (tenant, tenant)]
+
+
+def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:
+    """A hook that returns something other than a page fails clearly."""
+
+    @json_object
+    class Wrong(PagedBase):
+        class_url = "/wrong/"
+
+        id: int
+
+        @classmethod
+        def collection_page(cls, resp: requests.Response, *, api: API) -> Any:
+            return api.json(resp)
+
+    requests_mock.get("https://example.com/v1/wrong/", json=[{"id": 1}])
+
+    with pytest.raises(TypeError, match="must return a Page"):
+        Wrong.get_page()
+
+
+def test_page_built_by_a_hook_holds_objects_but_cannot_navigate(
+    requests_mock: Any,
+) -> None:
+    """A hook may build its own page, which then cannot read its links."""
+
+    @json_object
+    class Built(PagedBase):
+        class_url = "/built/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: requests.Response, *, api: API
+        ) -> Page[Any]:
+            return Page(api.json(resp), url=resp.url, next_url="?page=2")
+
+    requests_mock.get("https://example.com/v1/built/", json=[{"id": 1}])
+
+    page = Built.get_page()
+
+    assert [item.id for item in page] == [1]
+    with pytest.raises(UsageError, match="cannot read other pages"):
+        page.next_page()
