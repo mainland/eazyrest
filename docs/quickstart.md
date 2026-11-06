@@ -64,3 +64,16 @@ with API(
     first.completed = True
     first.save()
 ```
+
+## Getting objects
+
+- `Todo(id=1)` makes a lazy object without a request. The first read of a field
+  other than the primary key sends a `GET` to the object's URL.
+- `Todo.get(title="Write docs")` queries the collection and returns its one
+  match. It raises `DoesNotExist` if nothing matches and
+  `MultipleObjectsReturned` if more than one object does. It is a query, not a
+  lookup by primary key.
+- `todo.refresh()` discards the object's cached JSON and pending changes, so
+  the next read loads it again.
+
+The [guide](guide.md) describes loading, saving, and queries in full.

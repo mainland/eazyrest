@@ -163,6 +163,13 @@ user.refresh()
 print(user.name)
 ```
 
+An object built from JSON, such as an item that `filter()` returns or a related
+object embedded in another object's JSON, counts as loaded. Reading a field
+that its JSON lacks raises `AttributeError` rather than sending a request. An
+API whose collection returns summaries, with fewer fields than its detail
+endpoint, therefore gives objects that lack the other fields. Call `refresh()`
+on such an object to load its detail from its `url` at the next read.
+
 ## Resource URLs
 
 `url` returns the model resource path built from `class_url` and the primary
@@ -265,8 +272,11 @@ either one keeps working.
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
-the code assigned. A Pydantic error says where and why a value is invalid, as
-in `Asset.rating: Input should be greater than 0`, without the input. A mapping
+the code assigned. The exceptions are URLs: an HTTP error, a redirect error,
+and a pagination error name the URLs involved, with their query strings, so a
+query parameter's value can appear. Send a secret in a header or the body, not
+in the query. A Pydantic error says where and why a value is invalid, as in
+`Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
 The error that eazyrest replaced remains the `__cause__`, and it can quote the
