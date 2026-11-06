@@ -1032,10 +1032,15 @@ The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
 request, the requests for later pages that a collection hook sends with its
 `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only
 when its API has the origin of the query's own, so that a header such as
-`Authorization` never reaches another host. A query sends no body and builds
-its own parameters, so its options cannot set `json`, `data`, `files`, or
-`params`, and it reads every response, so they cannot enable `stream=True`. The
-objects that a query returns do not keep its options:
+`Authorization` does not reach another model's host. The options otherwise go
+where the session's own headers go: a collection hook that reads pages with
+`allow_other_origins=True` sends them to the pages' origin, and
+`bulk_get_by_urls()` may send them to an origin in its API's
+`redirect_origins`, as reading a hyperlinked field sends the session's headers
+there. A query sends no body and builds its own parameters, so its options
+cannot set `json`, `data`, `files`, or `params`, and it reads every response,
+so they cannot enable `stream=True`. The objects that a query returns do not
+keep its options:
 
 ```python
 todos = Todo.filter(

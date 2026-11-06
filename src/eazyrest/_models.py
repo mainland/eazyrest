@@ -180,9 +180,12 @@ class _Query:
         """Return the client for a bulk lookup of related objects.
 
         The lookup uses the query's ``api=``, or else the related model's own
-        API. It sends the query's request options only to the origin of the
-        query's own client, so that credentials in them, such as an
-        ``Authorization`` header, never reach another host.
+        API. It gets the query's request options only when that API has the
+        origin of the query's own client, so that credentials in them, such as
+        an ``Authorization`` header, do not reach another model's host. A
+        hyperlink lookup may still send them to an origin in that API's
+        ``redirect_origins``, as reading the field sends the session's
+        headers there.
 
         Args:
             model: Class of the related objects.
