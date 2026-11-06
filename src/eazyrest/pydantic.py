@@ -524,9 +524,10 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
 
     Raises:
         ValueError: If the value is not valid input for the field, or the field
-            could not read its JSON value back, for example because the value
-            breaks a constraint that only validation checks. The message does
-            not quote the value.
+            could not read its JSON value back as the value written, for
+            example because the value breaks a constraint that only
+            validation checks, or because it is a ``SecretStr``, which writes
+            a mask. The message does not quote the value.
     """
     # A round trip writes a value that validation reads back, such as the
     # JSON text of a pydantic.Json field rather than the value it holds.
@@ -538,13 +539,32 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             by_alias=True,
             warnings="error",
         )
+        written = value
     except PydanticSerializationError:
+        written = _decode(adapter, value)
         encoded = adapter.dump_python(
-            _decode(adapter, value),
-            mode="json",
-            round_trip=True,
-            by_alias=True,
+            written, mode="json", round_trip=True, by_alias=True
         )
 
-    _decode(adapter, encoded)
+    # Compare the Python dumps rather than the values, because a model's
+    # equality also compares its private attributes, which are not written.
+    # A secret dumps as itself, so a mask that reads back is still caught.
+    if _python_dump(adapter, _decode(adapter, encoded)) != _python_dump(
+        adapter, written
+    ):
+        raise ValueError("The value does not read back as written")
+
     return encoded
+
+
+def _python_dump(adapter: TypeAdapter[Any], value: Any) -> Any:
+    """Return the Python dump of a field value, for comparing values.
+
+    Args:
+        adapter: ``TypeAdapter`` for the field's type.
+        value: Field value to dump.
+
+    Returns:
+        ``value`` dumped in Python mode.
+    """
+    return adapter.dump_python(value, round_trip=True, by_alias=True)

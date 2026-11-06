@@ -275,7 +275,24 @@ eazyrest still handles related objects, `T | None`, and collections around a typ
 
 Assigning a value, or passing it to `create()` or a query, writes the JSON value that Pydantic serializes for a round trip, so a field typed as `pydantic.Json[dict[str, int]]` writes JSON text, as it reads. A value of another type, such as a `dict` assigned to a field typed as a Pydantic model, is validated first. A field typed as `Base64Bytes` therefore writes both `b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not read back raises `FieldConversionError` and sends nothing. This includes a value that breaks a constraint, such as `0` for a field typed as `Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as `null`.
 
-A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a model whose config sets `alias_generator=to_camel` writes `darkMode` rather than `dark_mode`.
+A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a model whose config sets `alias_generator=to_camel` writes `darkMode` rather than `dark_mode`. A value must also read back as the value written. Pydantic writes a `SecretStr` or `SecretBytes` as `"**********"`, so writing one raises `FieldConversionError`, and so does reading one, because a read encodes the value to detect changes made in place. To send a secret, annotate its type with a serializer that reveals it:
+
+```python
+from typing import Annotated
+
+from pydantic import PlainSerializer, SecretStr
+
+RevealedSecret = Annotated[
+    SecretStr,
+    PlainSerializer(
+        lambda secret: secret.get_secret_value(),
+        return_type=str,
+        when_used="json",
+    ),
+]
+```
+
+A field typed as `RevealedSecret` writes the secret itself, and its `repr()` still hides it.
 
 `Annotated[T, ...]` converts as `T` does, and the metadata refines that conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`, `datetime.date`, `datetime.timedelta`, `uuid.UUID`, and enums, eazyrest's conversion reads and writes the value and Pydantic applies the metadata. `Logo.published` therefore reads as a plain `datetime.datetime` field would, a constraint such as `Field(ge=datetime.timedelta(0))` checks the decoded value, and a `pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every type that the annotation names, such as the items of `Annotated[list[datetime.datetime], Field(max_length=3)]`.
 

@@ -475,6 +475,122 @@ def test_pydantic_fields_write_by_alias(requests_mock: Any) -> None:
     }
 
 
+class Login(pydantic.BaseModel):
+    """Pydantic model with a secret."""
+
+    password: pydantic.SecretStr
+
+
+@json_object(write_only={"password", "key", "login", "token"})
+class Account(PydanticBase):
+    """Model with secret fields, whose writes would send their masks."""
+
+    class_url = "/accounts/"
+
+    id: int
+    password: pydantic.SecretStr
+    key: pydantic.SecretBytes
+    login: Login
+    token: Annotated[
+        pydantic.SecretStr,
+        PlainSerializer(
+            lambda secret: secret.get_secret_value(),
+            return_type=str,
+            when_used="json",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("password", pydantic.SecretStr("hunter2")),
+        ("password", "hunter2"),
+        ("key", pydantic.SecretBytes(b"hunter2")),
+        ("login", Login(password=pydantic.SecretStr("hunter2"))),
+    ],
+)
+def test_pydantic_fields_refuse_to_write_secrets(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A secret, which Pydantic writes as a mask, is not sent.
+
+    Args:
+        field: Name of the ``Account`` field to write.
+        value: Value whose secret would be written as a mask.
+    """
+    account = Account(json={"id": 1})
+
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        setattr(account, field, value)
+    with pytest.raises(FieldConversionError, match=f"^Account.{field}: "):
+        Account.create(fields={field: value})
+
+    assert requests_mock.call_count == 0
+
+
+def test_pydantic_field_writes_a_revealed_secret(requests_mock: Any) -> None:
+    """A secret whose serializer reveals it is written."""
+    post = requests_mock.post(
+        "https://pydantic.example.com/accounts/", json={"id": 2}
+    )
+
+    Account.create(token=pydantic.SecretStr("hunter2"))
+
+    assert post.last_request.json() == {"token": "hunter2"}
+
+
+@json_object
+class Vault(PydanticBase):
+    """Model with a readable secret field."""
+
+    id: int
+    secret: pydantic.SecretStr
+
+
+def test_pydantic_field_refuses_to_read_a_secret() -> None:
+    """A secret field cannot be read, since its changes could not be saved."""
+    vault = Vault(json={"id": 1, "secret": "hunter2"})
+
+    with pytest.raises(FieldConversionError, match=r"^Vault.secret: "):
+        _ = vault.secret
+
+
+class Cached(pydantic.BaseModel):
+    """Pydantic model with a private attribute, which is not written."""
+
+    model_config = ConfigDict(extra="allow")
+
+    x: int
+    _hits: int = pydantic.PrivateAttr(default=0)
+
+
+@json_object
+class Counter(PydanticBase):
+    """Model with a field whose model has a private attribute."""
+
+    class_url = "/counters/"
+
+    id: int
+    cached: Cached
+
+
+def test_pydantic_field_writes_a_model_with_private_state(
+    requests_mock: Any,
+) -> None:
+    """A model's private attributes do not stop it from being written."""
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/counters/1/", status_code=204
+    )
+    counter = Counter(json={"id": 1, "cached": {"x": 1}})
+
+    counter.cached._hits = 3
+    counter.cached.x = 2
+    counter.save()
+
+    assert patch.last_request.json() == {"cached": {"x": 2}}
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
