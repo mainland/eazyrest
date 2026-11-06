@@ -1302,6 +1302,77 @@ def test_json_schema_hoists_pydantic_definitions() -> None:
     assert properties["image"] == {"format": "base64", "type": "string"}
 
 
+def _make_tree(leaf: type) -> type[BaseModel]:
+    """Return models named ``Tree``, ``Branch``, and ``Leaf``.
+
+    Args:
+        leaf: Type of the leaf's value, which tells two trees apart.
+
+    Returns:
+        ``Tree``, whose JSON schema defines ``Branch`` and ``Leaf``.
+    """
+    config = ConfigDict(extra="allow")
+    leaf_model = pydantic.create_model(
+        "Leaf", __config__=config, v=(leaf, ...)
+    )
+    branch = pydantic.create_model(
+        "Branch", __config__=config, a=(leaf_model, ...)
+    )
+    model: type[BaseModel] = pydantic.create_model(
+        "Tree", __config__=config, x=(branch, ...)
+    )
+    return model
+
+
+IntTree = _make_tree(int)
+StrTree = _make_tree(str)
+
+
+@json_object
+class Forest(PydanticBase):
+    """Model whose definitions differ only below their first level."""
+
+    id: int
+    first: IntTree  # type: ignore[valid-type]
+    second: StrTree  # type: ignore[valid-type]
+
+
+def _resolve(schema: Any, defs: dict[str, Any]) -> Any:
+    """Return a schema with its references replaced by their definitions.
+
+    Args:
+        schema: Part of a JSON schema without recursive definitions.
+        defs: Definitions that the references name.
+
+    Returns:
+        ``schema`` without references or ``$defs``.
+    """
+    if isinstance(schema, dict):
+        if "$ref" in schema:
+            return _resolve(
+                defs[schema["$ref"].removeprefix("#/$defs/")], defs
+            )
+        return {
+            key: _resolve(value, defs)
+            for key, value in schema.items()
+            if key != "$defs"
+        }
+    if isinstance(schema, list):
+        return [_resolve(item, defs) for item in schema]
+    return schema
+
+
+def test_json_schema_renames_definitions_that_refer_to_renamed_ones() -> None:
+    """A definition whose dependency is renamed is renamed too."""
+    schema = Forest.json_schema()
+
+    for field, tree in [("first", IntTree), ("second", StrTree)]:
+        own = tree.model_json_schema()
+        assert _resolve(schema["properties"][field], schema["$defs"]) == (
+            _resolve(own, own["$defs"])
+        )
+
+
 def test_json_schema_without_pydantic_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
