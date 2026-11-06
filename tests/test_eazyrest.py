@@ -1939,6 +1939,46 @@ def test_object_without_primary_key_reports_missing_url(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize(
+    "body", [{"status_code": 204}, {"json": {}}, {"json": {"title": "a"}}]
+)
+def test_create_without_returned_key_reports_missing_url(
+    requests_mock: Any, body: dict[str, Any]
+) -> None:
+    """A creation whose response lacks the new key leaves the object keyless.
+
+    Its JSON is partial, and loading the rest would need the key, so reading
+    a field that the JSON lacks says that the object has no URL.
+
+    Args:
+        body: Keyword arguments of the mocked ``POST`` response.
+    """
+    requests_mock.post("https://example.com/v1/todos/", **body)
+
+    todo = Todo.create(title="a")
+
+    assert todo.pk is None
+    assert todo.title == "a"
+    with pytest.raises(ValueError, match="primary key None, so it has no URL"):
+        _ = todo.completed
+    with pytest.raises(ValueError, match="no URL"):
+        todo.save(full=True)
+    assert requests_mock.call_count == 1
+
+
+def test_keyless_push_reports_missing_url(requests_mock: Any) -> None:
+    """A push without a key into a keyless object cannot load the rest."""
+    todo = Todo()
+
+    todo.update_from_json({"title": "a"})
+
+    assert todo.pk is None
+    assert todo.title == "a"
+    with pytest.raises(ValueError, match="no URL"):
+        _ = todo.completed
+    assert requests_mock.call_count == 0
+
+
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
 def test_constructor_field_arguments_are_assignments(
     requests_mock: Any, write_mode: WriteMode
