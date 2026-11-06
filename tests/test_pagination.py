@@ -30,7 +30,7 @@ class PagedBase(JSONObject):
     """Base object for models with paginated collection responses."""
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Read every page of a collection response.
 
         Args:
@@ -60,7 +60,7 @@ class ResponsePagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the first page's URL.
 
@@ -91,7 +91,7 @@ class LinkPagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page named by a Link header.
 
@@ -131,7 +131,7 @@ class Owner(PagedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, Owner]:
         """Return an object for each primary key.
 
@@ -1139,7 +1139,9 @@ def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
         id: int
 
         @classmethod
-        def collection_items(cls, payload: Any, *, api: API) -> Any:
+        def collection_items(
+            cls, payload: Any, *, api: API, **kwargs: Any
+        ) -> Any:
             return Counted(payload["data"])
 
     requests_mock.get(
@@ -1212,7 +1214,9 @@ def test_query_api_is_the_class_api_during_the_hook(
         id: int
 
         @classmethod
-        def collection_items(cls, payload: Any, *, api: API) -> Any:
+        def collection_items(
+            cls, payload: Any, *, api: API, **kwargs: Any
+        ) -> Any:
             seen.append((cls.api, api))
             return payload
 
@@ -1523,7 +1527,7 @@ def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
 
         @classmethod
         def collection_page(
-            cls, resp: requests.Response, *, api: API
+            cls, resp: requests.Response, *, api: API, **kwargs: Any
         ) -> Page[Any]:
             seen.append((cls.api, api))
             return link_headers_page(api, resp)
@@ -1558,7 +1562,9 @@ def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:
         id: int
 
         @classmethod
-        def collection_page(cls, resp: requests.Response, *, api: API) -> Any:
+        def collection_page(
+            cls, resp: requests.Response, *, api: API, **kwargs: Any
+        ) -> Any:
             return api.json(resp)
 
     requests_mock.get("https://example.com/v1/wrong/", json=[{"id": 1}])
@@ -1580,7 +1586,7 @@ def test_page_built_by_a_hook_holds_objects_but_cannot_navigate(
 
         @classmethod
         def collection_page(
-            cls, resp: requests.Response, *, api: API
+            cls, resp: requests.Response, *, api: API, **kwargs: Any
         ) -> Page[Any]:
             return Page(api.json(resp), url=resp.url, next_url="?page=2")
 

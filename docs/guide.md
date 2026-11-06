@@ -807,7 +807,7 @@ class User(JSONObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api):
+    def bulk_get_by_pks(cls, pks, *, api, **kwargs):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
@@ -827,10 +827,10 @@ more than once in a prefetch batch, parent objects share the same related
 instance.
 
 A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
-its related model implements `bulk_get_by_urls(cls, urls, *, api)` instead,
-which receives the absolute URLs and returns the objects keyed by URL. A URL is
-checked as reading the field checks it, so a URL on an origin that the API does
-not allow is not loaded, and reading the field still raises
+its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`
+instead, which receives the absolute URLs and returns the objects keyed by URL.
+A URL is checked as reading the field checks it, so a URL on an origin that the
+API does not allow is not loaded, and reading the field still raises
 `FieldConversionError`. Two spellings of one URL, such as a relative and an
 absolute one, name the same object.
 
@@ -870,13 +870,20 @@ query passed as `api=` or the class's registered API. Send any request for
 later pages with it, so that a query with `api=` reads every page from that
 API.
 
+The hooks that take `api`, which are `collection_items()`,
+`collection_items_from_response()`, `collection_page()`, `bulk_get_by_pks()`,
+and `bulk_get_by_urls()`, may receive more keyword arguments in later 1.x
+releases, to tell them more about the query. An override must therefore accept
+`**kwargs`, and pass them on when it calls another hook or `super()`, as the
+examples here do.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:
 
 ```python
 @classmethod
-def collection_items(cls, payload, *, api):
+def collection_items(cls, payload, *, api, **kwargs):
     return payload["results"]
 
 
@@ -896,7 +903,7 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload, *, api):
+    def collection_items(cls, payload, *, api, **kwargs):
         return follow_next_links(api, payload)
 ```
 
@@ -924,7 +931,7 @@ the response, and pass the URL of the first page:
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp, *, api):
+    def collection_items_from_response(cls, resp, *, api, **kwargs):
         return follow_next_links(api, api.json(resp), url=resp.url)
 ```
 
@@ -955,7 +962,7 @@ from eazyrest import JSONObject, follow_link_headers
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp, *, api):
+    def collection_items_from_response(cls, resp, *, api, **kwargs):
         return follow_link_headers(api, resp)
 ```
 
@@ -993,7 +1000,7 @@ from eazyrest import JSONObject, link_headers_page
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_page(cls, resp, *, api):
+    def collection_page(cls, resp, *, api, **kwargs):
         return link_headers_page(api, resp)
 ```
 

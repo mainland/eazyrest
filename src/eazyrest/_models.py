@@ -3653,6 +3653,7 @@ class JSONObject:
         pks: set[Any],
         *,
         api: API | None = None,
+        **kwargs: Any,
     ) -> Mapping[Any, Self]:
         """Bulk-load objects by primary key for explicit prefetch support.
 
@@ -3664,6 +3665,8 @@ class JSONObject:
             api: The client to send the bulk request with. Prefetch always
                 passes it: the API that the query passed as ``api=``, or else
                 this class's registered API.
+            **kwargs: Context that later 1.x releases may pass. An override
+                must accept it, and pass it on when it calls another hook.
 
         Returns:
             Mapping from primary key to loaded object.
@@ -3671,7 +3674,7 @@ class JSONObject:
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
         """
-        del pks, api
+        del pks, api, kwargs
         raise PrefetchNotSupported(
             f"{cls.__name__} does not support bulk prefetch"
         )
@@ -3682,6 +3685,7 @@ class JSONObject:
         urls: set[str],
         *,
         api: API | None = None,
+        **kwargs: Any,
     ) -> Mapping[str, Self]:
         """Bulk-load objects by URL to prefetch a hyperlinked relation.
 
@@ -3696,6 +3700,8 @@ class JSONObject:
             urls: Absolute URLs of the objects to load.
             api: The client to send the bulk request with, as for
                 ``bulk_get_by_pks()``.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``bulk_get_by_pks()``.
 
         Returns:
             Mapping from URL to loaded object. URLs are matched after
@@ -3705,14 +3711,14 @@ class JSONObject:
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
         """
-        del urls, api
+        del urls, api, kwargs
         raise PrefetchNotSupported(
             f"{cls.__name__} does not support bulk prefetch by URL"
         )
 
     @classmethod
     def collection_page(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Page[Any]:
         """Read one page of a collection response for ``get_page()``.
 
@@ -3726,15 +3732,18 @@ class JSONObject:
             resp: Response for the page.
             api: The query's client, as for ``collection_items()``, which the
                 page uses to read the pages it links to.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``collection_items()``.
 
         Returns:
             The page of JSON objects.
         """
+        del kwargs
         return next_links_page(api, resp)
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API
+        cls, resp: requests.Response, *, api: API, **kwargs: Any
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 
@@ -3746,14 +3755,18 @@ class JSONObject:
         Args:
             resp: Response to the collection request.
             api: The query's client, as for ``collection_items()``.
+            **kwargs: Context that later 1.x releases may pass, as for
+                ``collection_items()``. The default passes it on.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
         """
-        return cls.collection_items(api.json(resp), api=api)
+        return cls.collection_items(api.json(resp), api=api, **kwargs)
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Iterable[Any]:
+    def collection_items(
+        cls, payload: Any, *, api: API, **kwargs: Any
+    ) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
         The default implementation yields items from a list response directly.
@@ -3775,6 +3788,9 @@ class JSONObject:
         Args:
             payload: Decoded JSON payload returned by a collection request.
             api: The query's client, for requests for later pages.
+            **kwargs: Context that later 1.x releases may pass, to tell the
+                hook more about the query. An override must accept it, and
+                pass it on when it calls another hook or ``super()``.
 
         Returns:
             Iterable of JSON objects used to construct model instances.
@@ -3783,6 +3799,7 @@ class JSONObject:
             ResponseShapeError: If the payload is not a supported collection
                 response.
         """
+        del kwargs
         if isinstance(payload, list):
             return payload
 

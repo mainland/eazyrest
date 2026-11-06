@@ -400,7 +400,7 @@ class DRFBase(JSONObject):
     """Base model that reads every page of a DRF collection."""
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Read every page, following next links."""
         return follow_next_links(api, payload)
 
@@ -443,7 +443,7 @@ class HyperPermissionModel(DRFBase):
 # The DRF guide's client recipe for bulk_get_by_urls(), run as the guide
 # writes it.
 bulk_by_urls_recipe = run_guide_example(
-    "def bulk_get_by_urls(cls, urls, *, api):", doc=DRF
+    "def bulk_get_by_urls(cls, urls, *, api, **kwargs):", doc=DRF
 )["bulk_get_by_urls"]
 
 
@@ -453,7 +453,7 @@ class LinkedContentTypeModel(ContentTypeModel):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, LinkedContentTypeModel]:
         """Load content types by key from the list view.
 

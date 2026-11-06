@@ -48,7 +48,7 @@ from eazyrest import JSONObject, follow_next_links, json_object
 
 class DRFModel(JSONObject):
     @classmethod
-    def collection_items(cls, payload, *, api):
+    def collection_items(cls, payload, *, api, **kwargs):
         return follow_next_links(api, payload)
 
 
@@ -126,7 +126,7 @@ from eazyrest import API, JSONObject, follow_next_links
 
 class DRFObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload, *, api):
+    def collection_items(cls, payload, *, api, **kwargs):
         return follow_next_links(api, payload)
 
 
@@ -574,7 +574,7 @@ class User(DRFObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api):
+    def bulk_get_by_pks(cls, pks, *, api, **kwargs):
         users = list(cls.filter(id=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
@@ -642,7 +642,7 @@ Then your client model can implement:
 
 ```python
 @classmethod
-def bulk_get_by_pks(cls, pks, *, api):
+def bulk_get_by_pks(cls, pks, *, api, **kwargs):
     resp = api.get("/users/bulk/", params={"id": sorted(pks)})
     return {
         user.pk: user
@@ -663,22 +663,30 @@ can take the keys from the URLs and reuse the bulk lookup by key:
 
 ```python
 @classmethod
-def bulk_get_by_urls(cls, urls, *, api):
+def bulk_get_by_urls(cls, urls, *, api, **kwargs):
     prefix = api.resolve_url(cls.class_url)
     pks = {
         url.removeprefix(prefix).strip("/")
         for url in urls
         if url.startswith(prefix)
     }
+    if not pks:
+        return {}
     objects = cls.bulk_get_by_pks(pks, api=api)
     return {obj.absolute_url: obj for obj in objects.values()}
 ```
 
 Return the objects keyed by URL. eazyrest matches the keys after resolving them
 against the API's base URL and normalizing their case and default ports. A URL
-outside the model's `class_url`, such as one of a serializer with another
-`lookup_field`, is not loaded here, and the object loads lazily when it is
-read.
+outside the model's `class_url`, such as `/members/7/` for a model whose
+`class_url` is `/users/`, is not loaded here, and the object loads lazily when
+it is read. The recipe returns `{}` for a batch in which no URL is under
+`class_url`. It compares the prefix as text, so a URL whose host differs in
+case from the base URL's is not loaded here either.
+
+A serializer with another `lookup_field` gives URLs under `class_url`, such as
+`/users/ada/`, and the recipe would take `ada` for a primary key. For such a
+serializer, look the objects up in bulk by that field instead.
 
 ## Preserve laziness with batch prefetch
 

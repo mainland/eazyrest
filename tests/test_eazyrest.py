@@ -67,6 +67,7 @@ class User(ModelBase):
         pks: set[Any],
         *,
         api: API | None = None,
+        **kwargs: Any,
     ) -> dict[Any, User]:
         """Load users in one request for explicit prefetch support.
 
@@ -173,7 +174,7 @@ class SearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Extract wrapped collection items for this test model.
 
         Args:
@@ -208,7 +209,7 @@ class PaginatedSearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API) -> Any:
+    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
         """Follow ``next`` links and yield items across all pages.
 
         Args:
@@ -1344,7 +1345,7 @@ class UUIDUser(ModelBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None
+        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
     ) -> dict[Any, UUIDUser]:
         """Load users and key the result by their decoded primary keys.
 
@@ -4166,6 +4167,45 @@ def test_creation_uses_the_api_passed_to_it(requests_mock: Any) -> None:
     }
 
 
+def test_default_hooks_accept_and_pass_on_keyword_arguments(
+    requests_mock: Any,
+) -> None:
+    """Context that a later release passes reaches overrides through ``super``.
+
+    The default hooks accept keyword arguments they do not know, and
+    ``collection_items_from_response()`` passes them to
+    ``collection_items()``.
+    """
+    seen: list[dict[str, Any]] = []
+
+    @json_object
+    class Probe(ModelBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: API, **kwargs: Any
+        ) -> Any:
+            seen.append(kwargs)
+            return super().collection_items(payload, api=api, **kwargs)
+
+    requests_mock.get("https://example.com/v1/probes/", json=[{"id": 1}])
+    resp = test_api.get(Probe.class_url)
+
+    items = Probe.collection_items_from_response(resp, api=test_api, hint=1)
+    page = Probe.collection_page(resp, api=test_api, hint=1)
+
+    assert list(items) == [{"id": 1}]
+    assert seen == [{"hint": 1}]
+    assert page.items == [{"id": 1}]
+    with pytest.raises(PrefetchNotSupported):
+        Probe.bulk_get_by_pks({1}, api=test_api, hint=1)
+    with pytest.raises(PrefetchNotSupported):
+        Probe.bulk_get_by_urls({"https://example.com/"}, api=test_api, hint=1)
+
+
 def test_prefetch_passes_the_query_api_to_bulk_lookup(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4174,7 +4214,12 @@ def test_prefetch_passes_the_query_api_to_bulk_lookup(
     seen: list[API | None] = []
 
     def bulk_get_by_pks(
-        cls: type[User], pks: set[Any], *, api: API | None = None
+        cls: type[User],
+        /,
+        pks: set[Any],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[Any, User]:
         seen.append(api)
         return {pk: cls(json={"id": pk, "name": "Ada"}, api=api) for pk in pks}
@@ -5723,7 +5768,12 @@ def test_hyperlinked_prefetch_loads_each_url_once(
     calls: list[tuple[set[str], API | None]] = []
 
     def bulk_get_by_urls(
-        cls: type[User], urls: set[str], *, api: API | None = None
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[str, User]:
         calls.append((urls, api))
         # Return each URL in another spelling, to check matching.
@@ -5949,7 +5999,12 @@ def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
     """Optional and lazy hyperlinked fields read prefetched objects too."""
 
     def bulk_get_by_urls(
-        cls: type[User], urls: set[str], *, api: API | None = None
+        cls: type[User],
+        /,
+        urls: set[str],
+        *,
+        api: API | None = None,
+        **kwargs: Any,
     ) -> dict[str, User]:
         return {url: _user_from_url(url, api) for url in urls}
 
