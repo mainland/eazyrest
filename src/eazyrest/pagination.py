@@ -26,27 +26,178 @@ from .api import (
 __all__ = ["follow_link_headers", "follow_next_links"]
 
 
-def _next_link(resp: requests.Response) -> str | None:
-    """Return the URL of the ``rel="next"`` link in a response's Link header.
+def _link(resp: requests.Response, rels: frozenset[str]) -> str | None:
+    """Return the URL of a link with one of ``rels`` in a Link header.
 
     A link may have several relation types, as in ``rel="next last"``, and
     registered relation types compare case-insensitively, as RFC 8288 says.
 
     Args:
         resp: Response whose Link header is read.
+        rels: Relation types to look for, in lowercase.
 
     Returns:
-        The URL of the first link whose relation types include ``next``, or
-        ``None`` if there is none.
+        The URL of the first link whose relation types include one of
+        ``rels``, or ``None`` if there is none.
     """
     # requests parses the Link header into resp.links, keyed by the whole rel
     # value.
     for link in resp.links.values():
-        if "next" in link.get("rel", "").lower().split():
+        if rels.intersection(link.get("rel", "").lower().split()):
             url: str | None = link.get("url")
             return url
 
     return None
+
+
+def _page_link(page: Mapping[str, Any], key: str, base: str) -> str | None:
+    """Return the absolute URL of a page's link to another page.
+
+    Args:
+        page: Decoded JSON page.
+        key: Member of the page that holds the link.
+        base: URL of the page, against which a relative link is resolved.
+
+    Returns:
+        The link resolved against ``base``, or ``None`` if the member is
+        absent, null, or empty. Some APIs mark the last page with an empty
+        link, which resolving would turn into the current page.
+
+    Raises:
+        ResponseShapeError: If the member holds something other than a string.
+    """
+    link = page.get(key)
+    if link is None or link == "":
+        return None
+    if not isinstance(link, str):
+        raise ResponseShapeError(
+            f"The {key!r} member of a collection page must be a URL, got "
+            f"{type(link).__name__}"
+        )
+    return urljoin(base, link)
+
+
+def _page_results(page: Any, results_key: str) -> list[Any] | None:
+    """Return a page's items, checking the page's shape.
+
+    Args:
+        page: Decoded JSON payload of a page.
+        results_key: Member of a page mapping that holds its items.
+
+    Returns:
+        The items of a page mapping, or ``None`` for a list payload, which is
+        an unpaginated collection.
+
+    Raises:
+        ResponseShapeError: If the payload is neither a list nor a mapping, or
+            its ``results_key`` member is missing or is not a list.
+    """
+    if isinstance(page, list):
+        return None
+    if not isinstance(page, Mapping):
+        raise ResponseShapeError(
+            "Collection responses must be lists or page mappings, "
+            f"got {type(page).__name__}"
+        )
+    if results_key not in page:
+        raise ResponseShapeError(
+            f"Collection page has no {results_key!r} member"
+        )
+    results = page[results_key]
+    # A string would yield its characters, and a mapping its keys.
+    if not isinstance(results, list):
+        raise ResponseShapeError(
+            f"The {results_key!r} member of a collection page must be a list, "
+            f"got {type(results).__name__}"
+        )
+    return results
+
+
+def _check_page_origin(api: API, url: str) -> None:
+    """Reject a page URL whose origin is not the API's base URL's.
+
+    Args:
+        api: Client that would request the page.
+        url: Absolute URL of the page.
+
+    Raises:
+        PaginationError: If ``url`` has another origin.
+    """
+    if _origin(url) != _origin(api.base_url):
+        raise PaginationError(
+            f"Page URL {url!r} has a different origin from the API's base URL "
+            f"{api.base_url!r}. Pass allow_other_origins=True to follow it."
+        )
+
+
+def _request_page(
+    api: API, url: str, allow_other_origins: bool
+) -> requests.Response:
+    """Request the page at ``url``, checking its origin and redirects.
+
+    Args:
+        api: Client that sends the request.
+        url: Absolute URL of the page.
+        allow_other_origins: Whether the page and its redirects may have an
+            origin other than the API's base URL. A redirect must still lead
+            to an origin that the API allows.
+
+    Returns:
+        Response for the page.
+
+    Raises:
+        PaginationError: If ``url`` or a redirect has another origin and other
+            origins are not allowed.
+        RedirectError: If a redirect is refused, as for any request, or the
+            response is a redirect that was not followed.
+    """
+    api_origin = _origin(api.base_url)
+    if not allow_other_origins:
+        _check_page_origin(api, url)
+
+    def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
+        """Check redirects before requests follows them.
+
+        The API checks every redirect too, as for any request. This hook adds
+        the page's own origin restriction.
+
+        Args:
+            resp: Response, which may be a redirect.
+            kwargs: Other arguments that requests passes to response hooks,
+                which are ignored.
+
+        Raises:
+            PaginationError: If ``resp`` redirects to an origin other than the
+                API's base URL and other origins are not allowed. The response
+                is closed first.
+        """
+        target = api.session.get_redirect_target(resp)
+        if not target or allow_other_origins:
+            return
+        destination = _redirect_destination(resp, target)
+        if _redirect_origins(resp, target) != {api_origin}:
+            resp.close()
+            raise PaginationError(
+                f"Page request {resp.url!r} was redirected to "
+                f"{destination!r}, which has a different origin from the "
+                f"API's base URL {api.base_url!r}. Pass "
+                "allow_other_origins=True to follow it."
+            )
+
+    # Request hooks replace session hooks, so preserve the existing ones,
+    # unless the API's request options carry hooks, which replace them as they
+    # do for the first page. Run the guard after any hook that might change
+    # the response.
+    session_hooks = (
+        None
+        if api._request_options.get("hooks")
+        else api.session.hooks.get("response")
+    )
+    hooks = [*_response_hooks(session_hooks), check_redirect]
+    return _check_final_response(
+        api.get(url, hooks={"response": hooks}),
+        "the page has no response to read",
+    )
 
 
 class _PageReader:
@@ -64,7 +215,6 @@ class _PageReader:
         """
         self.api = api
         self.allow_other_origins = allow_other_origins
-        self.api_origin = _origin(api.base_url)
         self.read_urls: set[str] = set()
         """The URLs of the pages read so far."""
         self.pages = 1
@@ -93,23 +243,6 @@ class _PageReader:
             )
         return items
 
-    def check_origin(self, url: str) -> None:
-        """Reject a page or redirect URL before credentials can be sent.
-
-        Args:
-            url: Absolute URL of a page or of a redirect target.
-
-        Raises:
-            PaginationError: If ``url`` has an origin other than the API's base
-                URL and other origins are not allowed.
-        """
-        if not self.allow_other_origins and _origin(url) != self.api_origin:
-            raise PaginationError(
-                f"Next-page URL {url!r} has a different origin from the "
-                f"API's base URL {self.api.base_url!r}. Pass "
-                "allow_other_origins=True to follow it."
-            )
-
     def read(self, url: str) -> requests.Response:
         """Request the page at ``url``, a link resolved to an absolute URL.
 
@@ -131,57 +264,15 @@ class _PageReader:
                 f"Next-page URL {url!r} names a page that was already read, "
                 "so following it would never end"
             )
-        self.check_origin(url)
+        if not self.allow_other_origins:
+            _check_page_origin(self.api, url)
         limit = self.api.max_pages
         if limit is not None and self.pages >= limit:
             raise LimitExceeded(
                 "max_pages", f"The collection has more than {limit} pages"
             )
         self.pages += 1
-
-        def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
-            """Check redirects before requests follows them.
-
-            The API checks every redirect too, as for any request. This hook
-            adds the reader's own origin restriction.
-
-            Args:
-                resp: Response, which may be a redirect.
-                kwargs: Other arguments that requests passes to response hooks,
-                    which are ignored.
-
-            Raises:
-                PaginationError: If ``resp`` redirects to an origin other than
-                    the API's base URL and other origins are not allowed. The
-                    response is closed first.
-            """
-            target = self.api.session.get_redirect_target(resp)
-            if not target or self.allow_other_origins:
-                return
-            destination = _redirect_destination(resp, target)
-            if _redirect_origins(resp, target) != {self.api_origin}:
-                resp.close()
-                raise PaginationError(
-                    f"Page request {resp.url!r} was redirected to "
-                    f"{destination!r}, which has a different origin from the "
-                    f"API's base URL {self.api.base_url!r}. Pass "
-                    "allow_other_origins=True to follow it."
-                )
-
-        # Request hooks replace session hooks, so preserve the existing ones,
-        # unless the API's request options carry hooks, which replace them as
-        # they do for the first page. Run the guard after any hook that might
-        # change the response.
-        session_hooks = (
-            None
-            if self.api._request_options.get("hooks")
-            else self.api.session.hooks.get("response")
-        )
-        hooks = [*_response_hooks(session_hooks), check_redirect]
-        resp = _check_final_response(
-            self.api.get(url, hooks={"response": hooks}),
-            "the page has no response to read",
-        )
+        resp = _request_page(self.api, url, self.allow_other_origins)
         # After a redirect, a page's links are relative to its final URL.
         self.read_urls.update((url, resp.url))
         return resp
@@ -297,37 +388,17 @@ def follow_next_links(
             reader.read_urls.add(page_url)
 
         while True:
-            if isinstance(page, list):
+            results = _page_results(page, results_key)
+            if results is None:
                 yield from reader.count_items(page)
                 return
-
-            if not isinstance(page, Mapping):
-                raise ResponseShapeError(
-                    "Collection responses must be lists or page mappings, "
-                    f"got {type(page).__name__}"
-                )
-
-            if results_key not in page:
-                raise ResponseShapeError(
-                    f"Collection page has no {results_key!r} member"
-                )
-
-            results = page[results_key]
-            # A string would yield its characters, and a mapping its keys.
-            if not isinstance(results, list):
-                raise ResponseShapeError(
-                    f"The {results_key!r} member of a collection page must be "
-                    f"a list, got {type(results).__name__}"
-                )
             yield from reader.count_items(results)
 
-            next_url = page.get(next_key)
-            # Some APIs mark the last page with an empty link. Resolving it
-            # would name the current page again.
-            if next_url is None or next_url == "":
+            next_url = _page_link(page, next_key, page_url)
+            if next_url is None:
                 return
 
-            resp = reader.read(urljoin(page_url, next_url))
+            resp = reader.read(next_url)
             # After a redirect, a page's links are relative to its final URL.
             page_url = resp.url
             page = api.json(resp)
@@ -401,7 +472,7 @@ def follow_link_headers(
 
             yield from reader.count_items(payload)
 
-            next_url = _next_link(page)
+            next_url = _link(page, frozenset({"next"}))
             if not next_url:
                 return
 
