@@ -8,6 +8,7 @@ release reviews of 784537f proposed.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime
 import enum
 import importlib.util
@@ -29,19 +30,24 @@ from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
+    CollectionType,
     FieldConversionError,
     JSONObject,
+    OptionalType,
     ResponseShapeError,
     WriteMode,
     json_object,
     parse_duration,
 )
-from eazyrest._models import _json_equal
+from eazyrest._models import _json_equal, analyze_type
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 HAVE_PYDANTIC = importlib.util.find_spec("pydantic") is not None
+HAVE_ANNOTATED_TYPES = importlib.util.find_spec("annotated_types") is not None
+if HAVE_ANNOTATED_TYPES:
+    import annotated_types
 
 BASE_URL = "https://properties.example/"
 
@@ -973,3 +979,107 @@ def test_named_type_aliases_convert_as_their_expansions(
 
     expanded = _field_model(pair.expanded)
     assert _read_outcome(aliased, value) == _read_outcome(expanded, value)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Note:
+    """Metadata of another library, which eazyrest must ignore."""
+
+    text: str
+
+
+_ANNOTATED: Any = typing.Annotated
+
+# Metadata that is not for Pydantic. annotated_types constraints, which
+# Pydantic also reads, are not Pydantic's own, so they do not opt in either.
+_NEUTRAL_METADATA = st.one_of(
+    st.text(max_size=3),
+    st.integers(),
+    st.builds(_Note, st.text(max_size=3)),
+    *(
+        [st.sampled_from([annotated_types.Gt(0), annotated_types.MaxLen(3)])]
+        if HAVE_ANNOTATED_TYPES
+        else []
+    ),
+)
+
+
+def _annotated(pair: _TypePair, metadata: list[Any]) -> _TypePair:
+    """Return a pair whose written type carries neutral metadata.
+
+    Args:
+        pair: Pair to annotate, whose written type is the bare type.
+        metadata: Metadata to add, or nothing to leave the type bare.
+
+    Returns:
+        The pair, with its written type annotated and its bare type unchanged.
+    """
+    if not metadata:
+        return pair
+    return _TypePair(
+        _ANNOTATED[(pair.aliased, *metadata)], pair.expanded, pair.recursive
+    )
+
+
+def _annotated_trees() -> st.SearchStrategy[_TypePair]:
+    """Return type pairs of up to three levels, with metadata at any level.
+
+    Returns:
+        Strategy for pairs whose written type is annotated and whose other
+        type is the bare type.
+    """
+    metadata = st.lists(_NEUTRAL_METADATA, max_size=2)
+    return st.recursive(
+        st.tuples(_LEAF_TYPES, metadata).map(lambda t: _annotated(*t)),
+        lambda children: st.tuples(_type_nodes(children), metadata).map(
+            lambda t: _annotated(*t)
+        ),
+        max_leaves=3,
+    )
+
+
+def _collapsed(analyzed: Any) -> Any:
+    """Return analyzed type metadata with nested optional types collapsed.
+
+    ``Annotated`` keeps ``(T | None) | None`` from flattening as the bare union
+    does, and both convert the same way.
+
+    Args:
+        analyzed: Result of ``analyze_type()``.
+
+    Returns:
+        ``analyzed`` with each optional of an optional made one optional.
+    """
+    if isinstance(analyzed, OptionalType):
+        inner = _collapsed(analyzed.inner_type)
+        return (
+            inner if isinstance(inner, OptionalType) else OptionalType(inner)
+        )
+    if isinstance(analyzed, CollectionType):
+        return CollectionType(
+            analyzed.collection_type, _collapsed(analyzed.item_type)
+        )
+    return analyzed
+
+
+@settings(max_examples=150)
+@given(pair=_annotated_trees(), value=_ALIAS_JSON)
+def test_neutral_metadata_leaves_conversion_unchanged(
+    pair: _TypePair, value: Any
+) -> None:
+    """``Annotated`` metadata that is not for Pydantic changes nothing.
+
+    A field typed ``Annotated[T, m]`` analyzes as ``T``, so it never opts in
+    to Pydantic, and it reads and writes every value as ``T`` does.
+
+    Args:
+        pair: Type as written with metadata and as bare.
+        value: JSON value of the field.
+    """
+    assert _collapsed(analyze_type(pair.aliased)) == _collapsed(
+        analyze_type(pair.expanded)
+    )
+
+    annotated = _field_model(pair.aliased)
+    bare = _field_model(pair.expanded)
+    assert _read_outcome(annotated, value) == _read_outcome(bare, value)
