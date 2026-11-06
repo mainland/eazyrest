@@ -5,7 +5,8 @@ changes, in-place changes, saves, full saves, failed and unconfirmed writes,
 refreshes, pushed updates, and write-mode changes to one object, which it
 loads, creates, or makes partial, and changes the values that the caller
 passed to ``create()``. Some assigned and in-place values cannot be encoded,
-and every write must then fail before it sends anything.
+and every write must then fail before it sends anything. A related object
+changed but not saved must survive a load that leaves its JSON as it was.
 A fake server records every write, and a model of the server, of the object's
 stored JSON, and of the values that reads return predicts the outcome of each
 step.
@@ -61,11 +62,18 @@ DOC_URL = re.compile(r"https://state\.example\.com/docs/(\d+)/(\?.*)?$")
 
 @json_object
 class Owner(StateBase):
-    """Related model, which the machine never loads."""
+    """Related model, which the machine changes but never saves."""
 
     class_url = "/owners/"
 
     id: int
+    name: str
+
+
+OWNER_URL = re.compile(r"https://state\.example\.com/owners/(\d+)/$")
+
+OWNER_NAMES = {1: "one", 2: "two", 3: "three"}
+"""The name of each related object, which the server never changes."""
 
 
 @json_object(write_only={"secret"}, write_map={"owner": "owner_id"})
@@ -174,8 +182,14 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.mocker.patch(DOC_URL, text=self.handle_patch)
         self.mocker.put(DOC_URL, text=self.handle_put)
         self.mocker.post(f"{BASE}/docs/", text=self.handle_post)
+        self.mocker.register_uri(
+            requests_mock.ANY, OWNER_URL, text=self.handle_owner
+        )
         # The key of the fake server's object.
         self.server_id = 1
+        # A related object whose name was changed but not saved, and the name.
+        self.dirty_owner: Owner | None = None
+        self.dirty_name = ""
         self.response_mode = "full"
         # How the next write fails, or None for a successful write.
         self.failure: str | None = None
@@ -201,8 +215,32 @@ class ObjectStateMachine(RuleBasedStateMachine):
         """
         result = dict(fields)
         if "owner" in result:
-            result["owner"] = {"id": result["owner"]}
+            key = result["owner"]
+            result["owner"] = {"id": key, "name": OWNER_NAMES[key]}
         return result
+
+    def handle_owner(self, request: Any, context: Any) -> str:
+        """Return a related object, and refuse any write to one.
+
+        The parent's writes send only the related object's key, and the
+        machine never saves a related object, so no write reaches one.
+
+        Args:
+            request: Request that the mock received.
+            context: Mock response context, whose status code becomes 405
+                for a write.
+
+        Returns:
+            JSON text of the related object, or an error for a write.
+        """
+        match = OWNER_URL.match(request.url)
+        assert match is not None
+        if request.method != "GET":
+            self.violations.append(f"{request.method} sent to {request.url}")
+            context.status_code = 405
+            return json.dumps({"detail": "Method not allowed."})
+        key = int(match.group(1))
+        return json.dumps({"id": key, "name": OWNER_NAMES[key]})
 
     def accept(self, body: dict[str, Any]) -> dict[str, Any]:
         """Check a write's keys and return its fields as the server keeps them.
@@ -434,11 +472,13 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if how == "pushed":
             self.obj = Doc(id=1)
             fields = data.draw(st.sets(st.sampled_from(DECLARED)))
-            self.obj.update_from_json(
-                self.representation(
-                    {name: copy.deepcopy(self.fake[name]) for name in fields}
-                )
+            pushed = self.representation(
+                {name: copy.deepcopy(self.fake[name]) for name in fields}
             )
+            # As for a later push, a related object may be named by its key.
+            if "owner" in pushed and data.draw(st.booleans()):
+                pushed["owner"] = self.fake["owner"]
+            self.obj.update_from_json(pushed)
             return
 
         self.create_body = "full" if how == "create-full" else "key"
@@ -554,6 +594,64 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def read_owner(self) -> None:
         """A related object read nested has the expected key."""
         assert self.obj.owner.pk == self.expected["owner"]
+
+    @rule(name=WORDS)
+    def modify_owner(self, name: str) -> None:
+        """Change the related object's name without saving it.
+
+        Args:
+            name: New name of the related object.
+        """
+        owner = self.obj.owner
+        owner.set_write_mode("lazy")
+        owner.name = name
+        self.dirty_owner = owner
+        self.dirty_name = name
+
+    @precondition(
+        lambda self: (
+            not self.poisoned
+            and vars(self.obj).get("_json_is_partial", False)
+            and any(field not in vars(self.obj)["_json"] for field in FIELDS)
+        )
+    )
+    @rule(name=st.none() | WORDS)
+    def load_through_partial_read(self, name: str | None) -> None:
+        """A load keeps a related object whose JSON it does not change.
+
+        Reading a field that a partial object lacks loads the object. A
+        related object read before the load is kept, with any change made to
+        it, exactly when the load leaves the related object's JSON as it was.
+
+        Args:
+            name: New name to give the related object before the load, or
+                ``None`` to leave it unchanged.
+        """
+        state = vars(self.obj)["_json"]
+        field = next(field for field in FIELDS if field not in state)
+        owner = None
+        if "owner" in state:
+            owner = self.obj.owner
+            if name is not None:
+                self.modify_owner(name)
+        owner_json = copy.deepcopy(state.get("owner"))
+
+        self.read(field)
+
+        if owner is None:
+            return
+        kept = self.obj._field_cache.get("owner") is owner
+        assert kept == (vars(self.obj)["_json"].get("owner") == owner_json)
+
+    @invariant()
+    def dirty_owner_keeps_its_change(self) -> None:
+        """A changed related object that the object holds keeps its change."""
+        owner = self.dirty_owner
+        if owner is None:
+            return
+        held = self.obj._field_cache.get("owner") is owner
+        if held:
+            assert owner._pending_updates == {"name": self.dirty_name}
 
     @rule(data=st.data(), field=st.sampled_from(FIELDS))
     def assign(self, data: st.DataObject, field: str) -> None:
@@ -843,16 +941,22 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def push(self, data: st.DataObject, field: str) -> None:
         """A pushed server update overrides local changes to its field.
 
+        A push may name the related object by its key, which a later load
+        replaces with the nested object, as a server's messages may differ
+        from its responses.
+
         Args:
-            data: Hypothesis data object that draws the server's new value.
+            data: Hypothesis data object that draws the server's new value
+                and whether a related object is pushed as its key.
             field: Name of the field that the server updates.
         """
         value = data.draw(VALUES[field])
         self.fake[field] = copy.deepcopy(value)
         self.server[field] = copy.deepcopy(value)
-        self.obj.update_from_json(
-            self.representation({field: copy.deepcopy(value)})
-        )
+        pushed = self.representation({field: copy.deepcopy(value)})
+        if field == "owner" and data.draw(st.booleans()):
+            pushed["owner"] = value
+        self.obj.update_from_json(pushed)
         self.stored[field] = copy.deepcopy(value)
         self.expected[field] = copy.deepcopy(value)
         self.pending.discard(field)
