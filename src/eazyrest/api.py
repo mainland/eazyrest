@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import contextvars
+import copy
 import sys
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urljoin, urlparse, urlsplit
 
 import requests
+from requests.structures import CaseInsensitiveDict
 from requests.utils import requote_uri
 from urllib3.exceptions import (
     DecodeError,
@@ -156,6 +159,72 @@ def _response_hooks(hooks: Any) -> list[Callable[..., Any]]:
     if callable(hooks):
         return [hooks]
     return list(hooks)
+
+
+def _merge_request_options(
+    base: Mapping[str, Any], override: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return request options with ``override`` applied over ``base``.
+
+    Headers are merged, matching names without regard to case, and hooks are
+    combined per event, with ``base``'s first. For any other option,
+    ``override``'s value wins. A header whose value is ``None`` is kept, so
+    requests still removes that header from the session's.
+
+    Args:
+        base: Options that apply unless ``override`` sets them.
+        override: Options that take precedence.
+
+    Returns:
+        The merged options, as a new dict.
+    """
+    merged = {**base, **override}
+    if base.get("headers") and override.get("headers"):
+        headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
+            base["headers"]
+        )
+        headers.update(override["headers"])
+        merged["headers"] = headers
+    if base.get("hooks") and override.get("hooks"):
+        merged["hooks"] = {
+            event: [
+                *_response_hooks(base["hooks"].get(event)),
+                *_response_hooks(override["hooks"].get(event)),
+            ]
+            for event in {*base["hooks"], *override["hooks"]}
+        }
+    return merged
+
+
+def _check_final_response(
+    resp: requests.Response, consequence: str
+) -> requests.Response:
+    """Refuse a final response that is a redirect.
+
+    A request that expects a result, such as a model write or a query, has
+    none when it ends with a redirect that was not followed, as with
+    ``allow_redirects=False``.
+
+    Args:
+        resp: Response that the API accepted.
+        consequence: What the redirect means for the caller, ending the
+            message, such as "the model write was not confirmed".
+
+    Returns:
+        ``resp``, when its status is not a redirect.
+
+    Raises:
+        RedirectError: If the response has a 3xx status. The response is
+            closed first.
+    """
+    if 300 <= resp.status_code < 400:
+        resp.close()
+        raise RedirectError(
+            f"{resp.request.method} {resp.url} returned status "
+            f"{resp.status_code}, so {consequence}",
+            response=resp,
+        )
+    return resp
 
 
 def _redirected_method(method: str, status: int) -> str:
@@ -603,6 +672,12 @@ class API:
     default_write_mode: WriteMode
     """Default write mode inherited by newly created model instances."""
 
+    _request_options: Mapping[str, Any] = MappingProxyType({})
+    """Request options that every request of this client sends."""
+
+    _request_scoped: bool = False
+    """Whether this client is a request-scoped copy made by ``_scoped()``."""
+
     def __init__(
         self,
         url: str,
@@ -813,6 +888,27 @@ class API:
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
 
+    def _scoped(self, options: Mapping[str, Any]) -> Self:
+        """Return a copy of this client that sends ``options`` with requests.
+
+        The copy shares this client's session, so its cookies, adapters, and
+        configuration are the same. A request that the copy sends with its own
+        options merges them over ``options``. The copy expects a final
+        response to every request, so a redirect that is not followed raises.
+
+        Args:
+            options: Request options, as for ``requests.Session.request()``.
+
+        Returns:
+            The request-scoped copy.
+        """
+        scoped = copy.copy(self)
+        scoped._request_options = _merge_request_options(
+            self._request_options, options
+        )
+        scoped._request_scoped = True
+        return scoped
+
     def _send(
         self,
         send: Callable[..., requests.Response],
@@ -838,6 +934,8 @@ class API:
             requests.HTTPError: If ``raise_for_response()`` raises it for the
                 response.
         """
+        if self._request_options:
+            kwargs = _merge_request_options(self._request_options, kwargs)
         kwargs.setdefault("timeout", self.timeout)
         # A request that streams reads its own body, so only its time and its
         # redirects are checked.
@@ -871,7 +969,12 @@ class API:
             budget.check_time(resp)
             if not streamed:
                 budget.read_body(resp)
-            return self._check_response(resp)
+            resp = self._check_response(resp)
+            if self._request_scoped:
+                return _check_final_response(
+                    resp, "the request has no response to read"
+                )
+            return resp
         finally:
             _request_budget.reset(token)
 

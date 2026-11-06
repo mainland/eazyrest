@@ -395,7 +395,7 @@ print(f"{admins.count} admins")
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed field with the same JSON field name and conversion as `create()`. For example, `Todo.filter(user=user)` sends the user's primary key under the field's JSON key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such as `ordering` or `created__gte`, are sent unchanged, except that a model instance, also as an item of a collection, is sent as its primary key, so `Todo.filter(user__in=[ada, bob])` sends `user__in=1&user__in=2`.
 
-The keyword arguments `api`, `prefetch`, `defaults`, and `params` of the query methods are their own options, not query parameters. The query methods also reserve `request_options` and raise `TypeError` for it. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
+The keyword arguments `api`, `prefetch`, `defaults`, `request_options`, and `params` of the query methods are their own options, not query parameters. Pass a query parameter of any name, including one of these, in the `params=` mapping, which `filter()`, `get()`, and `get_or_create()` encode as they encode keyword arguments. `create()` likewise takes field values in `fields=`, for a key such as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 
 ```python
 todos = Todo.filter(params={"api": "v2"}, completed=False)
@@ -431,7 +431,7 @@ for todo in todos:
     print(todo.title, todo.user.name)
 ```
 
-Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads and must return related objects keyed by primary key:
+Explicit prefetch requires the related model to implement `bulk_get_by_pks()`. The method receives the primary keys found in the parent payloads, and as `api` the client to request them with, which is the query's `api=` or else the related model's own API. It must return related objects keyed by primary key:
 
 ```python
 @json_object
@@ -442,8 +442,7 @@ class User(JSONObject):
     name: str
 
     @classmethod
-    def bulk_get_by_pks(cls, pks, *, api=None):
-        api = cls.api if api is None else api
+    def bulk_get_by_pks(cls, pks, *, api):
         resp = api.get(cls.class_url, params={"id": sorted(pks)})
         return {
             user.pk: user
@@ -478,11 +477,13 @@ Override these hooks if an API wraps responses in envelopes:
 - `collection_items_from_response()` for collection endpoints whose items or later pages depend on the response itself, such as its headers or URL
 - `object_json()` for single-object endpoints
 
+The collection hooks receive the query's client as `api`, the API that the query passed as `api=` or the class's registered API. Send any request for later pages with it, so that a query with `api=` reads every page from that API.
+
 For example, an API that returns singleton responses in a "result" field and collection responses in a "results" field should define a new base class derived from `JSONObject` with the following overrides:
 
 ```python
 @classmethod
-def collection_items(cls, payload):
+def collection_items(cls, payload, *, api):
     return payload["results"]
 
 
@@ -499,8 +500,8 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload):
-        return follow_next_links(cls.api, payload)
+    def collection_items(cls, payload, *, api):
+        return follow_next_links(api, payload)
 ```
 
 With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size` objects ahead of iteration to fill each batch, so they can request later pages early.
@@ -512,8 +513,8 @@ A next-page URL is resolved against the URL of the page that holds it, as a brow
 ```python
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_next_links(cls.api, cls.api.json(resp), url=resp.url)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_next_links(api, api.json(resp), url=resp.url)
 ```
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose scheme, host, or port differs from `base_url`, because the session would send its headers and credentials there too. A server behind a misconfigured reverse proxy can send such links, for example `http://` links from a server that does not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an API that serves pages from another host.
@@ -530,8 +531,8 @@ from eazyrest import JSONObject, follow_link_headers
 
 class GitHubObject(JSONObject):
     @classmethod
-    def collection_items_from_response(cls, resp):
-        return follow_link_headers(cls.api, resp)
+    def collection_items_from_response(cls, resp, *, api):
+        return follow_link_headers(api, resp)
 ```
 
 ## Write modes
@@ -585,6 +586,17 @@ todo.save(request_options={"headers": {"If-Match": etag}})
 ```
 
 An assignment in eager mode sends its `PATCH` with no options. Use lazy mode and `save()` for a write that needs them.
+
+The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take `request_options=` too, for every request that the query sends: the collection request, the requests for later pages that a collection hook sends with its `api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only when its API has the origin of the query's own, so that a header such as `Authorization` never reaches another host. A query sends no body and builds its own parameters, so its options cannot set `json`, `data`, `files`, or `params`, and it reads every response, so they cannot enable `stream=True`. The objects that a query returns do not keep its options:
+
+```python
+todos = Todo.filter(
+    completed=False,
+    request_options={"headers": {"Accept-Language": "fr"}, "timeout": 30},
+)
+```
+
+`get_or_create()` sends its options with both the lookup and any creation. An unfollowed final 3xx raises `RedirectError`, as for writes, and so does a collection request answered with one, such as a `304 Not Modified`.
 
 ### Write responses
 
@@ -716,7 +728,7 @@ Registering the API on a shared base class is the cleanest pattern. The API can 
 todos = Todo.filter(api=user_api, completed=False)
 ```
 
-Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`. While `filter()` calls `collection_items()`, `cls.api` is the query's API, so a hook such as `follow_next_links(cls.api, payload)` reads later pages with it.
+Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, or else the related model's own API, and the collection hooks receive the query's client as `api`, so a hook such as `follow_next_links(api, payload)` reads later pages with it. While `filter()` calls a collection hook, `cls.api` is the query's API too.
 
 A related object loads through the API registered for its own class, so models served by different APIs can refer to each other. If the parent object has an `api=` override, its related objects use that override too.
 
