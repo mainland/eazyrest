@@ -6,7 +6,9 @@ refreshes, pushed updates, and write-mode changes to one object, which it
 loads, creates, or makes partial, and changes the values that the caller
 passed to ``create()``. Some assigned and in-place values cannot be encoded,
 and every write must then fail before it sends anything. A related object
-changed but not saved must survive a load that leaves its JSON as it was.
+changed but not saved must survive a load that leaves its JSON as it was. A
+save with a file sends the changes as form fields, which the fake server
+parses as Django REST Framework would.
 A fake server records every write, and a model of the server, of the object's
 stored JSON, and of the values that reads return predicts the outcome of each
 step.
@@ -20,6 +22,8 @@ from __future__ import annotations
 
 import copy
 import datetime
+import email
+import email.message
 import json
 import re
 from collections.abc import Callable
@@ -146,6 +150,59 @@ def python_value(field: str, value: Any) -> Any:
     return copy.deepcopy(value)
 
 
+FORM_INTEGERS = frozenset({"id", "count", "owner_id"})
+"""Form fields whose text the server reads as an integer."""
+
+FORM_LISTS = frozenset({"tags", "days"})
+"""Form fields that the server reads as a list of their repeated values."""
+
+
+def sent_fields(request: Any) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """Return the fields and files of a write, as the server reads them.
+
+    A JSON body's members are its fields. A multipart body's form fields
+    are text, which the server reads back by each field's type, as Django
+    REST Framework's serializers do: a repeated field is a list, and the
+    key, count, and owner are integers.
+
+    Args:
+        request: Request that the mock received.
+
+    Returns:
+        The write's fields, and the content of each uploaded file by name.
+    """
+    content_type = request.headers.get("Content-Type", "")
+    if not content_type.startswith("multipart/form-data"):
+        return request.json(), {}
+
+    message = email.message_from_bytes(
+        b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + request.body
+    )
+    payload = message.get_payload()
+    assert isinstance(payload, list)
+    text: dict[str, list[str]] = {}
+    files: dict[str, bytes] = {}
+    for part in payload:
+        assert isinstance(part, email.message.Message)
+        name = str(part.get_param("name", header="content-disposition"))
+        content = part.get_payload(decode=True)
+        assert isinstance(content, bytes)
+        if part.get_filename() is not None:
+            files[name] = content
+        else:
+            text.setdefault(name, []).append(content.decode())
+
+    fields: dict[str, Any] = {}
+    for name, values in text.items():
+        if name in FORM_LISTS:
+            fields[name] = values
+        elif name in FORM_INTEGERS:
+            fields[name] = int(values[-1])
+        else:
+            fields[name] = values[-1]
+    return fields, files
+
+
 FAILURES: dict[str, type[Exception]] = {
     "error": APIError,
     "redirect": RedirectError,
@@ -198,6 +255,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.redirect: tuple[int, str] = (307, "same")
         # The key of the fake server's object.
         self.server_id = 1
+        # The content of each file that a write uploaded, by form name.
+        self.uploads: dict[str, bytes] = {}
         # A related object whose name was changed but not saved, and the name.
         self.dirty_owner: Owner | None = None
         self.dirty_name = ""
@@ -379,7 +438,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if self.response_mode == "partial":
             return json.dumps(self.representation(body))
         if self.response_mode == "echo":
-            return json.dumps(request.json())
+            return json.dumps(sent_fields(request)[0])
         return json.dumps(
             {"id": self.server_id, **self.representation(self.fake)}
         )
@@ -387,11 +446,13 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def handle_patch(self, request: Any, context: Any) -> str:
         """Apply a PATCH and answer it.
 
-        A body that holds the key moves the object to that key.
+        A body that holds the key moves the object to that key. A multipart
+        body's form fields are applied as a JSON body's members are, and its
+        files are recorded in ``uploads``.
 
         Args:
-            request: Request that the mock received, whose JSON body holds the
-                changed fields.
+            request: Request that the mock received, whose JSON or multipart
+                body holds the changed fields.
             context: Mock response context, which ``fail()`` and ``answer()``
                 set.
 
@@ -405,7 +466,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         failed = self.fail(request, context)
         if failed is not None:
             return failed
-        body = self.accept(request.json())
+        fields, files = sent_fields(request)
+        self.uploads.update(files)
+        body = self.accept(fields)
         key = body.pop("id", None)
         if key is not None:
             self.server_id = key
@@ -527,10 +590,15 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.obj = Doc.create(id=1, **self.caller, **extra)
 
     def detect_in_place_changes(self) -> None:
-        """Model the detection of in-place changes as pending updates."""
+        """Model the detection of in-place changes as pending updates.
+
+        A change that leaves the value as it was, such as setting a key to
+        the value that it already has, is no change.
+        """
         for field in self.in_place:
-            self.stored[field] = copy.deepcopy(self.expected[field])
-            self.pending.add(field)
+            if self.expected[field] != self.stored[field]:
+                self.stored[field] = copy.deepcopy(self.expected[field])
+                self.pending.add(field)
         self.in_place.clear()
 
     def send_pending(self) -> None:
@@ -819,6 +887,50 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.caller["extra"][key] = [99]
         for items in self.caller["extra"].values():
             items.append(98)
+
+    def form_ready(self) -> bool:
+        """Return whether every pending value can be sent as a form field.
+
+        A form field holds text, and a list as repeated fields, so a mapping
+        and an empty list cannot be sent.
+
+        Returns:
+            Whether a multipart write can hold every pending update.
+        """
+        values = [self.stored[name] for name in self.pending - {"id"}]
+        return not any(
+            isinstance(value, dict) or value == [] for value in values
+        )
+
+    @rule(content=st.binary(max_size=8))
+    def save_with_file(self, content: bytes) -> None:
+        """Save with a file, which sends the changes as form fields.
+
+        The save detects in-place changes first, as every save does, and
+        raises ``TypeError`` before sending anything if a pending value
+        cannot be a form field. The changes then stay pending.
+
+        Args:
+            content: Content of the uploaded file.
+        """
+        upload = {"upload": ("upload.bin", content)}
+        if self.poisoned:
+            self.refused(lambda: self.obj.save(files=upload))
+            return
+
+        before = len(self.mocker.request_history)
+        self.detect_in_place_changes()
+        if not self.form_ready():
+            with pytest.raises(TypeError, match="form field"):
+                self.obj.save(files=upload)
+            assert len(self.mocker.request_history) == before
+            return
+
+        self.obj.save(files=upload)
+        assert self.uploads.pop("upload") == content
+        self.send_pending()
+        self.pending.clear()
+        self.pending_secret = None
 
     @rule(field=st.sampled_from(sorted(BAD_VALUES)))
     def assign_bad(self, field: str) -> None:
