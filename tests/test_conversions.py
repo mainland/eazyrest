@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, ClassVar, Literal, NewType, Protocol
 
+import jsonschema
 import pytest
 import requests_mock
 from typing_extensions import TypedDict
@@ -504,6 +505,12 @@ def test_conversion_schemas_keep_their_definitions(
     assert properties["chain"]["anyOf"][0] == {"$ref": "#/$defs/Part_2"}
     assert schema["$defs"]["Part_2"]["items"] == {"$ref": "#/$defs/Part_2"}
 
+    good = {"id": 1, "token": {"part": 1}, "tokens": [], "chain": [[], [[]]]}
+    jsonschema.validate(good, schema)
+    for bad in ({"token": {"part": "x"}}, {"chain": [1]}):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**good, **bad}, schema)
+
 
 class FirstCode(str):
     """String whose conversion's schema defines a name."""
@@ -581,6 +588,8 @@ def test_renamed_definitions_keep_what_their_schemas_mean(
             definition is renamed.
         mode: Schema mode.
     """
+    assert jsonschema.Draft202012Validator(first).is_valid(1)
+    assert jsonschema.Draft202012Validator(second).is_valid(value)
     model: Any = json_object(
         type(
             "Codes",
@@ -606,3 +615,6 @@ def test_renamed_definitions_keep_what_their_schemas_mean(
     schema = model.json_schema(mode)
 
     assert schema["properties"]["b"] == renamed
+    validator = jsonschema.Draft202012Validator(schema)
+    assert validator.is_valid({"a": 1, "b": value})
+    assert not validator.is_valid({"a": "x", "b": value})

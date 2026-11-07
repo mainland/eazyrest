@@ -25,6 +25,7 @@ from typing import (
 )
 from urllib.parse import parse_qs, urlparse
 
+import jsonschema
 import pydantic
 import pydantic_core
 import pytest
@@ -1461,6 +1462,11 @@ def test_json_schema_hoists_a_conversions_definitions_from_pydantic(
         if key != "title"
     } == stamp
     assert "x-eazyrest" not in str(schema)
+
+    good = {"plain": {"at": "x"}, "parts": [{"when": {"at": "x"}, "n": 1}]}
+    jsonschema.validate(good, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"parts": [{"when": {"at": 1}, "n": 1}]}, schema)
 
 
 def _first_cat() -> type[BaseModel]:
