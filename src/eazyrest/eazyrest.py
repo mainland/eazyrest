@@ -17,6 +17,7 @@ from collections.abc import (
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from functools import cached_property
+from types import MappingProxyType
 from typing import (
     Any,
     ClassVar,
@@ -29,7 +30,13 @@ from typing import (
 
 from typing_extensions import Self
 
-from ._conversion import _conversion_of
+from ._conversion import (
+    Conversion,
+    _conversion_of,
+    _final_supertype,
+    _is_instance,
+    _table_of,
+)
 from .api import API
 from .write_mode import WriteMode, validate_write_mode
 
@@ -546,6 +553,19 @@ class JSONObject:
     prefetch_batch_size: ClassVar[int] = 100
     """Maximum number of parent objects to prefetch in one batch."""
 
+    conversions: ClassVar[Mapping[Any, Conversion]] = MappingProxyType({})
+    """Conversions of field types, keyed by the type they convert.
+
+    A class's entries are merged over its bases', and theirs over the
+    default ones for ``datetime``, ``timedelta``, and enums. A field type
+    converts by the entry for exactly that type, else by the entry of the
+    nearest class in its MRO, else, for a ``NewType``, as its supertype. A
+    key cannot be a model, or a type that eazyrest converts itself:
+    ``object``, ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
+    collection type such as ``list`` or ``dict``. Declare the mapping in the
+    class body: the class merges and checks its table when it is defined.
+    """
+
     _pk_value: Any
     """Value of the primary key.
 
@@ -569,6 +589,36 @@ class JSONObject:
 
     _json: Any
     """Object's JSON representation."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Merge and check a class's conversions.
+
+        The class's conversion table is merged and checked now, so that a
+        bad entry fails when the class is defined rather than when a field
+        first converts.
+
+        Args:
+            **kwargs: Keyword arguments for ``object.__init_subclass__()``.
+
+        Raises:
+            TypeError: If the class's ``conversions`` or a base's has a bad
+                entry, such as one keyed by a model.
+        """
+        super().__init_subclass__(**kwargs)
+
+        for base in cls.__mro__:
+            own = vars(base).get("conversions")
+            if not isinstance(own, Mapping):
+                continue
+            for key in own:
+                if lenient_issubclass(_final_supertype(key), JSONObject):
+                    raise TypeError(
+                        f"{base.__name__}.conversions has the key "
+                        f"{key.__name__}, a model or a NewType of one. A "
+                        "field of a model's type is a relation, which a "
+                        "conversion cannot replace."
+                    )
+        _table_of(cls)
 
     # pylint: disable=redefined-outer-name
     def __init__(
@@ -687,9 +737,9 @@ class JSONObject:
                 return self._from_json(value, inner_type, field=field)
 
             case BaseType(base_type):
-                entry = _conversion_of(base_type)
-                if entry is not None:
-                    return entry.decode(value, base_type)
+                found = _conversion_of(base_type, _table_of(type(self)))
+                if found is not None:
+                    return found.entry.decode(value, found.declared)
 
                 return value
 
@@ -767,9 +817,12 @@ class JSONObject:
 
                 return value.pk
             case BaseType(base_type):
-                entry = _conversion_of(base_type)
-                if entry is not None and isinstance(value, base_type):
-                    return entry.encode(value, base_type)
+                found = _conversion_of(base_type, _table_of(cls))
+                # A subclass of the key reads as the key's type, such as a
+                # plain datetime for a subclass of datetime, which must write
+                # back.
+                if found is not None and _is_instance(value, found.key):
+                    return found.entry.encode(value, found.declared)
 
                 return value
             case CollectionType(_, item_type):
