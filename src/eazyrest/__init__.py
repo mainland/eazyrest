@@ -20,6 +20,7 @@ from ._models import (
     FieldConversionError,
     Hyperlinked,
     JSONObject,
+    encode_json,
     json_object,
 )
 from ._results import Results
@@ -61,6 +62,7 @@ __all__ = [
     "Results",
     "UsageError",
     "WriteMode",
+    "encode_json",
     "follow_link_headers",
     "follow_next_links",
     "json_object",

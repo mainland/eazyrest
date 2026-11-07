@@ -21,6 +21,7 @@ from eazyrest import (
     API,
     FieldConversionError,
     JSONObject,
+    encode_json,
     json_object,
 )
 from eazyrest._models import (
@@ -428,6 +429,54 @@ def test_json_schema_describes_typed_dicts_and_mappings() -> None:
     }
 
 
+def test_encode_json_writes_values_as_fields_write_them() -> None:
+    """``encode_json()`` encodes by the annotation, as a field would."""
+    assert encode_json(WINDOW, Window) == {
+        **WINDOW_JSON,
+        "start": "2026-11-07T09:00:00+00:00",
+    }
+    assert encode_json([WINDOW], list[Window])[0]["length"] == "PT1H"
+    assert (
+        encode_json(datetime.date(2026, 1, 2), datetime.date) == "2026-01-02"
+    )
+    assert encode_json(None, Window) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "annotation", "message"),
+    [
+        (
+            {"days": [Owner(id=1)]},
+            dict[str, list[int]],
+            r"at \[key\]\[0\] has the type Owner",
+        ),
+        ({"a": {1: "x"}}, dict[str, Any], r"at \[key\] has a key"),
+        (object(), Any, "^The value has the type object"),
+        ({"day": "x"}, Window, None),
+    ],
+)
+def test_encode_json_refuses_values_that_are_not_json(
+    value: Any, annotation: Any, message: str | None
+) -> None:
+    """A value that does not encode to JSON raises, naming where it is.
+
+    A value that the annotation's conversion leaves alone, such as a string
+    under a date key, is JSON, so it is written as it is.
+
+    Args:
+        value: Value to encode.
+        annotation: Its annotation.
+        message: Pattern that the error should match, or ``None`` if the
+            value encodes.
+    """
+    if message is None:
+        assert encode_json(value, annotation) == value
+        return
+
+    with pytest.raises(TypeError, match=message):
+        encode_json(value, annotation)
+
+
 JSON_SCALARS = st.none() | st.booleans() | st.integers() | st.text()
 
 WINDOWS = st.fixed_dictionaries(
@@ -462,14 +511,11 @@ def test_typed_dict_values_read_back_as_written(
     Args:
         window: Generated value, with undeclared keys.
     """
-    writer = job()
-    writer.window = cast("Window", window)
-    encoded = writer.json["window"]
+    encoded = encode_json(window, Window)
     item = Job(json={**JOB_JSON, "window": encoded})
 
     assert dict(item.window) == window
-    writer.window = item.window
-    assert writer.json["window"] == encoded
+    assert encode_json(item.window, Window) == encoded
 
 
 class Other(TypedDict):

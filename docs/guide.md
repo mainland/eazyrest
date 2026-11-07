@@ -392,7 +392,7 @@ all convert as `T`, as a `dict`:
 ```python
 import datetime
 
-from typing_extensions import NotRequired, TypedDict
+from typing import TypedDict
 
 from eazyrest import JSONObject, json_object
 
@@ -400,7 +400,7 @@ from eazyrest import JSONObject, json_object
 class Window(TypedDict):
     start: datetime.datetime
     length: datetime.timedelta
-    note: NotRequired[str]
+    note: str
 
 
 @json_object
@@ -1448,6 +1448,39 @@ With the adapters that `API` creates, retry delays and intermediate response
 bodies obey the same total-time and body-size budgets as the final response.
 `reset_session()` keeps the session's configuration but not its adapters, so
 pass the adapter arguments again when you call it.
+
+### Request bodies
+
+`API.post()`, `patch()`, and `put()` pass `json=` to requests, which writes it
+with `json.dumps()`, so a body must already be JSON. A `datetime` or a model in
+it raises `TypeError` before anything is sent. To write Python values as fields
+write them, describe the body with a `TypedDict` and encode it with
+`encode_json()`:
+
+```python
+import datetime
+
+from typing import TypedDict
+
+from eazyrest import encode_json
+
+
+class Extension(TypedDict, total=False):
+    duration: datetime.timedelta
+    until: datetime.datetime
+
+
+body = encode_json({"duration": datetime.timedelta(hours=2)}, Extension)
+api.post("/reservations/1/extend/", json=body)
+```
+
+`encode_json(value, annotation)` returns the JSON value that a field annotated
+`annotation` writes, so `body` is `{"duration": "PT2H"}`. Any field annotation
+works, such as `datetime.datetime` for a query parameter or `list[Extension]`
+for a list. A key annotated `pydantic.Base64Bytes` writes base64 through
+Pydantic, so the annotation, not eazyrest, decides how bytes are written. A
+value that does not encode to JSON, such as a model under a key annotated
+`int`, raises `TypeError` naming its key.
 
 ### Limits
 

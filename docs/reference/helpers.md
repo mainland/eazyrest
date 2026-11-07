@@ -9,6 +9,10 @@
 ```
 
 ```{eval-rst}
+.. autofunction:: eazyrest.encode_json
+```
+
+```{eval-rst}
 .. autoclass:: eazyrest.Results
    :members:
 ```

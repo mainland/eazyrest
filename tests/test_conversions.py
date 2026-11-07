@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, Literal, NewType, Protocol
 
 import pytest
+import requests_mock
 from typing_extensions import TypedDict
 
 from eazyrest import (
@@ -19,6 +20,7 @@ from eazyrest import (
     Conversion,
     FieldConversionError,
     JSONObject,
+    encode_json,
     json_object,
 )
 
@@ -97,7 +99,6 @@ class Host(TableBase):
     alias: Address
     when: datetime.datetime
     stamp: Stamp
-    stamps: list[Stamp]
     level: Level
     user: UserId
     start: Start
@@ -133,7 +134,6 @@ HOST_JSON: dict[str, Any] = {
     "alias": "10.0.0.5",
     "when": "2026-01-02T03:04:05Z",
     "stamp": "2026-01-02T03:04:05Z",
-    "stamps": ["2026-01-02T03:04:05Z"],
     "level": 1,
     "user": 7,
     "start": "2026-01-02T03:04:05Z",
@@ -176,12 +176,25 @@ def test_lookup_follows_the_mro_and_new_types() -> None:
 def test_a_subclass_reads_values_that_write_back() -> None:
     """A field of a subclass of a key's type writes back what it reads."""
     host = Host(json=dict(HOST_JSON))
-
     host.stamp = host.stamp
-    host.stamps = [*host.stamps, host.stamps[0]]
-
     assert host.json["stamp"] == "2026-01-02T03:04:05+00:00"
-    assert host.json["stamps"] == ["2026-01-02T03:04:05+00:00"] * 2
+
+    @json_object
+    class Stamps(TableBase):
+        class_url = "/stamps/"
+
+        id: int
+        stamps: list[Stamp]
+
+    stamps = Stamps(json={"id": 1, "stamps": ["2026-01-02T03:04:05Z"]})
+    stamps.stamps.append(stamps.stamps[0])
+    with requests_mock.Mocker() as mock:
+        mock.patch("https://table.example.com/stamps/1/", json={"id": 1})
+        stamps.save()
+        assert mock.last_request.json() == {
+            "stamps": ["2026-01-02T03:04:05+00:00"] * 2
+        }
+    assert encode_json(host.stamp, Stamp) == "2026-01-02T03:04:05+00:00"
 
 
 def test_subclass_entries_replace_their_bases() -> None:

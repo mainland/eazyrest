@@ -401,3 +401,14 @@ def test_reservation_example_converts_typed_dict_keys(
     assert requests_mock.last_request.json() == {
         "window": {"start": "2026-11-07T09:00:00+00:00", "length": "PT2H"}
     }
+
+
+def test_request_body_example_encodes_its_body(requests_mock: Any) -> None:
+    """The guide's request body example sends the encoded body."""
+    requests_mock.post("https://api.example.com/reservations/1/extend/")
+    example = run_guide_example(
+        "class Extension", api=API("https://api.example.com/")
+    )
+
+    assert example["body"] == {"duration": "PT2H"}
+    assert requests_mock.last_request.json() == {"duration": "PT2H"}

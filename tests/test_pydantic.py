@@ -49,6 +49,7 @@ from eazyrest import (
     Conversion,
     FieldConversionError,
     JSONObject,
+    encode_json,
     json_object,
 )
 from eazyrest._models import (
@@ -1665,6 +1666,21 @@ def test_decorated_typed_dict_is_validated_by_pydantic() -> None:
     assert survey.placed["when"] == datetime.datetime(2024, 1, 1, tzinfo=UTC)
     with pytest.raises(FieldConversionError, match=r"^Survey\.checked: "):
         _ = survey.checked
+
+
+class Upload(TypedDict):
+    """Request body whose bytes Pydantic writes as base64."""
+
+    name: str
+    content: Base64Bytes
+
+
+def test_encode_json_writes_bytes_as_their_annotation_says() -> None:
+    """A key annotated for Pydantic is encoded by Pydantic."""
+    assert encode_json({"name": "a", "content": b"hello"}, Upload) == {
+        "name": "a",
+        "content": "aGVsbG8=",
+    }
 
 
 @with_config(ConfigDict(extra="ignore"))

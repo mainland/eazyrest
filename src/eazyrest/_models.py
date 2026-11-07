@@ -2008,6 +2008,36 @@ def _takes_kwargs(method: Any) -> bool:
     )
 
 
+def encode_json(value: Any, annotation: Any) -> Any:
+    """Return the JSON value that a field annotated ``annotation`` writes.
+
+    Use it to encode a request body or a query parameter as fields encode
+    their values, for example
+    ``api.post(url, json=encode_json(body, Extension))`` with a ``TypedDict``
+    ``Extension`` that describes the body. The request methods send ``json=``
+    as it is given, so the body must already be JSON.
+
+    Args:
+        value: Python value to encode.
+        annotation: Type that describes ``value``, as a field annotation
+            would, such as a ``TypedDict`` or ``list[datetime.datetime]``.
+
+    Returns:
+        The JSON value, made of dictionaries with string keys, lists,
+        strings, numbers, booleans, and ``None``.
+
+    Raises:
+        TypeError: If ``annotation`` cannot be converted, as for a field, or
+            ``value`` holds a value that does not encode to JSON, such as a
+            model under a key annotated ``int``. The message names the key or
+            index where the value is, but not the value.
+        ValueError: If a value cannot be encoded, as for a field.
+    """
+    encoded = JSONObject._to_json(value, analyze_type(annotation))
+    _check_json(encoded, "")
+    return encoded
+
+
 def _check_json(value: Any, path: str) -> None:
     """Check that a value is made only of JSON types.
 
