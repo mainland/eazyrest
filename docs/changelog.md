@@ -86,8 +86,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   `FieldConversionError` rather than writing an offset that ISO 8601 lacks.
 - A `timedelta` field writes an ISO 8601 duration. `parse_duration()` rejects
   years and months, whose length varies, no longer reads the `:SS` and
-  `D:HH:MM:SS` forms, and reads microseconds. A value out of range raises
-  `ValueError` rather than `OverflowError`.
+  `D:HH:MM:SS` forms, such as `":30"` and `"1:02:03:04"`, although it still
+  reads `"1:30"` and `"1 02:03:04"`, and reads microseconds. A value out of
+  range raises `ValueError` rather than `OverflowError`.
 - A value that a field cannot convert raises `FieldConversionError`, which is
   both a `TypeError` and a `ValueError`. Its message names the model and field
   but not the value.
