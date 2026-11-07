@@ -691,9 +691,10 @@ admins = User.filter(role="admin")
 print(f"{admins.count} admins")
 ```
 
-`filter()` takes `count` from the iterable that `collection_items()` returns.
-`follow_next_links()` returns one with the first page's `count` member, and a
-hook of your own can return any iterable with an integer `count` attribute.
+`filter()` takes `count` from the iterable that the collection hooks return.
+`follow_next_links()`, which reads pages by default, returns one with the first
+page's `count` member, and a hook of your own can return any iterable with an
+integer `count` attribute.
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed
 field with the same JSON field name and conversion as `create()`. For example,
@@ -906,10 +907,21 @@ def object_json(cls, payload):
     return payload["result"]
 ```
 
+### Following pages
+
 When a collection endpoint splits its results into pages linked by a next-page
-URL, return `follow_next_links()` from `collection_items()`. It yields the
-items of each page and requests the next page only when iteration reaches it,
-so `filter()` and `all()` stay lazy:
+URL, as Django REST Framework's paginators do, `filter()` and `all()` read
+every page by default. The default `collection_items_from_response()` returns
+`follow_next_links(api, api.json(resp), url=resp.url)`, which yields the items
+of each page and requests the next page only when iteration reaches it, so
+`filter()` and `all()` stay lazy. A list payload is a single unpaginated page.
+With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
+objects ahead of iteration to fill each batch, so they can request later pages
+early.
+
+`follow_next_links()` reads a page's items from `results` and the next page's
+URL from `next`, as Django REST Framework does. For other names, override
+`collection_items_from_response()` and pass `results_key=` and `next_key=`:
 
 ```python
 from eazyrest import JSONObject, follow_next_links
@@ -917,37 +929,34 @@ from eazyrest import JSONObject, follow_next_links
 
 class PagedObject(JSONObject):
     @classmethod
-    def collection_items(cls, payload, *, api, **kwargs):
-        return follow_next_links(api, payload)
+    def collection_items_from_response(cls, resp, *, api, **kwargs):
+        return follow_next_links(
+            api,
+            api.json(resp),
+            url=resp.url,
+            results_key="items",
+            next_key="next_page",
+        )
 ```
 
-With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
-objects ahead of iteration to fill each batch, so they can request later pages
-early.
+A page whose next link is null, empty, or absent is the last page. A next link
+to a page that was already read raises `PaginationError`, rather than reading
+the same pages forever. A page that is not JSON, or whose results are not a
+list, raises `ResponseShapeError`, as does a payload that is neither a list nor
+a page.
 
-By default, `follow_next_links()` reads a page's items from `results` and the
-next page's URL from `next`, as Django REST Framework does. Pass `results_key=`
-and `next_key=` for other names. A list payload is a single unpaginated page. A
-page whose next link is null, empty, or absent is the last page. A next link to
-a page that was already read raises `PaginationError`, rather than reading the
-same pages forever. A page that is not JSON, or whose results are not a list,
-raises `ResponseShapeError`.
+A class that overrides `collection_items()` replaces this default: the default
+`collection_items_from_response()` then passes the decoded payload to it, and
+pages only if it does. The default `collection_items()` accepts only a list, so
+code that reads a collection itself, such as a `bulk_get_by_pks()` hook, should
+call `filter()` rather than `collection_items()`.
 
 A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
 sends, is used as is. A path such as `/v1/items/?page=2` is resolved against
-the server's origin, and a query such as `?page=2` against the page's path.
-`collection_items()` receives only the payload, so links in the first page are
-resolved against `base_url` unless you pass `url=`. For an API that sends
-query-only links, override `collection_items_from_response()`, which receives
-the response, and pass the URL of the first page:
-
-```python
-class PagedObject(JSONObject):
-    @classmethod
-    def collection_items_from_response(cls, resp, *, api, **kwargs):
-        return follow_next_links(api, api.json(resp), url=resp.url)
-```
+the server's origin, and a query such as `?page=2` against the page's path. A
+call of `follow_next_links()` without `url=` resolves links in the first page
+against `base_url`, so pass the URL of the first page, as the default does.
 
 `follow_next_links()` raises `PaginationError` for a next-page URL whose
 scheme, host, or port differs from `base_url`, because the session would send

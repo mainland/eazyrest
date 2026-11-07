@@ -38,33 +38,13 @@ Many DRF list endpoints return an envelope such as:
 ```
 
 If DRF pagination is not configured, list endpoints usually return a plain JSON
-list, which `JSONObject.collection_items()` already handles. If pagination is
-configured, each response holds one page, so return `follow_next_links()` from
-`collection_items()` to read every page:
-
-```python
-from eazyrest import JSONObject, follow_next_links, json_object
-
-
-class DRFModel(JSONObject):
-    @classmethod
-    def collection_items(cls, payload, *, api, **kwargs):
-        return follow_next_links(api, payload)
-
-
-@json_object
-class User(DRFModel):
-    class_url = "/users/"
-
-    id: int
-    name: str
-```
-
-`follow_next_links()` handles unpaginated list responses as well as paginated
-responses from `PageNumberPagination`, `LimitOffsetPagination`, and
-`CursorPagination`. It requests the next page only when iteration reaches it.
-With `prefetch=`, iteration reads ahead by up to `prefetch_batch_size` objects,
-so a batch can span pages.
+list. If pagination is configured, each response holds one page. `filter()` and
+`all()` read both by default: their default `collection_items_from_response()`
+hook returns `follow_next_links()`, which handles unpaginated list responses as
+well as paginated responses from `PageNumberPagination`,
+`LimitOffsetPagination`, and `CursorPagination`. It requests the next page only
+when iteration reaches it. With `prefetch=`, iteration reads ahead by up to
+`prefetch_batch_size` objects, so a batch can span pages.
 
 To show one page at a time, call `get_page()`, whose default
 `collection_page()` hook reads the same page shapes. The page's `count`,
@@ -116,18 +96,16 @@ how DRF encodes that URL.
 
 ## Add a base model for DRF conventions
 
-It usually helps to centralize DRF-specific behavior on one base class. Start
-with pagination and response-shape handling there, then add serializer field
-conversions or API-specific helpers as needed:
+It usually helps to centralize DRF-specific behavior, such as serializer field
+conversions, hooks, or API-specific helpers, on one base class, and to register
+the API there:
 
 ```python
-from eazyrest import API, JSONObject, follow_next_links
+from eazyrest import API, JSONObject
 
 
 class DRFObject(JSONObject):
-    @classmethod
-    def collection_items(cls, payload, *, api, **kwargs):
-        return follow_next_links(api, payload)
+    pass
 
 
 api = API("https://api.example.com/")
@@ -724,10 +702,10 @@ With `PageNumberPagination` and `LimitOffsetPagination`, the iterator that
 `filter()` returns has the collection's size as `count`, from the first page.
 `CursorPagination` does not report a size, so `count` is `None`.
 
-Follow `next` links in `collection_items()`, as `follow_next_links()` does,
-rather than in related-field conversion. Related fields should describe one
-object's payload. Page traversal should describe how to walk a collection
-endpoint.
+Follow `next` links in the collection hooks, as the default does with
+`follow_next_links()`, rather than in related-field conversion. Related fields
+should describe one object's payload. Page traversal should describe how to
+walk a collection endpoint.
 
 ## Recommended DRF server-side setup
 

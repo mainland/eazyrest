@@ -173,6 +173,10 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 - Lazy loading of objects and related objects, and explicit bulk prefetch
   through `prefetch=` and `bulk_get_by_pks()`.
+- `filter()` and `all()` read every page of a collection in Django REST
+  Framework's page shapes by default, through the default
+  `collection_items_from_response()`. A class that overrides
+  `collection_items()` keeps its own paging.
 - Pagination helpers `follow_next_links()`, for Django REST Framework's page
   shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the
   `collection_items_from_response()` hook. The collection hooks receive the

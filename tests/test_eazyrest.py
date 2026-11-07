@@ -35,6 +35,7 @@ from eazyrest import (
     MultipleObjectsReturned,
     PrefetchNotSupported,
     RedirectError,
+    ResponseShapeError,
     WriteMode,
     json_object,
 )
@@ -589,17 +590,44 @@ def test_filter_returns_iterable_and_preserves_base_path_prefix(
     assert [todo.id for todo in todos] == [1, 2]
 
 
-def test_default_collection_items_rejects_non_list_payload(
-    requests_mock: Any,
-) -> None:
-    """Default collection extraction should reject envelope payloads."""
+def test_default_filter_reads_every_page(requests_mock: Any) -> None:
+    """By default, ``filter()`` follows next links from the collection URL.
+
+    A query-only link resolves against the collection's URL, not the base URL,
+    so the default passes the response's URL to ``follow_next_links()``.
+    """
     requests_mock.get(
         "https://example.com/v1/todos/",
-        json={"results": [{"id": 1, "userId": 2, "title": "a"}]},
+        complete_qs=True,
+        json={
+            "count": 2,
+            "next": "?page=2",
+            "results": [{"id": 1, "userId": 2, "title": "a"}],
+        },
+    )
+    requests_mock.get(
+        "https://example.com/v1/todos/?page=2",
+        json={"next": None, "results": [{"id": 2, "userId": 2, "title": "b"}]},
     )
 
-    with pytest.raises(TypeError):
+    todos = Todo.filter()
+
+    assert todos.count == 2
+    assert [todo.id for todo in todos] == [1, 2]
+
+
+def test_default_filter_rejects_other_payloads(requests_mock: Any) -> None:
+    """A payload that is neither a list nor a page raises."""
+    requests_mock.get("https://example.com/v1/todos/", json={"items": []})
+
+    with pytest.raises(ResponseShapeError):
         list(Todo.filter())
+
+
+def test_default_collection_items_does_not_page() -> None:
+    """The default ``collection_items()`` itself accepts only a list."""
+    with pytest.raises(ResponseShapeError, match="expected a list"):
+        Todo.collection_items({"results": []}, api=test_api)
 
 
 def test_collection_and_object_hooks_support_envelope_responses(

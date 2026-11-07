@@ -54,7 +54,6 @@ from eazyrest import (
     Hyperlinked,
     JSONObject,
     NotFound,
-    follow_next_links,
     json_object,
 )
 
@@ -397,12 +396,7 @@ def api() -> Iterator[API]:
 
 
 class DRFBase(JSONObject):
-    """Base model that reads every page of a DRF collection."""
-
-    @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
-        """Read every page, following next links."""
-        return follow_next_links(api, payload)
+    """Base model, which reads every page of a DRF collection by default."""
 
 
 @json_object
