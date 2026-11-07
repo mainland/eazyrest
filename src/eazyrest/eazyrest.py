@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
-import enum
 import inspect
 import itertools
 import types
@@ -31,8 +29,8 @@ from typing import (
 
 from typing_extensions import Self
 
+from ._conversion import _conversion_of
 from .api import API
-from .dateparse import parse_duration
 from .write_mode import WriteMode, validate_write_mode
 
 
@@ -689,14 +687,9 @@ class JSONObject:
                 return self._from_json(value, inner_type, field=field)
 
             case BaseType(base_type):
-                if base_type is datetime.datetime:
-                    return datetime.datetime.fromtimestamp(
-                        value, datetime.timezone.utc
-                    )
-                if base_type is datetime.timedelta:
-                    return parse_duration(value)
-                if lenient_issubclass(base_type, enum.Enum):
-                    return base_type(value)
+                entry = _conversion_of(base_type)
+                if entry is not None:
+                    return entry.decode(value, base_type)
 
                 return value
 
@@ -774,15 +767,9 @@ class JSONObject:
 
                 return value.pk
             case BaseType(base_type):
-                if base_type is datetime.datetime:
-                    return value.timestamp()
-                if base_type is datetime.timedelta:
-                    return str(value)
-                if lenient_issubclass(base_type, enum.Enum):
-                    if isinstance(value, base_type):
-                        return value.value
-
-                    return value
+                entry = _conversion_of(base_type)
+                if entry is not None and isinstance(value, base_type):
+                    return entry.encode(value, base_type)
 
                 return value
             case CollectionType(_, item_type):
