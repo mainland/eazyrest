@@ -1629,6 +1629,71 @@ def _check_options(
         )
 
 
+_API_HOOKS = (
+    "bulk_get_by_pks",
+    "bulk_get_by_urls",
+    "collection_page",
+    "collection_items_from_response",
+    "collection_items",
+)
+"""The hooks that take ``api``, and the keywords that later releases add."""
+
+_KWARGS_HOOKS = ("merge_response", "object_json")
+"""The other hooks, which take the keywords that later releases add."""
+
+
+def _check_hook_signatures(cls: type[JSONObject]) -> None:
+    """Check that the hooks a class overrides accept what eazyrest passes.
+
+    eazyrest passes the hooks that take ``api`` the client as ``api=``, and
+    later 1.x releases may pass more keyword arguments to every hook, so an
+    override must have a ``**kwargs`` parameter. Checking when the class is
+    defined, also for a mixin that is never decorated, reports an override
+    without one at import, rather than when a query first calls it.
+
+    Args:
+        cls: Class being defined.
+
+    Raises:
+        TypeError: If the class overrides one of these hooks with a method
+            that takes no ``**kwargs``.
+    """
+    for name in (*_API_HOOKS, *_KWARGS_HOOKS):
+        if not cls._overrides_hook(name):
+            continue
+        owner = next(base for base in cls.__mro__ if name in vars(base))
+        if not _takes_kwargs(vars(owner)[name]):
+            takes = "api= and **kwargs" if name in _API_HOOKS else "**kwargs"
+            raise TypeError(
+                f"{owner.__name__}.{name}() must accept {takes}, which "
+                "eazyrest passes to it, and pass them on when it calls "
+                "another hook"
+            )
+
+
+def _takes_kwargs(method: Any) -> bool:
+    """Return whether a method has a ``**kwargs`` parameter.
+
+    Args:
+        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
+            object.
+
+    Returns:
+        Whether it takes any keyword argument. A callable whose signature
+        cannot be read, such as a builtin, is taken to.
+    """
+    if isinstance(method, (classmethod, staticmethod)):
+        method = method.__func__
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 @overload
 def json_object(
     cls: type[T],
@@ -1721,6 +1786,8 @@ def json_object(
             on the class, if ``exclude`` names no annotated attribute of the
             class, or if two fields, declared or inherited, map to the same
             JSON key.
+        TypeError: If the class overrides a hook that takes ``api``, such as
+            ``collection_items()``, with a method that takes no ``**kwargs``.
     """
     if field_map is None:
         field_map = {}
@@ -2287,6 +2354,7 @@ class JSONObject:
                 ancestors of the class are not subclasses of one another.
         """
         super().__init_subclass__(**kwargs)
+        _check_hook_signatures(cls)
 
         for base in cls.__mro__:
             own = vars(base).get("conversions")
@@ -2977,6 +3045,7 @@ class JSONObject:
         resp: requests.Response,
         current: Mapping[str, Any],
         sent: Mapping[str, Any],
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Return this object's JSON after a successful write.
 
@@ -3003,6 +3072,8 @@ class JSONObject:
             sent: JSON fields that the write sent. For ``create()``, these are
                 only the JSON-backed fields, so that an extra key such as a
                 write-only password is not kept in the object's JSON.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Returns:
             The object's JSON after the write.
@@ -3653,7 +3724,7 @@ class JSONObject:
         cls: type[Self],
         pks: set[Any],
         *,
-        api: API | None = None,
+        api: API,
         **kwargs: Any,
     ) -> Mapping[Any, Self]:
         """Bulk-load objects by primary key for explicit prefetch support.
@@ -3663,9 +3734,8 @@ class JSONObject:
 
         Args:
             pks: Primary keys to load.
-            api: The client to send the bulk request with. Prefetch always
-                passes it: the API that the query passed as ``api=``, or else
-                this class's registered API.
+            api: The client to send the bulk request with: the API that the
+                query passed as ``api=``, or else this class's registered API.
             **kwargs: Context that later 1.x releases may pass. An override
                 must accept it, and pass it on when it calls another hook.
 
@@ -3685,7 +3755,7 @@ class JSONObject:
         cls: type[Self],
         urls: set[str],
         *,
-        api: API | None = None,
+        api: API,
         **kwargs: Any,
     ) -> Mapping[str, Self]:
         """Bulk-load objects by URL to prefetch a hyperlinked relation.
@@ -3825,7 +3895,7 @@ class JSONObject:
         )
 
     @classmethod
-    def object_json(cls, payload: Any) -> Any:
+    def object_json(cls, payload: Any, **kwargs: Any) -> Any:
         """Return the JSON object contained in a single-object response.
 
         Subclasses can override this hook when an API wraps single-object
@@ -3833,6 +3903,8 @@ class JSONObject:
 
         Args:
             payload: Decoded JSON payload returned by the object endpoint.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Returns:
             JSON object used to populate a model instance.

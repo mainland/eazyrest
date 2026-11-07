@@ -182,8 +182,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   `collection_items_from_response()` hook. The collection hooks receive the
   query's client as `api`, so a hook reads later pages with the API that the
   query used. The hooks that take `api` also take `**kwargs`, for context that
-  a later 1.x release may pass, and an override must accept it. Page navigation
-  with `get_page()`, which returns a `Page` whose `next_page()` and
+  a later 1.x release may pass, and an override must accept it, which
+  `json_object()` checks when it decorates the class. Page navigation with
+  `get_page()`, which returns a `Page` whose `next_page()` and
   `previous_page()` request the pages around it, read by the
   `collection_page()` hook with `next_links_page()` or `link_headers_page()`.
 - Pydantic conversion of fields whose types use Pydantic, through the

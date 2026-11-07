@@ -12,8 +12,10 @@ top of a single large API response. DRF's built-in pagination classes are
 DRF apps, the best setup is:
 
 - Paginate collection endpoints in DRF.
-- Let each `eazyrest` request consume one page at a time.
-- Iterate through pages lazily in model code if you need a full stream.
+- Let `filter()` and `all()` read the pages. Each request fetches one page.
+  `filter()` requests the first page when it is called, and each later page
+  only when iteration reaches it.
+- Call `get_page()` if you need to show one page at a time.
 
 In practice, all three built-in DRF pagination classes can work with `eazyrest`
 because they expose `next`, `previous`, and `results` in the response body.
@@ -23,7 +25,7 @@ because it gives stable traversal without large offsets.
 offsets. `PageNumberPagination` is useful for smaller or more user-facing
 collections where page numbers are part of the API contract.
 
-## Unwrap DRF collections with `collection_items()`
+## Read paginated DRF collections
 
 Many DRF list endpoints return an envelope such as:
 
@@ -332,7 +334,7 @@ For query parameters that are not valid Python identifiers, pass a dictionary
 with `**`:
 
 ```python
-users = User.filter(**{"created__gte": "2026-01-01T00:00:00Z"})
+users = User.filter(**{"created-after": "2026-01-01T00:00:00Z"})
 ```
 
 On the DRF side, keep sensitive filtering and ordering fields explicit. For
@@ -523,9 +525,9 @@ class DRFNotFound(DRFAPIError, NotFound):
 
 
 class DRFAPI(API):
-    def raise_for_response(self, resp):
+    def raise_for_response(self, resp, **kwargs):
         try:
-            super().raise_for_response(resp)
+            super().raise_for_response(resp, **kwargs)
         except NotFound as err:
             raise DRFNotFound(str(err), response=resp, data=err.data) from None
         except APIError as err:
@@ -650,7 +652,7 @@ def bulk_get_by_urls(cls, urls, *, api, **kwargs):
     }
     if not pks:
         return {}
-    objects = cls.bulk_get_by_pks(pks, api=api)
+    objects = cls.bulk_get_by_pks(pks, api=api, **kwargs)
     return {obj.absolute_url: obj for obj in objects.values()}
 ```
 

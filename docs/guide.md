@@ -885,12 +885,15 @@ query without options. The copy is made with `copy.copy()`, so a subclass of
 `API` that changes its own state while it sends requests, such as a refreshed
 token, must keep that state on the session, which the copy shares.
 
-The hooks that take `api`, which are `collection_items()`,
-`collection_items_from_response()`, `collection_page()`, `bulk_get_by_pks()`,
-and `bulk_get_by_urls()`, may receive more keyword arguments in later 1.x
-releases, to tell them more about the query. An override must therefore accept
-`**kwargs`, and pass them on when it calls another hook or `super()`, as the
-examples here do.
+Every hook may receive more keyword arguments in later 1.x releases, to tell it
+more about the query or the write: those that take `api`, which are
+`collection_items()`, `collection_items_from_response()`, `collection_page()`,
+`bulk_get_by_pks()`, and `bulk_get_by_urls()`, and also `object_json()`,
+`merge_response()`, and `API.raise_for_response()`. An override must therefore
+accept `**kwargs`, and pass them on when it calls another hook or `super()`, as
+the examples here do. A class that overrides a hook without `**kwargs`, also an
+undecorated base class, raises `TypeError` when it is defined, rather than when
+a query first calls the hook.
 
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
@@ -903,7 +906,7 @@ def collection_items(cls, payload, *, api, **kwargs):
 
 
 @classmethod
-def object_json(cls, payload):
+def object_json(cls, payload, **kwargs):
     return payload["result"]
 ```
 
@@ -1180,7 +1183,7 @@ from eazyrest import JSONObject
 
 
 class StatusObject(JSONObject):
-    def merge_response(self, resp, current, sent):
+    def merge_response(self, resp, current, sent, **kwargs):
         # The body is {"status": "ok"}, not the object.
         return {**current, **sent}
 ```

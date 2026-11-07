@@ -188,7 +188,7 @@ class SearchResult(ModelBase):
         return payload["results"]
 
     @classmethod
-    def object_json(cls, payload: Any) -> Any:
+    def object_json(cls, payload: Any, **kwargs: Any) -> Any:
         """Extract a wrapped single object for this test model.
 
         Args:
@@ -4234,6 +4234,52 @@ def test_default_hooks_accept_and_pass_on_keyword_arguments(
         Probe.bulk_get_by_urls({"https://example.com/"}, api=test_api, hint=1)
 
 
+@pytest.mark.parametrize(
+    "hook",
+    [
+        "bulk_get_by_pks",
+        "bulk_get_by_urls",
+        "collection_page",
+        "collection_items_from_response",
+        "collection_items",
+    ],
+)
+def test_decorating_refuses_hook_overrides_without_kwargs(hook: str) -> None:
+    """An override without ``**kwargs`` raises when its class is decorated.
+
+    The override is on an undecorated base class, as a shared hook is, so the
+    decorated subclass inherits it. Without the check, the override would fail
+    only when a query first called it.
+    """
+
+    def override(cls: type[JSONObject], value: Any, *, api: API) -> None:
+        del cls, value, api
+
+    class Base(ModelBase):
+        pass
+
+    setattr(Base, hook, classmethod(override))
+
+    with pytest.raises(
+        TypeError, match=rf"Base\.{hook}\(\) must accept api= and \*\*kwargs"
+    ):
+
+        @json_object
+        class Old(Base):
+            class_url = "/old/"
+
+            id: int
+
+
+def test_hook_overrides_whose_signature_is_hidden_are_accepted() -> None:
+    """A hook whose signature cannot be read, such as a builtin, is valid."""
+
+    class Wrapped(JSONObject):
+        object_json = cast(Any, staticmethod(dict))
+
+    assert Wrapped.object_json({"a": 1}) == {"a": 1}
+
+
 def test_prefetch_passes_the_query_api_to_bulk_lookup(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4600,6 +4646,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
             resp: requests.Response,
             current: Mapping[str, Any],
             sent: Mapping[str, Any],
+            **kwargs: Any,
         ) -> dict[str, Any]:
             """Ignore the status body.
 
@@ -4607,6 +4654,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
                 resp: Response to the write, whose body is a status.
                 current: JSON of the object before the write.
                 sent: Fields that the write sent.
+                **kwargs: Other arguments, which are ignored.
 
             Returns:
                 ``current`` updated with ``sent``.
@@ -4919,6 +4967,24 @@ def test_query_methods_reserve_the_options_they_do_not_take(
         getattr(Todo, method)(**{name: "wire"})
 
     assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("name", ["object_json", "merge_response"])
+def test_hooks_without_kwargs_are_refused(name: str) -> None:
+    """An override of any hook must accept the keywords of later releases.
+
+    The check runs when the class is defined, also for a mixin that is never
+    decorated.
+
+    Args:
+        name: Hook to override.
+    """
+
+    def hook(self: Any, *args: Any) -> Any:
+        return {}
+
+    with pytest.raises(TypeError, match=rf"{name}\(\) must accept \*\*kwargs"):
+        type("Mixin", (JSONObject,), {name: hook})
 
 
 def test_params_are_encoded_as_keyword_arguments(requests_mock: Any) -> None:
