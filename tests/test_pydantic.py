@@ -16,6 +16,7 @@ from typing import (
     ClassVar,
     Generic,
     Literal,
+    NamedTuple,
     NewType,
     TypeVar,
     cast,
@@ -1164,6 +1165,344 @@ def test_integer_mapping_keys_are_redacted() -> None:
 
     assert "91736123" not in str(info.value)
     assert "[key]" in str(info.value)
+
+
+@with_config(ConfigDict(extra="ignore"))
+class IgnoringInner(TypedDict):
+    """``TypedDict`` that drops the keys it does not declare."""
+
+    v: int
+
+
+@with_config(ConfigDict(extra="allow"))
+class KeepingOuter(TypedDict):
+    """``TypedDict`` that keeps keys, around one that drops them."""
+
+    inner: list[IgnoringInner]
+
+
+@json_object
+class Nesting(PydanticBase):
+    """Model with a Pydantic-converted ``TypedDict`` that nests one."""
+
+    class_url = "/nestings/"
+
+    id: int
+    outer: Annotated[KeepingOuter, Field()]
+
+
+def test_nested_types_that_drop_keys_are_rejected(requests_mock: Any) -> None:
+    """A nested ``TypedDict`` that drops keys is refused, at any depth.
+
+    Writing back a value that dropped them would delete them on the server.
+    """
+    nesting = Nesting(json={"id": 1, "outer": {"inner": [{"v": 1, "x": 2}]}})
+
+    with pytest.raises(FieldConversionError, match="IgnoringInner would drop"):
+        _ = nesting.outer
+
+    assert requests_mock.call_count == 0
+
+
+@with_config(ConfigDict(extra="allow"))
+class KeepingInner(TypedDict):
+    """``TypedDict`` that keeps the keys it does not declare."""
+
+    v: int
+
+
+IgnoringAlias = TypeAliasType("IgnoringAlias", IgnoringInner)
+KeepingAlias = TypeAliasType("KeepingAlias", KeepingInner)
+# Mypy refuses a NewType of a TypedDict, which Python allows.
+IgnoringNew = NewType("IgnoringNew", IgnoringInner)  # type: ignore[valid-newtype]
+KeepingNew = NewType("KeepingNew", KeepingInner)  # type: ignore[valid-newtype]
+WrappedT = TypeVar("WrappedT")
+BoundT = TypeVar("BoundT", bound=IgnoringInner)
+
+
+class IgnoringPair(NamedTuple):
+    """``NamedTuple`` with a field that drops keys."""
+
+    inner: IgnoringInner
+
+
+class KeepingPair(NamedTuple):
+    """``NamedTuple`` with a field that keeps keys."""
+
+    inner: KeepingInner
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class WrappingBox(Generic[WrappedT]):
+    """Generic dataclass whose field has its type argument's type."""
+
+    inner: WrappedT
+
+
+@with_config(ConfigDict(extra="allow"))
+class BoundBox(TypedDict, Generic[BoundT]):
+    """Generic ``TypedDict`` whose type parameter's bound drops keys."""
+
+    inner: BoundT
+
+
+Nested = TypeAliasType("Nested", "list[Nested] | KeepingInner")
+
+
+# Mypy does not know extra_items, from PEP 728.
+@with_config(ConfigDict(extra="allow"))
+class IgnoringExtras(TypedDict, extra_items=IgnoringInner):  # type: ignore[call-arg]
+    """``TypedDict`` whose extra items drop keys."""
+
+    name: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class IgnoringNamedExtras(TypedDict, extra_items="IgnoringInner"):  # type: ignore[call-arg]
+    """``TypedDict`` whose extra items, named by a string, drop keys."""
+
+    name: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class KeepingExtras(TypedDict, extra_items=KeepingInner):  # type: ignore[call-arg]
+    """``TypedDict`` whose extra items keep keys."""
+
+    name: str
+
+
+def _resolved_by_pydantic() -> type[Any]:
+    """Return a Pydantic dataclass that only Pydantic can resolve.
+
+    Its field's annotation names a local alias of ``IgnoringInner``, which
+    ``get_type_hints()`` cannot resolve, but which Pydantic resolved when
+    the class was rebuilt.
+
+    Returns:
+        The dataclass.
+    """
+    local = IgnoringInner
+
+    @pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+    class Resolved:
+        inner: local  # type: ignore[valid-type]
+
+    pydantic.dataclasses.rebuild_dataclass(
+        cast(Any, Resolved), force=True, _types_namespace={"local": local}
+    )
+    return Resolved
+
+
+def _wrapped_in(hint: Any) -> type[Any]:
+    """Return a model whose field nests ``hint`` inside a ``TypedDict``.
+
+    Args:
+        hint: Type of the ``TypedDict``'s key.
+
+    Returns:
+        Model with a Pydantic-converted field ``value``.
+    """
+    outer = with_config(ConfigDict(extra="forbid"))(
+        TypedDict("Outer", {"inner": hint})  # type: ignore[operator]
+    )
+    model = type(
+        "Holder",
+        (PydanticBase,),
+        {
+            "class_url": "/holders/",
+            "__annotations__": {"id": int, "value": Annotated[outer, Field()]},
+        },
+    )
+    return json_object(model)
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw"),
+    [
+        (IgnoringAlias, {"v": 1, "x": 2}),
+        (IgnoringNew, {"v": 1, "x": 2}),
+        (IgnoringPair, [{"v": 1, "x": 2}]),
+        (WrappingBox[IgnoringInner], {"inner": {"v": 1, "x": 2}}),
+        (WrappingBox[list[IgnoringAlias]], {"inner": [{"v": 1, "x": 2}]}),
+        (BoundBox, {"inner": {"v": 1, "x": 2}}),
+        (IgnoringExtras, {"name": "a", "e": {"v": 1, "x": 2}}),
+        (IgnoringNamedExtras, {"name": "a", "e": {"v": 1, "x": 2}}),
+        (_resolved_by_pydantic(), {"inner": {"v": 1, "x": 2}}),
+    ],
+    ids=[
+        "alias",
+        "newtype",
+        "namedtuple",
+        "generic",
+        "combined",
+        "bound",
+        "extra-items",
+        "extra-items-string",
+        "resolved-by-pydantic",
+    ],
+)
+def test_wrapped_types_that_drop_keys_are_rejected(
+    hint: Any, raw: Any, requests_mock: Any
+) -> None:
+    """A type that drops keys is refused behind any wrapper.
+
+    A named alias, a ``NewType``, a ``NamedTuple``'s field, a generic class's
+    type argument, a type variable's bound, a ``TypedDict``'s extra items,
+    or a field that only Pydantic resolves must not hide it, or a read would
+    drop a server key and the next write would delete it.
+
+    Args:
+        hint: Type, wrapping one that drops keys, of a nested key.
+        raw: JSON of a value of ``hint`` with an undeclared key.
+        requests_mock: Fixture that records requests.
+    """
+    holder = _wrapped_in(hint)(json={"id": 1, "value": {"inner": raw}})
+
+    with pytest.raises(FieldConversionError, match="IgnoringInner would drop"):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw", "inner", "sent"),
+    [
+        (
+            KeepingAlias,
+            {"v": 1, "x": 2},
+            lambda value: value,
+            {"v": 2, "x": 2},
+        ),
+        (
+            KeepingNew,
+            {"v": 1, "x": 2},
+            lambda value: value,
+            {"v": 2, "x": 2},
+        ),
+        (
+            KeepingPair,
+            [{"v": 1, "x": 2}],
+            lambda value: value[0],
+            [{"v": 2, "x": 2}],
+        ),
+        (
+            WrappingBox[KeepingInner],
+            {"inner": {"v": 1, "x": 2}},
+            lambda value: value.inner,
+            {"inner": {"v": 2, "x": 2}},
+        ),
+        (
+            Nested,
+            [[{"v": 1, "x": 2}]],
+            lambda value: value[0][0],
+            [[{"v": 2, "x": 2}]],
+        ),
+        (
+            KeepingExtras,
+            {"name": "a", "e": {"v": 1, "x": 2}},
+            lambda value: value["e"],
+            {"name": "a", "e": {"v": 2, "x": 2}},
+        ),
+    ],
+    ids=["alias", "newtype", "namedtuple", "generic", "recursive", "extras"],
+)
+def test_wrapped_types_that_keep_keys_write_them_back(
+    hint: Any, raw: Any, inner: Any, sent: Any, requests_mock: Any
+) -> None:
+    """A wrapped type that keeps keys reads, and writes them back.
+
+    Args:
+        hint: Type, wrapping one that keeps keys, of a nested key.
+        raw: JSON of a value of ``hint`` with an undeclared key, ``x``.
+        inner: Function that returns the ``TypedDict`` inside a value.
+        sent: JSON that a write sends after ``v`` changes to 2.
+        requests_mock: Fixture that records requests.
+    """
+    holder = _wrapped_in(hint)(json={"id": 1, "value": {"inner": raw}})
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/holders/1/", json={}
+    )
+
+    inner(holder.value["inner"])["v"] = 2
+    holder.save()
+
+    assert patch.last_request.json() == {"value": {"inner": sent}}
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class InitOnly:
+    """Dataclass with an init-only field, which it reads but never writes."""
+
+    v: int
+    seed: dataclasses.InitVar[int] = 0
+
+
+def test_init_only_fields_are_rejected(requests_mock: Any) -> None:
+    """A dataclass with an init-only field is refused.
+
+    Pydantic reads the field's key but never writes it, so a write would
+    delete it on the server.
+    """
+    holder = _wrapped_in(InitOnly)(
+        json={"id": 1, "value": {"inner": {"v": 1, "seed": 2}}}
+    )
+
+    with pytest.raises(FieldConversionError, match="init-only field seed"):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+def test_unresolvable_fields_are_rejected(requests_mock: Any) -> None:
+    """A class whose annotations cannot be resolved is refused.
+
+    Its fields cannot be checked for types that drop keys.
+    """
+
+    @with_config(ConfigDict(extra="forbid"))
+    @dataclasses.dataclass
+    class Unresolved:
+        inner: Missing  # type: ignore[name-defined]  # noqa: F821
+
+    holder = _wrapped_in(Unresolved)(
+        json={"id": 1, "value": {"inner": {"inner": {}}}}
+    )
+
+    with pytest.raises(
+        FieldConversionError, match="annotations cannot be resolved"
+    ):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class WithClassVariable:
+    """Dataclass whose class variable's type would drop keys as a field."""
+
+    v: int
+    defaults: ClassVar[IgnoringInner] = {"v": 1}
+
+
+def test_class_variables_are_not_checked(requests_mock: Any) -> None:
+    """A dataclass's class variable is not checked for keys it would drop.
+
+    Pydantic never reads or writes it.
+    """
+    holder = _wrapped_in(WithClassVariable)(
+        json={"id": 1, "value": {"inner": {"v": 1}}}
+    )
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/holders/1/", json={}
+    )
+
+    holder.value["inner"] = WithClassVariable(2)
+    holder.save()
+
+    assert patch.last_request.json() == {"value": {"inner": {"v": 2}}}
 
 
 def _to_timestamp(value: Any, cls: type[Any]) -> float:

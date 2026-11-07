@@ -22,8 +22,9 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from typing import Annotated, Any, Literal, Union, cast
+from typing import Annotated, Any, Literal, TypeVar, Union, cast
 
+import typing_extensions
 from pydantic import (
     BaseModel,
     PlainSerializer,
@@ -38,10 +39,16 @@ from pydantic_core import (
     PydanticKnownError,
     PydanticSerializationError,
 )
-from typing_extensions import is_typeddict
+from typing_extensions import get_type_hints, is_typeddict
 
-from ._conversion import _current_conversion, _final_supertype
-from .eazyrest import JSONObject, lenient_issubclass
+from ._conversion import _current_conversion, _final_supertype, _supertype
+from .eazyrest import (
+    JSONObject,
+    _is_named_tuple,
+    _is_type_alias,
+    _resolve_alias_value,
+    lenient_issubclass,
+)
 
 __all__ = ["UUID", "Date", "Datetime", "Duration"]
 
@@ -287,8 +294,8 @@ def _is_dataclass_class(cls: Any) -> bool:
     return isinstance(cls, type) and dataclasses.is_dataclass(cls)
 
 
-def _check_undeclared_keys(cls: Any) -> None:
-    """Check that a class keeps or rejects the keys it does not declare.
+def _check_undeclared_keys(ty: Any, seen: set[Any] | None = None) -> None:
+    """Check that every class a type names keeps or rejects undeclared keys.
 
     Under Pydantic's default config, validating and serializing a ``TypedDict``
     or a dataclass drop the keys it does not declare. Saving such a value
@@ -296,6 +303,247 @@ def _check_undeclared_keys(cls: Any) -> None:
     under ``extra="allow"``, but Pydantic never writes them for a dataclass,
     of Pydantic or the standard library, so only ``extra="forbid"``, which
     rejects them, is safe for it.
+
+    Every ``TypedDict`` and dataclass that the type names is checked, at any
+    depth: as a type argument, as the value of a named alias, as the
+    supertype of a ``NewType``, as the bound of a type variable, as the type
+    of a field of a ``TypedDict``, dataclass, or ``NamedTuple``, or as the
+    type of a ``TypedDict``'s extra items, with the type arguments of a
+    parameterized generic class in place of its type parameters. A nested
+    value that drops keys deletes them on the server as well. A dataclass's
+    init-only field drops its key too, but its class variables are not
+    fields. A Pydantic model follows its own config, so the types of its
+    fields are not checked.
+
+    Args:
+        ty: Type to check.
+        seen: Types already checked, which a type that refers to itself
+            reaches again.
+
+    Raises:
+        TypeError: If a class that the type names would drop keys, by its
+            config or an init-only field, or its annotations cannot be
+            resolved.
+    """
+    seen = set() if seen is None else seen
+    try:
+        key: Any = ty
+        if key in seen:
+            return
+    except TypeError:
+        # Annotated metadata can make a type unhashable.
+        key = id(ty)
+        if key in seen:
+            return
+    seen.add(key)
+
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    for nested in _nested_types(ty, origin, args):
+        _check_undeclared_keys(nested, seen)
+
+
+def _nested_types(ty: Any, origin: Any, args: tuple[Any, ...]) -> list[Any]:
+    """Return the types that one level of a type names, checking its class.
+
+    Args:
+        ty: Type to inspect.
+        origin: ``typing.get_origin(ty)``.
+        args: ``typing.get_args(ty)``.
+
+    Returns:
+        The types to check next, such as the value of a named alias or the
+        field types of a class.
+
+    Raises:
+        TypeError: If ``ty`` is a ``TypedDict`` or dataclass, or a
+            parameterized one, that would drop keys, or whose annotations
+            cannot be resolved.
+    """
+    if _is_type_alias(ty):
+        return _alias_value(ty, (), ())
+    if _is_type_alias(origin):
+        return _alias_value(origin, origin.__type_params__, args)
+    supertype = _supertype(ty)
+    if supertype is not None:
+        return [supertype]
+    if isinstance(ty, TypeVar):
+        bound = [ty.__bound__] if ty.__bound__ is not None else []
+        return [*bound, *ty.__constraints__]
+    if origin is Literal:
+        return []
+    if origin is Annotated:
+        return [args[0]]
+
+    cls = ty if origin is None else origin
+    if not (
+        is_typeddict(cls) or _is_dataclass_class(cls) or _is_named_tuple(cls)
+    ):
+        return list(args)
+    if not _is_named_tuple(cls):
+        _check_extra(cls)
+    params = getattr(cls, "__parameters__", ())
+    substitutions = dict(zip(params, args, strict=False)) if args else {}
+    return [_substitute(hint, substitutions) for hint in _field_types(cls)]
+
+
+def _field_types(cls: Any) -> list[Any]:
+    """Return the types of the values that a class reads and writes.
+
+    These are the types of a ``TypedDict``'s keys and of its extra items, and
+    of the fields of a ``NamedTuple`` or dataclass, not its class variables.
+    A Pydantic dataclass gives the types that Pydantic resolved, which may
+    name classes that its annotations cannot.
+
+    Args:
+        cls: ``TypedDict``, dataclass, or ``NamedTuple`` class.
+
+    Returns:
+        The types.
+
+    Raises:
+        TypeError: If the class has an init-only field, which it reads but
+            does not write, or its annotations cannot be resolved, so that
+            its fields cannot be checked.
+    """
+    pydantic_fields = getattr(cls, "__pydantic_fields__", None)
+    if (
+        _is_dataclass_class(cls)
+        and pydantic_fields is not None
+        and getattr(cls, "__pydantic_complete__", False)
+    ):
+        for name, info in pydantic_fields.items():
+            if info.init_var:
+                _refuse_init_only(cls, name)
+        return [info.annotation for info in pydantic_fields.values()]
+
+    try:
+        hints = get_type_hints(cls, include_extras=True)
+        extra = _extra_items(cls) if is_typeddict(cls) else None
+    except Exception as err:
+        raise TypeError(
+            f"The fields of {cls.__name__} cannot be checked for the keys "
+            f"that it would drop, because its annotations cannot be resolved: "
+            f"{err}"
+        ) from err
+    if is_typeddict(cls):
+        return [*hints.values(), *([extra] if extra is not None else [])]
+    if _is_named_tuple(cls):
+        return [hints[name] for name in cls._fields if name in hints]
+    for name, hint in hints.items():
+        if isinstance(hint, dataclasses.InitVar):
+            _refuse_init_only(cls, name)
+    names = {field.name for field in dataclasses.fields(cls)}
+    return [hint for name, hint in hints.items() if name in names]
+
+
+def _extra_items(cls: Any) -> Any:
+    """Return the type of a ``TypedDict``'s extra items.
+
+    Args:
+        cls: ``TypedDict`` class.
+
+    Returns:
+        The type given by its ``extra_items``, resolved if it is a string, or
+        ``None`` if it gives none.
+
+    Raises:
+        NameError: If a string type names nothing.
+    """
+    extra = getattr(cls, "__extra_items__", None)
+    if extra is None or any(
+        extra is getattr(module, "NoExtraItems", None)
+        for module in (typing, typing_extensions)
+    ):
+        return None
+    if isinstance(extra, (str, typing.ForwardRef)):
+        # Resolve it as an annotation of the TypedDict's module.
+        namespace = {
+            "__annotations__": {"extra": extra},
+            "__module__": cls.__module__,
+        }
+        holder = type("_ExtraItems", (), namespace)
+        return get_type_hints(holder, include_extras=True)["extra"]
+    return extra
+
+
+def _refuse_init_only(cls: Any, name: str) -> None:
+    """Refuse a dataclass with an init-only field.
+
+    Args:
+        cls: Dataclass.
+        name: Name of its init-only field.
+
+    Raises:
+        TypeError: Always, since a write would drop the field's key.
+    """
+    raise TypeError(
+        f"{cls.__name__} would drop the key of its init-only field {name}, "
+        "which it reads but does not write. Make it a field."
+    )
+
+
+def _alias_value(
+    alias: Any, params: tuple[Any, ...], args: tuple[Any, ...]
+) -> list[Any]:
+    """Return the value of a named alias, with type arguments in place.
+
+    Args:
+        alias: Named type alias.
+        params: The alias's type parameters.
+        args: Type arguments for ``params``.
+
+    Returns:
+        A list of the alias's value, or no types if a string in the value
+        names nothing, which Pydantic reports.
+    """
+    try:
+        value = _resolve_alias_value(alias)
+    except TypeError:
+        return []
+    return [_substitute(value, dict(zip(params, args, strict=False)))]
+
+
+def _substitute(ty: Any, substitutions: Mapping[Any, Any]) -> Any:
+    """Return a type with type arguments in place of its type variables.
+
+    Named aliases are left as they are, so that one that refers to itself
+    does not expand without end.
+
+    Args:
+        ty: Type to change.
+        substitutions: Types to put in place of type variables.
+
+    Returns:
+        ``ty`` with each type variable in ``substitutions`` replaced, or
+        ``ty`` itself if it has none.
+    """
+    if not substitutions:
+        return ty
+    if isinstance(ty, TypeVar):
+        return substitutions.get(ty, ty)
+    origin = typing.get_origin(ty)
+    args = typing.get_args(ty)
+    if not args or origin is Literal:
+        return ty
+
+    new_args = tuple(_substitute(arg, substitutions) for arg in args)
+    if all(new is old for new, old in zip(new_args, args, strict=True)):
+        return ty
+    try:
+        if origin is Annotated:
+            return Annotated[new_args]
+        if origin is types.UnionType:
+            origin = Union
+        return origin[new_args]
+    except TypeError:
+        # A form that cannot be rebuilt, such as a Callable's argument list,
+        # names no class that drops keys.
+        return ty
+
+
+def _check_extra(cls: Any) -> None:
+    """Check that one class keeps or rejects the keys it does not declare.
 
     Args:
         cls: ``TypedDict`` or dataclass to check.
@@ -338,8 +586,7 @@ def _eazyrest_types(ty: Any) -> Any:
 
     Raises:
         TypeError: If ``ty`` names an eazyrest model, which Pydantic cannot
-            convert, or a ``TypedDict`` or Pydantic dataclass that would drop
-            the keys it does not declare.
+            convert.
     """
     if lenient_issubclass(ty, JSONObject):
         raise TypeError(
@@ -365,13 +612,6 @@ def _eazyrest_types(ty: Any) -> Any:
 
     origin = typing.get_origin(ty)
     args = typing.get_args(ty)
-    if is_typeddict(ty) or is_typeddict(origin):
-        _check_undeclared_keys(origin or ty)
-    # A parameterized generic dataclass, such as Box[int], is an alias rather
-    # than a class, so check its origin, as for a TypedDict.
-    cls = ty if origin is None else origin
-    if _is_dataclass_class(cls):
-        _check_undeclared_keys(cls)
     if not args or origin is Literal:
         return ty
     if origin is Annotated:
@@ -400,9 +640,12 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
         types it names.
 
     Raises:
-        TypeError: If Pydantic cannot convert the type, or cannot apply its
-            metadata, such as ``strict``, to a type that eazyrest converts.
+        TypeError: If Pydantic cannot convert the type, cannot apply its
+            metadata, such as ``strict``, to a type that eazyrest converts,
+            or the type names a ``TypedDict`` or dataclass that would drop the
+            keys it does not declare.
     """
+    _check_undeclared_keys(annotation)
     try:
         return TypeAdapter(_eazyrest_types(annotation))
     except PydanticUserError as err:

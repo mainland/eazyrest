@@ -460,6 +460,22 @@ def _mentions_pydantic(ty: Any) -> bool:
     return any(_mentions_pydantic(arg) for arg in args)
 
 
+def _is_named_tuple(ty: Any) -> bool:
+    """Return whether a type is a ``NamedTuple`` class.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a tuple class with named fields.
+    """
+    return (
+        isinstance(ty, type)
+        and issubclass(ty, tuple)
+        and hasattr(ty, "_fields")
+    )
+
+
 def _is_type_alias(ty: Any) -> bool:
     """Return whether a type is a named type alias.
 

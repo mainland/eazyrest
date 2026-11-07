@@ -470,13 +470,18 @@ field that it sends, so a key missing from that value is deleted. Under
 Pydantic's default config, both a `TypedDict` and a Pydantic model drop such
 keys. A `TypedDict` that a field type names must therefore set `extra="allow"`,
 or `extra="forbid"` to reject such keys, or using the field raises
-`FieldConversionError`. A `TypedDict` nested inside it follows its config. A
-Pydantic model follows its own config, so give it `extra="allow"`, as `Point`
-has. Pydantic never writes undeclared keys for a dataclass, of Pydantic or the
-standard library, even under `extra="allow"`, so a dataclass that a field type
-names must set `extra="forbid"`, as with
+`FieldConversionError`. So must a `TypedDict` or a Pydantic dataclass nested
+inside it, at any depth. A Pydantic model follows its own config, so give it
+`extra="allow"`, as `Point` has. Pydantic never writes undeclared keys for a
+dataclass, of Pydantic or the standard library, even under `extra="allow"`, so
+a dataclass that a field type names must set `extra="forbid"`, as with
 `@pydantic.with_config(pydantic.ConfigDict(extra="forbid"))`, or using the
-field raises `FieldConversionError`.
+field raises `FieldConversionError`. Nor does Pydantic write a dataclass's
+init-only fields, of type `dataclasses.InitVar`, so a dataclass with one raises
+`FieldConversionError` too. A `TypedDict`'s extra items, which `extra_items=`
+types, are checked as its keys are, and a dataclass's class variables, which
+Pydantic neither reads nor writes, are not checked. A class whose annotations
+cannot be resolved cannot be checked, so it raises `FieldConversionError`.
 
 A value that Pydantic converts can be changed in place, as
 [Field conversion](#field-conversion) describes. For example,
