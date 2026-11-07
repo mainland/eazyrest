@@ -380,9 +380,66 @@ raise `TypeError` unless they are collections. In `filter()` and `get()`, a
 single value for a collection field, such as `Team.filter(members=user)`, is
 sent as one item and matches the objects whose collection holds it.
 
-Other generic annotations, such as `dict[str, T]`, are not converted. Reading
-such a field returns a copy of its JSON value. Pydantic can convert such types
-instead, as [Pydantic conversion](#pydantic-conversion) describes.
+A `TypedDict` field reads a JSON object whose declared keys convert by their
+annotations, as fields do, and writes each declared key in its JSON form. A key
+that the `TypedDict` does not declare is kept as JSON, so that writing the
+value back does not delete it on the server. A key may be missing, as a field
+may, and reading it from the dictionary then raises `KeyError`, so `Required`,
+`NotRequired`, and `ReadOnly` do not change conversion. A `TypedDict` may refer
+to itself. `dict[str, T]` and `Mapping[str, T]` read a JSON object whose values
+all convert as `T`, as a `dict`:
+
+```python
+import datetime
+
+from typing_extensions import NotRequired, TypedDict
+
+from eazyrest import JSONObject, json_object
+
+
+class Window(TypedDict):
+    start: datetime.datetime
+    length: datetime.timedelta
+    note: NotRequired[str]
+
+
+@json_object
+class Reservation(JSONObject):
+    class_url = "/reservations/"
+
+    id: int
+    window: Window
+    holidays: dict[str, datetime.date]
+```
+
+Here `reservation.window["start"]` is a `datetime.datetime`, and after
+`reservation.window["length"] = datetime.timedelta(hours=2)`, `save()` sends
+`"PT2H"`. eazyrest converts these types but does not validate them: as for a
+field, a key declared `int` that holds a string reads the string. An error
+names a declared key, as in `Reservation.window: ['start']: ...`, but shows a
+key of a `dict[str, T]`, which the server chose, as `[key]`. A value under an
+undeclared key is written as it is, so assigning one that is not JSON, such as
+a `datetime`, raises `FieldConversionError`. To have a `TypedDict` validated,
+annotate it for Pydantic, as [Pydantic conversion](#pydantic-conversion)
+describes. A `TypedDict` decorated with `pydantic.with_config()` is annotated
+for Pydantic, which converts and validates it by its whole config, aliases
+included, as [Pydantic conversion](#pydantic-conversion) describes. A plain
+`TypedDict` whose key has a Pydantic alias raises `FieldConversionError`,
+because eazyrest reads and writes keys by their own names, so decorate such a
+`TypedDict` for Pydantic.
+
+A field whose type eazyrest would read as another type raises
+`FieldConversionError` when it is first used. That holds for a fixed-length
+tuple, such as `tuple[int, str]`, and a `NamedTuple`, whose JSON form is an
+array, for a standard library dataclass, whose JSON form is an object, and for
+a mapping whose keys are not strings, because JSON object keys are strings.
+Annotate such a type for Pydantic, or annotate its JSON form, such as `list` or
+`dict[str, Any]`. A model inside a `TypedDict` or a mapping raises too, because
+eazyrest does not convert related objects there yet, so annotate such a key
+with the model's primary key type, such as `int`. So do a `TypedDict` that is
+closed or has extra items (PEP 728), a generic `TypedDict` with type arguments,
+and a union that holds a `TypedDict`, because a JSON object does not say which
+member it is. Annotate such a union for Pydantic.
 
 A field's value is cached when it is first read, so later reads return the same
 value. If you change that value in place, `save()` sends the change, as it does
@@ -414,12 +471,12 @@ a type is, or contains, one of the following:
 - `Annotated` metadata from Pydantic, such as `pydantic.Field()`,
   `pydantic.Strict()`, or `pydantic.AfterValidator()`.
 
-Every other type converts as [Field conversion](#field-conversion) describes,
-so a plain `TypedDict`, a standard library dataclass, or a `Literal` passes
-through unchecked. To have Pydantic check such a type, annotate it with
-`Annotated[T, pydantic.Field()]`. Constraints from `annotated_types` alone,
-such as `Annotated[int, Gt(0)]`, do not mention Pydantic, because other
-libraries use them too.
+Every other type converts as [Field conversion](#field-conversion) describes.
+eazyrest converts a plain `TypedDict` itself, without validating it, and a
+`Literal` passes through unchecked. To have Pydantic check such a type,
+annotate it with `Annotated[T, pydantic.Field()]`. Constraints from
+`annotated_types` alone, such as `Annotated[int, Gt(0)]`, do not mention
+Pydantic, because other libraries use them too.
 
 Some of Pydantic's own types are made only of such constraints, so they do not
 mention Pydantic either. `pydantic.PositiveInt`, for example, is
@@ -469,20 +526,21 @@ class Logo(JSONObject):
 
     id: int
     image: Base64Bytes
-    rendering: Rendering
+    rendering: Annotated[Rendering, Field()]
     anchors: list[Point]
     shape: Annotated[Literal["square", "round"], Field()]
     published: Annotated[datetime.datetime, Field(description="First shown")]
 ```
 
 Reading `Logo.image` decodes the base64 JSON string to `bytes`, and reading
-`Logo.rendering` checks the mapping against `Rendering`. A value that Pydantic
-rejects raises `FieldConversionError`. Pydantic on Python before 3.12 requires
-`TypedDict` from `typing_extensions`.
+`Logo.rendering` checks the mapping against `Rendering`, because its annotation
+asks Pydantic to. A value that Pydantic rejects raises `FieldConversionError`.
+Pydantic on Python before 3.12 requires `TypedDict` from `typing_extensions`.
 
-eazyrest still handles related objects, `T | None`, and collections around a
-type that Pydantic converts, so `Logo.anchors` converts each item to a `Point`.
-Pydantic converts the whole of any other type, such as `dict[str, Point]`,
+eazyrest still handles related objects, `T | None`, collections,
+`dict[str, T]`, and `TypedDict` keys around a type that Pydantic converts, so
+`Logo.anchors` converts each item to a `Point`, and `dict[str, Point]` each
+value. Pydantic converts the whole of any other type, such as `Point | str`,
 which therefore cannot contain an eazyrest model.
 
 Assigning a value, or passing it to `create()` or a query, writes the JSON
@@ -537,8 +595,9 @@ it has one, as a plain field of it does. A model's conversions of other types,
 such as `IPv4Address`, do not apply inside an annotation for Pydantic, which
 converts those types by its own rules.
 
-Inside a class that the annotation names, such as a Pydantic model or a
-`TypedDict`, Pydantic's own rules apply, and they differ from eazyrest's:
+Inside a class that Pydantic converts, such as a Pydantic model, or a
+`TypedDict` annotated for Pydantic, Pydantic's own rules apply, and they differ
+from eazyrest's:
 
 | Type | eazyrest | Pydantic |
 | --- | --- | --- |
@@ -562,15 +621,17 @@ such as `AwareDatetime`, keep Pydantic's rules.
 A server may send keys that a `TypedDict` or a Pydantic model does not declare,
 and saving a value that dropped them would delete them on the server. A `PATCH`
 leaves the fields that it omits alone, but it replaces the whole value of each
-field that it sends, so a key missing from that value is deleted. Under
-Pydantic's default config, both a `TypedDict` and a Pydantic model drop such
-keys. A `TypedDict` that a field type names must therefore set `extra="allow"`,
-or `extra="forbid"` to reject such keys, or using the field raises
-`FieldConversionError`. So must a `TypedDict` or a Pydantic dataclass nested
-inside it, at any depth. A Pydantic model follows its own config, so give it
-`extra="allow"`, as `Point` has. Pydantic never writes undeclared keys for a
-dataclass, of Pydantic or the standard library, even under `extra="allow"`, so
-a dataclass that a field type names must set `extra="forbid"`, as with
+field that it sends, so a key missing from that value is deleted. eazyrest
+keeps such keys in a `TypedDict` that it converts, as
+[Field conversion](#field-conversion) describes. Under Pydantic's default
+config, both a `TypedDict` and a Pydantic model drop such keys. A `TypedDict`
+that Pydantic converts must therefore set `extra="allow"`, or `extra="forbid"`
+to reject such keys, or using the field raises `FieldConversionError`. So must
+a `TypedDict` or a Pydantic dataclass nested inside it, at any depth. A
+Pydantic model follows its own config, so give it `extra="allow"`, as `Point`
+has. Pydantic never writes undeclared keys for a dataclass, of Pydantic or the
+standard library, even under `extra="allow"`, so a dataclass that a field type
+names must set `extra="forbid"`, as with
 `@pydantic.with_config(pydantic.ConfigDict(extra="forbid"))`, or using the
 field raises `FieldConversionError`. Nor does Pydantic write a dataclass's
 init-only fields, of type `dataclasses.InitVar`, so a dataclass with one raises

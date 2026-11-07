@@ -122,6 +122,18 @@ that can break code written for 0.9.0, followed by what to do about it.
 - A field typed as a subclass of a type that converts, such as a subclass of
   `datetime`, converts as that type, and a `NewType` as its supertype, where
   0.9.0 read their JSON values unchanged.
+- A `TypedDict` field converts its declared keys by their annotations, and a
+  `dict[str, T]` or `Mapping[str, T]` field its values, where 0.9.0 returned
+  the JSON value unchanged. Undeclared keys are kept. A `TypedDict` decorated
+  with `pydantic.with_config()` is converted and validated by Pydantic, by its
+  whole config. A fixed-length tuple, a `NamedTuple`, a standard library
+  dataclass, a mapping whose keys are not strings, a union that holds a
+  `TypedDict`, and a model inside a `TypedDict` or a mapping raise
+  `FieldConversionError`, because eazyrest would read them as other types.
+  Annotate them for Pydantic, or annotate their JSON form, such as `list` or
+  `dict[str, Any]`. Pydantic does not convert eazyrest models either, so
+  annotate a model inside one of these with its primary key type, such as
+  `int`.
 - `from_json()` and `to_json()` are no longer override points. Declare a
   model's `conversions` instead, mapping each type to a `Conversion` that
   decodes and encodes it, as the guide's Custom field conversion section shows.

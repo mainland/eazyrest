@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, Literal, NewType, Protocol
 
 import pytest
+from typing_extensions import TypedDict
 
 from eazyrest import (
     API,
@@ -65,6 +66,12 @@ Address = NewType("Address", ipaddress.IPv4Address)
 Cents = NewType("Cents", int)
 
 
+class Hosts(TypedDict):
+    """Mapping that holds an address."""
+
+    primary: ipaddress.IPv4Address
+
+
 class TableBase(JSONObject):
     """Base model whose table converts IPv4 addresses."""
 
@@ -85,6 +92,8 @@ class Host(TableBase):
     id: int
     address: ipaddress.IPv4Address
     allowed: list[ipaddress.IPv4Address]
+    hosts: Hosts
+    by_name: dict[str, ipaddress.IPv4Address]
     alias: Address
     when: datetime.datetime
     stamp: Stamp
@@ -119,6 +128,8 @@ HOST_JSON: dict[str, Any] = {
     "id": 1,
     "address": "10.0.0.1",
     "allowed": ["10.0.0.2"],
+    "hosts": {"primary": "10.0.0.3", "server": 1},
+    "by_name": {"a": "10.0.0.4"},
     "alias": "10.0.0.5",
     "when": "2026-01-02T03:04:05Z",
     "stamp": "2026-01-02T03:04:05Z",
@@ -130,11 +141,16 @@ HOST_JSON: dict[str, Any] = {
 
 
 def test_table_entries_convert_wherever_their_type_appears() -> None:
-    """A class's entry converts its type in fields and lists."""
+    """A class's entry converts its type in fields, lists, and mappings."""
     host = Host(json=dict(HOST_JSON))
 
     assert host.address == ipaddress.IPv4Address("10.0.0.1")
     assert host.allowed == [ipaddress.IPv4Address("10.0.0.2")]
+    assert host.hosts == {
+        "primary": ipaddress.IPv4Address("10.0.0.3"),
+        "server": 1,
+    }
+    assert host.by_name == {"a": ipaddress.IPv4Address("10.0.0.4")}
 
     host.allowed = [ipaddress.IPv4Address("10.0.0.6")]
     assert host.json["allowed"] == ["10.0.0.6"]

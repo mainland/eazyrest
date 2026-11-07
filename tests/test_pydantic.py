@@ -54,8 +54,10 @@ from eazyrest import (
 from eazyrest._models import (
     BaseType,
     CollectionType,
+    MappingType,
     OptionalType,
     PydanticType,
+    TypedDictType,
     analyze_type,
 )
 from eazyrest.pydantic import UUID, Date, Datetime, Duration, Time
@@ -327,7 +329,7 @@ class Asset(PydanticBase):
     starts: Annotated[datetime.datetime, Field(description="Start")]
     length: Annotated[datetime.timedelta, Field(ge=datetime.timedelta(0))]
     windows: Annotated[list[datetime.datetime], Field(max_length=2)]
-    owners: dict[str, Owner | Spec]
+    owners: dict[str, Owner | Point]
 
 
 ASSET_JSON: dict[str, Any] = {
@@ -360,12 +362,12 @@ NUMBER_OR_TEXT: Any = int | str
         (Spec, PydanticType(Spec)),
         (Point | None, OptionalType(PydanticType(Point))),
         (list[Spec], CollectionType(list, PydanticType(Spec))),
-        (dict[str, Spec], PydanticType(dict[str, Spec])),
+        (dict[str, Spec], MappingType(PydanticType(Spec))),
+        (dict[str, Point], MappingType(PydanticType(Point))),
         (Base64Bytes, PydanticType(Base64Bytes)),
         (PydanticPair, PydanticType(PydanticPair)),
         (Annotated[int, FIELD], PydanticType(Annotated[int, FIELD])),
-        (PlainSpec, BaseType(PlainSpec)),
-        (Pair, BaseType(Pair)),
+        (PlainSpec, TypedDictType(PlainSpec)),
         (Annotated[int, Gt(0)], BaseType(int)),
         (POINTS, CollectionType(list, PydanticType(Point))),
         (POSITIVE, PydanticType(Annotated[int, FIELD])),
@@ -426,7 +428,7 @@ def test_pydantic_field_values_share_no_containers_with_json() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("spec", {"name": 5, "size": 1}),
+        ("spec", ["a"]),
         ("origin", {"x": "left", "y": 2}),
         ("rating", 0),
         ("kind", "c"),
@@ -682,7 +684,7 @@ def test_pydantic_field_writes_a_model_with_private_state(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("spec", {"name": "a"}),
+        ("spec", ["a"]),
         ("origin", {"x": "left", "y": 2}),
         # The serializer accepts this value, but the field cannot read it.
         ("rating", 0),
@@ -1015,7 +1017,7 @@ def test_field_that_cannot_be_written_fails_on_every_read() -> None:
 
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
-    asset = Asset(json=deepcopy(ASSET_JSON))
+    asset = Asset(json={**deepcopy(ASSET_JSON), "owners": {"a": {"id": 1}}})
 
     with pytest.raises(FieldConversionError, match="an eazyrest model"):
         _ = asset.owners
@@ -1121,6 +1123,13 @@ class Settings(PydanticBase):
     strict_box: StrictBox[int]
 
 
+# A mapping's values convert one by one, so a type inside one is checked only
+# when the mapping holds a value.
+DROPPING_VALUES: dict[str, Any] = {
+    "ignoring_boxes": {"k": {"first": datetime.date(2024, 1, 1)}}
+}
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [
@@ -1157,7 +1166,7 @@ def test_types_that_drop_keys_are_rejected(
     with pytest.raises(FieldConversionError, match=message):
         getattr(settings, field)
     with pytest.raises(FieldConversionError, match=message):
-        Settings.create(**{field: cast(Any, {})})
+        Settings.create(**{field: cast(Any, DROPPING_VALUES.get(field, {}))})
 
     assert requests_mock.call_count == 0
 
@@ -1613,6 +1622,51 @@ def test_json_schema_without_pydantic_raises(
         Located.json_schema()
 
 
+class Placed(TypedDict):
+    """``TypedDict`` with a key that Pydantic converts."""
+
+    point: Point
+    when: datetime.datetime
+
+
+@json_object
+class Survey(PydanticBase):
+    """Model whose ``TypedDict`` fields eazyrest or Pydantic converts."""
+
+    class_url = "/surveys/"
+
+    id: int
+    spec: Spec
+    placed: Placed
+    checked: Annotated[Spec, Field()]
+    strict: StrictSpec
+
+
+SURVEY_JSON: dict[str, Any] = {
+    "id": 1,
+    "spec": {"name": 5, "size": 1},
+    "placed": {"point": {"x": 1, "y": 2}, "when": "2024-01-01T00:00:00Z"},
+    "checked": {"name": 5, "size": 1},
+    "strict": {"name": "a"},
+}
+
+
+def test_decorated_typed_dict_is_validated_by_pydantic() -> None:
+    """A ``TypedDict`` with a Pydantic config is annotated for Pydantic.
+
+    A plain ``TypedDict`` is eazyrest's, which hands a key annotated for
+    Pydantic to Pydantic.
+    """
+    survey = Survey(json=deepcopy(SURVEY_JSON))
+
+    with pytest.raises(FieldConversionError, match=r"^Survey\.spec: "):
+        _ = survey.spec
+    assert survey.placed["point"] == Point(x=1, y=2)
+    assert survey.placed["when"] == datetime.datetime(2024, 1, 1, tzinfo=UTC)
+    with pytest.raises(FieldConversionError, match=r"^Survey\.checked: "):
+        _ = survey.checked
+
+
 @with_config(ConfigDict(extra="ignore"))
 class IgnoringInner(TypedDict):
     """``TypedDict`` that drops the keys it does not declare."""
@@ -1949,6 +2003,66 @@ def test_class_variables_are_not_checked(requests_mock: Any) -> None:
     holder.save()
 
     assert patch.last_request.json() == {"value": {"inner": {"v": 2}}}
+
+
+@with_config(ConfigDict(extra="allow", alias_generator=to_camel))
+class CamelSettings(TypedDict):
+    """``TypedDict`` whose Pydantic config renames its keys."""
+
+    dark_mode: bool
+
+
+class AliasedKey(TypedDict):
+    """``TypedDict`` with a key that a Pydantic alias renames."""
+
+    dark_mode: Annotated[bool, Field(alias="darkMode")]
+
+
+@json_object
+class Preferences(PydanticBase):
+    """Model whose ``TypedDict`` fields rename keys with Pydantic aliases."""
+
+    class_url = "/preferences/"
+
+    id: int
+    camel: CamelSettings
+    aliased: AliasedKey
+    validated: Annotated[CamelSettings, Field()]
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("aliased", r"AliasedKey\.dark_mode has a Pydantic alias"),
+    ],
+)
+def test_typed_dict_aliases_are_refused_where_eazyrest_converts(
+    field: str, message: str
+) -> None:
+    """Aliases that eazyrest would not apply are refused, not ignored.
+
+    Args:
+        field: Name of a ``Preferences`` field.
+        message: Pattern that the error should match.
+    """
+    preferences = Preferences(json={"id": 1, field: {"darkMode": True}})
+
+    with pytest.raises(FieldConversionError, match=message):
+        getattr(preferences, field)
+
+
+@pytest.mark.parametrize("field", ["camel", "validated"])
+def test_typed_dict_for_pydantic_applies_its_aliases(field: str) -> None:
+    """A decorated ``TypedDict``, or one annotated for Pydantic, uses aliases.
+
+    Args:
+        field: Name of a ``Preferences`` field that Pydantic converts.
+    """
+    preferences = Preferences(json={"id": 1, field: {"darkMode": True}})
+
+    assert getattr(preferences, field) == {"dark_mode": True}
+    setattr(preferences, field, {"dark_mode": False})
+    assert preferences.json[field] == {"darkMode": False}
 
 
 def _to_timestamp(value: Any, cls: type[Any]) -> float:

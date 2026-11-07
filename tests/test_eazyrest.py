@@ -6343,7 +6343,7 @@ def test_json_schema_describes_what_a_model_reads() -> None:
                 "uniqueItems": True,
             },
             "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-            "extra": {},
+            "extra": {"type": "object", "additionalProperties": {}},
             "owner": owner,
             "link": link,
             "created": {"type": "string", "format": "date-time"},

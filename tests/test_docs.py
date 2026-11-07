@@ -374,3 +374,30 @@ def test_fields_never_sent_reports_only_fields_that_no_object_has() -> None:
     ]
 
     assert fields_never_sent(Machine, objects) == {"deployed"}
+
+
+def test_reservation_example_converts_typed_dict_keys(
+    requests_mock: Any,
+) -> None:
+    """The guide's ``TypedDict`` example reads and writes converted keys."""
+    reservation_type = run_guide_example("class Reservation")["Reservation"]
+    reservation_type.register_api(API("https://api.example.com/"))
+    requests_mock.patch("https://api.example.com/reservations/1/", json={})
+    reservation = reservation_type(
+        json={
+            "id": 1,
+            "window": {"start": "2026-11-07T09:00:00+00:00", "length": "PT1H"},
+            "holidays": {"new_year": "2027-01-01"},
+        }
+    )
+
+    assert reservation.window["start"] == datetime.datetime(
+        2026, 11, 7, 9, tzinfo=datetime.timezone.utc
+    )
+    assert reservation.holidays == {"new_year": datetime.date(2027, 1, 1)}
+    reservation.window["length"] = datetime.timedelta(hours=2)
+    reservation.save()
+
+    assert requests_mock.last_request.json() == {
+        "window": {"start": "2026-11-07T09:00:00+00:00", "length": "PT2H"}
+    }
