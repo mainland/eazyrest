@@ -1675,6 +1675,23 @@ def test_decorated_typed_dict_is_validated_by_pydantic() -> None:
         _ = survey.checked
 
 
+def test_typed_dict_writes_reject_keys_that_its_config_forbids(
+    requests_mock: Any,
+) -> None:
+    """A write that Pydantic would drop a key from raises, without naming it.
+
+    Under ``extra="forbid"``, Pydantic serializes a ``TypedDict`` without the
+    keys it does not declare, so the write would silently lose them.
+    """
+    survey = Survey(json=deepcopy(SURVEY_JSON))
+
+    with pytest.raises(FieldConversionError, match="would drop them") as info:
+        survey.strict = cast(Any, {"name": "a", "secret": 1})
+
+    assert "secret" not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
 class Upload(TypedDict):
     """Request body whose bytes Pydantic writes as base64."""
 
@@ -2001,6 +2018,77 @@ def test_unresolvable_fields_are_rejected(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+class ShipsLater(BaseModel):
+    """Model whose field names a class defined after it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    shipping: LaterShipping
+
+
+class NotesLater(BaseModel):
+    """Model whose field names a model defined after it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    note: LaterNote
+
+
+class NamesNothing(BaseModel):
+    """Model whose field names a class that is never defined."""
+
+    inner: Nowhere  # type: ignore[name-defined]  # noqa: F821
+
+
+@dataclasses.dataclass
+class LaterShipping:
+    """Dataclass, without a config, that drops the keys it does not declare."""
+
+    street: str
+
+
+class LaterNote(BaseModel):
+    """Model with a field that Pydantic excludes from writes."""
+
+    model_config = ConfigDict(extra="allow")
+
+    text: str = ""
+    author: Annotated[str, Field(exclude=True)] = ""
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw", "message"),
+    [
+        (
+            ShipsLater,
+            {"shipping": {"street": "1 Main", "zip": "02139"}},
+            "LaterShipping would drop the keys",
+        ),
+        (
+            NotesLater,
+            {"note": {"text": "t", "author": "ada"}},
+            "the key of its field author",
+        ),
+        (NamesNothing, {"inner": {}}, "annotations cannot be resolved"),
+    ],
+)
+def test_classes_behind_forward_references_are_checked(
+    requests_mock: Any, hint: type[BaseModel], raw: Any, message: str
+) -> None:
+    """The fields of a model that Pydantic has not completed are checked.
+
+    Pydantic keeps a name for a class defined later as a forward reference
+    until the model is rebuilt, and nothing behind it would be checked.
+    """
+    assert not hint.__pydantic_complete__
+    holder = _wrapped_in(hint)(json={"id": 1, "value": {"inner": raw}})
+
+    with pytest.raises(FieldConversionError, match=message):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
 @with_config(ConfigDict(extra="forbid"))
 @dataclasses.dataclass
 class WithClassVariable:
@@ -2026,6 +2114,265 @@ def test_class_variables_are_not_checked(requests_mock: Any) -> None:
     holder.save()
 
     assert patch.last_request.json() == {"value": {"inner": {"v": 2}}}
+
+
+class ExcludingModel(BaseModel):
+    """Model that reads a key and never writes it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    theme: str
+    token: str = Field(default="", exclude=True)
+
+
+class ConditionallyExcludingModel(BaseModel):
+    """Model that writes a key only when its value is not empty."""
+
+    model_config = ConfigDict(extra="allow")
+
+    theme: str
+    token: str = Field(default="", exclude_if=lambda token: not token)
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class ExcludingData:
+    """Dataclass that reads a key and never writes it."""
+
+    theme: str
+    token: Annotated[str, Field(exclude=True)] = ""
+
+
+@dataclasses.dataclass
+class PlainData:
+    """Dataclass without a config, which drops undeclared keys."""
+
+    a: int
+
+
+class HoldingData(BaseModel):
+    """Model that keeps its own keys, around a dataclass that drops them."""
+
+    model_config = ConfigDict(extra="allow")
+
+    inner: PlainData
+
+
+class PlainKeys(TypedDict):
+    """``TypedDict`` without a config, which takes a model's."""
+
+    a: int
+
+
+class HoldingKeys(BaseModel):
+    """Model whose ``TypedDict`` keys take its config, which keeps keys."""
+
+    model_config = ConfigDict(extra="allow")
+
+    inner: PlainKeys
+    many: list[PlainKeys]
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class WithCheckerOnlyClassVariable:
+    """Dataclass whose class variable names a type only for type checkers."""
+
+    v: int
+    context: ClassVar[decimal.Context | None] = None
+
+
+def test_class_variables_need_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A class variable whose annotation cannot be resolved does not matter.
+
+    Only a dataclass's fields are resolved, one by one, so a class variable
+    may name a type that is imported only under ``TYPE_CHECKING``.
+
+    Args:
+        monkeypatch: Fixture that hides ``decimal`` from the test module.
+    """
+    monkeypatch.delitem(globals(), "decimal")
+    holder = _wrapped_in(WithCheckerOnlyClassVariable)(
+        json={"id": 1, "value": {"inner": {"v": 1}}}
+    )
+
+    assert holder.value["inner"] == WithCheckerOnlyClassVariable(1)
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw", "message"),
+    [
+        (ExcludingModel, {"theme": "a", "token": "t"}, "field token"),
+        (
+            ConditionallyExcludingModel,
+            {"theme": "a", "token": "t"},
+            "field token",
+        ),
+        (
+            Annotated[ExcludingData, Field()],
+            {"theme": "a", "token": "t"},
+            "field token",
+        ),
+        (HoldingData, {"inner": {"a": 1, "z": 2}}, "PlainData would drop"),
+    ],
+    ids=[
+        "excluded-model-field",
+        "conditionally-excluded-model-field",
+        "excluded-dataclass-field",
+        "in-model",
+    ],
+)
+def test_keys_that_writes_drop_inside_models_are_rejected(
+    hint: Any, raw: Any, message: str, requests_mock: Any
+) -> None:
+    """An excluded field, or a dataclass inside a model, is refused.
+
+    Pydantic reads an excluded field's key and never writes it, and never
+    writes a dataclass's undeclared keys, whatever the config of the model
+    around it, so a write would delete them on the server.
+
+    Args:
+        hint: Type of the field.
+        raw: JSON of a value of ``hint`` with a key that a write would drop.
+        message: Part of the error message.
+        requests_mock: Fixture that records requests.
+    """
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {"id": int, "v": hint},
+            },
+        )
+    )
+    holder = model(json={"id": 1, "v": raw})
+
+    with pytest.raises(FieldConversionError, match=message):
+        _ = holder.v
+
+    assert requests_mock.call_count == 0
+
+
+def test_typed_dicts_inside_models_take_their_config(
+    requests_mock: Any,
+) -> None:
+    """A ``TypedDict`` without a config takes the config of its model."""
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {"id": int, "v": HoldingKeys},
+            },
+        )
+    )
+    raw = {"inner": {"a": 1, "z": 2}, "many": [{"a": 1, "z": 2}]}
+    holder = model(json={"id": 1, "v": raw})
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/holders/1/", json={}
+    )
+
+    holder.v.inner["a"] = 3
+    holder.save()
+
+    assert patch.last_request.json() == {
+        "v": {"inner": {"a": 3, "z": 2}, "many": [{"a": 1, "z": 2}]}
+    }
+
+
+class ForbiddingData(BaseModel):
+    """Model whose config a dataclass without one inside it takes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inner: PlainData
+
+
+class PlainKeysPair(NamedTuple):
+    """``NamedTuple`` around a ``TypedDict`` without a config."""
+
+    keys: PlainKeys
+    total: int
+
+
+class HoldingKeysPair(BaseModel):
+    """Model whose config reaches a ``TypedDict`` through a ``NamedTuple``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    pair: PlainKeysPair
+
+
+def test_classes_inside_models_take_their_config(requests_mock: Any) -> None:
+    """A dataclass or a ``TypedDict`` without a config takes the model's.
+
+    Pydantic rejects a dataclass's undeclared keys inside a model with
+    ``extra="forbid"``, and keeps a ``TypedDict``'s inside a ``NamedTuple``
+    inside a model with ``extra="allow"``, so neither is refused.
+    """
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {
+                    "id": int,
+                    "forbidding": ForbiddingData,
+                    "pairs": HoldingKeysPair,
+                },
+            },
+        )
+    )
+    holder = model(
+        json={
+            "id": 1,
+            "forbidding": {"inner": {"a": 1}},
+            "pairs": {"pair": [{"a": 1, "z": 2}, 3]},
+        }
+    )
+    put = requests_mock.put("https://pydantic.example.com/holders/1/", json={})
+
+    assert holder.forbidding.inner == PlainData(1)
+    holder.save(full=True)
+
+    assert put.last_request.json() == {
+        "id": 1,
+        "forbidding": {"inner": {"a": 1}},
+        "pairs": {"pair": [{"a": 1, "z": 2}, 3]},
+    }
+
+
+def test_dataclass_inside_forbidding_model_rejects_undeclared_keys() -> None:
+    """A dataclass without a config takes ``extra="forbid"`` from its model.
+
+    eazyrest accepts such a dataclass only because Pydantic gives it the
+    model's config, so that a key it does not declare is refused rather than
+    dropped from the next write.
+    """
+    model: Any = json_object(
+        type(
+            "Forbidder",
+            (PydanticBase,),
+            {
+                "class_url": "/forbidders/",
+                "__annotations__": {"id": int, "forbidding": ForbiddingData},
+            },
+        )
+    )
+    forbidder = model(
+        json={"id": 1, "forbidding": {"inner": {"a": 1, "b": 2}}}
+    )
+
+    with pytest.raises(
+        FieldConversionError, match=r"^Forbidder\.forbidding: "
+    ):
+        _ = forbidder.forbidding
 
 
 @with_config(ConfigDict(extra="allow", alias_generator=to_camel))
@@ -2806,6 +3153,20 @@ def test_a_nested_schema_keeps_its_own_mode() -> None:
 
 
 @with_config(ConfigDict(extra="forbid"))
+class _Inner(TypedDict):
+    """``TypedDict`` that rejects undeclared keys."""
+
+    x: int
+
+
+@with_config(ConfigDict(extra="forbid"))
+class _Outer(TypedDict):
+    """``TypedDict`` that holds another."""
+
+    inner: _Inner
+
+
+@with_config(ConfigDict(extra="forbid"))
 @dataclasses.dataclass
 class _Base:
     """Standard library dataclass that rejects undeclared keys."""
@@ -2814,10 +3175,57 @@ class _Base:
 
 
 @dataclasses.dataclass
+class _Child(_Base):
+    """Subclass with a field that its base does not declare."""
+
+    b: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class _PydanticBase:
+    """Pydantic dataclass that rejects undeclared keys."""
+
+    a: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class _PydanticChild(_PydanticBase):
+    """Subclass with a field that its base does not declare."""
+
+    b: int
+
+
+@dataclasses.dataclass
 class _Loose:
     """Standard library dataclass without a config, which would drop keys."""
 
     a: int
+
+
+@pytest.mark.parametrize(
+    ("value", "annotation"),
+    [
+        ({"inner": {"x": 1, "extra": 2}}, _Outer),
+        ([{"x": 1, "extra": 2}], Annotated[list[_Inner], Field()]),
+        (_Child(1, 2), Annotated[_Base, Field()]),
+        ([_Child(1, 2)], Annotated[list[_Base], Field()]),
+        (_PydanticChild(a=1, b=2), _PydanticBase),
+    ],
+)
+def test_writes_that_would_drop_nested_keys_or_fields_raise(
+    value: Any, annotation: Any
+) -> None:
+    """A value that Pydantic would write without some of its data raises.
+
+    The check reaches nested values, and the fields that a dataclass's
+    subclass adds.
+
+    Args:
+        value: Value to write.
+        annotation: Its annotation.
+    """
+    with pytest.raises(ValueError, match="would drop them"):
+        encode_json(value, annotation)
 
 
 def test_dataclasses_must_reject_keys_that_pydantic_would_drop() -> None:

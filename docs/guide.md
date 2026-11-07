@@ -652,19 +652,32 @@ keeps such keys in a `TypedDict` that it converts, as
 [Field conversion](#field-conversion) describes. Under Pydantic's default
 config, both a `TypedDict` and a Pydantic model drop such keys. A `TypedDict`
 that Pydantic converts must therefore set `extra="allow"`, or `extra="forbid"`
-to reject such keys, or using the field raises `FieldConversionError`. So must
-a `TypedDict` or a Pydantic dataclass nested inside it, at any depth. A
-Pydantic model follows its own config, so give it `extra="allow"`, as `Point`
-has. Pydantic never writes undeclared keys for a dataclass, of Pydantic or the
-standard library, even under `extra="allow"`, so a dataclass that a field type
-names must set `extra="forbid"`, as with
-`@pydantic.with_config(pydantic.ConfigDict(extra="forbid"))`, or using the
-field raises `FieldConversionError`. Nor does Pydantic write a dataclass's
-init-only fields, of type `dataclasses.InitVar`, so a dataclass with one raises
+to reject such keys, or using the field raises `FieldConversionError`. Under
+`extra="forbid"`, Pydantic writes a value without the keys that it does not
+declare, so writing such a value raises `FieldConversionError` rather than
+dropping them, at any depth. So does writing an instance of a dataclass's
+subclass that has fields of its own, which Pydantic writes as the declared
+class. A `TypedDict` or dataclass nested inside a field's type must follow the
+same rules, at any depth. A Pydantic model follows its own config, so give it
+`extra="allow"`, as `Point` has. A `TypedDict`, dataclass, or `NamedTuple`
+without a config of its own inside a model takes the model's config. Pydantic
+never writes undeclared keys for a dataclass, of Pydantic or the standard
+library, even under `extra="allow"`, so a dataclass that a field type names
+must set `extra="forbid"`, as with
+`@pydantic.with_config(pydantic.ConfigDict(extra="forbid"))`, or be inside a
+model with `extra="forbid"` without a config of its own, or using the field
+raises `FieldConversionError`. A Pydantic dataclass always has a config of its
+own, empty if declared without one, so it is accepted only with
+`extra="forbid"` on itself, even inside a model with `extra="forbid"`. Nor does
+Pydantic write a dataclass's init-only fields, of type `dataclasses.InitVar`,
+or a field of a model or dataclass that it excludes from writes, with
+`Field(exclude=True)` or `exclude_if`, so such a class raises
 `FieldConversionError` too. A `TypedDict`'s extra items, which `extra_items=`
 types, are checked as its keys are, and a dataclass's class variables, which
-Pydantic neither reads nor writes, are not checked. A class whose annotations
-cannot be resolved cannot be checked, so it raises `FieldConversionError`.
+Pydantic neither reads nor writes, are not checked. A class whose fields'
+annotations cannot be resolved cannot be checked, so it raises
+`FieldConversionError`. A serializer that leaves a key out, such as a model's
+`model_serializer`, is a model's own choice, which eazyrest does not check.
 
 A value that Pydantic converts can be changed in place, as
 [Field conversion](#field-conversion) describes. For example,
