@@ -802,7 +802,11 @@ class API:
         The default raises ``NotFound`` for a 404 and ``APIError`` for any
         other failure. Both are ``requests.HTTPError``, and they hold the
         response's JSON body as ``data``. Subclasses can override this hook to
-        translate API-specific error payloads into other exception types.
+        translate API-specific error payloads into exception types of their
+        own. An override should raise a subclass of ``APIError``, and of
+        ``NotFound`` for a 404, because eazyrest relies on ``NotFound`` being
+        ``DoesNotExist`` when it loads an object that the server deleted, and
+        callers catch ``APIError``.
 
         Args:
             resp: Response object to validate.

@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import (
+    API,
+    APIError,
+    DoesNotExist,
+    JSONObject,
+    json_object,
+)
 
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 GUIDE = DOCS / "guide.md"
@@ -254,30 +259,42 @@ def test_merge_response_example_ignores_status_bodies(
 
 
 @pytest.mark.parametrize(
-    ("body", "message"),
+    ("status", "body", "kind"),
     [
-        ({"detail": "Not found."}, "Not found."),
-        ({"email": ["This field must be unique."]}, "must be unique"),
+        (400, {"email": ["This field must be unique."]}, "DRFAPIError"),
+        (404, {"detail": "Not found."}, "DRFNotFound"),
     ],
 )
-def test_drf_error_example_raises_its_exception(
-    requests_mock: Any, body: dict[str, Any], message: str
+def test_drf_error_example_keeps_eazyrest_exceptions(
+    requests_mock: Any, status: int, body: dict[str, Any], kind: str
 ) -> None:
-    """The DRF error example turns DRF's error bodies into its exception.
+    """The DRF error example raises its exceptions as eazyrest's subclasses.
 
     Args:
+        status: Status of the error response.
         body: DRF error response body.
-        message: Pattern that the exception's message should match.
+        kind: Name of the example's exception that the response raises.
     """
     example = run_guide_example("class DRFAPIError", doc=DRF)
     api = example["DRFAPI"]("https://api.example.com/")
     requests_mock.get(
-        "https://api.example.com/users/9/", status_code=400, json=body
+        "https://api.example.com/users/9/", status_code=status, json=body
     )
 
-    with pytest.raises(example["DRFAPIError"], match=message) as info:
+    with pytest.raises(example[kind]) as info:
         api.get("/users/9/")
 
-    assert isinstance(info.value, requests.HTTPError)
-    assert info.value.response is not None
-    assert info.value.response.status_code == 400
+    error: Any = info.value
+    assert isinstance(error, APIError)
+    assert isinstance(error, DoesNotExist) is (status == 404)
+    assert error.data == body
+    assert error.response.status_code == status
+    # The message is eazyrest's, which does not quote the body.
+    assert "unique" not in str(error)
+    assert "Not found." not in str(error)
+    if status == 404:
+        assert info.value.detail == "Not found."
+        assert info.value.field_errors == {}
+    else:
+        assert info.value.detail is None
+        assert info.value.field_errors == body

@@ -81,9 +81,11 @@ that can break code written for 0.9.0, followed by what to do about it.
 - A failed request raises `APIError`, or `NotFound` for a 404, instead of a
   plain `requests.HTTPError`. Both are `requests.HTTPError`, so existing
   handlers still catch them, but the message differs: it names the method, URL,
-  status, and the members of a JSON body, and the parsed body is in `data`.
-  `NotFound` is also a `DoesNotExist`, so a 404 on a lazy load is caught by
-  `except DoesNotExist`.
+  status, and the members of a JSON body other than `detail`, and the parsed
+  body is in `data`. `NotFound` is also a `DoesNotExist`, so a 404 on a lazy
+  load is caught by `except DoesNotExist`. An override of
+  `API.raise_for_response()` should raise subclasses of `APIError` and
+  `NotFound` to keep both.
 
 #### Fields and conversion
 

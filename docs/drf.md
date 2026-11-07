@@ -493,35 +493,46 @@ as `"'abc' is not a valid choice."`. `NotFound` is also `DoesNotExist`, so
 `except DoesNotExist` catches an object that was deleted on the server when it
 is lazily loaded, as it catches a lookup that matched nothing.
 
-For exception types of your own, override `API.raise_for_response()` and
-translate DRF's error payload:
+For exception types of your own, override `API.raise_for_response()`, and raise
+subclasses of `APIError`, and of `NotFound` for a 404, so that
+`except APIError` and `except DoesNotExist` still catch them. Calling
+`super().raise_for_response()` first keeps eazyrest's message, which does not
+quote the body, and its parsed `data`:
 
 ```python
-import requests
-
-from eazyrest import API, ResponseShapeError
+from eazyrest import API, APIError, NotFound
 
 
-class DRFAPIError(requests.HTTPError):
+class DRFAPIError(APIError):
+    @property
+    def detail(self):
+        if isinstance(self.data, dict):
+            return self.data.get("detail")
+        return None
+
+    @property
+    def field_errors(self):
+        if isinstance(self.data, dict):
+            return {
+                name: messages
+                for name, messages in self.data.items()
+                if name != "detail"
+            }
+        return {}
+
+
+class DRFNotFound(DRFAPIError, NotFound):
     pass
 
 
 class DRFAPI(API):
     def raise_for_response(self, resp):
-        if resp.ok:
-            return
-
         try:
-            payload = self.json(resp)
-        except ResponseShapeError:
-            resp.raise_for_status()
-
-        if isinstance(payload, dict):
-            if "detail" in payload:
-                raise DRFAPIError(payload["detail"], response=resp)
-            raise DRFAPIError(str(payload), response=resp)
-
-        resp.raise_for_status()
+            super().raise_for_response(resp)
+        except NotFound as err:
+            raise DRFNotFound(str(err), response=resp, data=err.data) from None
+        except APIError as err:
+            raise DRFAPIError(str(err), response=resp, data=err.data) from None
 ```
 
 That keeps DRF-specific error unwrapping in the API layer instead of spreading

@@ -1053,7 +1053,11 @@ the payload lacks then loads the full object.
 The `API` class wraps a `requests.Session`, resolves request URLs relative to
 `base_url`, applies a default timeout, and raises for HTTP error responses. To
 customize error handling for a particular API, override `raise_for_response()`
-in an `API` subclass.
+in an `API` subclass. An override should raise a subclass of `APIError`, and of
+`NotFound` for a 404, so that `except APIError` catches its errors and a lazy
+load of an object deleted on the server still raises `DoesNotExist`. The
+[Django REST Framework guide](drf.md) shows one that keeps the default message
+and `data`.
 
 Requests follows redirects, but only a 307 or 308 redirect resends a request
 unchanged. It resends a `POST` answered with a 301 or 302, and any other
