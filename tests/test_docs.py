@@ -352,3 +352,25 @@ def test_drf_error_example_keeps_eazyrest_exceptions(
     else:
         assert info.value.detail is None
         assert info.value.field_errors == body
+
+
+def test_fields_never_sent_reports_only_fields_that_no_object_has() -> None:
+    """The drift recipe reports a field only when every object lacks it."""
+    fields_never_sent = run_guide_example("def fields_never_sent")[
+        "fields_never_sent"
+    ]
+
+    @json_object
+    class Machine(JSONObject):
+        class_url = "/machines/"
+
+        id: int
+        state: str
+        deployed: bool
+
+    objects = [
+        Machine(json={"id": 1, "state": "ready"}),
+        Machine(json={"id": 2}),
+    ]
+
+    assert fields_never_sent(Machine, objects) == {"deployed"}

@@ -707,6 +707,34 @@ whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
 so that it describes the declared types, as a server's schema does. It allows
 properties that the class does not declare, which a server may send.
 
+The schema is in the JSON Schema 2020-12 dialect, which its `$schema` names.
+OpenAPI 3.1 uses the same dialect, but OpenAPI 3.0, which Django REST
+Framework's schema generator writes, uses an older one, which has no
+`prefixItems`, the keyword of a fixed-length tuple's items, and no `$defs`.
+Compare such a schema property by property, rather than validating with it.
+
+### Finding fields that the server never sends
+
+A declared field that the server does not send raises `AttributeError` only
+when it is read, so a misspelled or removed field can go unnoticed. To find
+such fields, read many objects and report the read keys that none of them
+holds. A key missing from only some objects is a field that the server leaves
+out of some, not drift, so it is not reported:
+
+```python
+def fields_never_sent(model, objects):
+    """Return the read keys of model that no object's JSON holds."""
+    keys = set(model.json_schema()["properties"])
+    for obj in objects:
+        keys -= obj.json.keys()
+    return keys
+```
+
+For example, `fields_never_sent(Machine, Machine.filter())` in a deployment
+test compares every machine that the list endpoint returns. A list endpoint
+whose serializer leaves out fields that the detail endpoint sends reports those
+fields too, so compare objects loaded from the detail endpoint for such an API.
+
 ## Collections
 
 `filter()` and `all()` return iterators over model instances. The request is
