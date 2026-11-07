@@ -126,14 +126,31 @@ that can break code written for 0.9.0, followed by what to do about it.
   `dict[str, T]` or `Mapping[str, T]` field its values, where 0.9.0 returned
   the JSON value unchanged. Undeclared keys are kept. A `TypedDict` decorated
   with `pydantic.with_config()` is converted and validated by Pydantic, by its
-  whole config. A fixed-length tuple, a `NamedTuple`, a standard library
-  dataclass, a mapping whose keys are not strings, a union that holds a
-  `TypedDict`, and a model inside a `TypedDict` or a mapping raise
-  `FieldConversionError`, because eazyrest would read them as other types.
-  Annotate them for Pydantic, or annotate their JSON form, such as `list` or
+  whole config.
+- Fixed-length tuples and `NamedTuple`s convert as JSON arrays by position, and
+  standard library dataclasses as JSON objects by field, where 0.9.0 returned
+  the JSON value unchanged. `tuple[T]` is a tuple of one item, as Python's
+  types say, so annotate a tuple of any length as `tuple[T, ...]`. A union
+  converts only if each of its members passes through unchanged, as
+  `int | str`'s do.
+- A mapping whose keys are not strings, a union with a member that converts,
+  such as `str | datetime`, a model inside a `TypedDict`, a mapping, a
+  fixed-length tuple, a `NamedTuple`, or a dataclass, and any parameterized
+  type whose items eazyrest does not convert, such as `Counter[str]`, raise
+  `FieldConversionError`, because eazyrest cannot read them as their types.
+  Annotate them for Pydantic, or annotate their JSON form, such as
   `dict[str, Any]`. Pydantic does not convert eazyrest models either, so
   annotate a model inside one of these with its primary key type, such as
-  `int`.
+  `int`. `MutableSequence`, `Collection`, `Set`, `MutableSet`, `deque`, and
+  `MutableMapping` fields convert their items, where 0.9.0 returned them
+  unchanged.
+- Assigning a value that is not JSON to a field, such as an `IPv4Address`
+  without a conversion, or a float that is not finite, raises
+  `FieldConversionError` naming the field, rather than failing when the request
+  is sent.
+- A `Literal` field reads the JSON value of one of its enum members as the
+  member, and writes the member as that value, where 0.9.0 read the JSON value
+  unchanged.
 - `from_json()` and `to_json()` are no longer override points. Declare a
   model's `conversions` instead, mapping each type to a `Conversion` that
   decodes and encodes it, as the guide's Custom field conversion section shows.
@@ -213,10 +230,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   `eazyrest.pydantic` types follow inside the model's Pydantic fields, merged
   over its bases' and the default table, so a shared base model can convert a
   type of its own, such as `IPv4Address`, or replace a default, such as writing
-  datetimes as timestamps. `DEFAULT_CONVERSIONS` holds the default table. A
-  class checks its table when it is defined, and refuses a key that is a model
-  or a type that eazyrest converts itself, such as `int`, whose entry would
-  also convert `bool`.
+  datetimes as timestamps. An entry can also replace the conversion of a
+  dataclass, a `NamedTuple`, a `TypedDict`, or a Pydantic model.
+  `DEFAULT_CONVERSIONS` holds the default table. A class checks its table when
+  it is defined, and refuses a key that is a model or a type that eazyrest
+  converts itself, such as `int`, whose entry would also convert `bool`.
 - `encode_json(value, annotation)`, which encodes a request body or a query
   parameter as a field annotated `annotation` writes it, for
   `API.post(json=...)` and the other request methods, which send `json=` as it

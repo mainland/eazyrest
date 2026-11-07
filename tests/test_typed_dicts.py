@@ -339,11 +339,6 @@ def test_typed_dict_writes_reject_other_shapes(
         (dict[str, list[Owner | None]], "holds the model Owner"),
         (dict[str, dict[str, Owner]], "holds the model Owner"),
         (GenericWindow[int], "parameterized generic TypedDict"),
-        (Closed, "closed or declares extra items"),
-        (Extra, "closed or declares extra items"),
-        (tuple[int, str], "fixed-length tuple"),
-        (Point, "NamedTuple"),
-        (Pair, "dataclass"),
         (dict[int, str], "keys are not strings"),
     ],
 )
@@ -358,6 +353,21 @@ def test_types_read_as_another_type_are_refused(ty: Any, message: str) -> None:
     """
     with pytest.raises(TypeError, match=message):
         analyze_type(ty)
+
+
+@pytest.mark.parametrize("ty", [Closed, Extra])
+def test_closed_typed_dicts_are_refused_when_converted(ty: Any) -> None:
+    """A closed ``TypedDict``, or one with extra items, raises on first use.
+
+    It does not raise when analyzed, because a conversion may replace it.
+
+    Args:
+        ty: ``TypedDict`` class.
+    """
+    analyzed = analyze_type(ty)
+    assert isinstance(analyzed, TypedDictType)
+    with pytest.raises(TypeError, match="closed or declares extra items"):
+        _ = analyzed.keys
 
 
 @json_object
@@ -400,8 +410,18 @@ def test_json_schema_describes_typed_dicts_and_mappings() -> None:
     assert properties["window"] == {
         "type": "object",
         "properties": {
-            "start": {"type": "string", "format": "date-time"},
-            "length": {"type": "string", "format": "duration"},
+            "start": {
+                "anyOf": [
+                    {"type": "string", "format": "date-time"},
+                    {"type": "number"},
+                ]
+            },
+            "length": {
+                "anyOf": [
+                    {"type": "string", "format": "duration"},
+                    {"type": "number"},
+                ]
+            },
             "note": {"type": "string"},
             "token": {"type": "string", "format": "uuid"},
             "day": {"type": "string", "format": "date"},
@@ -448,10 +468,13 @@ def test_encode_json_writes_values_as_fields_write_them() -> None:
         (
             {"days": [Owner(id=1)]},
             dict[str, list[int]],
-            r"at \[key\]\[0\] has the type Owner",
+            r"^\[key\]: \[0\]: The value has the type Owner",
         ),
-        ({"a": {1: "x"}}, dict[str, Any], r"at \[key\] has a key"),
+        ({"a": {1: "x"}}, dict[str, Any], r"^\[key\]: The value has a key"),
+        ({"a": [{1: "x"}]}, Any, r"at \[key\]\[0\] has a key"),
         (object(), Any, "^The value has the type object"),
+        (float("nan"), float, "^The value is a float that is not finite"),
+        ({"a": [float("inf")]}, Any, r"at \[key\]\[0\] is a float that"),
         ({"day": "x"}, Window, None),
     ],
 )
@@ -473,7 +496,7 @@ def test_encode_json_refuses_values_that_are_not_json(
         assert encode_json(value, annotation) == value
         return
 
-    with pytest.raises(TypeError, match=message):
+    with pytest.raises((TypeError, ValueError), match=message):
         encode_json(value, annotation)
 
 

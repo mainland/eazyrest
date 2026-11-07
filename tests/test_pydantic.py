@@ -60,6 +60,7 @@ from eazyrest._models import (
     OptionalType,
     PydanticType,
     TypedDictType,
+    UnionType,
     analyze_type,
 )
 from eazyrest.pydantic import UUID, Date, Datetime, Duration, Time
@@ -241,7 +242,7 @@ def test_decimal_and_time_types_reject_what_pydantic_reads(
 
 def test_types_have_json_schemas() -> None:
     """A model that uses the types still has a JSON schema."""
-    properties = SCHEDULE.json_schema()["properties"]
+    properties = SCHEDULE.json_schema(mode="serialization")["properties"]
 
     assert {
         name: (schema["type"], schema["format"])
@@ -382,7 +383,7 @@ NUMBER_OR_TEXT: Any = int | str
         (pydantic.StrictInt, PydanticType(pydantic.StrictInt)),
         (pydantic.FiniteFloat, PydanticType(pydantic.FiniteFloat)),
         (CHOICE, BaseType(CHOICE)),
-        (NUMBER_OR_TEXT, BaseType(NUMBER_OR_TEXT)),
+        (NUMBER_OR_TEXT, UnionType((BaseType(int), BaseType(str)))),
     ],
 )
 def test_pydantic_converts_types_that_mention_it(
@@ -2146,6 +2147,63 @@ def test_pydantic_types_convert_by_the_models_table() -> None:
     }
 
 
+class Span(BaseModel):
+    """Pydantic model whose JSON form, in ``SpanBase``, is a string."""
+
+    low: int
+    high: int
+
+
+class SpanBase(PydanticBase):
+    """Base whose table converts a Pydantic model instead of Pydantic."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Span: Conversion(
+            decode=lambda value, cls: cls(
+                **dict(
+                    zip(
+                        ("low", "high"),
+                        map(int, value.split("-")),
+                        strict=True,
+                    )
+                )
+            ),
+            encode=lambda value, cls: f"{value.low}-{value.high}",
+            schema={"type": "string"},
+        )
+    }
+
+
+@json_object
+class Range(SpanBase):
+    """Model with a Pydantic model field, plain and annotated for Pydantic."""
+
+    class_url = "/ranges/"
+
+    id: int
+    span: Span
+    annotated: Annotated[Span, Field()]
+
+
+def test_an_entry_replaces_pydantic_unless_the_field_asks_for_it() -> None:
+    """A table entry converts a Pydantic model's field instead of Pydantic.
+
+    ``Annotated[T, pydantic.Field()]`` names Pydantic for that field, which
+    is more specific than the table, so Pydantic converts it.
+    """
+    item = Range(
+        json={"id": 1, "span": "1-2", "annotated": {"low": 3, "high": 4}}
+    )
+
+    assert item.span == Span(low=1, high=2)
+    assert item.annotated == Span(low=3, high=4)
+    item.span = Span(low=5, high=6)
+    assert item.json["span"] == "5-6"
+    schema = Range.json_schema()["properties"]
+    assert schema["span"] == {"type": "string"}
+    assert schema["annotated"]["type"] == "object"
+
+
 class SchemaTimestampBase(PydanticBase):
     """Base whose datetimes are timestamps, with a schema that says so."""
 
@@ -2205,8 +2263,10 @@ def test_pydantic_types_schemas_follow_the_models_table() -> None:
 
     assert slot(TimestampSlot, "read")["start"] == {"type": "number"}
     assert slot(IsoSlot, "read")["start"] == {
-        "type": "string",
-        "format": "date-time",
+        "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "number"},
+        ]
     }
     assert slot(IsoSlot, "read")["price"] == {
         "anyOf": [{"type": "string", "format": "decimal"}, {"type": "number"}]
@@ -2259,6 +2319,37 @@ def test_new_types_convert_as_their_supertype_inside_pydantic() -> None:
     assert opening.listed == [when]
     opening.annotated = Opened(when)
     assert opening.json["annotated"] == "2023-11-14T22:13:20+00:00"
+
+
+def test_pydantic_floats_that_are_not_finite_raise_when_written(
+    requests_mock: Any,
+) -> None:
+    """A Pydantic field refuses a float that JSON cannot write at once.
+
+    Assignment raises and keeps the old value, so ``save()``, ``create()``,
+    and a query never send it, as for a field without Pydantic.
+    """
+
+    @json_object
+    class Reading(PydanticBase):
+        class_url = "/readings/"
+
+        id: int
+        level: Annotated[float, Field()]
+        levels: list[Annotated[float, Field()]]
+
+    reading = Reading(json={"id": 1, "level": 0.5, "levels": [0.5]})
+    with pytest.raises(FieldConversionError, match="not finite"):
+        reading.level = float("inf")
+    assert reading.json["level"] == 0.5
+    with pytest.raises(FieldConversionError, match="not finite"):
+        Reading.create(id=2, level=float("inf"), levels=[])
+    with pytest.raises(FieldConversionError, match="not finite"):
+        list(Reading.filter(level=float("inf")))
+    reading.levels.append(float("-inf"))
+    with pytest.raises(FieldConversionError, match="not finite"):
+        reading.save()
+    assert not requests_mock.called
 
 
 @pytest.mark.parametrize(
@@ -2670,8 +2761,10 @@ def test_write_schemas_describe_what_pydantic_fields_write() -> None:
     jsonschema.validate(dial.json, written)
     assert written["properties"]["stamp"] == {"type": "number"}
     assert read["properties"]["stamp"] == {
-        "type": "string",
-        "format": "date-time",
+        "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "number"},
+        ]
     }
     assert "doubled" not in str(written)
 

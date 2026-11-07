@@ -257,7 +257,7 @@ class TupleTeam(ModelBase):
     class_url = "/tuple-teams/"
 
     id: int
-    members: tuple[User]
+    members: tuple[User, ...]
 
 
 @json_object
@@ -427,7 +427,7 @@ class IssueSnapshot(ModelBase):
     class_url = "/issue-snapshots/"
 
     id: int
-    statuses: tuple[IssueStatus]
+    statuses: tuple[IssueStatus, ...]
 
 
 class NoBulkUser(ModelBase):
@@ -1196,7 +1196,7 @@ def test_decimal_field_rejects_exponents_too_long_to_write(
 
     with pytest.raises(FieldConversionError, match="exponent beyond"):
         _ = shop.price
-    with pytest.raises(FieldConversionError, match=r"^Shop\.prices: Decimal"):
+    with pytest.raises(FieldConversionError, match=r"^Shop\.prices: \[0\]"):
         _ = shop.prices
     with pytest.raises(FieldConversionError, match="exponent beyond"):
         shop.price = decimal.Decimal(value)
@@ -6330,10 +6330,20 @@ def test_json_schema_describes_what_a_model_reads() -> None:
             "name": {"type": "string"},
             "score": {"type": "number"},
             "flag": {"type": "boolean"},
-            "when": {"type": "string", "format": "date-time"},
+            "when": {
+                "anyOf": [
+                    {"type": "string", "format": "date-time"},
+                    {"type": "number"},
+                ]
+            },
             "day": {"type": "string", "format": "date"},
             "token": {"type": "string", "format": "uuid"},
-            "length": {"type": "string", "format": "duration"},
+            "length": {
+                "anyOf": [
+                    {"type": "string", "format": "duration"},
+                    {"type": "number"},
+                ]
+            },
             "shade": {"enum": ["light", "dark"]},
             "type": {"enum": ["a", "b"]},
             "tags": {"type": "array", "items": {"type": "string"}},
@@ -6346,7 +6356,12 @@ def test_json_schema_describes_what_a_model_reads() -> None:
             "extra": {"type": "object", "additionalProperties": {}},
             "owner": owner,
             "link": link,
-            "created": {"type": "string", "format": "date-time"},
+            "created": {
+                "anyOf": [
+                    {"type": "string", "format": "date-time"},
+                    {"type": "number"},
+                ]
+            },
         },
         "additionalProperties": True,
     }

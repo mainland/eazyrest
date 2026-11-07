@@ -8,6 +8,7 @@ eazyrest's conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars
 import copy
@@ -15,16 +16,22 @@ import datetime
 import decimal
 import enum
 import re
+import types
 import typing
 import uuid
 import weakref
 from collections.abc import (
     Callable,
+    Collection,
     Generator,
     Iterable,
     Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
     Sequence,
 )
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, cast
@@ -32,6 +39,14 @@ from typing import Any, Literal, NamedTuple, cast
 import isodate
 
 from .dateparse import parse_datetime, parse_duration
+
+_typing_extensions: types.ModuleType | None
+try:
+    import typing_extensions as _typing_extensions_module
+except ImportError:  # pragma: no cover
+    _typing_extensions = None
+else:
+    _typing_extensions = _typing_extensions_module
 
 _ONE_MINUTE = datetime.timedelta(minutes=1)
 """The unit of an ISO 8601 UTC offset."""
@@ -62,7 +77,8 @@ class Conversion:
     instances of the type that the entry is keyed by, so a plain
     ``datetime`` read from a field declared as a subclass of ``datetime``
     writes back. Any other value, such as a string assigned to a
-    ``datetime`` field, is written as it is."""
+    ``datetime`` field, is written as it is. The result, like a value written
+    as it is, must be JSON, or the write raises ``FieldConversionError``."""
 
     schema: (
         Mapping[str, Any]
@@ -409,16 +425,23 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
 
     Raises:
         ValueError: If ``cls`` has no such member. The message does not quote
-            ``value``.
+            ``value``. A JSON boolean is not a member whose value is a
+            number, nor a number one whose value is a boolean, although
+            Python finds them equal.
     """
     try:
-        return cls(value)
+        member = cls(value)
     except ValueError as err:
         # Python quotes the value that the enum lacks.
         if repr(value) in str(err):
             raise ValueError(f"Value is not a valid {cls.__name__}") from err
 
         raise
+    if member.value == value and isinstance(member.value, bool) != isinstance(
+        value, bool
+    ):
+        raise ValueError(f"Value is not a valid {cls.__name__}")
+    return member
 
 
 def _decode_enum_value(value: Any, cls: type[Any]) -> enum.Enum:
@@ -501,6 +524,28 @@ def _string(form: str) -> Mapping[str, Any]:
     return MappingProxyType({"type": "string", "format": form})
 
 
+def _string_or_number(form: str) -> Callable[[type[Any], str], Any]:
+    """Return the schema of a string format that a read also takes as a number.
+
+    A datetime reads a Unix timestamp, and a duration a number of seconds.
+
+    Args:
+        form: The string's format, such as ``"date-time"``.
+
+    Returns:
+        A function of the declared type and mode that gives the schema.
+    """
+
+    def schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
+        del cls
+        written = {"type": "string", "format": form}
+        if mode == "read":
+            return {"anyOf": [written, {"type": "number"}]}
+        return written
+
+    return schema
+
+
 def _decimal_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
     """Return a ``Decimal``'s schema, which a read and a write differ in.
 
@@ -557,7 +602,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
         datetime.datetime: Conversion(
             decode=lambda value, _: parse_datetime(value),
             encode=lambda value, _: _encode_datetime(value),
-            schema=_string("date-time"),
+            schema=_string_or_number("date-time"),
         ),
         datetime.date: Conversion(
             decode=lambda value, _: _decode_date(value),
@@ -572,7 +617,7 @@ DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
         datetime.timedelta: Conversion(
             decode=lambda value, _: parse_duration(value),
             encode=lambda value, _: isodate.duration_isoformat(value),
-            schema=_string("duration"),
+            schema=_string_or_number("duration"),
         ),
         datetime.time: Conversion(
             decode=lambda value, _: _decode_time(value),
@@ -607,9 +652,15 @@ _OWN_TYPES: frozenset[type[Any]] = frozenset(
         dict,
         set,
         frozenset,
+        collections.deque,
         Iterable,
+        Collection,
         Sequence,
+        MutableSequence,
+        AbstractSet,
+        MutableSet,
         Mapping,
+        MutableMapping,
     }
 )
 """Types that eazyrest converts itself, which cannot key a conversion.
@@ -691,14 +742,16 @@ def _check_entry(owner: type[Any], key: Any, entry: Any) -> None:
             f"{owner.__name__}.conversions has the key {key.__name__}, a "
             f"NewType of {final!r}, which is not a class"
         )
-    # An entry encodes the instances of its key, so isinstance() must work.
-    try:
-        isinstance(None, final)
-    except TypeError:
-        raise TypeError(
-            f"{owner.__name__}.conversions has the key {key!r}, whose "
-            "instances cannot be recognized with isinstance()"
-        ) from None
+    if not _is_typed_dict(final):
+        # An entry encodes the instances of its key, so isinstance() must
+        # work. A TypedDict's entry encodes any mapping instead.
+        try:
+            isinstance(None, final)
+        except TypeError:
+            raise TypeError(
+                f"{owner.__name__}.conversions has the key {key!r}, whose "
+                "instances cannot be recognized with isinstance()"
+            ) from None
     try:
         own_type = key in _OWN_TYPES
     except TypeError:
@@ -727,6 +780,21 @@ def _is_class(ty: Any) -> bool:
         type, so a parameterized type is excluded explicitly.
     """
     return isinstance(ty, type) and typing.get_origin(ty) is None
+
+
+def _is_typed_dict(ty: Any) -> bool:
+    """Return whether a type is a ``TypedDict`` class.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a ``TypedDict``, from ``typing`` or
+        ``typing_extensions``.
+    """
+    if _typing_extensions is not None:
+        return bool(_typing_extensions.is_typeddict(ty))
+    return typing.is_typeddict(ty)  # pragma: no cover
 
 
 def _final_supertype(ty: Any) -> Any:
