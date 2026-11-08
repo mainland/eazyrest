@@ -604,10 +604,22 @@ def test_typed_dict_writes_refuse_values_that_are_not_json_under_other_keys(
 
 def test_errors_do_not_show_keys_that_the_input_chose() -> None:
     """A key of a value checked as JSON can be a secret, so it is hidden."""
-    job: Any = Job(json=dict(JOB_JSON))
 
-    with pytest.raises(FieldConversionError) as caught:
-        job.window = {**WINDOW, "secret-key": {"inner": object()}}
-    assert "secret" not in str(caught.value)
-    assert "inner" not in str(caught.value)
-    assert "[key]" in str(caught.value)
+    @json_object
+    class Note(JSONObject):
+        class_url = "/notes/"
+
+        id: int
+        extra: Any
+
+    note = Note(json={"id": 1, "extra": {}})
+    for attempt in (
+        lambda: encode_json({"secret-key": object()}, Any),
+        lambda: encode_json({"secret-key": {"inner": float("inf")}}, Any),
+        lambda: setattr(note, "extra", {"secret-key": object()}),
+    ):
+        with pytest.raises((TypeError, ValueError)) as caught:
+            attempt()
+        assert "secret" not in str(caught.value)
+        assert "inner" not in str(caught.value)
+        assert "[key]" in str(caught.value)

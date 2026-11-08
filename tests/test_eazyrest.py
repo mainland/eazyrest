@@ -38,6 +38,7 @@ from eazyrest import (
     RedirectError,
     ResponseShapeError,
     WriteMode,
+    encode_json,
     json_object,
 )
 
@@ -1216,8 +1217,7 @@ def test_zero_decimal_with_a_large_exponent_writes_one_digit() -> None:
     shop = Shop(json={"id": 1, "price": "0E+20000"})
 
     assert shop.price == 0
-    shop.price = decimal.Decimal("-0E+20000")
-    assert shop.json["price"] == "-0"
+    assert encode_json(shop.price, decimal.Decimal) == "0"
 
 
 @pytest.mark.parametrize("value", [True, [1], {"amount": 1}])

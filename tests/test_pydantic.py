@@ -3225,7 +3225,7 @@ def test_writes_that_would_drop_nested_keys_or_fields_raise(
         annotation: Its annotation.
     """
     with pytest.raises(ValueError, match="would drop them"):
-        encode_json(value, annotation)
+        encode_json(value, annotation, model=PydanticBase)
 
 
 def test_dataclasses_must_reject_keys_that_pydantic_would_drop() -> None:
@@ -3299,13 +3299,12 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
 
     assert mark.annotated == when
     assert mark.other == when
-    mark.plain = _Millis(when)
-    mark.annotated = _Millis(when)
+    for annotation in (_Millis, Annotated[_Millis, Field()]):
+        assert encode_json(when, annotation, model=Mark) == 1577836800000.0
     mark.listed = [_Millis(when)]
-    mark.other = _Plain(when)
-    assert mark.json["plain"] == 1577836800000.0
-    assert mark.json["annotated"] == 1577836800000.0
     assert mark.json["listed"] == [1577836800000.0]
-    assert mark.json["other"] == "2020-01-01T00:00:00+00:00"
+    assert encode_json(when, Annotated[_Plain, Field()], model=Mark) == (
+        "2020-01-01T00:00:00+00:00"
+    )
     write = Mark.json_schema("write")["properties"]
     assert write["annotated"] == {"type": "number"}

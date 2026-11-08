@@ -235,10 +235,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   `DEFAULT_CONVERSIONS` holds the default table. A class checks its table when
   it is defined, and refuses a key that is a model or a type that eazyrest
   converts itself, such as `int`, whose entry would also convert `bool`.
-- `encode_json(value, annotation)`, which encodes a request body or a query
-  parameter as a field annotated `annotation` writes it, for
-  `API.post(json=...)` and the other request methods, which send `json=` as it
-  is given.
+- `encode_json(value, annotation, *, model=None)`, which encodes a request body
+  or a query parameter as a field annotated `annotation` writes it, by the
+  default conversion table or by `model`'s, for `API.post(json=...)` and the
+  other request methods, which send `json=` as it is given.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`,
   detection of in-place changes to field values, and `merge_response()`.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and

@@ -1546,9 +1546,12 @@ api.post("/reservations/1/extend/", json=body)
 `annotation` writes, so `body` is `{"duration": "PT2H"}`. Any field annotation
 works, such as `datetime.datetime` for a query parameter or `list[Extension]`
 for a list. A key annotated `pydantic.Base64Bytes` writes base64 through
-Pydantic, so the annotation, not eazyrest, decides how bytes are written. A
-value that does not encode to JSON, such as a model under a key annotated
-`int`, raises `TypeError` naming its key.
+Pydantic, so the annotation, not eazyrest, decides how bytes are written. It
+converts by the default conversion table. Pass `model=` to convert by a model's
+table instead, as that model's fields would, such as
+`encode_json(body, Extension, model=Reservation)` for an API whose models
+declare their own `conversions`. A value that does not encode to JSON, such as
+a model under a key annotated `int`, raises `TypeError` naming its key.
 
 ### Limits
 

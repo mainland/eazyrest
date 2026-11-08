@@ -664,6 +664,23 @@ def test_renamed_definitions_keep_what_their_schemas_mean(
     assert not validator.is_valid({"a": "x", "b": value})
 
 
+def test_encode_json_converts_by_a_models_table() -> None:
+    """``encode_json(model=)`` writes a value as that model's fields do."""
+    address = ipaddress.IPv4Address("10.0.0.9")
+
+    assert encode_json([address], list[ipaddress.IPv4Address], model=Host) == [
+        "10.0.0.9"
+    ]
+    assert encode_json(WHEN, datetime.datetime, model=Event) == (
+        WHEN.timestamp()
+    )
+    assert encode_json(WHEN, datetime.datetime) == WHEN.isoformat()
+    with pytest.raises(TypeError, match="has the type IPv4Address"):
+        encode_json(address, ipaddress.IPv4Address)
+    with pytest.raises(TypeError, match="must be a JSONObject subclass"):
+        encode_json(1, int, model=int)  # type: ignore[arg-type]
+
+
 @dataclasses.dataclass
 class Money:
     """Dataclass whose JSON form is a string, such as ``"12 USD"``."""
@@ -828,6 +845,7 @@ def test_an_entry_writes_other_values_as_they_are() -> None:
     item.point = "5,6"  # type: ignore[assignment]
     assert item.json["price"] == "15 USD"
     assert item.json["point"] == "5,6"
+    assert encode_json("3 EUR", Money, model=Item) == "3 EUR"
     with pytest.raises(FieldConversionError, match="does not encode to JSON"):
         item.price = object()  # type: ignore[assignment]
     assert item.json["price"] == "15 USD"
@@ -868,6 +886,7 @@ def test_class_entries_give_schemas_queries_and_encode_json() -> None:
     }
     assert schema["point"] == {}
     assert schema["long_pair"]["type"] == "object"
+    assert encode_json(Money(1, "USD"), Money, model=Item) == "1 USD"
     assert encode_json(Money(1, "USD"), Money) == {
         "amount": 1,
         "currency": "USD",
@@ -1065,10 +1084,10 @@ def test_a_new_type_of_a_collection_converts_by_its_own_entry() -> None:
 
     assert segment.ends == (1, 2)
     assert segment.more == [(3, 4), None]
-    segment.ends = Ends((7, 8))
-    segment.more = [Ends((7, 8)), None]
-    assert segment.json["ends"] == "7,8"
-    assert segment.json["more"] == ["7,8", None]
+    assert encode_json(Ends((7, 8)), Ends, model=Segment) == "7,8"
+    assert encode_json(
+        [Ends((7, 8)), None], list[Ends | None], model=Segment
+    ) == ["7,8", None]
     for mode in ("read", "write"):
         properties = Segment.json_schema(mode)["properties"]
         assert properties["ends"] == {"type": "string"}
@@ -1138,6 +1157,10 @@ def test_a_new_type_of_a_typed_dict_converts_by_its_entry() -> None:
     tally: Any = Tally(json={"id": 1, "count": "3"})
 
     assert tally.count == {"n": 3}
+    assert (
+        encode_json(_CountRef(_CountId({"n": 4})), _CountRef, model=Tally)
+        == "4"
+    )
     tally.count["n"] = 5
     with requests_mock.Mocker() as mock:
         patch = mock.patch(

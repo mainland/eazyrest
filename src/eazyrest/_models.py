@@ -2281,26 +2281,32 @@ def _takes_kwargs(method: Any) -> bool:
     )
 
 
-def encode_json(value: Any, annotation: Any) -> Any:
+def encode_json(
+    value: Any, annotation: Any, *, model: type[JSONObject] | None = None
+) -> Any:
     """Return the JSON value that a field annotated ``annotation`` writes.
 
     Use it to encode a request body or a query parameter as fields encode
     their values, for example
-    ``api.post(url, json=encode_json(body, Extension))`` with a ``TypedDict``
-    ``Extension`` that describes the body. The request methods send ``json=``
-    as it is given, so the body must already be JSON.
+    ``api.post(url, json=encode_json(body, Extension, model=Machine))`` with
+    a ``TypedDict`` ``Extension`` that describes the body. The request
+    methods send ``json=`` as it is given, so the body must already be JSON.
 
     Args:
         value: Python value to encode.
         annotation: Type that describes ``value``, as a field annotation
             would, such as a ``TypedDict`` or ``list[datetime.datetime]``.
+        model: Model whose conversion table to encode by, so that the value
+            is written as that model's fields write it. Without it, the
+            default table.
 
     Returns:
         The JSON value, made of dictionaries with string keys, lists,
         strings, numbers, booleans, and ``None``.
 
     Raises:
-        TypeError: If ``annotation`` cannot be converted, as for a field, or
+        TypeError: If ``model`` is not a ``JSONObject`` subclass, if
+            ``annotation`` cannot be converted, as for a field, or if
             ``value`` holds a value that does not encode to JSON, such as a
             model under a key annotated ``int``. The message names the
             declared key, field, or position where the value is, shows a
@@ -2308,7 +2314,13 @@ def encode_json(value: Any, annotation: Any) -> Any:
         ValueError: If a value cannot be encoded, as for a field, or is a
             float that is not finite, which JSON cannot write.
     """
-    encoded = JSONObject._to_json(value, analyze_type(annotation))
+    if model is None:
+        model = JSONObject
+    elif not lenient_issubclass(model, JSONObject):
+        raise TypeError(
+            f"encode_json(model=) must be a JSONObject subclass, got {model!r}"
+        )
+    encoded = model._to_json(value, analyze_type(annotation))
     _check_json(encoded, "")
     return encoded
 
