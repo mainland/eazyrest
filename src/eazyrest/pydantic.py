@@ -43,12 +43,14 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
+from pydantic.fields import FieldInfo
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import (
     CoreSchema,
     ErrorDetails,
     PydanticKnownError,
     PydanticSerializationError,
+    PydanticUndefined,
     core_schema,
 )
 from typing_extensions import get_type_hints, is_typeddict
@@ -61,6 +63,7 @@ from ._conversion import (
 )
 from ._models import (
     JSONObject,
+    _annotations,
     _is_named_tuple,
     _is_type_alias,
     _resolve_alias_value,
@@ -437,20 +440,9 @@ _EAZYREST_TYPES: dict[Any, Any] = {
 }
 
 
-def _is_dataclass_class(cls: Any) -> bool:
-    """Return whether a type is a dataclass class.
-
-    Args:
-        cls: Type to test.
-
-    Returns:
-        Whether ``cls`` is a dataclass, of Pydantic or the standard library,
-        and a class, not an instance.
-    """
-    return isinstance(cls, type) and dataclasses.is_dataclass(cls)
-
-
-def _check_undeclared_keys(ty: Any, seen: set[Any] | None = None) -> None:
+def _check_undeclared_keys(
+    ty: Any, seen: set[Any] | None = None, *, model_extra: str | None = None
+) -> None:
     """Check that every class a type names keeps or rejects undeclared keys.
 
     Under Pydantic's default config, validating and serializing a ``TypedDict``
@@ -466,81 +458,161 @@ def _check_undeclared_keys(ty: Any, seen: set[Any] | None = None) -> None:
     of a field of a ``TypedDict``, dataclass, or ``NamedTuple``, or as the
     type of a ``TypedDict``'s extra items, with the type arguments of a
     parameterized generic class in place of its type parameters. A nested
-    value that drops keys deletes them on the server as well. A dataclass's
-    init-only field drops its key too, but its class variables are not
-    fields. A Pydantic model follows its own config, so the types of its
-    fields are not checked.
+    value that drops keys deletes them on the server as well. A field that
+    Pydantic excludes from writes, and a dataclass's init-only field, drop
+    their keys too, but a dataclass's class variables are not fields.
+
+    A Pydantic model follows its own config, and so does a ``TypedDict``
+    without a config of its own inside it, which takes the model's, but the
+    types of a model's fields are checked. A dataclass without a config of
+    its own inside a model takes the model's too, so it is safe only inside a
+    model with ``extra="forbid"``. A ``NamedTuple`` declares no keys, and the
+    classes inside it take the config that it is inside.
 
     Args:
         ty: Type to check.
         seen: Types already checked, which a type that refers to itself
             reaches again.
+        model_extra: The ``extra`` setting of the Pydantic model that ``ty``
+            is inside, through only classes without configs of their own,
+            which take it, or ``None`` outside a model.
 
     Raises:
         TypeError: If a class that the type names would drop keys, by its
-            config or an init-only field, or its annotations cannot be
-            resolved.
+            config, an excluded field, or an init-only field, or its
+            annotations cannot be resolved.
     """
     seen = set() if seen is None else seen
     try:
-        key: Any = ty
+        key: Any = (ty, model_extra)
         if key in seen:
             return
     except TypeError:
         # Annotated metadata can make a type unhashable.
-        key = id(ty)
+        key = (id(ty), model_extra)
         if key in seen:
             return
     seen.add(key)
 
     origin = typing.get_origin(ty)
     args = typing.get_args(ty)
-    for nested in _nested_types(ty, origin, args):
-        _check_undeclared_keys(nested, seen)
+    for nested, nested_extra in _nested_types(ty, origin, args, model_extra):
+        _check_undeclared_keys(nested, seen, model_extra=nested_extra)
 
 
-def _nested_types(ty: Any, origin: Any, args: tuple[Any, ...]) -> list[Any]:
+def _nested_types(
+    ty: Any, origin: Any, args: tuple[Any, ...], model_extra: str | None
+) -> list[tuple[Any, str | None]]:
     """Return the types that one level of a type names, checking its class.
 
     Args:
         ty: Type to inspect.
         origin: ``typing.get_origin(ty)``.
         args: ``typing.get_args(ty)``.
+        model_extra: The ``extra`` setting of the Pydantic model whose config
+            ``ty`` takes, as ``_check_undeclared_keys()`` says, or ``None``.
 
     Returns:
         The types to check next, such as the value of a named alias or the
-        field types of a class.
+        field types of a class, each with the model setting that it takes.
 
     Raises:
-        TypeError: If ``ty`` is a ``TypedDict`` or dataclass, or a
-            parameterized one, that would drop keys, or whose annotations
-            cannot be resolved.
+        TypeError: If ``ty`` is a class, or a parameterized one, that would
+            drop keys, or whose annotations cannot be resolved.
     """
     if _is_type_alias(ty):
-        return _alias_value(ty, (), ())
+        return [(value, model_extra) for value in _alias_value(ty, (), ())]
     if _is_type_alias(origin):
-        return _alias_value(origin, origin.__type_params__, args)
+        values = _alias_value(origin, origin.__type_params__, args)
+        return [(value, model_extra) for value in values]
     supertype = _supertype(ty)
     if supertype is not None:
-        return [supertype]
+        return [(supertype, model_extra)]
     if isinstance(ty, TypeVar):
         bound = [ty.__bound__] if ty.__bound__ is not None else []
-        return [*bound, *ty.__constraints__]
+        return [(arg, model_extra) for arg in [*bound, *ty.__constraints__]]
     if origin is Literal:
         return []
     if origin is Annotated:
-        return [args[0]]
+        return [(args[0], model_extra)]
 
     cls = ty if origin is None else origin
+    if lenient_issubclass(cls, BaseModel):
+        # A parameterized generic model is a class of its own, whose fields
+        # have its type arguments.
+        extra = cls.model_config.get("extra") or "ignore"
+        return [(hint, extra) for hint in _model_field_types(cls)]
     if not (
         is_typeddict(cls) or _is_dataclass_class(cls) or _is_named_tuple(cls)
     ):
-        return list(args)
-    if not _is_named_tuple(cls):
+        return [(arg, model_extra) for arg in args]
+    # A class without a config of its own inside a model takes the model's.
+    takes = (
+        model_extra
+        if getattr(cls, "__pydantic_config__", None) is None
+        else None
+    )
+    if _is_named_tuple(cls):
+        nested = model_extra
+    elif (is_typeddict(cls) and takes is not None) or takes == "forbid":
+        nested = takes
+    else:
         _check_extra(cls)
+        nested = None
     params = getattr(cls, "__parameters__", ())
     substitutions = dict(zip(params, args, strict=False)) if args else {}
-    return [_substitute(hint, substitutions) for hint in _field_types(cls)]
+    return [
+        (_substitute(hint, substitutions), nested)
+        for hint in _field_types(cls)
+    ]
+
+
+def _model_field_types(cls: type[BaseModel]) -> list[Any]:
+    """Return the types of a Pydantic model's fields.
+
+    Args:
+        cls: Pydantic model class.
+
+    Returns:
+        The types.
+
+    Raises:
+        TypeError: If the model excludes a field from writes, or its
+            annotations cannot be resolved, so that they cannot be checked.
+    """
+    if not getattr(cls, "__pydantic_complete__", True):
+        # A model that names a class defined after it holds the name as a
+        # ForwardRef, behind which nothing would be checked, until it is
+        # rebuilt.
+        try:
+            complete = cls.model_rebuild()
+        except Exception as err:
+            raise _unresolved(cls, err) from err
+        if complete is False:
+            raise _unresolved(cls, NameError("a name is undefined"))
+    for name, info in cls.model_fields.items():
+        _check_written(cls, name, info)
+    return [info.annotation for info in cls.model_fields.values()]
+
+
+def _check_written(cls: Any, name: str, info: FieldInfo) -> None:
+    """Refuse a field that Pydantic reads but may not write.
+
+    Args:
+        cls: Class of the field.
+        name: Name of the field.
+        info: Pydantic's description of the field.
+
+    Raises:
+        TypeError: If the field is excluded from writes, always or by a
+            condition, since a write would then drop its key.
+    """
+    if info.exclude or getattr(info, "exclude_if", None) is not None:
+        raise TypeError(
+            f"{cls.__name__} would drop the key of its field {name}, which "
+            "Pydantic excludes from writes. Remove the exclusion, or annotate "
+            "the field's JSON form."
+        )
 
 
 def _field_types(cls: Any) -> list[Any]:
@@ -549,7 +621,10 @@ def _field_types(cls: Any) -> list[Any]:
     These are the types of a ``TypedDict``'s keys and of its extra items, and
     of the fields of a ``NamedTuple`` or dataclass, not its class variables.
     A Pydantic dataclass gives the types that Pydantic resolved, which may
-    name classes that its annotations cannot.
+    name classes that its annotations cannot. A standard library dataclass's
+    fields are resolved one by one, so that a class variable whose
+    annotation names a type that exists only for type checkers does not
+    matter.
 
     Args:
         cls: ``TypedDict``, dataclass, or ``NamedTuple`` class.
@@ -559,38 +634,96 @@ def _field_types(cls: Any) -> list[Any]:
 
     Raises:
         TypeError: If the class has an init-only field, which it reads but
-            does not write, or its annotations cannot be resolved, so that
-            its fields cannot be checked.
+            does not write, or a field that Pydantic excludes from writes, or
+            the annotations of its fields cannot be resolved, so that they
+            cannot be checked.
     """
-    pydantic_fields = getattr(cls, "__pydantic_fields__", None)
-    if (
-        _is_dataclass_class(cls)
-        and pydantic_fields is not None
-        and getattr(cls, "__pydantic_complete__", False)
-    ):
-        for name, info in pydantic_fields.items():
-            if info.init_var:
+    if _is_dataclass_class(cls):
+        for name, field in cls.__dataclass_fields__.items():
+            if field._field_type is dataclasses._FIELD_INITVAR:  # type: ignore[attr-defined]
                 _refuse_init_only(cls, name)
-        return [info.annotation for info in pydantic_fields.values()]
+        pydantic_fields = getattr(cls, "__pydantic_fields__", None)
+        if pydantic_fields is not None and getattr(
+            cls, "__pydantic_complete__", False
+        ):
+            for name, info in pydantic_fields.items():
+                _check_written(cls, name, info)
+            return [info.annotation for info in pydantic_fields.values()]
+        field_hints = []
+        for field in dataclasses.fields(cls):
+            hint = _field_hint(cls, field.name)
+            default = (
+                PydanticUndefined
+                if field.default is dataclasses.MISSING
+                else field.default
+            )
+            info = FieldInfo.from_annotated_attribute(hint, default)
+            _check_written(cls, field.name, info)
+            field_hints.append(hint)
+        return field_hints
 
     try:
         hints = get_type_hints(cls, include_extras=True)
         extra = _extra_items(cls) if is_typeddict(cls) else None
     except Exception as err:
-        raise TypeError(
-            f"The fields of {cls.__name__} cannot be checked for the keys "
-            f"that it would drop, because its annotations cannot be resolved: "
-            f"{err}"
-        ) from err
+        raise _unresolved(cls, err) from err
     if is_typeddict(cls):
         return [*hints.values(), *([extra] if extra is not None else [])]
-    if _is_named_tuple(cls):
-        return [hints[name] for name in cls._fields if name in hints]
-    for name, hint in hints.items():
-        if isinstance(hint, dataclasses.InitVar):
-            _refuse_init_only(cls, name)
-    names = {field.name for field in dataclasses.fields(cls)}
-    return [hint for name, hint in hints.items() if name in names]
+    return [hints[name] for name in cls._fields if name in hints]
+
+
+def _field_hint(cls: Any, name: str) -> Any:
+    """Resolve the annotation of one field of a dataclass.
+
+    Args:
+        cls: Dataclass.
+        name: Name of one of its fields.
+
+    Returns:
+        The field's type, with ``Annotated`` metadata.
+
+    Raises:
+        TypeError: If the annotation cannot be resolved.
+    """
+    owner = next(base for base in cls.__mro__ if name in _annotations(base))
+    holder = type(
+        owner.__name__,
+        (),
+        {
+            "__module__": owner.__module__,
+            "__annotations__": {name: _annotations(owner)[name]},
+        },
+    )
+    # A class defined inside a function is absent from its module's globals.
+    # Its namespace resolves its own name, without the defaults of its
+    # fields, which could hide the types that their annotations name.
+    fields = {field.name for field in dataclasses.fields(cls)}
+    localns = {
+        key: value for key, value in vars(owner).items() if key not in fields
+    }
+    localns[owner.__name__] = owner
+    try:
+        return get_type_hints(holder, localns=localns, include_extras=True)[
+            name
+        ]
+    except Exception as err:
+        raise _unresolved(cls, err) from err
+
+
+def _unresolved(cls: Any, err: Exception) -> TypeError:
+    """Return the error for a class whose field types cannot be resolved.
+
+    Args:
+        cls: The class.
+        err: The error that resolving raised.
+
+    Returns:
+        The error to raise.
+    """
+    return TypeError(
+        f"The fields of {cls.__name__} cannot be checked for the keys that it "
+        f"would drop, because their annotations cannot be resolved: {err}"
+    )
 
 
 def _extra_items(cls: Any) -> Any:
@@ -696,6 +829,19 @@ def _substitute(ty: Any, substitutions: Mapping[Any, Any]) -> Any:
         # A form that cannot be rebuilt, such as a Callable's argument list,
         # names no class that drops keys.
         return ty
+
+
+def _is_dataclass_class(cls: Any) -> bool:
+    """Return whether a type is a dataclass class.
+
+    Args:
+        cls: Type to test.
+
+    Returns:
+        Whether ``cls`` is a dataclass, of Pydantic or the standard library,
+        and a class, not an instance.
+    """
+    return isinstance(cls, type) and dataclasses.is_dataclass(cls)
 
 
 def _check_extra(cls: Any) -> None:
@@ -1008,7 +1154,8 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             could not read its JSON value back as the value written, for
             example because the value breaks a constraint that only
             validation checks, or because it is a ``SecretStr``, which writes
-            a mask. The message does not quote the value.
+            a mask, or because it is a mapping with keys that the field's
+            type does not write. The message does not quote the value.
     """
     # A round trip writes a value that validation reads back, such as the
     # JSON text of a pydantic.Json field rather than the value it holds.
@@ -1038,10 +1185,79 @@ def _encode(adapter: TypeAdapter[Any], value: Any) -> Any:
             warnings="none",
         )
 
-    if not _same(adapter, written, _decode(adapter, encoded)):
+    read_back = _decode(adapter, encoded)
+    # Pydantic writes a TypedDict without the keys that its config forbids
+    # or ignores, and a dataclass or model without the fields of a subclass,
+    # at any depth, and the dumps below lack them too.
+    if _drops(written, read_back):
+        raise ValueError(
+            "The value has keys or fields that the field does not write, so "
+            "writing it would drop them"
+        )
+
+    if not _same(adapter, written, read_back):
         raise ValueError("The value does not read back as written")
 
     return encoded
+
+
+def _drops(written: Any, read_back: Any) -> bool:
+    """Return whether writing a value dropped some of its keys or fields.
+
+    Only the shape is compared: the keys of mappings, the fields of
+    dataclasses and models, and the lengths of sequences and sets, at any
+    depth. The values themselves are compared by their dumps.
+
+    Args:
+        written: The value written.
+        read_back: The value that its JSON reads as.
+
+    Returns:
+        Whether ``read_back`` lacks a key, field, or item that ``written``
+        has.
+    """
+    if isinstance(written, Mapping):
+        if not isinstance(read_back, Mapping) or len(read_back) < len(written):
+            return True
+        return any(
+            _drops(item, read_back[key])
+            for key, item in written.items()
+            if key in read_back
+        )
+    if isinstance(written, BaseModel):
+        fields = _names(written)
+        if not isinstance(read_back, BaseModel) or not fields <= _names(
+            read_back
+        ):
+            return True
+        return any(
+            _drops(getattr(written, name), getattr(read_back, name))
+            for name in fields
+        )
+    if dataclasses.is_dataclass(written) and not isinstance(written, type):
+        fields = {field.name for field in dataclasses.fields(written)}
+        if not dataclasses.is_dataclass(read_back) or not fields <= {
+            field.name for field in dataclasses.fields(read_back)
+        }:
+            return True
+        return any(
+            _drops(getattr(written, name), getattr(read_back, name))
+            for name in fields
+        )
+    if isinstance(written, (list, tuple)):
+        if not isinstance(read_back, (list, tuple)) or len(read_back) != len(
+            written
+        ):
+            return True
+        return any(
+            _drops(item, back)
+            for item, back in zip(written, read_back, strict=True)
+        )
+    if isinstance(written, (set, frozenset)):
+        return not isinstance(read_back, (set, frozenset)) or len(
+            read_back
+        ) != len(written)
+    return False
 
 
 def _same(adapter: TypeAdapter[Any], written: Any, read_back: Any) -> bool:
@@ -1086,14 +1302,10 @@ def _same_values(written: Any, read_back: Any) -> bool:
         Whether the values are the same.
     """
     if isinstance(written, BaseModel):
-        names = set(type(written).model_fields) | set(
-            written.model_extra or {}
-        )
+        names = _names(written)
         return (
             type(read_back) is type(written)
-            and names
-            == set(type(read_back).model_fields)
-            | set(read_back.model_extra or {})
+            and names == _names(read_back)
             and all(
                 _same_values(getattr(written, name), getattr(read_back, name))
                 for name in names
@@ -1184,9 +1396,7 @@ def _key(value: Any) -> Any:
         return (
             type(value),
             frozenset(
-                (name, _key(getattr(value, name)))
-                for name in set(type(value).model_fields)
-                | set(value.model_extra or {})
+                (name, _key(getattr(value, name))) for name in _names(value)
             ),
         )
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -1208,6 +1418,19 @@ def _key(value: Any) -> Any:
         return (set, frozenset(_items(value).items()))
     hash(value)
     return (None, value)
+
+
+def _names(model: BaseModel) -> set[str]:
+    """Return the names of a model's fields and of its undeclared keys.
+
+    Args:
+        model: Pydantic model instance.
+
+    Returns:
+        The names of its class's fields, and the keys of its
+        ``model_extra``, if its config keeps undeclared keys.
+    """
+    return set(type(model).model_fields) | set(model.model_extra or {})
 
 
 def _python_dump(adapter: TypeAdapter[Any], value: Any) -> Any:

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import contextvars
 import copy
+import dataclasses
 import datetime
 import decimal
 import enum
+import functools
 import inspect
 import itertools
+import math
+import operator
 import re
 import sys
 import types
@@ -22,6 +27,8 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    MutableMapping,
+    MutableSequence,
     MutableSet,
     Sequence,
 )
@@ -50,7 +57,9 @@ from ._conversion import (
     _active_table,
     _conversion_of,
     _final_supertype,
+    _Found,
     _is_instance,
+    _is_typed_dict,
     _schema_of_entry,
     _supertype,
     _table_of,
@@ -88,6 +97,17 @@ else:
 
 if sys.version_info >= (3, 14):
     from annotationlib import Format
+
+# typing_extensions recognizes its own TypedDicts as well as typing's, and
+# reads the qualifiers of their keys on every supported Python. It is a
+# dependency only before Python 3.11.
+_typing_extensions: types.ModuleType | None
+try:
+    import typing_extensions as _typing_extensions_module
+except ImportError:  # pragma: no cover
+    _typing_extensions = None
+else:
+    _typing_extensions = _typing_extensions_module
 
 if TYPE_CHECKING:
     from pydantic import TypeAdapter
@@ -425,6 +445,29 @@ def _is_class_var(annotation: Any) -> bool:
     return annotation is ClassVar or typing.get_origin(annotation) is ClassVar
 
 
+_READ_AS: Mapping[Any, type[Any]] = MappingProxyType(
+    {
+        list: list,
+        tuple: tuple,
+        set: set,
+        frozenset: frozenset,
+        collections.deque: collections.deque,
+        Iterable: tuple,
+        Collection: tuple,
+        Sequence: tuple,
+        MutableSequence: list,
+        AbstractSet: frozenset,
+        MutableSet: set,
+    }
+)
+"""Each collection type whose items eazyrest converts, and the type that a
+value of it reads as. An abstract type reads as an immutable one where it
+can."""
+
+_MAPPING_TYPES = (dict, Mapping, MutableMapping)
+"""Mapping types whose values eazyrest converts, which read as a ``dict``."""
+
+
 def _is_collection_type(ty: Any) -> bool:
     """Return whether a type represents a collection.
 
@@ -432,10 +475,10 @@ def _is_collection_type(ty: Any) -> bool:
         ty: Declared type to test.
 
     Returns:
-        Whether ``ty`` is ``Iterable``, ``list``, ``tuple``, ``set``, or
-        ``frozenset``.
+        Whether ``ty`` is a collection type whose items eazyrest converts,
+        such as ``list``, ``set``, ``Sequence``, or ``deque``.
     """
-    return ty in (Iterable, Sequence, list, tuple, set, frozenset)
+    return ty in _READ_AS
 
 
 def _is_collection_value(value: Any) -> bool:
@@ -552,8 +595,148 @@ class PydanticType:
         return _type_adapter(self.annotation)
 
 
+@dataclass(frozen=True)
+class TypedDictType:
+    """Type metadata for a ``TypedDict``, whose keys convert by annotation.
+
+    Each declared key converts by its annotation, and an undeclared key is
+    kept as JSON. A missing key is not an error. The keys are analyzed when
+    they are first needed, so a ``TypedDict`` can refer to itself.
+    """
+
+    typed_dict: type[Any]
+
+    @cached_property
+    def keys(self) -> Mapping[str, AnalyzedType]:
+        """Return the analyzed type of each declared key.
+
+        Raises:
+            TypeError: If a key's annotation cannot be resolved or converted,
+                or holds a model.
+        """
+        return _typed_dict_keys(self.typed_dict)
+
+
+@dataclass(frozen=True)
+class MappingType:
+    """Type metadata for a JSON object whose values all have one type.
+
+    ``dict[str, T]`` and ``Mapping[str, T]`` read and write a JSON object
+    whose values convert as ``T``.
+    """
+
+    value_type: AnalyzedType
+
+
+@dataclass(frozen=True)
+class FixedTupleType:
+    """Type metadata for a fixed-length tuple, such as ``tuple[int, str]``.
+
+    Its JSON form is an array of exactly that length, whose items convert
+    by position.
+    """
+
+    item_types: tuple[AnalyzedType, ...]
+
+
+@dataclass(frozen=True)
+class NamedTupleType:
+    """Type metadata for a ``NamedTuple``, whose JSON form is an array.
+
+    The array's items convert by position, as the fields' annotations say.
+    The fields are analyzed when they are first needed.
+    """
+
+    named_tuple: type[Any]
+
+    @cached_property
+    def fields(self) -> tuple[tuple[str, AnalyzedType], ...]:
+        """Return each field's name and analyzed type, in order.
+
+        Raises:
+            TypeError: If an annotation cannot be resolved or converted, or
+                holds a model.
+        """
+        hints = _hints_of(self.named_tuple)
+        return tuple(
+            (name, _structure_member(hints[name], self.named_tuple))
+            for name in self.named_tuple._fields
+        )
+
+
+@dataclass(frozen=True)
+class DataclassType:
+    """Type metadata for a standard library dataclass.
+
+    Its JSON form is an object whose keys are the fields that ``__init__``
+    takes, each converting by its annotation. The fields are analyzed when
+    they are first needed.
+    """
+
+    dataclass_type: type[Any]
+
+    @cached_property
+    def fields(self) -> tuple[tuple[str, AnalyzedType, bool], ...]:
+        """Return each field's name, analyzed type, and whether it is required.
+
+        Raises:
+            TypeError: If an annotation cannot be resolved or converted, or
+                holds a model.
+        """
+        hints = _hints_of(self.dataclass_type)
+        return tuple(
+            (
+                field.name,
+                _structure_member(hints[field.name], self.dataclass_type),
+                field.default is dataclasses.MISSING
+                and field.default_factory is dataclasses.MISSING,
+            )
+            for field in dataclasses.fields(self.dataclass_type)
+            if field.init
+        )
+
+
+@dataclass(frozen=True)
+class UnionType:
+    """Type metadata for a union whose members are leaf types.
+
+    It converts only if every member passes through unchanged, which a
+    class's conversion table decides, since a JSON value does not say which
+    member it is.
+    """
+
+    members: tuple[BaseType, ...]
+
+
+@dataclass(frozen=True)
+class NewTypeType:
+    """Type metadata for a ``NewType`` of a type that eazyrest structures.
+
+    The ``NewType``, or else its supertype, may have a conversion, which
+    replaces the supertype's structure, such as a ``tuple``'s or a
+    dataclass's. Without one, it converts as ``inner``. A ``NewType`` of a
+    leaf type is a ``BaseType``, and one whose supertype holds a model
+    analyzes as its supertype, so that its related objects read as any
+    other field's do.
+    """
+
+    new_type: Any
+    inner: AnalyzedType
+
+
 AnalyzedType: TypeAlias = (
-    BaseType | RelatedType | OptionalType | CollectionType | PydanticType
+    BaseType
+    | NewTypeType
+    | RelatedType
+    | OptionalType
+    | CollectionType
+    | MappingType
+    | TypedDictType
+    | FixedTupleType
+    | NamedTupleType
+    | DataclassType
+    | UnionType
+    | PydanticType
 )
 
 
@@ -582,7 +765,8 @@ def _mentions_pydantic(ty: Any) -> bool:
     A class with Pydantic's schema hook, such as a Pydantic model, a class with
     a Pydantic config, such as a ``TypedDict`` decorated with
     ``pydantic.with_config()``, and ``Annotated`` metadata for Pydantic are for
-    Pydantic.
+    Pydantic. ``analyze_type()`` converts a ``TypedDict`` itself, so its config
+    matters here only inside a type that Pydantic converts, such as a union.
 
     Args:
         ty: Type to inspect. The values of a ``Literal`` are not inspected.
@@ -609,22 +793,6 @@ def _mentions_pydantic(ty: Any) -> bool:
         return False
 
     return any(_mentions_pydantic(arg) for arg in args)
-
-
-def _is_named_tuple(ty: Any) -> bool:
-    """Return whether a type is a ``NamedTuple`` class.
-
-    Args:
-        ty: Type to test.
-
-    Returns:
-        Whether ``ty`` is a tuple class with named fields.
-    """
-    return (
-        isinstance(ty, type)
-        and issubclass(ty, tuple)
-        and hasattr(ty, "_fields")
-    )
 
 
 def _is_type_alias(ty: Any) -> bool:
@@ -854,7 +1022,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     converts the whole type.
 
     A named type alias, such as one that the ``type`` statement creates,
-    analyzes as the type it stands for.
+    analyzes as the type it stands for. A ``TypedDict`` and a mapping with
+    string keys, such as ``dict[str, T]``, analyze as structure whose keys or
+    values eazyrest converts.
 
     Args:
         ty: Declared field type.
@@ -864,7 +1034,13 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
 
     Raises:
         TypeError: If ``ty`` holds a named type alias that refers to itself, or
-            whose type parameters cannot be substituted.
+            whose type parameters cannot be substituted. Also raised for a
+            mapping whose keys are not strings, whose JSON form would read
+            them as strings, for a model inside a mapping, for a union that
+            holds a ``TypedDict``, and for a ``TypedDict`` that is
+            parameterized or has a Pydantic config that eazyrest would not
+            apply. A closed ``TypedDict`` raises when its keys are first
+            analyzed, since a conversion may replace it.
     """
     ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
@@ -883,14 +1059,43 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
         if len(non_none_args) == 1 and len(non_none_args) != len(ty_args):
             return OptionalType(analyze_type(non_none_args[0]))
+        if any(_names_typed_dict(arg) for arg in non_none_args):
+            raise TypeError(
+                f"{ty!r} is a union that holds a TypedDict, which eazyrest "
+                "cannot convert, because a JSON object does not say which "
+                "member it is. Annotate it for Pydantic, with "
+                "Annotated[T, pydantic.Field()]."
+            )
+        if not _mentions_pydantic(ty):
+            union = _union_type(ty, non_none_args)
+            if len(non_none_args) != len(ty_args):
+                return OptionalType(union)
+            return union
+
+    supertype = _supertype(ty)
+    if supertype is not None:
+        inner = analyze_type(supertype)
+        if isinstance(inner, BaseType):
+            return BaseType(ty)
+        if _class_key(inner) is not None or not _holds_model(inner):
+            return NewTypeType(ty, inner)
+        return inner
 
     if lenient_issubclass(ty, JSONObject):
         assert issubclass(ty, JSONObject)
         return RelatedType(ty)
 
+    if ty is tuple:
+        # A bare tuple is a tuple of any length, of items read as they are.
+        return CollectionType(tuple, BaseType(cast(type[Any], Any)))
     if ty_origin is tuple and len(ty_args) == 2 and ty_args[1] is Ellipsis:
         # tuple[T, ...] is a homogeneous tuple of any length.
         ty_args = ty_args[:1]
+    elif ty_origin is tuple:
+        item_types = tuple(analyze_type(arg) for arg in ty_args)
+        for item_type in item_types:
+            _check_no_models(item_type, ty)
+        return FixedTupleType(item_types)
 
     if _is_collection_type(ty_origin) and len(ty_args) == 1:
         return CollectionType(
@@ -898,10 +1103,390 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             item_type=analyze_type(ty_args[0]),
         )
 
+    if (
+        ty_origin in _MAPPING_TYPES
+        and len(ty_args) == 2
+        and ty_args[0] in (str, Any)
+    ):
+        value_type = analyze_type(ty_args[1])
+        _check_no_models(value_type, ty)
+        return MappingType(value_type)
+
+    if _is_typed_dict(ty_origin):
+        raise TypeError(
+            f"{ty!r} is a parameterized generic TypedDict, which eazyrest "
+            "cannot convert. Annotate the TypedDict that it stands for, or "
+            "annotate it for Pydantic."
+        )
+    if _is_typed_dict(ty) and not hasattr(ty, "__pydantic_config__"):
+        return TypedDictType(ty)
+
     if _mentions_pydantic(ty):
         return PydanticType(ty)
 
+    _check_json_form(ty, ty_origin)
+    if _is_named_tuple(ty):
+        return NamedTupleType(ty)
+    if _is_dataclass(ty):
+        return DataclassType(ty)
     return BaseType(ty)
+
+
+def _is_named_tuple(ty: Any) -> bool:
+    """Return whether a type is a ``NamedTuple`` class.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a tuple class with named fields.
+    """
+    return (
+        isinstance(ty, type)
+        and issubclass(ty, tuple)
+        and hasattr(ty, "_fields")
+    )
+
+
+def _is_dataclass(ty: Any) -> bool:
+    """Return whether a type is a dataclass, rather than an instance of one.
+
+    Args:
+        ty: Type to test.
+
+    Returns:
+        Whether ``ty`` is a dataclass.
+    """
+    return isinstance(ty, type) and dataclasses.is_dataclass(ty)
+
+
+def _union_type(ty: Any, members: tuple[Any, ...]) -> UnionType:
+    """Analyze a union of the types that a JSON value could be.
+
+    Args:
+        ty: The union, for the message.
+        members: Its members other than ``None``.
+
+    Returns:
+        The union's type metadata.
+
+    Raises:
+        TypeError: If a member is not a leaf type, such as a collection or a
+            model, which a union cannot convert.
+    """
+    analyzed = tuple(analyze_type(member) for member in members)
+    leaves = tuple(
+        member for member in analyzed if isinstance(member, BaseType)
+    )
+    if len(leaves) != len(analyzed):
+        raise TypeError(_union_message(ty))
+    return UnionType(leaves)
+
+
+def _union_message(ty: Any) -> str:
+    """Return the message for a union that eazyrest cannot convert.
+
+    Args:
+        ty: The union.
+
+    Returns:
+        The message.
+    """
+    return (
+        f"{ty!r} is a union whose members do not all pass through "
+        "unchanged, which eazyrest cannot convert, because a JSON value does "
+        "not say which member it is. Annotate it for Pydantic, with "
+        "Annotated[T, pydantic.Field()]."
+    )
+
+
+def _check_union(union: UnionType, table: Mapping[Any, Conversion]) -> None:
+    """Check that every member of a union passes through unchanged.
+
+    Args:
+        union: The union's type metadata.
+        table: Conversion table of the model whose field it is.
+
+    Raises:
+        TypeError: If a member has a conversion, or is a ``Literal`` with an
+            enum member, which reads as the member rather than its value.
+    """
+    for member in union.members:
+        ty = member.base_type
+        if _conversion_of(ty, table) is not None or (
+            typing.get_origin(ty) is Literal
+            and any(isinstance(arg, enum.Enum) for arg in typing.get_args(ty))
+        ):
+            raise TypeError(
+                _union_message(
+                    functools.reduce(
+                        operator.or_,
+                        (member.base_type for member in union.members),
+                    )
+                )
+            )
+
+
+def _check_optional_union(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> None:
+    """Check a union, or an optional one, whose value is ``None``.
+
+    Args:
+        analyzed: Analyzed type of the ``None`` value.
+        table: Conversion table of the model whose field it is.
+
+    Raises:
+        TypeError: If ``analyzed`` is a union with a member that converts.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    if isinstance(analyzed, UnionType):
+        _check_union(analyzed, table)
+
+
+def _hints_of(cls: type[Any]) -> dict[str, Any]:
+    """Resolve the annotations of a class whose fields eazyrest converts.
+
+    Args:
+        cls: ``TypedDict``, ``NamedTuple``, or dataclass.
+
+    Returns:
+        Each annotation, resolved, with its ``Annotated`` metadata.
+
+    Raises:
+        TypeError: If an annotation cannot be resolved.
+    """
+    get_type_hints = (
+        typing.get_type_hints
+        if _typing_extensions is None
+        else _typing_extensions.get_type_hints
+    )
+    try:
+        return dict(get_type_hints(cls, include_extras=True))
+    except Exception as err:
+        raise TypeError(
+            f"The annotations of {cls.__name__} cannot be resolved: {err}"
+        ) from err
+
+
+def _structure_member(hint: Any, container: Any) -> AnalyzedType:
+    """Analyze the annotation of a field of a ``NamedTuple`` or dataclass.
+
+    Args:
+        hint: The field's annotation.
+        container: The class, for messages.
+
+    Returns:
+        The field's type metadata.
+
+    Raises:
+        TypeError: If the annotation cannot be converted, or holds a model.
+    """
+    analyzed = analyze_type(hint)
+    _check_no_models(analyzed, container)
+    return analyzed
+
+
+def _names_typed_dict(ty: Any) -> bool:
+    """Return whether a union member is a ``TypedDict`` that eazyrest owns.
+
+    A ``TypedDict`` decorated for Pydantic is Pydantic's, which converts a
+    union of such members.
+
+    Args:
+        ty: Member of a union, which may be a named type alias or
+            ``Annotated``.
+
+    Returns:
+        Whether ``ty`` is a plain ``TypedDict``, or a parameterized one.
+    """
+    ty = _expand_aliases(ty)
+    if typing.get_origin(ty) is Annotated:
+        ty = typing.get_args(ty)[0]
+    cls = typing.get_origin(ty) or ty
+    return _is_typed_dict(cls) and not hasattr(cls, "__pydantic_config__")
+
+
+_NO_EXTRA_ITEMS: tuple[Any, ...] = (
+    None,
+    getattr(typing, "NoExtraItems", None),
+    getattr(_typing_extensions, "NoExtraItems", None),
+)
+"""Values of ``__extra_items__`` for a ``TypedDict`` without extra items."""
+
+
+def _key_qualifiers() -> frozenset[Any]:
+    """Return the qualifiers that a ``TypedDict`` key's annotation may have.
+
+    Returns:
+        ``Required``, ``NotRequired``, and ``ReadOnly``, from ``typing`` and
+        ``typing_extensions``, as far as each has them.
+    """
+    modules = [typing]
+    if _typing_extensions is not None:
+        modules.append(_typing_extensions)
+    return frozenset(
+        getattr(module, name)
+        for module in modules
+        for name in ("Required", "NotRequired", "ReadOnly")
+        if hasattr(module, name)
+    )
+
+
+_KEY_QUALIFIERS = _key_qualifiers()
+
+
+def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
+    """Analyze the declared keys of a ``TypedDict``.
+
+    ``Required``, ``NotRequired``, and ``ReadOnly`` say whether a key may be
+    missing or changed, which conversion does not check, so they are removed.
+
+    Args:
+        ty: ``TypedDict`` class.
+
+    Returns:
+        The analyzed type of each declared key.
+
+    Raises:
+        TypeError: If ``ty`` is closed or has extra items (PEP 728), or if an
+            annotation cannot be resolved or converted, or holds a model.
+    """
+    if getattr(ty, "__closed__", None) or not any(
+        getattr(ty, "__extra_items__", None) is marker
+        for marker in _NO_EXTRA_ITEMS
+    ):
+        raise TypeError(
+            f"{ty.__name__} is closed or declares extra items, which eazyrest "
+            "does not convert yet. Remove closed= and extra_items=, give it a "
+            "conversion, or decorate it for Pydantic."
+        )
+    keys: dict[str, AnalyzedType] = {}
+    for key, hint in _hints_of(ty).items():
+        while typing.get_origin(hint) in _KEY_QUALIFIERS:
+            hint = typing.get_args(hint)[0]
+        _check_no_alias(hint, ty, key)
+        analyzed = analyze_type(hint)
+        _check_no_models(analyzed, ty)
+        keys[key] = analyzed
+    return keys
+
+
+def _check_no_alias(hint: Any, ty: type[Any], key: str) -> None:
+    """Refuse a Pydantic alias on a ``TypedDict`` key that eazyrest converts.
+
+    The key is read and written under its own name, so an alias would be
+    ignored rather than applied as Pydantic applies it.
+
+    Args:
+        hint: The key's annotation.
+        ty: ``TypedDict`` class, for the message.
+        key: The key, for the message.
+
+    Raises:
+        TypeError: If ``hint``'s ``Annotated`` metadata gives an alias.
+    """
+    if typing.get_origin(hint) is not Annotated:
+        return
+    for metadata in typing.get_args(hint)[1:]:
+        if _is_pydantic_metadata(metadata) and any(
+            getattr(metadata, name, None) is not None
+            for name in ("alias", "validation_alias", "serialization_alias")
+        ):
+            raise TypeError(
+                f"{ty.__name__}.{key} has a Pydantic alias, which eazyrest "
+                "does not apply when it converts a TypedDict. Remove it, or "
+                "annotate the field for Pydantic, with "
+                "Annotated[T, pydantic.Field()]."
+            )
+
+
+def _holds_model(analyzed: AnalyzedType) -> bool:
+    """Return whether an analyzed type reads related objects.
+
+    Args:
+        analyzed: Analyzed type.
+
+    Returns:
+        Whether ``analyzed`` is a related model, or an optional or a
+        collection of one.
+    """
+    match analyzed:
+        case RelatedType():
+            return True
+        case OptionalType(inner) | CollectionType(_, inner):
+            return _holds_model(inner)
+    return False
+
+
+def _check_no_models(analyzed: AnalyzedType, container: Any) -> None:
+    """Refuse a model inside a ``TypedDict`` or a mapping.
+
+    Reading a related object inside such a value would need its own rules,
+    for its API, for reloads, and for prefetch, which a later release may
+    add.
+
+    Args:
+        analyzed: Analyzed type of a key or value of ``container``.
+        container: The ``TypedDict`` or mapping type, for the message.
+
+    Raises:
+        TypeError: If ``analyzed`` holds a related model.
+    """
+    match analyzed:
+        case RelatedType(model_type):
+            name = getattr(container, "__name__", repr(container))
+            raise TypeError(
+                f"{name} holds the model {model_type.__name__}, which "
+                "eazyrest does not convert inside a TypedDict, a mapping, a "
+                "fixed-length tuple, a NamedTuple, or a dataclass. Annotate "
+                "the model's primary key type instead."
+            )
+        case OptionalType(inner):
+            _check_no_models(inner, container)
+        case CollectionType(_, item_type):
+            _check_no_models(item_type, container)
+        case MappingType(value_type):
+            _check_no_models(value_type, container)
+        case FixedTupleType(item_types):
+            for item_type in item_types:
+                _check_no_models(item_type, container)
+
+
+def _check_json_form(ty: Any, ty_origin: Any) -> None:
+    """Refuse a type whose JSON form eazyrest cannot read as the type.
+
+    A mapping with keys other than strings has string keys in JSON, and a
+    parameterized generic ``NamedTuple`` or dataclass would need its type
+    arguments substituted, which a later release may do.
+
+    Args:
+        ty: Declared type, which eazyrest would otherwise pass through.
+        ty_origin: ``typing.get_origin(ty)``.
+
+    Raises:
+        TypeError: If ``ty`` is such a type.
+    """
+    if ty_origin in _MAPPING_TYPES:
+        raise TypeError(
+            f"{ty!r} is a mapping whose keys are not strings, whose JSON form "
+            "eazyrest would read as another type. Annotate it for Pydantic, "
+            "with Annotated[T, pydantic.Field()], or annotate its JSON form, "
+            "such as dict[str, Any]."
+        )
+    if _is_dataclass(ty_origin) or _is_named_tuple(ty_origin):
+        raise TypeError(
+            f"{ty!r} is a parameterized generic class, which eazyrest cannot "
+            "convert. Annotate the class itself, or annotate it for Pydantic, "
+            "with Annotated[T, pydantic.Field()]."
+        )
+    if ty_origin is not None and ty_origin is not Literal:
+        raise TypeError(
+            f"{ty!r} is a parameterized type that eazyrest does not convert, "
+            "whose items would pass through unconverted. Annotate a type that "
+            "it converts, such as list[T] or dict[str, T], or annotate it for "
+            "Pydantic, with Annotated[T, pydantic.Field()]."
+        )
 
 
 def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
@@ -983,12 +1568,12 @@ _UNCHANGEABLE_VALUES = (
     datetime.time,
     datetime.timedelta,
     uuid.UUID,
-    frozenset,
 )
 """Types of field values that cannot be changed in place.
 
 ``bool`` is a subclass of ``int`` and ``datetime.datetime`` of
-``datetime.date``.
+``datetime.date``. A ``frozenset`` or a ``tuple`` cannot change, but its
+items can, as a dataclass can, so neither is listed.
 """
 
 _MISSING = object()
@@ -1696,6 +2281,165 @@ def _takes_kwargs(method: Any) -> bool:
     )
 
 
+def encode_json(
+    value: Any, annotation: Any, *, model: type[JSONObject] | None = None
+) -> Any:
+    """Return the JSON value that a field annotated ``annotation`` writes.
+
+    Use it to encode a request body or a query parameter as fields encode
+    their values, for example
+    ``api.post(url, json=encode_json(body, Extension, model=Machine))`` with
+    a ``TypedDict`` ``Extension`` that describes the body. The request
+    methods send ``json=`` as it is given, so the body must already be JSON.
+
+    Args:
+        value: Python value to encode.
+        annotation: Type that describes ``value``, as a field annotation
+            would, such as a ``TypedDict`` or ``list[datetime.datetime]``.
+        model: Model whose conversion table to encode by, so that the value
+            is written as that model's fields write it. Without it, the
+            default table.
+
+    Returns:
+        The JSON value, made of dictionaries with string keys, lists,
+        strings, numbers, booleans, and ``None``.
+
+    Raises:
+        TypeError: If ``model`` is not a ``JSONObject`` subclass, if
+            ``annotation`` cannot be converted, as for a field, or if
+            ``value`` holds a value that does not encode to JSON, such as a
+            model under a key annotated ``int``. The message names the
+            declared key, field, or position where the value is, shows a
+            mapping's own keys as ``[key]``, and does not quote the value.
+        ValueError: If a value cannot be encoded, as for a field, or is a
+            float that is not finite, which JSON cannot write.
+    """
+    if model is None:
+        model = JSONObject
+    elif not lenient_issubclass(model, JSONObject):
+        raise TypeError(
+            f"encode_json(model=) must be a JSONObject subclass, got {model!r}"
+        )
+    encoded = model._to_json(value, analyze_type(annotation))
+    _check_json(encoded, "")
+    return encoded
+
+
+def _check_json(value: Any, path: str) -> None:
+    """Check that a value is made only of JSON types.
+
+    Args:
+        value: Value to check.
+        path: Where ``value`` is in the encoded value, for the message, such
+            as ``[key][0]``. A key that this check reaches was chosen by the
+            input or an encoder, not declared, and can be a secret, so it is
+            shown as ``[key]``.
+
+    Raises:
+        TypeError: If ``value`` holds a value of another type, or a mapping
+            key that is not a string.
+        ValueError: If ``value`` holds a float that is not finite, which
+            JSON cannot write.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(
+                f"The value{_at(path)} is a float that is not finite, which "
+                "JSON cannot write"
+            )
+        return
+    if value is None or isinstance(value, (str, int)):
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _check_json(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"The value{_at(path)} has a key that is not a string, "
+                    "which JSON objects cannot have"
+                )
+            _check_json(item, f"{path}[key]")
+        return
+    raise TypeError(
+        f"The value{_at(path)} has the type {type(value).__name__}, which "
+        "does not encode to JSON. Annotate it with a type that eazyrest "
+        "converts."
+    )
+
+
+def _literal_json(member: Any, table: Mapping[Any, Conversion]) -> Any:
+    """Return the JSON value of a ``Literal``'s member.
+
+    Args:
+        member: The member, such as ``"open"`` or ``Status.OPEN``.
+        table: Conversion table of the model whose field it is.
+
+    Returns:
+        An enum member encoded by its conversion, or any other member as it
+        is.
+    """
+    if isinstance(member, enum.Enum):
+        found = _conversion_of(type(member), table)
+        if found is not None:
+            return found.entry.encode(member, found.declared)
+    return member
+
+
+def _literal_member(
+    ty: Any, value: Any, table: Mapping[Any, Conversion]
+) -> Any:
+    """Read a JSON value as the member of a ``Literal`` that it encodes.
+
+    Args:
+        ty: The ``Literal`` type.
+        value: JSON value read.
+        table: Conversion table of the model whose field it is.
+
+    Returns:
+        The enum member whose JSON value is ``value``, or else a copy of
+        ``value``, which a ``Literal`` does not check.
+    """
+    for member in typing.get_args(ty):
+        if isinstance(member, enum.Enum):
+            encoded = _literal_json(member, table)
+            # A JSON true is not the member whose value is 1.
+            if type(encoded) is type(value) and encoded == value:
+                return member
+    return _copy_json(value)
+
+
+def _checked_json(value: Any) -> Any:
+    """Return a value after checking that it is made only of JSON types.
+
+    Args:
+        value: Encoded value.
+
+    Returns:
+        ``value``.
+
+    Raises:
+        TypeError: If ``value`` holds a value of another type.
+    """
+    _check_json(value, "")
+    return value
+
+
+def _at(path: str) -> str:
+    """Return where a value is, for a message.
+
+    Args:
+        path: Keys and indexes, such as ``['window'][0]``, or empty for the
+            whole value.
+
+    Returns:
+        `` at `` and ``path``, or nothing for an empty path.
+    """
+    return f" at {path}" if path else ""
+
+
 @overload
 def json_object(
     cls: type[T],
@@ -1940,15 +2684,13 @@ def _base_schema(
     if typing.get_origin(ty) is Literal:
         return {
             "enum": [
-                value.value if isinstance(value, enum.Enum) else value
-                for value in typing.get_args(ty)
+                _literal_json(member, table) for member in typing.get_args(ty)
             ]
         }
     found = _conversion_of(ty, table)
     if found is not None:
         return _schema_of_entry(found.entry, found.declared, mode)
-    while _supertype(ty) is not None:
-        ty = _supertype(ty)
+    ty = _final_supertype(ty)
     if not isinstance(ty, type):
         return {}
     # A bool is an int too, so it comes first.
@@ -2168,6 +2910,24 @@ def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
     return result
 
 
+def _array_schema(items: list[Any]) -> dict[str, Any]:
+    """Return the schema of an array whose items are fixed by position.
+
+    Args:
+        items: Each position's schema.
+
+    Returns:
+        The schema, in the JSON Schema 2020-12 vocabulary.
+    """
+    return {
+        "type": "array",
+        "prefixItems": items,
+        "items": False,
+        "minItems": len(items),
+        "maxItems": len(items),
+    }
+
+
 def _json_schema_of(
     analyzed: AnalyzedType,
     mode: str,
@@ -2181,8 +2941,9 @@ def _json_schema_of(
         analyzed: Analyzed type of the field.
         mode: ``"read"`` or ``"write"``.
         defs: Definitions shared by the model's schema, updated in place.
-        seen: Models whose key schema is being built, to stop a cycle of
-            related primary keys.
+        seen: Models whose key schema is being built, and structures whose
+            schema is, to stop a cycle of related primary keys or of a
+            structure inside itself.
         table: Conversion table of the model whose field it is.
 
     Returns:
@@ -2192,7 +2953,12 @@ def _json_schema_of(
         TypeError: If a Pydantic-converted field needs Pydantic, which is not
             installed, or another conversion error.
     """
+    found = _class_entry(analyzed, table)
+    if found is not None:
+        return _schema_of_entry(found.entry, found.declared, mode)
     match analyzed:
+        case NewTypeType(_, inner):
+            return _json_schema_of(inner, mode, defs, seen, table)
         case OptionalType(inner):
             return {
                 "anyOf": [
@@ -2205,7 +2971,7 @@ def _json_schema_of(
                 "type": "array",
                 "items": _json_schema_of(item_type, mode, defs, seen, table),
             }
-            if collection_type in (set, frozenset):
+            if _READ_AS[collection_type] in (set, frozenset):
                 schema["uniqueItems"] = True
             return schema
         case RelatedType(model_type, hyperlinked):
@@ -2228,6 +2994,71 @@ def _json_schema_of(
             if mode == "read":
                 return {"anyOf": [key, {"type": "object"}]}
             return key
+        case TypedDictType(typed_dict):
+            if typed_dict in seen:
+                # A TypedDict inside itself allows any object there.
+                return {"type": "object"}
+            return {
+                "type": "object",
+                "properties": {
+                    key: _json_schema_of(
+                        key_type, mode, defs, seen | {typed_dict}, table
+                    )
+                    for key, key_type in analyzed.keys.items()
+                },
+                "additionalProperties": True,
+            }
+        case MappingType(value_type):
+            return {
+                "type": "object",
+                "additionalProperties": _json_schema_of(
+                    value_type, mode, defs, seen, table
+                ),
+            }
+        case FixedTupleType(item_types):
+            return _array_schema(
+                [
+                    _json_schema_of(item_type, mode, defs, seen, table)
+                    for item_type in item_types
+                ]
+            )
+        case NamedTupleType(named_tuple):
+            if named_tuple in seen:
+                # A NamedTuple inside itself allows any array there.
+                return {"type": "array"}
+            return _array_schema(
+                [
+                    _json_schema_of(
+                        item_type, mode, defs, seen | {named_tuple}, table
+                    )
+                    for _, item_type in analyzed.fields
+                ]
+            )
+        case DataclassType(dataclass_type):
+            if dataclass_type in seen:
+                # A dataclass inside itself allows any object there.
+                return {"type": "object"}
+            fields = analyzed.fields
+            inside = seen | {dataclass_type}
+            schema = {
+                "type": "object",
+                "properties": {
+                    name: _json_schema_of(item_type, mode, defs, inside, table)
+                    for name, item_type, _ in fields
+                },
+                "additionalProperties": False,
+            }
+            required = [name for name, _, needed in fields if needed]
+            if required:
+                schema["required"] = required
+            return schema
+        case UnionType(members):
+            return {
+                "anyOf": [
+                    _base_schema(member.base_type, mode, table)
+                    for member in members
+                ]
+            }
         case PydanticType():
             # Building the adapter reports a missing Pydantic.
             adapter = analyzed.adapter
@@ -2241,6 +3072,188 @@ def _json_schema_of(
         case BaseType(base_type):
             return _base_schema(base_type, mode, table)
     raise TypeError(f"Unsupported analyzed type {type(analyzed).__name__}")
+
+
+@contextlib.contextmanager
+def _at_key(where: str) -> Generator[None, None, None]:
+    """Name the key of a ``TypedDict`` or mapping in a conversion error.
+
+    Args:
+        where: The key, such as ``['start']``, or ``[key]`` for a key that the
+            input chose, which the message does not quote.
+
+    Yields:
+        Nothing. A ``TypeError`` or ``ValueError`` raised inside the block is
+        raised again with ``where`` before its message.
+
+    Raises:
+        TypeError: If the block raises a ``TypeError``.
+        ValueError: If the block raises a ``ValueError`` that is not a
+            ``TypeError``.
+    """
+    try:
+        yield
+    except TypeError as err:
+        raise TypeError(f"{where}: {err}") from err
+    except ValueError as err:
+        raise ValueError(f"{where}: {err}") from err
+
+
+def _each_item(
+    convert: Callable[[Any], Any], items: Iterable[Any]
+) -> list[Any]:
+    """Convert each item of a collection, naming its position in an error.
+
+    One ``try`` covers the loop, so a long collection pays for naming the
+    position only when an item fails.
+
+    Args:
+        convert: Function that converts one item.
+        items: The items.
+
+    Returns:
+        The converted items, in order.
+
+    Raises:
+        TypeError: If converting an item raises a ``TypeError``.
+        ValueError: If converting an item raises a ``ValueError`` that is
+            not a ``TypeError``.
+    """
+    converted: list[Any] = []
+    index = 0
+    try:
+        # The except clauses read index.
+        for index, item in enumerate(items):  # noqa: B007
+            converted.append(convert(item))
+    except TypeError as err:
+        raise TypeError(f"[{index}]: {err}") from err
+    except ValueError as err:
+        raise ValueError(f"[{index}]: {err}") from err
+    return converted
+
+
+def _fixed_items(value: Any, length: int, direction: str) -> list[Any]:
+    """Return the items of a fixed-length array, checking its length.
+
+    Args:
+        value: JSON array read, or tuple written.
+        length: The length that the annotation requires.
+        direction: ``"read"`` or ``"write"``, for the message.
+
+    Returns:
+        The items.
+
+    Raises:
+        TypeError: If ``value`` is not an array, or a sequence to write.
+        ValueError: If it has another length.
+    """
+    if not isinstance(value, (list, tuple)):
+        what = "JSON arrays" if direction == "read" else "tuples or lists"
+        raise TypeError(
+            f"Fixed-length values must be {what}, got {type(value).__name__}"
+        )
+    if len(value) != length:
+        raise ValueError(
+            f"Fixed-length values must have {length} items, got {len(value)}"
+        )
+    return list(value)
+
+
+def _class_key(analyzed: AnalyzedType) -> Any:
+    """Return the class whose conversion would replace a type's structure.
+
+    Args:
+        analyzed: Analyzed type.
+
+    Returns:
+        The dataclass, ``NamedTuple``, ``TypedDict``, or class that Pydantic
+        converts, or the ``NewType`` of one, which a conversion table entry
+        may convert instead. ``None`` for any other type, including one
+        annotated for Pydantic, whose annotation is more specific than a
+        table.
+    """
+    match analyzed:
+        case DataclassType(key) | NamedTupleType(key) | TypedDictType(key):
+            return key
+        case NewTypeType(key, _):
+            return key
+        case PydanticType(annotation) if isinstance(annotation, type):
+            return annotation
+    return None
+
+
+def _class_entry(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> _Found | None:
+    """Return the table entry that converts a class instead of its structure.
+
+    Args:
+        analyzed: Analyzed type.
+        table: Conversion table of the model whose field it is.
+
+    Returns:
+        The conversion found for the type's class, if it has one.
+    """
+    key = _class_key(analyzed)
+    if key is None:
+        return None
+    return _conversion_of(key, table)
+
+
+def _encodes(value: Any, found: _Found) -> bool:
+    """Return whether a conversion encodes a value.
+
+    Args:
+        value: Value to write.
+        found: The conversion, as ``_conversion_of()`` found it.
+
+    Returns:
+        Whether ``value`` is an instance of the type that the entry is keyed
+        by. A ``TypedDict`` has no instances, so an entry keyed by one, or
+        by a ``NewType`` of one, encodes any mapping.
+    """
+    if _is_typed_dict(_final_supertype(found.key)):
+        return isinstance(value, Mapping)
+    return _is_instance(value, found.key)
+
+
+def _check_mapping(
+    value: Any, conversion: TypedDictType | MappingType
+) -> None:
+    """Check that a value can be a ``TypedDict`` or mapping field's value.
+
+    Args:
+        value: JSON value read, or Python value written.
+        conversion: The field's ``TypedDict`` or mapping type.
+
+    Raises:
+        TypeError: If ``value`` is not a mapping, or has a key that is not a
+            string.
+    """
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"{_mapping_name(conversion)} values must be mappings, "
+            f"got {type(value).__name__}"
+        )
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError(
+            f"{_mapping_name(conversion)} keys must be strings, which JSON "
+            "object keys are"
+        )
+
+
+def _mapping_name(conversion: TypedDictType | MappingType) -> str:
+    """Return the name of a ``TypedDict`` or mapping type, for messages.
+
+    Args:
+        conversion: The type.
+
+    Returns:
+        The ``TypedDict``'s name, or ``Mapping``.
+    """
+    if isinstance(conversion, TypedDictType):
+        return conversion.typed_dict.__name__
+    return "Mapping"
 
 
 class JSONProperty:
@@ -2560,11 +3573,8 @@ class JSONProperty:
         ):
             return _MISSING
 
-        # Abstract collection types read as tuples, as in _from_json().
-        if collection_type in (Iterable, Sequence):
-            return tuple(value)
-
-        return collection_type(value)
+        # Abstract collection types read as concrete ones, as in _from_json().
+        return _READ_AS[collection_type](value)
 
 
 class JSONObject:
@@ -2601,16 +3611,16 @@ class JSONObject:
     conversions: ClassVar[Mapping[Any, Conversion]] = MappingProxyType({})
     """Conversions of field types, keyed by the type they convert.
 
-    A class's entries are merged over its bases', and theirs over the
-    default ones for ``datetime``, ``date``, ``time``, ``timedelta``,
-    ``UUID``, ``Decimal``, and enums. A field type converts by the entry
-    for exactly that type, else by the entry of the nearest class in its
-    MRO, else, for a ``NewType``, as its supertype. A key cannot be a
-    model, or a type that eazyrest converts itself: ``object``,
-    ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
-    collection type such as ``list`` or ``dict``. Declare the mapping in
-    the class body: the class merges and checks its table when it is
-    defined.
+    A class's entries are merged over its bases', and theirs over the default
+    ones for ``datetime``, ``date``, ``time``, ``timedelta``, ``UUID``,
+    ``Decimal``, and enums. A field type converts by the entry for exactly that
+    type, else by the entry of the nearest class in its MRO, else, for a
+    ``NewType``, as its supertype. An entry for a dataclass, a ``NamedTuple``,
+    a ``TypedDict``, or a class that Pydantic converts replaces its structure.
+    A key cannot be a model, or a type that eazyrest converts itself:
+    ``object``, ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
+    collection type such as ``list`` or ``dict``. Declare the mapping in the
+    class body: the class merges and checks its table when it is defined.
     """
 
     _pk_value: Any
@@ -2883,6 +3893,44 @@ class JSONObject:
 
         return related
 
+    def _read_at(
+        self,
+        where: str,
+        value: Any,
+        conversion: AnalyzedType,
+        field: str | None,
+    ) -> Any:
+        """Read one item of a structure, naming it in a conversion error.
+
+        Args:
+            where: The item's position or declared key, such as ``[0]``.
+            value: The item's JSON value.
+            conversion: The item's analyzed type.
+            field: Owning field name, as for ``_from_json()``.
+
+        Returns:
+            The item's value.
+        """
+        with _at_key(where):
+            return self._from_json(value, conversion, field=field)
+
+    @classmethod
+    def _write_at(
+        cls, where: str, value: Any, conversion: AnalyzedType
+    ) -> Any:
+        """Write one item of a structure, naming it in a conversion error.
+
+        Args:
+            where: The item's position or declared key, such as ``[0]``.
+            value: The item's value.
+            conversion: The item's analyzed type.
+
+        Returns:
+            The item's JSON value.
+        """
+        with _at_key(where):
+            return cls._to_json(value, conversion)
+
     def _from_json(
         self,
         value: Any,
@@ -2906,16 +3954,29 @@ class JSONObject:
                 ``conversion`` is not a supported analyzed type.
         """
         if value is None:
+            # A union that cannot convert is refused whatever its value.
+            _check_optional_union(conversion, _table_of(type(self)))
             return value
+
+        found = _class_entry(conversion, _table_of(type(self)))
+        if found is not None:
+            return found.entry.decode(value, found.declared)
 
         match conversion:
             case OptionalType(inner_type):
+                return self._from_json(value, inner_type, field=field)
+
+            case NewTypeType(_, inner_type):
                 return self._from_json(value, inner_type, field=field)
 
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(type(self)))
                 if found is not None:
                     return found.entry.decode(value, found.declared)
+                if typing.get_origin(base_type) is Literal:
+                    return _literal_member(
+                        base_type, value, _table_of(type(self))
+                    )
 
                 # Changing the returned value in place must not change the
                 # object's JSON without recording an update.
@@ -2938,6 +3999,79 @@ class JSONObject:
                     field=field,
                     hyperlinked=hyperlinked,
                 )
+
+            case TypedDictType():
+                keys = conversion.keys
+                _check_mapping(value, conversion)
+                read: dict[str, Any] = {}
+                for key, item in value.items():
+                    if key not in keys:
+                        read[key] = _copy_json(item)
+                        continue
+                    with _at_key(f"[{key!r}]"):
+                        read[key] = self._from_json(
+                            item, keys[key], field=field
+                        )
+                return read
+
+            case MappingType(value_type):
+                _check_mapping(value, conversion)
+                read = {}
+                for key, item in value.items():
+                    # The input chose the key, so the message does not name it.
+                    with _at_key("[key]"):
+                        read[key] = self._from_json(
+                            item, value_type, field=field
+                        )
+                return read
+
+            case FixedTupleType(item_types):
+                items = _fixed_items(value, len(item_types), "read")
+                return tuple(
+                    self._read_at(f"[{index}]", item, item_type, field)
+                    for index, (item, item_type) in enumerate(
+                        zip(items, item_types, strict=True)
+                    )
+                )
+
+            case NamedTupleType(named_tuple):
+                positions = conversion.fields
+                items = _fixed_items(value, len(positions), "read")
+                return named_tuple(
+                    *(
+                        self._read_at(f"[{name!r}]", item, item_type, field)
+                        for item, (name, item_type) in zip(
+                            items, positions, strict=True
+                        )
+                    )
+                )
+
+            case DataclassType(dataclass_type):
+                fields = conversion.fields
+                declared = {name for name, _, _ in fields}
+                if not isinstance(value, Mapping):
+                    raise TypeError(
+                        f"{dataclass_type.__name__} values must be JSON "
+                        f"objects, got {type(value).__name__}"
+                    )
+                if not set(value) <= declared:
+                    raise ValueError(
+                        f"{dataclass_type.__name__} has keys that it does not "
+                        "declare, which a dataclass cannot keep"
+                    )
+                return dataclass_type(
+                    **{
+                        name: self._read_at(
+                            f"[{name!r}]", value[name], item_type, field
+                        )
+                        for name, item_type, _ in fields
+                        if name in value
+                    }
+                )
+
+            case UnionType():
+                _check_union(conversion, _table_of(type(self)))
+                return _copy_json(value)
 
             case CollectionType(collection_type, item_type):
                 if not isinstance(value, Iterable) or isinstance(
@@ -2965,16 +4099,12 @@ class JSONObject:
                         hyperlinked=item_type.hyperlinked,
                     )
 
-                converted_items = (
-                    self._from_json(item, item_type, field=field)
-                    for item in value
+                converted_items = _each_item(
+                    lambda item: self._from_json(item, item_type, field=field),
+                    value,
                 )
 
-                # Abstract collection types read as tuples.
-                if collection_type in (Iterable, Sequence):
-                    return tuple(converted_items)
-
-                return collection_type(converted_items)
+                return _READ_AS[collection_type](converted_items)
 
             case _:
                 raise TypeError(
@@ -3003,10 +4133,22 @@ class JSONObject:
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
         if value is None:
+            # A union that cannot convert is refused whatever its value.
+            _check_optional_union(conversion, _table_of(cls))
             return None
+
+        found = _class_entry(conversion, _table_of(cls))
+        if found is not None:
+            if _encodes(value, found):
+                return _checked_json(found.entry.encode(value, found.declared))
+            # The entry replaces the structure, so another value is written
+            # as it is, as for an entry of a leaf type.
+            return _checked_json(value)
 
         match conversion:
             case OptionalType(inner_type):
+                return cls._to_json(value, inner_type)
+            case NewTypeType(_, inner_type):
                 return cls._to_json(value, inner_type)
             case RelatedType(model_type, hyperlinked=True):
                 if isinstance(value, JSONObject):
@@ -3028,10 +4170,19 @@ class JSONObject:
                 # A subclass of the key reads as the key's type, such as a
                 # plain datetime for a subclass of datetime, which must write
                 # back.
-                if found is not None and _is_instance(value, found.key):
-                    return found.entry.encode(value, found.declared)
+                if found is not None and _encodes(value, found):
+                    return _checked_json(
+                        found.entry.encode(value, found.declared)
+                    )
 
-                return value
+                if typing.get_origin(base_type) is Literal and isinstance(
+                    value, enum.Enum
+                ):
+                    value = _literal_json(value, _table_of(cls))
+
+                # A value that is not JSON must fail here, naming the field,
+                # rather than in json.dumps() when it is sent.
+                return _checked_json(value)
             case CollectionType(_, item_type):
                 if isinstance(value, RelatedCollection):
                     # Encoding the collection must not use up its single
@@ -3043,12 +4194,81 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                return [cls._to_json(item, item_type) for item in value]
+                return _each_item(
+                    lambda item: cls._to_json(item, item_type), value
+                )
+            case FixedTupleType(item_types):
+                items = _fixed_items(value, len(item_types), "write")
+                return [
+                    cls._write_at(f"[{index}]", item, item_type)
+                    for index, (item, item_type) in enumerate(
+                        zip(items, item_types, strict=True)
+                    )
+                ]
+            case NamedTupleType():
+                positions = conversion.fields
+                items = _fixed_items(value, len(positions), "write")
+                return [
+                    cls._write_at(f"[{name!r}]", item, item_type)
+                    for item, (name, item_type) in zip(
+                        items, positions, strict=True
+                    )
+                ]
+            case DataclassType(dataclass_type):
+                name = dataclass_type.__name__
+                if not isinstance(value, dataclass_type):
+                    raise TypeError(
+                        f"{name} field values must be {name} instances, got "
+                        f"{type(value).__name__}"
+                    )
+                declared = {field for field, _, _ in conversion.fields}
+                if any(
+                    field.init and field.name not in declared
+                    for field in dataclasses.fields(value)
+                ):
+                    # Writing only the declared fields would drop the rest.
+                    raise TypeError(
+                        f"{type(value).__name__} has fields that {name} does "
+                        f"not declare, which a {name} field cannot write"
+                    )
+                return {
+                    name: cls._write_at(
+                        f"[{name!r}]", getattr(value, name), item_type
+                    )
+                    for name, item_type, _ in conversion.fields
+                }
+            case UnionType():
+                _check_union(conversion, _table_of(cls))
+                return _checked_json(value)
+            case TypedDictType():
+                keys = conversion.keys
+                _check_mapping(value, conversion)
+                written: dict[str, Any] = {}
+                for key, item in value.items():
+                    if key in keys:
+                        with _at_key(f"[{key!r}]"):
+                            written[key] = cls._to_json(item, keys[key])
+                    else:
+                        # An undeclared key is written as it is, so it must
+                        # already be JSON.
+                        with _at_key("[key]"):
+                            _check_json(item, "")
+                        written[key] = item
+                return written
+            case MappingType(value_type):
+                _check_mapping(value, conversion)
+                written = {}
+                for key, item in value.items():
+                    with _at_key("[key]"):
+                        written[key] = cls._to_json(item, value_type)
+                return written
             case PydanticType():
                 from .pydantic import _encode
 
                 with _active_table(_table_of(cls)):
-                    return _encode(conversion.adapter, value)
+                    # Pydantic writes a float that is not finite as itself,
+                    # which JSON cannot write.
+                    return _checked_json(_encode(conversion.adapter, value))
             case _:
                 raise TypeError(
                     f"Unsupported analyzed type {type(conversion).__name__}"
@@ -3884,12 +5104,34 @@ class JSONObject:
         descriptor = getattr(cls, name, None)
         return (
             isinstance(descriptor, JSONProperty)
-            and isinstance(
-                _unwrap_optional_type(descriptor.analyzed_type), CollectionType
-            )
+            and cls._query_collection(descriptor) is not None
             and value is not None
             and not _is_collection_value(value)
         )
+
+    @classmethod
+    def _query_collection(
+        cls, descriptor: JSONProperty
+    ) -> CollectionType | None:
+        """Return the collection that a field's query values are items of.
+
+        Args:
+            descriptor: The field.
+
+        Returns:
+            The field's ``CollectionType``, inside any optional or ``NewType``,
+            or ``None`` for a field that does not convert as a collection.
+        """
+        analyzed = descriptor.analyzed_type
+        while True:
+            analyzed = _unwrap_optional_type(analyzed)
+            # A NewType is analyzed as one only around a structure, and no
+            # conversion can be registered for such a NewType, so the field's
+            # own structure is always its collection.
+            if not isinstance(analyzed, NewTypeType):
+                break
+            analyzed = analyzed.inner
+        return analyzed if isinstance(analyzed, CollectionType) else None
 
     @classmethod
     def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -3923,8 +5165,8 @@ class JSONObject:
                 # A single value, such as a query for the objects whose
                 # collection holds it, converts as one item.
                 descriptor = getattr(cls, name)
-                collection = _unwrap_optional_type(descriptor.analyzed_type)
-                assert isinstance(collection, CollectionType)
+                collection = cls._query_collection(descriptor)
+                assert collection is not None
                 with _converting(cls, name):
                     if descriptor.json_field in payload:
                         raise TypeError(
@@ -4241,8 +5483,9 @@ class JSONObject:
         JSON text that it writes and a computed field, which a write does not
         send, is left out. Its definitions, like those of a conversion's
         schema, move into the schema's ``$defs``, renamed with the references
-        to them when two share a name. A type whose JSON form eazyrest does not
-        check, such as ``Any``, allows any value.
+        to them when two share a name. A ``TypedDict`` or ``dict[str, T]`` is
+        an object. A type whose JSON form eazyrest does not check, such as
+        ``Any``, allows any value.
 
         eazyrest has no required fields, so the schema lists none, and allows
         other properties, which a server may send. The schema is a JSON Schema

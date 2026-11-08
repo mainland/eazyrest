@@ -70,6 +70,8 @@ test = [
 test-core = [
   "coverage",
   "hypothesis",
+  # The schema properties check written values against json_schema().
+  "jsonschema",
   # The packaging test reads the requirements in the package's metadata.
   "packaging",
   # pytest 9 is the first release that reads [tool.pytest].
@@ -173,6 +175,12 @@ ignore_missing_imports = true
 # tox environment installs, so their classes are untyped here.
 [[tool.mypy.overrides]]
 module = ["django.*", "rest_framework.*", "django_filters.*"]
+ignore_missing_imports = true
+
+# jsonschema publishes no type information, and only the conversion
+# properties use it.
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

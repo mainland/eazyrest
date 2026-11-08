@@ -28,9 +28,10 @@ import copy
 import datetime
 import email
 import email.message
+import ipaddress
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any, ClassVar
 from urllib.parse import urljoin
 
@@ -49,6 +50,7 @@ from hypothesis.stateful import (
 from eazyrest import (
     API,
     APIError,
+    Conversion,
     FieldConversionError,
     Hyperlinked,
     JSONObject,
@@ -105,9 +107,18 @@ class Doc(StateBase):
     owner: Owner
     # Accepted in writes but never returned.
     secret: str
+    # Converted by the model's own table.
+    hosts: list[ipaddress.IPv4Address]
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        ipaddress.IPv4Address: Conversion(
+            decode=lambda value, cls: cls(value),
+            encode=lambda value, cls: str(value),
+        )
+    }
 
 
-FIELDS = ("title", "count", "tags", "meta", "extra", "days")
+FIELDS = ("title", "count", "tags", "meta", "extra", "days", "hosts")
 """Plain fields that the machine reads and writes."""
 
 DECLARED = (*FIELDS, "owner")
@@ -130,6 +141,7 @@ VALUES = {
         ),
         max_size=2,
     ),
+    "hosts": st.lists(st.ip_addresses(v=4).map(str), max_size=2),
     "owner": OWNERS,
 }
 """JSON values of each field, which the model holds."""
@@ -149,17 +161,20 @@ def python_value(field: str, value: Any) -> Any:
         value: JSON value of the field.
 
     Returns:
-        The value, with the ISO 8601 strings of ``days`` as dates.
+        The value, with the ISO 8601 strings of ``days`` as dates and the
+        addresses of ``hosts`` as ``IPv4Address`` objects.
     """
     if field == "days":
         return [datetime.date.fromisoformat(day) for day in value]
+    if field == "hosts":
+        return [ipaddress.IPv4Address(host) for host in value]
     return copy.deepcopy(value)
 
 
 FORM_INTEGERS = frozenset({"id", "count", "owner_id"})
 """Form fields whose text the server reads as an integer."""
 
-FORM_LISTS = frozenset({"tags", "days"})
+FORM_LISTS = frozenset({"tags", "days", "hosts"})
 """Form fields that the server reads as a list of their repeated values."""
 
 

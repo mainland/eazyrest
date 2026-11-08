@@ -25,6 +25,7 @@ from typing import (
 )
 from urllib.parse import parse_qs, urlparse
 
+import jsonschema
 import pydantic
 import pydantic_core
 import pytest
@@ -49,13 +50,17 @@ from eazyrest import (
     Conversion,
     FieldConversionError,
     JSONObject,
+    encode_json,
     json_object,
 )
 from eazyrest._models import (
     BaseType,
     CollectionType,
+    MappingType,
     OptionalType,
     PydanticType,
+    TypedDictType,
+    UnionType,
     analyze_type,
 )
 from eazyrest.pydantic import UUID, Date, Datetime, Duration, Time
@@ -237,7 +242,7 @@ def test_decimal_and_time_types_reject_what_pydantic_reads(
 
 def test_types_have_json_schemas() -> None:
     """A model that uses the types still has a JSON schema."""
-    properties = SCHEDULE.json_schema()["properties"]
+    properties = SCHEDULE.json_schema(mode="serialization")["properties"]
 
     assert {
         name: (schema["type"], schema["format"])
@@ -327,7 +332,7 @@ class Asset(PydanticBase):
     starts: Annotated[datetime.datetime, Field(description="Start")]
     length: Annotated[datetime.timedelta, Field(ge=datetime.timedelta(0))]
     windows: Annotated[list[datetime.datetime], Field(max_length=2)]
-    owners: dict[str, Owner | Spec]
+    owners: dict[str, Owner | Point]
 
 
 ASSET_JSON: dict[str, Any] = {
@@ -360,12 +365,12 @@ NUMBER_OR_TEXT: Any = int | str
         (Spec, PydanticType(Spec)),
         (Point | None, OptionalType(PydanticType(Point))),
         (list[Spec], CollectionType(list, PydanticType(Spec))),
-        (dict[str, Spec], PydanticType(dict[str, Spec])),
+        (dict[str, Spec], MappingType(PydanticType(Spec))),
+        (dict[str, Point], MappingType(PydanticType(Point))),
         (Base64Bytes, PydanticType(Base64Bytes)),
         (PydanticPair, PydanticType(PydanticPair)),
         (Annotated[int, FIELD], PydanticType(Annotated[int, FIELD])),
-        (PlainSpec, BaseType(PlainSpec)),
-        (Pair, BaseType(Pair)),
+        (PlainSpec, TypedDictType(PlainSpec)),
         (Annotated[int, Gt(0)], BaseType(int)),
         (POINTS, CollectionType(list, PydanticType(Point))),
         (POSITIVE, PydanticType(Annotated[int, FIELD])),
@@ -378,7 +383,7 @@ NUMBER_OR_TEXT: Any = int | str
         (pydantic.StrictInt, PydanticType(pydantic.StrictInt)),
         (pydantic.FiniteFloat, PydanticType(pydantic.FiniteFloat)),
         (CHOICE, BaseType(CHOICE)),
-        (NUMBER_OR_TEXT, BaseType(NUMBER_OR_TEXT)),
+        (NUMBER_OR_TEXT, UnionType((BaseType(int), BaseType(str)))),
     ],
 )
 def test_pydantic_converts_types_that_mention_it(
@@ -426,7 +431,7 @@ def test_pydantic_field_values_share_no_containers_with_json() -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("spec", {"name": 5, "size": 1}),
+        ("spec", ["a"]),
         ("origin", {"x": "left", "y": 2}),
         ("rating", 0),
         ("kind", "c"),
@@ -682,7 +687,7 @@ def test_pydantic_field_writes_a_model_with_private_state(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("spec", {"name": "a"}),
+        ("spec", ["a"]),
         ("origin", {"x": "left", "y": 2}),
         # The serializer accepts this value, but the field cannot read it.
         ("rating", 0),
@@ -1015,7 +1020,7 @@ def test_field_that_cannot_be_written_fails_on_every_read() -> None:
 
 def test_pydantic_cannot_convert_eazyrest_models() -> None:
     """A type that Pydantic converts cannot contain an eazyrest model."""
-    asset = Asset(json=deepcopy(ASSET_JSON))
+    asset = Asset(json={**deepcopy(ASSET_JSON), "owners": {"a": {"id": 1}}})
 
     with pytest.raises(FieldConversionError, match="an eazyrest model"):
         _ = asset.owners
@@ -1121,6 +1126,13 @@ class Settings(PydanticBase):
     strict_box: StrictBox[int]
 
 
+# A mapping's values convert one by one, so a type inside one is checked only
+# when the mapping holds a value.
+DROPPING_VALUES: dict[str, Any] = {
+    "ignoring_boxes": {"k": {"first": datetime.date(2024, 1, 1)}}
+}
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [
@@ -1157,7 +1169,7 @@ def test_types_that_drop_keys_are_rejected(
     with pytest.raises(FieldConversionError, match=message):
         getattr(settings, field)
     with pytest.raises(FieldConversionError, match=message):
-        Settings.create(**{field: cast(Any, {})})
+        Settings.create(**{field: cast(Any, DROPPING_VALUES.get(field, {}))})
 
     assert requests_mock.call_count == 0
 
@@ -1452,6 +1464,11 @@ def test_json_schema_hoists_a_conversions_definitions_from_pydantic(
     } == stamp
     assert "x-eazyrest" not in str(schema)
 
+    good = {"plain": {"at": "x"}, "parts": [{"when": {"at": "x"}, "n": 1}]}
+    jsonschema.validate(good, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"parts": [{"when": {"at": 1}, "n": 1}]}, schema)
+
 
 def _first_cat() -> type[BaseModel]:
     """Return a model named ``Cat`` that requires ``a``.
@@ -1611,6 +1628,83 @@ def test_json_schema_without_pydantic_raises(
 
     with pytest.raises(FieldConversionError, match=r"eazyrest\[pydantic\]"):
         Located.json_schema()
+
+
+class Placed(TypedDict):
+    """``TypedDict`` with a key that Pydantic converts."""
+
+    point: Point
+    when: datetime.datetime
+
+
+@json_object
+class Survey(PydanticBase):
+    """Model whose ``TypedDict`` fields eazyrest or Pydantic converts."""
+
+    class_url = "/surveys/"
+
+    id: int
+    spec: Spec
+    placed: Placed
+    checked: Annotated[Spec, Field()]
+    strict: StrictSpec
+
+
+SURVEY_JSON: dict[str, Any] = {
+    "id": 1,
+    "spec": {"name": 5, "size": 1},
+    "placed": {"point": {"x": 1, "y": 2}, "when": "2024-01-01T00:00:00Z"},
+    "checked": {"name": 5, "size": 1},
+    "strict": {"name": "a"},
+}
+
+
+def test_decorated_typed_dict_is_validated_by_pydantic() -> None:
+    """A ``TypedDict`` with a Pydantic config is annotated for Pydantic.
+
+    A plain ``TypedDict`` is eazyrest's, which hands a key annotated for
+    Pydantic to Pydantic.
+    """
+    survey = Survey(json=deepcopy(SURVEY_JSON))
+
+    with pytest.raises(FieldConversionError, match=r"^Survey\.spec: "):
+        _ = survey.spec
+    assert survey.placed["point"] == Point(x=1, y=2)
+    assert survey.placed["when"] == datetime.datetime(2024, 1, 1, tzinfo=UTC)
+    with pytest.raises(FieldConversionError, match=r"^Survey\.checked: "):
+        _ = survey.checked
+
+
+def test_typed_dict_writes_reject_keys_that_its_config_forbids(
+    requests_mock: Any,
+) -> None:
+    """A write that Pydantic would drop a key from raises, without naming it.
+
+    Under ``extra="forbid"``, Pydantic serializes a ``TypedDict`` without the
+    keys it does not declare, so the write would silently lose them.
+    """
+    survey = Survey(json=deepcopy(SURVEY_JSON))
+
+    with pytest.raises(FieldConversionError, match="would drop them") as info:
+        survey.strict = cast(Any, {"name": "a", "secret": 1})
+
+    assert "secret" not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+class Upload(TypedDict):
+    """Request body whose bytes Pydantic writes as base64."""
+
+    name: str
+    content: Base64Bytes
+
+
+def test_encode_json_writes_bytes_as_their_annotation_says() -> None:
+    """A key annotated for Pydantic is encoded by Pydantic."""
+    assert encode_json({"name": "a", "content": b"hello"}, Upload) == {
+        "name": "a",
+        "content": "aGVsbG8=",
+    }
 
 
 @with_config(ConfigDict(extra="ignore"))
@@ -1924,6 +2018,77 @@ def test_unresolvable_fields_are_rejected(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+class ShipsLater(BaseModel):
+    """Model whose field names a class defined after it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    shipping: LaterShipping
+
+
+class NotesLater(BaseModel):
+    """Model whose field names a model defined after it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    note: LaterNote
+
+
+class NamesNothing(BaseModel):
+    """Model whose field names a class that is never defined."""
+
+    inner: Nowhere  # type: ignore[name-defined]  # noqa: F821
+
+
+@dataclasses.dataclass
+class LaterShipping:
+    """Dataclass, without a config, that drops the keys it does not declare."""
+
+    street: str
+
+
+class LaterNote(BaseModel):
+    """Model with a field that Pydantic excludes from writes."""
+
+    model_config = ConfigDict(extra="allow")
+
+    text: str = ""
+    author: Annotated[str, Field(exclude=True)] = ""
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw", "message"),
+    [
+        (
+            ShipsLater,
+            {"shipping": {"street": "1 Main", "zip": "02139"}},
+            "LaterShipping would drop the keys",
+        ),
+        (
+            NotesLater,
+            {"note": {"text": "t", "author": "ada"}},
+            "the key of its field author",
+        ),
+        (NamesNothing, {"inner": {}}, "annotations cannot be resolved"),
+    ],
+)
+def test_classes_behind_forward_references_are_checked(
+    requests_mock: Any, hint: type[BaseModel], raw: Any, message: str
+) -> None:
+    """The fields of a model that Pydantic has not completed are checked.
+
+    Pydantic keeps a name for a class defined later as a forward reference
+    until the model is rebuilt, and nothing behind it would be checked.
+    """
+    assert not hint.__pydantic_complete__
+    holder = _wrapped_in(hint)(json={"id": 1, "value": {"inner": raw}})
+
+    with pytest.raises(FieldConversionError, match=message):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
 @with_config(ConfigDict(extra="forbid"))
 @dataclasses.dataclass
 class WithClassVariable:
@@ -1949,6 +2114,325 @@ def test_class_variables_are_not_checked(requests_mock: Any) -> None:
     holder.save()
 
     assert patch.last_request.json() == {"value": {"inner": {"v": 2}}}
+
+
+class ExcludingModel(BaseModel):
+    """Model that reads a key and never writes it."""
+
+    model_config = ConfigDict(extra="allow")
+
+    theme: str
+    token: str = Field(default="", exclude=True)
+
+
+class ConditionallyExcludingModel(BaseModel):
+    """Model that writes a key only when its value is not empty."""
+
+    model_config = ConfigDict(extra="allow")
+
+    theme: str
+    token: str = Field(default="", exclude_if=lambda token: not token)
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class ExcludingData:
+    """Dataclass that reads a key and never writes it."""
+
+    theme: str
+    token: Annotated[str, Field(exclude=True)] = ""
+
+
+@dataclasses.dataclass
+class PlainData:
+    """Dataclass without a config, which drops undeclared keys."""
+
+    a: int
+
+
+class HoldingData(BaseModel):
+    """Model that keeps its own keys, around a dataclass that drops them."""
+
+    model_config = ConfigDict(extra="allow")
+
+    inner: PlainData
+
+
+class PlainKeys(TypedDict):
+    """``TypedDict`` without a config, which takes a model's."""
+
+    a: int
+
+
+class HoldingKeys(BaseModel):
+    """Model whose ``TypedDict`` keys take its config, which keeps keys."""
+
+    model_config = ConfigDict(extra="allow")
+
+    inner: PlainKeys
+    many: list[PlainKeys]
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclasses.dataclass
+class WithCheckerOnlyClassVariable:
+    """Dataclass whose class variable names a type only for type checkers."""
+
+    v: int
+    context: ClassVar[decimal.Context | None] = None
+
+
+def test_class_variables_need_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A class variable whose annotation cannot be resolved does not matter.
+
+    Only a dataclass's fields are resolved, one by one, so a class variable
+    may name a type that is imported only under ``TYPE_CHECKING``.
+
+    Args:
+        monkeypatch: Fixture that hides ``decimal`` from the test module.
+    """
+    monkeypatch.delitem(globals(), "decimal")
+    holder = _wrapped_in(WithCheckerOnlyClassVariable)(
+        json={"id": 1, "value": {"inner": {"v": 1}}}
+    )
+
+    assert holder.value["inner"] == WithCheckerOnlyClassVariable(1)
+
+
+@pytest.mark.parametrize(
+    ("hint", "raw", "message"),
+    [
+        (ExcludingModel, {"theme": "a", "token": "t"}, "field token"),
+        (
+            ConditionallyExcludingModel,
+            {"theme": "a", "token": "t"},
+            "field token",
+        ),
+        (
+            Annotated[ExcludingData, Field()],
+            {"theme": "a", "token": "t"},
+            "field token",
+        ),
+        (HoldingData, {"inner": {"a": 1, "z": 2}}, "PlainData would drop"),
+    ],
+    ids=[
+        "excluded-model-field",
+        "conditionally-excluded-model-field",
+        "excluded-dataclass-field",
+        "in-model",
+    ],
+)
+def test_keys_that_writes_drop_inside_models_are_rejected(
+    hint: Any, raw: Any, message: str, requests_mock: Any
+) -> None:
+    """An excluded field, or a dataclass inside a model, is refused.
+
+    Pydantic reads an excluded field's key and never writes it, and never
+    writes a dataclass's undeclared keys, whatever the config of the model
+    around it, so a write would delete them on the server.
+
+    Args:
+        hint: Type of the field.
+        raw: JSON of a value of ``hint`` with a key that a write would drop.
+        message: Part of the error message.
+        requests_mock: Fixture that records requests.
+    """
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {"id": int, "v": hint},
+            },
+        )
+    )
+    holder = model(json={"id": 1, "v": raw})
+
+    with pytest.raises(FieldConversionError, match=message):
+        _ = holder.v
+
+    assert requests_mock.call_count == 0
+
+
+def test_typed_dicts_inside_models_take_their_config(
+    requests_mock: Any,
+) -> None:
+    """A ``TypedDict`` without a config takes the config of its model."""
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {"id": int, "v": HoldingKeys},
+            },
+        )
+    )
+    raw = {"inner": {"a": 1, "z": 2}, "many": [{"a": 1, "z": 2}]}
+    holder = model(json={"id": 1, "v": raw})
+    patch = requests_mock.patch(
+        "https://pydantic.example.com/holders/1/", json={}
+    )
+
+    holder.v.inner["a"] = 3
+    holder.save()
+
+    assert patch.last_request.json() == {
+        "v": {"inner": {"a": 3, "z": 2}, "many": [{"a": 1, "z": 2}]}
+    }
+
+
+class ForbiddingData(BaseModel):
+    """Model whose config a dataclass without one inside it takes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inner: PlainData
+
+
+class PlainKeysPair(NamedTuple):
+    """``NamedTuple`` around a ``TypedDict`` without a config."""
+
+    keys: PlainKeys
+    total: int
+
+
+class HoldingKeysPair(BaseModel):
+    """Model whose config reaches a ``TypedDict`` through a ``NamedTuple``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    pair: PlainKeysPair
+
+
+def test_classes_inside_models_take_their_config(requests_mock: Any) -> None:
+    """A dataclass or a ``TypedDict`` without a config takes the model's.
+
+    Pydantic rejects a dataclass's undeclared keys inside a model with
+    ``extra="forbid"``, and keeps a ``TypedDict``'s inside a ``NamedTuple``
+    inside a model with ``extra="allow"``, so neither is refused.
+    """
+    model: Any = json_object(
+        type(
+            "Holder",
+            (PydanticBase,),
+            {
+                "class_url": "/holders/",
+                "__annotations__": {
+                    "id": int,
+                    "forbidding": ForbiddingData,
+                    "pairs": HoldingKeysPair,
+                },
+            },
+        )
+    )
+    holder = model(
+        json={
+            "id": 1,
+            "forbidding": {"inner": {"a": 1}},
+            "pairs": {"pair": [{"a": 1, "z": 2}, 3]},
+        }
+    )
+    put = requests_mock.put("https://pydantic.example.com/holders/1/", json={})
+
+    assert holder.forbidding.inner == PlainData(1)
+    holder.save(full=True)
+
+    assert put.last_request.json() == {
+        "id": 1,
+        "forbidding": {"inner": {"a": 1}},
+        "pairs": {"pair": [{"a": 1, "z": 2}, 3]},
+    }
+
+
+def test_dataclass_inside_forbidding_model_rejects_undeclared_keys() -> None:
+    """A dataclass without a config takes ``extra="forbid"`` from its model.
+
+    eazyrest accepts such a dataclass only because Pydantic gives it the
+    model's config, so that a key it does not declare is refused rather than
+    dropped from the next write.
+    """
+    model: Any = json_object(
+        type(
+            "Forbidder",
+            (PydanticBase,),
+            {
+                "class_url": "/forbidders/",
+                "__annotations__": {"id": int, "forbidding": ForbiddingData},
+            },
+        )
+    )
+    forbidder = model(
+        json={"id": 1, "forbidding": {"inner": {"a": 1, "b": 2}}}
+    )
+
+    with pytest.raises(
+        FieldConversionError, match=r"^Forbidder\.forbidding: "
+    ):
+        _ = forbidder.forbidding
+
+
+@with_config(ConfigDict(extra="allow", alias_generator=to_camel))
+class CamelSettings(TypedDict):
+    """``TypedDict`` whose Pydantic config renames its keys."""
+
+    dark_mode: bool
+
+
+class AliasedKey(TypedDict):
+    """``TypedDict`` with a key that a Pydantic alias renames."""
+
+    dark_mode: Annotated[bool, Field(alias="darkMode")]
+
+
+@json_object
+class Preferences(PydanticBase):
+    """Model whose ``TypedDict`` fields rename keys with Pydantic aliases."""
+
+    class_url = "/preferences/"
+
+    id: int
+    camel: CamelSettings
+    aliased: AliasedKey
+    validated: Annotated[CamelSettings, Field()]
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("aliased", r"AliasedKey\.dark_mode has a Pydantic alias"),
+    ],
+)
+def test_typed_dict_aliases_are_refused_where_eazyrest_converts(
+    field: str, message: str
+) -> None:
+    """Aliases that eazyrest would not apply are refused, not ignored.
+
+    Args:
+        field: Name of a ``Preferences`` field.
+        message: Pattern that the error should match.
+    """
+    preferences = Preferences(json={"id": 1, field: {"darkMode": True}})
+
+    with pytest.raises(FieldConversionError, match=message):
+        getattr(preferences, field)
+
+
+@pytest.mark.parametrize("field", ["camel", "validated"])
+def test_typed_dict_for_pydantic_applies_its_aliases(field: str) -> None:
+    """A decorated ``TypedDict``, or one annotated for Pydantic, uses aliases.
+
+    Args:
+        field: Name of a ``Preferences`` field that Pydantic converts.
+    """
+    preferences = Preferences(json={"id": 1, field: {"darkMode": True}})
+
+    assert getattr(preferences, field) == {"dark_mode": True}
+    setattr(preferences, field, {"dark_mode": False})
+    assert preferences.json[field] == {"darkMode": False}
 
 
 def _to_timestamp(value: Any, cls: type[Any]) -> float:
@@ -2010,6 +2494,63 @@ def test_pydantic_types_convert_by_the_models_table() -> None:
     }
 
 
+class Span(BaseModel):
+    """Pydantic model whose JSON form, in ``SpanBase``, is a string."""
+
+    low: int
+    high: int
+
+
+class SpanBase(PydanticBase):
+    """Base whose table converts a Pydantic model instead of Pydantic."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Span: Conversion(
+            decode=lambda value, cls: cls(
+                **dict(
+                    zip(
+                        ("low", "high"),
+                        map(int, value.split("-")),
+                        strict=True,
+                    )
+                )
+            ),
+            encode=lambda value, cls: f"{value.low}-{value.high}",
+            schema={"type": "string"},
+        )
+    }
+
+
+@json_object
+class Range(SpanBase):
+    """Model with a Pydantic model field, plain and annotated for Pydantic."""
+
+    class_url = "/ranges/"
+
+    id: int
+    span: Span
+    annotated: Annotated[Span, Field()]
+
+
+def test_an_entry_replaces_pydantic_unless_the_field_asks_for_it() -> None:
+    """A table entry converts a Pydantic model's field instead of Pydantic.
+
+    ``Annotated[T, pydantic.Field()]`` names Pydantic for that field, which
+    is more specific than the table, so Pydantic converts it.
+    """
+    item = Range(
+        json={"id": 1, "span": "1-2", "annotated": {"low": 3, "high": 4}}
+    )
+
+    assert item.span == Span(low=1, high=2)
+    assert item.annotated == Span(low=3, high=4)
+    item.span = Span(low=5, high=6)
+    assert item.json["span"] == "5-6"
+    schema = Range.json_schema()["properties"]
+    assert schema["span"] == {"type": "string"}
+    assert schema["annotated"]["type"] == "object"
+
+
 class SchemaTimestampBase(PydanticBase):
     """Base whose datetimes are timestamps, with a schema that says so."""
 
@@ -2069,8 +2610,10 @@ def test_pydantic_types_schemas_follow_the_models_table() -> None:
 
     assert slot(TimestampSlot, "read")["start"] == {"type": "number"}
     assert slot(IsoSlot, "read")["start"] == {
-        "type": "string",
-        "format": "date-time",
+        "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "number"},
+        ]
     }
     assert slot(IsoSlot, "read")["price"] == {
         "anyOf": [{"type": "string", "format": "decimal"}, {"type": "number"}]
@@ -2123,6 +2666,37 @@ def test_new_types_convert_as_their_supertype_inside_pydantic() -> None:
     assert opening.listed == [when]
     opening.annotated = Opened(when)
     assert opening.json["annotated"] == "2023-11-14T22:13:20+00:00"
+
+
+def test_pydantic_floats_that_are_not_finite_raise_when_written(
+    requests_mock: Any,
+) -> None:
+    """A Pydantic field refuses a float that JSON cannot write at once.
+
+    Assignment raises and keeps the old value, so ``save()``, ``create()``,
+    and a query never send it, as for a field without Pydantic.
+    """
+
+    @json_object
+    class Reading(PydanticBase):
+        class_url = "/readings/"
+
+        id: int
+        level: Annotated[float, Field()]
+        levels: list[Annotated[float, Field()]]
+
+    reading = Reading(json={"id": 1, "level": 0.5, "levels": [0.5]})
+    with pytest.raises(FieldConversionError, match="not finite"):
+        reading.level = float("inf")
+    assert reading.json["level"] == 0.5
+    with pytest.raises(FieldConversionError, match="not finite"):
+        Reading.create(id=2, level=float("inf"), levels=[])
+    with pytest.raises(FieldConversionError, match="not finite"):
+        list(Reading.filter(level=float("inf")))
+    reading.levels.append(float("-inf"))
+    with pytest.raises(FieldConversionError, match="not finite"):
+        reading.save()
+    assert not requests_mock.called
 
 
 @pytest.mark.parametrize(
@@ -2534,8 +3108,10 @@ def test_write_schemas_describe_what_pydantic_fields_write() -> None:
     jsonschema.validate(dial.json, written)
     assert written["properties"]["stamp"] == {"type": "number"}
     assert read["properties"]["stamp"] == {
-        "type": "string",
-        "format": "date-time",
+        "anyOf": [
+            {"type": "string", "format": "date-time"},
+            {"type": "number"},
+        ]
     }
     assert "doubled" not in str(written)
 
@@ -2577,6 +3153,20 @@ def test_a_nested_schema_keeps_its_own_mode() -> None:
 
 
 @with_config(ConfigDict(extra="forbid"))
+class _Inner(TypedDict):
+    """``TypedDict`` that rejects undeclared keys."""
+
+    x: int
+
+
+@with_config(ConfigDict(extra="forbid"))
+class _Outer(TypedDict):
+    """``TypedDict`` that holds another."""
+
+    inner: _Inner
+
+
+@with_config(ConfigDict(extra="forbid"))
 @dataclasses.dataclass
 class _Base:
     """Standard library dataclass that rejects undeclared keys."""
@@ -2585,10 +3175,57 @@ class _Base:
 
 
 @dataclasses.dataclass
+class _Child(_Base):
+    """Subclass with a field that its base does not declare."""
+
+    b: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class _PydanticBase:
+    """Pydantic dataclass that rejects undeclared keys."""
+
+    a: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class _PydanticChild(_PydanticBase):
+    """Subclass with a field that its base does not declare."""
+
+    b: int
+
+
+@dataclasses.dataclass
 class _Loose:
     """Standard library dataclass without a config, which would drop keys."""
 
     a: int
+
+
+@pytest.mark.parametrize(
+    ("value", "annotation"),
+    [
+        ({"inner": {"x": 1, "extra": 2}}, _Outer),
+        ([{"x": 1, "extra": 2}], Annotated[list[_Inner], Field()]),
+        (_Child(1, 2), Annotated[_Base, Field()]),
+        ([_Child(1, 2)], Annotated[list[_Base], Field()]),
+        (_PydanticChild(a=1, b=2), _PydanticBase),
+    ],
+)
+def test_writes_that_would_drop_nested_keys_or_fields_raise(
+    value: Any, annotation: Any
+) -> None:
+    """A value that Pydantic would write without some of its data raises.
+
+    The check reaches nested values, and the fields that a dataclass's
+    subclass adds.
+
+    Args:
+        value: Value to write.
+        annotation: Its annotation.
+    """
+    with pytest.raises(ValueError, match="would drop them"):
+        encode_json(value, annotation, model=PydanticBase)
 
 
 def test_dataclasses_must_reject_keys_that_pydantic_would_drop() -> None:
@@ -2662,13 +3299,12 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
 
     assert mark.annotated == when
     assert mark.other == when
-    mark.plain = _Millis(when)
-    mark.annotated = _Millis(when)
+    for annotation in (_Millis, Annotated[_Millis, Field()]):
+        assert encode_json(when, annotation, model=Mark) == 1577836800000.0
     mark.listed = [_Millis(when)]
-    mark.other = _Plain(when)
-    assert mark.json["plain"] == 1577836800000.0
-    assert mark.json["annotated"] == 1577836800000.0
     assert mark.json["listed"] == [1577836800000.0]
-    assert mark.json["other"] == "2020-01-01T00:00:00+00:00"
+    assert encode_json(when, Annotated[_Plain, Field()], model=Mark) == (
+        "2020-01-01T00:00:00+00:00"
+    )
     write = Mark.json_schema("write")["properties"]
     assert write["annotated"] == {"type": "number"}

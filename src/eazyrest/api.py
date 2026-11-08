@@ -1222,6 +1222,9 @@ class API:
     def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``POST`` request.
 
+        A body passed as ``json=`` must already be JSON. Encode Python values,
+        such as a ``datetime``, as fields encode them with ``encode_json()``.
+
         Args:
             uri: Relative or absolute request URI.
             *args: Positional arguments forwarded to ``requests.Session.post``.
@@ -1234,6 +1237,9 @@ class API:
 
     def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PATCH`` request.
+
+        A body passed as ``json=`` must already be JSON. Encode Python values,
+        such as a ``datetime``, as fields encode them with ``encode_json()``.
 
         Args:
             uri: Relative or absolute request URI.
@@ -1249,6 +1255,9 @@ class API:
 
     def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PUT`` request.
+
+        A body passed as ``json=`` must already be JSON. Encode Python values,
+        such as a ``datetime``, as fields encode them with ``encode_json()``.
 
         Args:
             uri: Relative or absolute request URI.
