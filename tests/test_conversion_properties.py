@@ -13,15 +13,18 @@ conversion is implemented.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import decimal
 import enum
+import ipaddress
 import itertools
 import json
+import keyword
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, ClassVar, NamedTuple, Optional
 from urllib.parse import parse_qs, urlparse
 
 import jsonschema
@@ -33,6 +36,7 @@ from typing_extensions import TypedDict
 
 from eazyrest import (
     API,
+    Conversion,
     FieldConversionError,
     JSONObject,
     encode_json,
@@ -50,8 +54,36 @@ class Shade(enum.Enum):
     ONE = 1
 
 
+def _decode_address(value: Any, cls: type[Any]) -> Any:
+    """Read an IPv4 address, without quoting a bad one in the error.
+
+    Args:
+        value: JSON value.
+        cls: The declared type.
+
+    Returns:
+        The address.
+
+    Raises:
+        ValueError: If ``value`` is not an IPv4 address.
+    """
+    try:
+        return cls(value)
+    except ValueError:
+        # The address's own error quotes the value.
+        raise ValueError("Value is not an IPv4 address") from None
+
+
 class ValueBase(JSONObject):
-    """Base model of these properties."""
+    """Base model of these properties, with a conversion of its own."""
+
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        ipaddress.IPv4Address: Conversion(
+            decode=_decode_address,
+            encode=lambda value, cls: str(value),
+            schema={"type": "string", "format": "ipv4"},
+        )
+    }
 
 
 ValueBase.register_api(API(BASE))
@@ -120,6 +152,9 @@ def _marked(marker: str) -> st.SearchStrategy[Any]:
     return st.just(f"not {marker} valid")
 
 
+# A union of members that pass through unchanged.
+_UNION: Any = int | str
+
 LEAVES = [
     _leaf(int, st.integers(min_value=-(2**53), max_value=2**53)),
     _leaf(str, st.text(max_size=8)),
@@ -153,6 +188,11 @@ LEAVES = [
         _marked,
     ),
     _leaf(Shade, st.sampled_from(Shade), _marked),
+    _leaf(ipaddress.IPv4Address, st.ip_addresses(v=4), _marked),
+    _leaf(
+        _UNION,
+        st.integers(min_value=-(2**53), max_value=2**53) | st.text(max_size=8),
+    ),
 ]
 
 _TYPED_DICT_NAMES = (f"Generated{n}" for n in itertools.count())
@@ -186,6 +226,7 @@ _TUPLE: Any = tuple
 _FROZENSET: Any = frozenset
 _DICT: Any = dict
 _TYPED_DICT: Any = TypedDict
+_NAMED_TUPLE: Any = NamedTuple
 
 Bad = Callable[[str], st.SearchStrategy[Any]]
 
@@ -313,6 +354,64 @@ def _typed_dict(draw: st.DrawFn, children: st.SearchStrategy[Node]) -> Node:
     return Node(cls, values, "typeddict", False, False, nodes, bad)
 
 
+_STRUCTURE_NAMES = (f"Structure{n}" for n in itertools.count())
+
+
+@st.composite
+def _positional(
+    draw: st.DrawFn, children: st.SearchStrategy[Node], kind: str
+) -> Node:
+    """Draw a fixed-length tuple or a NamedTuple of one to three items.
+
+    Args:
+        draw: Hypothesis's draw function.
+        children: Strategy for the item nodes.
+        kind: ``"fixed"`` or ``"namedtuple"``.
+
+    Returns:
+        The node.
+    """
+    nodes = tuple(
+        (f"f{index}", draw(children))
+        for index in range(draw(st.integers(min_value=1, max_value=3)))
+    )
+    items = st.tuples(*(node.values for _, node in nodes))
+    hashable = all(node.hashable for _, node in nodes)
+    if kind == "fixed":
+        annotation = _TUPLE[tuple(node.annotation for _, node in nodes)]
+        return Node(annotation, items, kind, hashable, False, nodes)
+    cls = _NAMED_TUPLE(
+        next(_STRUCTURE_NAMES), [(key, node.annotation) for key, node in nodes]
+    )
+    return Node(
+        cls, items.map(lambda item: cls(*item)), kind, hashable, False, nodes
+    )
+
+
+@st.composite
+def _dataclass(draw: st.DrawFn, children: st.SearchStrategy[Node]) -> Node:
+    """Draw a dataclass of one to three fields.
+
+    Args:
+        draw: Hypothesis's draw function.
+        children: Strategy for the field nodes.
+
+    Returns:
+        The node.
+    """
+    # A field's name must not be a keyword, such as "def".
+    names = _KEYS.filter(lambda key: not keyword.iskeyword(key))
+    keys = draw(st.lists(names, min_size=1, max_size=3, unique=True))
+    nodes = tuple((key, draw(children)) for key in keys)
+    cls = dataclasses.make_dataclass(
+        next(_STRUCTURE_NAMES), [(key, node.annotation) for key, node in nodes]
+    )
+    values = st.fixed_dictionaries(
+        {key: node.values for key, node in nodes}
+    ).map(lambda fields: cls(**fields))
+    return Node(cls, values, "dataclass", False, False, nodes)
+
+
 def _extend(children: st.SearchStrategy[Node]) -> st.SearchStrategy[Node]:
     """Return nodes one level deeper than ``children``.
 
@@ -331,10 +430,26 @@ def _extend(children: st.SearchStrategy[Node]) -> st.SearchStrategy[Node]:
         ),
         children.map(lambda node: _container("dict", node)),
         _typed_dict(children),
+        _positional(children, "fixed"),
+        _positional(children, "namedtuple"),
+        _dataclass(children),
     )
 
 
 NODES = st.recursive(st.sampled_from(LEAVES), _extend, max_leaves=5)
+
+
+def _encode(value: Any, annotation: Any) -> Any:
+    """Return the JSON that a field of these models writes for a value.
+
+    Args:
+        value: The value.
+        annotation: Its annotation.
+
+    Returns:
+        Its JSON, by the base model's conversion table.
+    """
+    return encode_json(value, annotation, model=ValueBase)
 
 
 def _model(annotation: Any) -> Any:
@@ -375,12 +490,12 @@ def test_writes_are_json_that_reads_back(data: st.DataObject) -> None:
     value = data.draw(node.values)
     model = _model(node.annotation)
 
-    encoded = encode_json(value, node.annotation)
+    encoded = _encode(value, node.annotation)
     json.dumps(encoded, allow_nan=False)
     read = model(json={"id": 1, "value": encoded}).value
 
     assert read == value
-    rewritten = encode_json(read, node.annotation)
+    rewritten = _encode(read, node.annotation)
     assert model(json={"id": 1, "value": rewritten}).value == value
 
 
@@ -408,7 +523,7 @@ def test_field_writes_send_what_encode_json_writes(
         assert not patch.called
     else:
         assert patch.last_request.json() == {
-            "value": encode_json(value, node.annotation)
+            "value": _encode(value, node.annotation)
         }
 
 
@@ -420,19 +535,26 @@ def _mutable_paths(value: Any, node: Node) -> list[tuple[Any, Node]]:
         node: Its node.
 
     Returns:
-        Each list, dict, or TypedDict value at any depth, with the node that
-        describes it. Tuples and frozensets cannot change.
+        Each list, dict, TypedDict, or dataclass value at any depth, with
+        the node that describes it. Tuples, NamedTuples, and frozensets
+        cannot change, but what they hold can.
     """
     if value is None:
         return []
     found: list[tuple[Any, Node]] = []
     if node.kind == "optional":
         return _mutable_paths(value, node.children[0][1])
-    if node.kind in ("list", "dict", "typeddict"):
+    if node.kind in ("list", "dict", "typeddict", "dataclass"):
         found.append((value, node))
     if node.kind in ("list", "tuple"):
         for item in value:
             found += _mutable_paths(item, node.children[0][1])
+    elif node.kind in ("fixed", "namedtuple"):
+        for item, (_, item_node) in zip(value, node.children, strict=True):
+            found += _mutable_paths(item, item_node)
+    elif node.kind == "dataclass":
+        for key, item_node in node.children:
+            found += _mutable_paths(getattr(value, key), item_node)
     elif node.kind == "dict":
         for item in value.values():
             found += _mutable_paths(item, node.children[0][1])
@@ -453,7 +575,7 @@ def test_changes_made_in_place_are_saved(data: st.DataObject) -> None:
     node = data.draw(NODES)
     value = data.draw(node.values)
     model = _model(node.annotation)
-    encoded = encode_json(value, node.annotation)
+    encoded = _encode(value, node.annotation)
     obj = model(json={"id": 1, "value": encoded})
     read = obj.value
 
@@ -472,10 +594,13 @@ def test_changes_made_in_place_are_saved(data: st.DataObject) -> None:
         elif container_node.kind == "dict":
             item = container_node.children[0][1]
             container[data.draw(_KEYS)] = data.draw(item.values)
+        elif container_node.kind == "dataclass":
+            key, item = data.draw(st.sampled_from(container_node.children))
+            setattr(container, key, data.draw(item.values))
         else:
             key, item = data.draw(st.sampled_from(container_node.children))
             container[key] = data.draw(item.values)
-        changed = encode_json(read, node.annotation)
+        changed = _encode(read, node.annotation)
         obj.save()
 
     if changed == encoded:
@@ -516,7 +641,7 @@ def test_queries_send_what_writes_send(data: st.DataObject) -> None:
         else node.values
     )
     model = _model(node.annotation)
-    encoded = encode_json(value, node.annotation)
+    encoded = _encode(value, node.annotation)
     items = encoded if isinstance(encoded, list) else [encoded]
 
     with requests_mock.Mocker() as mock:
@@ -540,7 +665,7 @@ def test_written_values_match_the_schema(data: st.DataObject) -> None:
     node = data.draw(NODES)
     value = data.draw(node.values)
     model = _model(node.annotation)
-    instance = {"id": 1, "value": encode_json(value, node.annotation)}
+    instance = {"id": 1, "value": _encode(value, node.annotation)}
 
     for mode in ("read", "write"):
         jsonschema.validate(instance, model.json_schema(mode))
