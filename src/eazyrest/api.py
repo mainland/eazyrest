@@ -367,13 +367,13 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         raise RedirectError(
             f"{method} {url} was answered with status 303, which says that "
             "the server performed it and points to its result at "
-            f"{_printable(target)}, which was not read. Do not retry the "
-            f"{method}.",
+            f"{_printable(_redact_url(target))}, which was not read. Do not "
+            f"retry the {method}.",
             response=resp,
         )
     raise RedirectError(
         f"{method} {url} was redirected with status {resp.status_code} "
-        f"to {_printable(target)}, which requests follows "
+        f"to {_printable(_redact_url(target))}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
         "and 308 redirects resend a request unchanged. Send the request to "
@@ -405,8 +405,9 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     location = resp.headers.get("Location", "")
     return RedirectError(
         f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
-        f"status {resp.status_code} to {_printable(location)}, for which "
-        "requests cannot prepare the next request, so it was not followed",
+        f"status {resp.status_code} to {_printable(_redact_url(location))}, "
+        "for which requests cannot prepare the next request, so it was not "
+        "followed",
         response=resp,
     )
 

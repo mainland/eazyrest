@@ -285,12 +285,12 @@ the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
 `LimitExceeded` for a size or time limit name the URLs involved, with their
 query strings, so a query parameter's value can appear. Send a secret in a
 header or the body, not in the query. They leave out a user and password in a
-URL, so `http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the
-message, `args`, and `repr()`, but the error's `request` and `response` keep
-the real URL. The `repr()` of a `Page`, and of an object known only by its URL,
-leaves them out too. An exception that requests itself raises, such as
-`requests.ConnectionError`, quotes the URL as requests does. A Pydantic error
-says where and why a value is invalid, as in
+URL, including the `Location` of a redirect, so `http://user:pass@host/x?a=b`
+appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
+error's `request` and `response` keep the real URL. The `repr()` of a `Page`,
+and of an object known only by its URL, leaves them out too. An exception that
+requests itself raises, such as `requests.ConnectionError`, quotes the URL as
+requests does. A Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.

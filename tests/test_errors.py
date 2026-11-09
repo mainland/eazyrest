@@ -28,6 +28,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
+from eazyrest._errors import _redact_url
 
 
 @pytest.mark.parametrize(
@@ -408,6 +409,95 @@ def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
     copy = pickle.loads(pickle.dumps(raised.value))
     assert type(copy) is RedirectError
     assert "cannot prepare" in str(copy)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://user:dummy@host/x?a=b", "http://host/x?a=b"),
+        ("//user:dummy@host/x", "//host/x"),
+        ("//user@host:99999/x", "//host:99999/x"),
+        ("//host/x@y", "//host/x@y"),
+        ("/x@y", "/x@y"),
+        ("http://host/x", "http://host/x"),
+        ("\x0chttp://user:dummy@host/x", "http://host/x"),
+        (" \x01//user:dummy@host/x", "//host/x"),
+        ("ht\ttp://user:dummy@host/x", "http://host/x"),
+        ("http:/\t/user:dummy@host/x", "http://host/x"),
+        ("http://user:dummy@host/\nx", "http://host/x"),
+        ("\x0chttp://host/x\t", "\x0chttp://host/x\t"),
+    ],
+)
+def test_redacted_url_leaves_out_a_user_and_password(
+    url: str, expected: str
+) -> None:
+    """A URL without a scheme, as a ``Location`` may be, is redacted too.
+
+    Args:
+        url: URL to quote.
+        expected: The URL without its user and password.
+    """
+    assert _redact_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://user:dummy@example.com:99999/x",
+        "//user:dummy@example.com:99999/x",
+    ],
+)
+def test_unpreparable_redirect_message_leaves_out_the_location_credentials(
+    requests_mock: Any, location: str
+) -> None:
+    """The message quotes the ``Location`` without its user and password.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    api.session.headers["Authorization"] = "Token dummy"
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert "dummy@" not in str(raised.value)
+    assert "dummy@" not in repr(raised.value)
+    assert "example.com:99999/x" in str(raised.value)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize(
+    "location",
+    ["https://user:dummy@example.com/x", "//user:dummy@example.com/x"],
+)
+def test_write_redirect_message_leaves_out_the_location_credentials(
+    requests_mock: Any, status: int, location: str
+) -> None:
+    """A write that requests would follow as another method quotes no user.
+
+    Args:
+        status: The redirect's status.
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.post(
+        "https://example.com/c",
+        status_code=status,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.post("/c", data=b"x")
+
+    assert "dummy@" not in str(raised.value)
+    assert "dummy@" not in repr(raised.value)
+    assert "example.com/x" in str(raised.value)
 
 
 def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:

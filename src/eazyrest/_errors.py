@@ -278,7 +278,9 @@ def _is_failure(status_code: int) -> bool:
     return 400 <= status_code < 600
 
 
-_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@")
+_USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/?#]*@")
+_URL_NOISE = str.maketrans("", "", "\t\r\n")
+_URL_LEADING = "".join(map(chr, range(0x21)))
 
 
 def _redact_url(url: object) -> str:
@@ -288,14 +290,23 @@ def _redact_url(url: object) -> str:
     such as ``http://user:pass@host/`` would put the credentials into a log.
 
     Args:
-        url: URL, as a string, or ``None``.
+        url: URL, as a string, or ``None``. It may lack a scheme, as a
+            ``Location`` header that begins with ``//`` does.
 
     Returns:
         The URL as it is, but for the user and password before the host, which
         are left out, so ``http://user:pass@host/x?q=1`` becomes
-        ``http://host/x?q=1``.
+        ``http://host/x?q=1`` and ``//user:pass@host/x`` becomes ``//host/x``.
+        The match reads the URL as ``urlsplit()`` does, which ignores leading
+        control characters and spaces and removes tabs, carriage returns, and
+        line feeds. A URL that has a user and password is quoted in that form,
+        so ``http://user:pass@host/x`` with a form feed before it becomes
+        ``http://host/x``.
     """
-    return _USERINFO.sub(r"\1", str(url))
+    text = str(url)
+    normal = text.translate(_URL_NOISE).lstrip(_URL_LEADING)
+    redacted, count = _USERINFO.subn(r"\1", normal)
+    return redacted if count else text
 
 
 def _printable(text: object) -> str:
