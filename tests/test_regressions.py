@@ -18,6 +18,7 @@ from eazyrest import (
     JSONObject,
     LimitExceeded,
     RedirectError,
+    Response,
     ResponseShapeError,
     UsageError,
     WriteMode,
@@ -804,7 +805,7 @@ class PagedMockedBase(MockedBase):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the response's URL.
 

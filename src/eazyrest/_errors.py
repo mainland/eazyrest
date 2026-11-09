@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import requests
+
+from ._protocols import Response
 
 
 class EazyrestError(Exception):
@@ -88,7 +90,7 @@ class APIError(EazyrestError, requests.HTTPError):
     """The response's JSON body, or ``None`` if the body is not JSON."""
 
     def __init__(
-        self, message: str, *, response: requests.Response, data: object
+        self, message: str, *, response: Response, data: object
     ) -> None:
         """Describe a failed request.
 
@@ -97,7 +99,8 @@ class APIError(EazyrestError, requests.HTTPError):
             response: Response whose status reports the failure.
             data: The response's JSON body, or ``None``.
         """
-        super().__init__(message, response=response)
+        # requests types response= as its own Response, but stores any value.
+        super().__init__(message, response=cast(requests.Response, response))
         self.data = data
 
 
@@ -168,9 +171,7 @@ def _json_depth(value: object) -> int:
     return depth
 
 
-def _response_json(
-    resp: requests.Response, max_depth: int | None = None
-) -> object:
+def _response_json(resp: Response, max_depth: int | None = None) -> object:
     """Return the JSON that a response's body holds.
 
     Args:
@@ -291,9 +292,7 @@ def _printable(text: object) -> str:
     )
 
 
-def _api_error(
-    resp: requests.Response, max_depth: int | None = None
-) -> APIError:
+def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     """Return the exception for a response whose status reports a failure.
 
     Args:

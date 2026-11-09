@@ -19,7 +19,7 @@ from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
 from requests_mock import Mocker, create_response
 
-from eazyrest import API, LimitExceeded, RedirectError
+from eazyrest import API, LimitExceeded, RedirectError, Response
 from eazyrest.api import _canonical_url, _redirect_destination
 
 
@@ -803,7 +803,7 @@ def test_api_uses_raise_for_response_hook_in_requests(
     """Request methods should route response validation through the hook."""
 
     class HookedAPI(API):
-        def raise_for_response(self, resp: requests.Response) -> None:
+        def raise_for_response(self, resp: Response, **kwargs: Any) -> None:
             if resp.status_code == 418:
                 raise RuntimeError("teapot")
 
@@ -822,7 +822,7 @@ def test_api_skips_raise_for_response_hook_for_successes(
     """Successful request paths should return before calling the hook."""
 
     class HookedAPI(API):
-        def raise_for_response(self, resp: requests.Response) -> None:
+        def raise_for_response(self, resp: Response, **kwargs: Any) -> None:
             raise AssertionError("raise_for_response() should not be called")
 
     api = HookedAPI("https://example.com/")
@@ -1001,9 +1001,9 @@ def test_raise_for_response_override_may_accept_a_failure(
     """An override that returns lets the failed response through."""
 
     class LenientAPI(API):
-        def raise_for_response(self, resp: requests.Response) -> None:
+        def raise_for_response(self, resp: Response, **kwargs: Any) -> None:
             if resp.status_code != 404:
-                resp.raise_for_status()
+                super().raise_for_response(resp)
 
     api = LenientAPI("https://example.com/")
     requests_mock.get("https://example.com/missing", status_code=404)
@@ -1215,3 +1215,32 @@ def test_canonical_url_spells_one_resource_one_way(
         canonical: Expected canonical spelling.
     """
     assert _canonical_url(url) == canonical
+
+
+def test_raise_for_response_without_kwargs_is_refused() -> None:
+    """An override of ``raise_for_response()`` must accept ``**kwargs``."""
+    with pytest.raises(TypeError, match=r"must accept \*\*kwargs"):
+
+        class Strict(API):
+            def raise_for_response(self, resp: Response) -> None:  # type: ignore[override]
+                pass
+
+    class ErrorsMixin:
+        def raise_for_response(self, resp: Response) -> None:
+            pass
+
+    with pytest.raises(TypeError, match=r"ErrorsMixin\.raise_for_response"):
+
+        class Mixed(ErrorsMixin, API):  # type: ignore[misc]
+            pass
+
+
+def test_raise_for_response_may_be_a_classmethod() -> None:
+    """A ``classmethod`` override that accepts ``**kwargs`` is valid."""
+
+    class ClassLevel(API):
+        @classmethod
+        def raise_for_response(cls, resp: Response, **kwargs: Any) -> None:
+            pass
+
+    assert ClassLevel("https://example.com/") is not None

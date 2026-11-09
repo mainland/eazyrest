@@ -36,6 +36,7 @@ from eazyrest import (
     MultipleObjectsReturned,
     PrefetchNotSupported,
     RedirectError,
+    Response,
     ResponseShapeError,
     WriteMode,
     encode_json,
@@ -4743,7 +4744,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
 
         def merge_response(
             self,
-            resp: requests.Response,
+            resp: Response,
             current: Mapping[str, Any],
             sent: Mapping[str, Any],
             **kwargs: Any,

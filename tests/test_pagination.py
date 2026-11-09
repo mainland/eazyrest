@@ -15,6 +15,7 @@ from eazyrest import (
     Page,
     PaginationError,
     RedirectError,
+    Response,
     ResponseShapeError,
     Results,
     UsageError,
@@ -60,7 +61,7 @@ class ResponsePagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the first page's URL.
 
@@ -91,7 +92,7 @@ class LinkPagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: API, **kwargs: Any
     ) -> Any:
         """Read every page named by a Link header.
 
@@ -1527,7 +1528,7 @@ def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
 
         @classmethod
         def collection_page(
-            cls, resp: requests.Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: API, **kwargs: Any
         ) -> Page[Any]:
             seen.append((cls.api, api))
             return link_headers_page(api, resp)
@@ -1563,7 +1564,7 @@ def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:
 
         @classmethod
         def collection_page(
-            cls, resp: requests.Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: API, **kwargs: Any
         ) -> Any:
             return api.json(resp)
 
@@ -1586,7 +1587,7 @@ def test_page_built_by_a_hook_holds_objects_but_cannot_navigate(
 
         @classmethod
         def collection_page(
-            cls, resp: requests.Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: API, **kwargs: Any
         ) -> Page[Any]:
             return Page(api.json(resp), url=resp.url, next_url="?page=2")
 

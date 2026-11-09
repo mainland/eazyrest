@@ -23,6 +23,7 @@ from ._models import (
     encode_json,
     json_object,
 )
+from ._protocols import Request, Response
 from ._results import Results
 from .api import API
 from .dateparse import parse_datetime, parse_duration
@@ -58,6 +59,8 @@ __all__ = [
     "PaginationError",
     "PrefetchNotSupported",
     "RedirectError",
+    "Request",
+    "Response",
     "ResponseShapeError",
     "Results",
     "UsageError",

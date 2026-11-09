@@ -73,6 +73,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
 )
+from ._protocols import Response
 from ._results import Results, _count_of
 from .api import (
     API,
@@ -80,6 +81,7 @@ from .api import (
     _check_final_response,
     _merge_request_options,
     _origin,
+    _takes_kwargs,
 )
 from .pagination import (
     Page,
@@ -271,7 +273,7 @@ class _ModelPageSource(_PageSource[Any]):
         """
         return self.page(_request_page(self.api, url, allow_other_origins))
 
-    def page(self, resp: requests.Response) -> Page[Any]:
+    def page(self, resp: Response) -> Page[Any]:
         """Read a page of objects from its response.
 
         Args:
@@ -2257,29 +2259,6 @@ def _check_hook_signatures(cls: type[JSONObject]) -> None:
                 "eazyrest passes to it, and pass them on when it calls "
                 "another hook"
             )
-
-
-def _takes_kwargs(method: Any) -> bool:
-    """Return whether a method has a ``**kwargs`` parameter.
-
-    Args:
-        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
-            object.
-
-    Returns:
-        Whether it takes any keyword argument. A callable whose signature
-        cannot be read, such as a builtin, is taken to.
-    """
-    if isinstance(method, (classmethod, staticmethod)):
-        method = method.__func__
-    try:
-        parameters = inspect.signature(method).parameters
-    except (TypeError, ValueError):
-        return True
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
 
 
 def encode_json(
@@ -4669,7 +4648,7 @@ class JSONObject:
 
     def merge_response(
         self,
-        resp: requests.Response,
+        resp: Response,
         current: Mapping[str, Any],
         sent: Mapping[str, Any],
         **kwargs: Any,
@@ -5435,7 +5414,7 @@ class JSONObject:
 
     @classmethod
     def collection_page(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: API, **kwargs: Any
     ) -> Page[Any]:
         """Read one page of a collection response for ``get_page()``.
 
@@ -5460,7 +5439,7 @@ class JSONObject:
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: API, **kwargs: Any
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 

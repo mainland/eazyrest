@@ -15,6 +15,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
 )
+from ._protocols import Response
 from ._results import Results
 from .api import (
     API,
@@ -36,7 +37,7 @@ __all__ = [
 T = TypeVar("T")
 
 
-def _link(resp: requests.Response, rels: frozenset[str]) -> str | None:
+def _link(resp: Response, rels: frozenset[str]) -> str | None:
     """Return the URL of a link with one of ``rels`` in a Link header.
 
     A link may have several relation types, as in ``rel="next last"``, and
@@ -475,7 +476,7 @@ def follow_next_links(
 
 def follow_link_headers(
     api: API,
-    resp: requests.Response,
+    resp: Response,
     *,
     allow_other_origins: bool = False,
 ) -> Results[Any]:
@@ -763,7 +764,7 @@ class _JSONPageSource(_PageSource[Any]):
     def __init__(
         self,
         api: API,
-        parse: Callable[[requests.Response], Page[Any]],
+        parse: Callable[[Response], Page[Any]],
         allow_other_origins: bool,
     ) -> None:
         """Read pages through ``api`` with ``parse``.
@@ -789,7 +790,7 @@ class _JSONPageSource(_PageSource[Any]):
         """
         return self.page(_request_page(self.api, url, allow_other_origins))
 
-    def page(self, resp: requests.Response) -> Page[Any]:
+    def page(self, resp: Response) -> Page[Any]:
         """Read a page from its response and attach this source.
 
         Args:
@@ -807,7 +808,7 @@ class _JSONPageSource(_PageSource[Any]):
 
 def next_links_page(
     api: API,
-    resp: requests.Response,
+    resp: Response,
     *,
     results_key: str = "results",
     next_key: str = "next",
@@ -848,7 +849,7 @@ def next_links_page(
             ``max_items``, or exceeds another of its limits.
     """
 
-    def parse(resp: requests.Response) -> Page[Any]:
+    def parse(resp: Response) -> Page[Any]:
         """Read a page from its response.
 
         Args:
@@ -874,7 +875,7 @@ def next_links_page(
 
 def link_headers_page(
     api: API,
-    resp: requests.Response,
+    resp: Response,
     *,
     allow_other_origins: bool = False,
 ) -> Page[Any]:
@@ -901,7 +902,7 @@ def link_headers_page(
             ``max_items``, or exceeds another of its limits.
     """
 
-    def parse(resp: requests.Response) -> Page[Any]:
+    def parse(resp: Response) -> Page[Any]:
         """Read a page from its response.
 
         Args:

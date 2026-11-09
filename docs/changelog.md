@@ -264,6 +264,14 @@ that can break code written for 0.9.0, followed by what to do about it.
   `PaginationError`, `ResponseShapeError`, `UsageError`, and `LimitExceeded`.
   Each one that replaces another exception type also derives from that type.
 - `eazyrest.__version__`.
+- The protocols `Response` and `Request`, which type the responses that
+  `raise_for_response()`, `merge_response()`, the collection hooks, and the
+  pagination helpers receive by what eazyrest guarantees of any HTTP library's
+  response, so that a later release can add another library without changing
+  these signatures. `API` still returns a `requests.Response`. Annotate a hook
+  override's response as `eazyrest.Response`, because an override annotated
+  `requests.Response` fails type checking, and cast it to use requests' other
+  members, such as `ok` or `links`.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.

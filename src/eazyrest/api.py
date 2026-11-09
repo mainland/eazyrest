@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import inspect
 import sys
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -33,6 +34,7 @@ from ._errors import (
     _printable,
     _response_json,
 )
+from ._protocols import Response
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -60,6 +62,29 @@ _SESSION_SETTINGS = (
 )
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _takes_kwargs(method: Any) -> bool:
+    """Return whether a method has a ``**kwargs`` parameter.
+
+    Args:
+        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
+            object.
+
+    Returns:
+        Whether it takes any keyword argument. A callable whose signature
+        cannot be read, such as a builtin, is taken to.
+    """
+    if isinstance(method, (classmethod, staticmethod)):
+        method = method.__func__
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 def _origin(url: str) -> tuple[str, str | None, int | None]:
@@ -839,6 +864,29 @@ class API:
     _request_scoped: bool = False
     """Whether this client is a request-scoped copy made by ``_scoped()``."""
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Check that an override of ``raise_for_response()`` takes kwargs.
+
+        Args:
+            **kwargs: Keyword arguments for ``object.__init_subclass__()``.
+
+        Raises:
+            TypeError: If the class overrides ``raise_for_response()``, also
+                through a mixin, with a method that takes no ``**kwargs``,
+                which later releases may pass.
+        """
+        super().__init_subclass__(**kwargs)
+        owner = next(
+            base for base in cls.__mro__ if "raise_for_response" in vars(base)
+        )
+        if owner is not API and not _takes_kwargs(
+            vars(owner)["raise_for_response"]
+        ):
+            raise TypeError(
+                f"{owner.__name__}.raise_for_response() must accept "
+                "**kwargs, which later releases may pass to it"
+            )
+
     def __init__(
         self,
         url: str,
@@ -991,7 +1039,7 @@ class API:
         self.raise_for_response(resp)
         return resp
 
-    def raise_for_response(self, resp: requests.Response) -> None:
+    def raise_for_response(self, resp: Response, **kwargs: Any) -> None:
         """Raise an exception if ``resp`` represents a failed request.
 
         The default raises ``NotFound`` for a 404 and ``APIError`` for any
@@ -1003,8 +1051,13 @@ class API:
         ``DoesNotExist`` when it loads an object that the server deleted, and
         callers catch ``APIError``.
 
+        An override must accept ``**kwargs``, which later releases may pass,
+        or the subclass raises ``TypeError`` when it is defined.
+
         Args:
             resp: Response object to validate.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Raises:
             NotFound: If the response status is 404.
@@ -1015,7 +1068,7 @@ class API:
             return
         raise _api_error(resp, self.max_json_depth)
 
-    def json(self, resp: requests.Response) -> Any:
+    def json(self, resp: Response) -> Any:
         """Decode response JSON with this client's depth and number policy.
 
         Use this in collection, bulk-lookup, and error hooks that decode a
