@@ -10,8 +10,163 @@ and hooks, so a model with a field of a new attribute's name raises
 `ValueError` when it is decorated, until `field_map=` gives the field another
 attribute name.
 
-The tags `v1.0.0a1` through `v1.0.0a4` name commits from an earlier history
+The tags `v1.0.0a1` through `v1.0.0a5` name commits from an earlier history
 that was later rewritten. They are not ancestors of 1.0.0.
+
+### Migrating from 1.0.0a5
+
+The items below change what code written for the alpha `v1.0.0a5` does, or
+whether it type-checks. The 0.9.0 items, the new features below, and the guide
+describe them further.
+
+- The hooks `collection_items()`, `collection_items_from_response()`,
+  `collection_page()`, `bulk_get_by_pks()`, and `bulk_get_by_urls()` must
+  accept `api=` and `**kwargs`, and `object_json()`, `merge_response()`, and
+  `API.raise_for_response()` must accept `**kwargs`. A class that overrides one
+  of them without, also an undecorated base class, raises `TypeError`, naming
+  the hook, when it is defined. `api` is required in the bulk hooks too, so
+  code that calls them itself must pass it. The bulk hooks return a `Mapping`
+  of the model's objects.
+- Annotate a hook's response as `eazyrest.Response` and its client as
+  `eazyrest.Client`. An override annotated `requests.Response` or `API` fails
+  type checking.
+- `filter()` reads a Django REST Framework page, a `results` list with a `next`
+  link, by default, where `v1.0.0a5` raised `ResponseShapeError`. An override
+  of `collection_items()` that only read such pages can go.
+- `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
+  `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
+  and `RelatedType`. Declare conversions instead, as
+  `conversions = {T: Conversion(decode=..., encode=..., schema=...)}` on a
+  model's base class, and encode a request body with
+  `encode_json(value, annotation, model=...)`. No public function decodes a
+  value as a field does, so code that called `from_json()` to read an action's
+  response must construct a model or read the JSON itself.
+- A plain `TypedDict`, `dict[str, T]`, fixed-length tuple, `NamedTuple`, or
+  dataclass field converts its keys, items, or fields, where `v1.0.0a5` kept
+  their JSON, so a `datetime.datetime` under a `TypedDict` key reads as a
+  `datetime`. Annotate the JSON form, such as `dict[str, Any]`, to keep the
+  JSON, or `Any` to keep any JSON, since `dict[str, Any]` now requires a JSON
+  object. Types whose JSON would read as another type, such as a mapping whose
+  keys are not strings, a model inside a mapping, or a union with a member that
+  is not a JSON scalar, such as `list[str] | str` or
+  `dict[str, Any] | list[Any]`, raise `FieldConversionError`, also for a `null`
+  value. Annotate such a union `Any`, or for Pydantic. A dataclass field reads
+  an instance, where `v1.0.0a5` read a `dict`, and refuses a key that the
+  dataclass lacks and a `dict` assigned to it. A `NamedTuple` with defaults
+  refuses a shorter array. A parameterized generic `TypedDict`, and a
+  parameterized type whose items eazyrest does not convert, such as
+  `Counter[str]`, raise.
+- A plain `TypedDict`, dataclass, or `NamedTuple` whose annotations name a type
+  that is imported only under `TYPE_CHECKING` raises `FieldConversionError`
+  when the field is first used, where `v1.0.0a5` passed its JSON through.
+  Import the type at run time.
+- `tuple[T]` is a tuple of exactly one item, so a longer array raises
+  `FieldConversionError`, where `v1.0.0a5` read an array of any length as a
+  tuple. Annotate a tuple of any length as `tuple[T, ...]`. A bare `tuple`
+  field reads a tuple, where `v1.0.0a5` read a list.
+- `MutableSequence`, `Collection`, `Set`, `MutableSet`, `deque`, and
+  `MutableMapping` fields convert their items, where `v1.0.0a5` returned the
+  JSON values, and the abstract types read as concrete ones: `Collection` as a
+  tuple, `Set` as a `frozenset`, and `MutableSet` as a `set`, where `v1.0.0a5`
+  read a list.
+- A field typed as a subclass of a type that converts, such as a subclass of
+  `datetime`, converts as that type, and a `NewType` as its supertype, where
+  `v1.0.0a5` read their JSON values unchanged.
+- A `Literal` field reads the JSON value of one of its enum members as the
+  member, where `v1.0.0a5` read the JSON value.
+- `decimal.Decimal` and `datetime.time` fields read as `Decimal` and `time`,
+  where `v1.0.0a5` left the strings. So do `Annotated[Decimal, Field()]` and
+  `Annotated[time, Field()]`, which now convert by eazyrest's table, as other
+  Pydantic fields do: a decimal string with spaces, such as `" 1.0 "`, is
+  refused, and `Decimal("1E+2")` writes `"100"`. `deque[T]` reads a `deque`.
+- In a field that Pydantic converts, a dataclass, of Pydantic or the standard
+  library, must set `extra="forbid"`, and a `TypedDict` `extra="allow"` or
+  `"forbid"`, at any depth, including behind a named alias, a `NewType`, a
+  `NamedTuple`'s field, a generic class's type argument, or a `TypedDict`'s
+  `extra_items=`, or using the field raises `FieldConversionError`. So does a
+  dataclass with an init-only field, which Pydantic reads but never writes, and
+  a class whose annotations cannot be resolved, whose fields therefore cannot
+  be checked.
+- A write that Pydantic would make without some keys or fields of a `TypedDict`
+  or dataclass raises `FieldConversionError`, and so does a value that cannot
+  be written as JSON, such as a float that is not finite, when it is assigned,
+  where `v1.0.0a5` accepted the assignment. Inside a type that eazyrest does
+  not convert, such as an `Any` field or a value of `dict[str, Any]`, a tuple,
+  which reads back as a list, and a mapping whose keys are not strings are such
+  values. Assign a list instead of a tuple.
+- In a field that Pydantic converts, a field that Pydantic excludes from
+  writes, with `Field(exclude=True)` or `exclude_if`, and a dataclass inside a
+  Pydantic model raise `FieldConversionError`, because a write would drop their
+  keys. A dataclass that sets `extra="forbid"` itself is accepted, and so is a
+  dataclass without a config of its own inside a model with `extra="forbid"`. A
+  dataclass with any other config of its own is refused there too.
+- A Pydantic field's write schema is its serialization schema, not its
+  validation schema.
+- A set or frozenset field writes its items in a fixed order, sorted as JSON
+  values, rather than in the set's order, and assigning a set equal to the
+  server's sends no update, whatever order the server lists the items in. That
+  holds for an optional set and a `NewType` of a set. A set inside a field that
+  Pydantic converts is still written in the set's order.
+- `conversions` is a `JSONObject` attribute, so a model with a field of that
+  name raises `ValueError` when it is decorated, and a class variable, method,
+  or property of that name raises `TypeError` when the class is defined. Give
+  the field another attribute name, with `field_map=` to keep its JSON key.
+- `api=` and `register_api()` take an `API`. Another object, such as a test
+  double, raises `TypeError`.
+- `json_schema()` describes fields that it gave as `{}`, such as `Decimal`,
+  `time`, `int | str`, `dict[str, Any]`, and tuples, and names its dialect,
+  JSON Schema 2020-12, in `$schema`, so a schema that a client compared with a
+  saved copy changes.
+- The default `collection_items_from_response()` returns a `Results` iterator,
+  which reads once, for a list payload. Code that calls the hook itself and
+  reads the result twice must make a list of it.
+- Each query method refuses the options of the query methods that it does not
+  take, `api`, `prefetch`, `defaults`, `request_options`, `params`, and `url`,
+  as keyword arguments. Pass a query parameter with one of these names in
+  `params=`.
+- `max_response_bytes` limits the bodies of one request together, where
+  `v1.0.0a5` limited each body alone, so a request that follows redirects could
+  hold the limit once for each of them in `resp.history`. A request whose
+  redirect bodies, challenge bodies, and final body total more than the limit
+  raises `LimitExceeded`. A 304 response, or one to a `HEAD` request, which has
+  no body, does not raise for the `Content-Length` that it declares.
+- A `urllib3.Timeout` passed as `timeout=` is accepted while `total_timeout` is
+  set, with its connect and read values cut to the time that remains. It raised
+  `TypeError`.
+- The messages of `APIError`, `NotFound`, `RedirectError`, `PaginationError`,
+  `ResponseShapeError`, and `LimitExceeded` leave out a user and password in
+  the URL that they quote, so code that compared a message with a base URL such
+  as `http://user:pass@host/` must compare it without them. The `repr()` of a
+  `Page`, and of an object known only by its URL, leaves them out too.
+- A 401 challenge whose body is larger than `max_response_bytes`, or that
+  arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
+  authentication handler that reads the body, such as
+  `requests.auth.HTTPDigestAuth`. Such a challenge was read without a limit.
+  Its body also counts against the limit that the final body shares, so a
+  challenge and a final body that are each within `max_response_bytes` raise
+  `LimitExceeded` when they total more.
+- A raw request sent with `allow_redirects=False` returns a 3xx response, where
+  it raised `RedirectError` for a `Location` on another origin and for a `POST`
+  answered with a 301, 302, or 303, though nothing was followed. A model write,
+  a query, and a next-page request raise `RedirectError` for an unfollowed 3xx.
+  A next-page request to the API's origin that is answered with a redirect to
+  another origin, when the query's client does not follow redirects, raised
+  `PaginationError`, which advised `allow_other_origins=True`, though that
+  option would follow nothing. It raises `RedirectError` now. A next-page URL
+  that itself names another origin still raises `PaginationError`. A `Location`
+  that cannot be parsed raises `RedirectError`, where `v1.0.0a5` let requests'
+  `UnicodeDecodeError` or `ValueError` escape, so code that caught them must
+  catch `RedirectError`. So does any other `Location` for which requests raises
+  `ValueError` or `UnicodeError` while it prepares the next request, such as a
+  port that is out of range when the request carries an `Authorization` header
+  and the redirect keeps the host. A `Location` that requests prepares without
+  error is returned. The body of an unfollowed redirect still counts against
+  `max_response_bytes` and `total_timeout`, also when the request passes
+  `stream=True`.
+- A response body that stalls until `total_timeout` raises `LimitExceeded`,
+  where it raised `requests.ConnectionError` when `timeout` was `None` or above
+  `total_timeout`. A read that times out below the deadline, because of a
+  `timeout` that you set, still raises requests' own exception.
 
 ### Migrating from 0.9.0
 
@@ -46,6 +201,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   in answer to a `PATCH` to a URL without its trailing slash, raises
   `RedirectError` before it is followed, and a lazy update stays pending. Use
   the URL that the server expects, for example by setting `API.trailing_slash`.
+- `create()` sends each field under its JSON key, as `field_map` names it, as a
+  write does, where 0.9.0 sent the Python name.
 - `delete()` takes request options in `request_options=`, as `save()` and
   `create()` do, rather than as positional and keyword arguments for
   `API.delete()`. Replace `obj.delete(headers=h)` with
@@ -59,9 +216,7 @@ that can break code written for 0.9.0, followed by what to do about it.
   size when the response reports it.
 - A collection request answered with a redirect that is not followed, such as a
   `304 Not Modified`, raises `RedirectError` rather than reading its body as
-  the collection. This holds for a next-page request that names another origin
-  too, where `PaginationError` advised `allow_other_origins=True`, though that
-  option would follow nothing.
+  the collection.
 - `filter(url=...)` is removed, and raises `TypeError`. Override `class_url`,
   or call the API directly.
 - Query parameters named after JSON-backed fields are encoded as `create()`
@@ -176,6 +331,15 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 #### URLs and HTTP
 
+- A request's URI is appended to the path of the base URL, where 0.9.0 joined
+  it with `urljoin()`, so that `API("https://h.example.com/api/v1/")` requests
+  `/users/` as `https://h.example.com/api/v1/users/`, where 0.9.0 requested
+  `https://h.example.com/users/`. A `class_url` that repeats the base URL's
+  path must drop it.
+- A detail response that is a list of more than one item raises
+  `MultipleObjectsReturned`, where 0.9.0 read the first item.
+- `reset_session()` keeps the session's headers, cookies, and query parameters,
+  which 0.9.0 dropped.
 - `url` percent-encodes the primary key as one path segment, and an object
   whose key is missing, empty, `.`, or `..` has no URL.
 - The second positional argument of `API()` is `proxy`, not `pool_connections`.
@@ -187,7 +351,13 @@ that can break code written for 0.9.0, followed by what to do about it.
   the warning yourself if you accept unverified connections.
 - A redirect is followed only to the origin of the request it answers, or to an
   origin in `API.redirect_origins`, so that session headers such as API keys
-  are not sent elsewhere.
+  are not sent elsewhere. A `Location` that cannot be parsed, such as
+  `http://[bad/` or one with a byte that is not UTF-8, raises `RedirectError`,
+  where 0.9.0 let requests' `ValueError` or `UnicodeDecodeError` escape. So
+  does a `Location` with a port that is out of range, when the redirect is
+  followed or requests must read the port of one that is not, where 0.9.0
+  raised `ValueError` or `requests.exceptions.InvalidURL`. `RedirectError` is
+  not a `ValueError`, so code that caught them must catch it.
 - Assigning `API.cookies` replaces the session's cookies rather than merging
   into them. Call `api.cookies.update(jar)` to add cookies.
 - Each API limits the size, time, and JSON depth of a response, and the pages
@@ -211,18 +381,21 @@ that can break code written for 0.9.0, followed by what to do about it.
   shapes, and `follow_link_headers()`, for RFC 8288 `Link` headers, with the
   `collection_items_from_response()` hook. The collection hooks receive the
   query's client as `api`, so a hook reads later pages with the API that the
-  query used. The hooks that take `api` also take `**kwargs`, for context that
-  a later 1.x release may pass, and an override must accept it, which
-  `json_object()` checks when it decorates the class. Page navigation with
-  `get_page()`, which returns a `Page` whose `next_page()` and
-  `previous_page()` request the pages around it, read by the
-  `collection_page()` hook with `next_links_page()` or `link_headers_page()`.
+  query used. Every hook also takes `**kwargs`, for context that a later 1.x
+  release may pass, and an override must accept it, which is checked when the
+  class is defined. Page navigation with `get_page()`, which returns a `Page`
+  whose `next_page()` and `previous_page()` request the pages around it, read
+  by the `collection_page()` hook with `next_links_page()` or
+  `link_headers_page()`.
 - Pydantic conversion of fields whose types use Pydantic, through the
   `pydantic` extra, and the `eazyrest.pydantic` types `Datetime`, `Date`,
-  `Time`, `Duration`, `UUID`, and `Decimal`. A type that would drop the keys it
-  does not declare is rejected, and a field must read back what it writes, so a
-  secret such as a `SecretStr`, which Pydantic writes as a mask, is refused
-  unless a serializer reveals it. Models are written by their fields' aliases.
+  `Time`, `Duration`, `UUID`, and `Decimal`. A `TypedDict` or dataclass that
+  would drop the keys it does not declare is rejected. A Pydantic model follows
+  its own config, so with the default config it drops undeclared keys,
+  `extra="allow"` keeps them, and `extra="forbid"` refuses them with
+  `FieldConversionError`. A field must read back what it writes, so a secret
+  such as a `SecretStr`, which Pydantic writes as a mask, is refused unless a
+  serializer reveals it. Models are written by their fields' aliases.
 - Named type aliases, including `typing_extensions.TypeAliasType` and the
   `type` statement.
 - `json_schema()`, the JSON schema of what a model reads or writes.
@@ -290,6 +463,15 @@ that can break code written for 0.9.0, followed by what to do about it.
   another host from the origin check.
 - Pydantic error messages leave out input values, mapping keys that the input
   chose, and discriminated-union tags.
+- An error that quotes a URL, `APIError`, `NotFound`, `RedirectError`,
+  `PaginationError`, `ResponseShapeError`, and `LimitExceeded`, leaves out the
+  user and password of the URL in its message, `args`, and `repr()`, as
+  `http://host/` for `http://user:pass@host/`. This holds for the `Location` of
+  a redirect that a `RedirectError` quotes, also when it has no scheme, as
+  `//host/` for `//user:pass@host/`, and when it begins with a control
+  character or has a tab, carriage return, or line feed inside, which requests
+  ignores. The URL's query is still quoted. The error's `request` and
+  `response` keep the real URL.
 - A `RedirectError` escapes the control characters of the `Location` that it
   quotes, as an HTTP error does for the reason phrase, so a server cannot write
   escape sequences or forged lines into a log.
@@ -301,6 +483,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   `APIError.data=None`, and JSON depth violations raise `LimitExceeded` for
   success and error responses alike. Bounded body reads preserve Requests'
   transport exceptions.
+- The adapters that `API` creates read a response's body within the response
+  limits before any response hook runs, so an authentication handler cannot
+  read the body of a challenge past `max_response_bytes` or `total_timeout`.
 - A hyperlinked relation is followed only to an origin that the related model's
   API allows, and `APIError` messages do not quote the error body, which can
   quote submitted values.
