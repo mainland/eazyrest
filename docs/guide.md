@@ -324,11 +324,19 @@ inside the abstract `Iterable`, `Collection`, `Sequence`, `MutableSequence`,
 `Set`, and `MutableSet` from `collections.abc`. An abstract type reads as a
 concrete one: `Iterable`, `Collection`, and `Sequence` as a tuple,
 `MutableSequence` as a list, `Set` as a `frozenset`, and `MutableSet` as a
-`set`. Any other parameterized type, such as `Counter[str]`, raises
-`FieldConversionError` when the field is first used, because its items would
-otherwise pass through unconverted. Annotate a tuple of any length as
-`tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of exactly one
-item, and a bare `tuple` is a tuple of any length whose items read as they are:
+`set`. A set writes its items in one order, whatever order it iterates them in:
+numbers by value, strings by code point, and arrays and objects by their JSON
+text. Equal sets therefore write equal JSON, and replacing a set with an equal
+one is not a change that `save()` sends, even when the server lists the items
+in another order. That holds for a field annotated as a set or frozenset, an
+optional one, or a `NewType` of either. A set nested in a list, tuple, or
+mapping field is compared in the server's order. A set inside a
+Pydantic-converted field is written by Pydantic, in iteration order. Any other
+parameterized type, such as `Counter[str]`, raises `FieldConversionError` when
+the field is first used, because its items would otherwise pass through
+unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As Python's
+types say, `tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a
+tuple of any length whose items read as they are:
 
 ```python
 import datetime

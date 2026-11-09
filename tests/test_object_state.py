@@ -668,6 +668,26 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 self.pending.add(field)
         self.in_place.clear()
 
+    def detect_before_load(self, field: str) -> None:
+        """Model the detection of in-place changes before a possible load.
+
+        An object loads when its JSON is unloaded, or when it is partial and
+        lacks the field that a step uses. A load queues the values changed in
+        place as pending updates before it replaces the JSON. The model does
+        not follow an object whose cached days cannot be encoded.
+
+        Args:
+            field: Name of the field that the step reads or assigns, or
+                ``"id"`` for the key.
+        """
+        if self.poisoned:
+            return
+
+        state = vars(self.obj).get("_json")
+        partial = vars(self.obj).get("_json_is_partial", False)
+        if state is None or (partial and field not in state):
+            self.detect_in_place_changes()
+
     def send_pending(self) -> None:
         """Model a PATCH of every pending update.
 
@@ -735,6 +755,25 @@ class ObjectStateMachine(RuleBasedStateMachine):
             step()
         assert len(self.mocker.request_history) == before
 
+    def same_assignment(self, field: str, same: bool) -> bool:
+        """Return whether an assignment leaves the object's JSON as it is.
+
+        A pending update is in the JSON but not on the server. In eager mode,
+        assigning the value that such an update holds still sends it, so the
+        assignment is unchanged only when no update to the field is pending. In
+        lazy mode, an assignment of the stored value is no change.
+
+        Args:
+            field: Name of the field assigned, or ``"id"`` for the key.
+            same: Whether the assigned value equals the stored one.
+
+        Returns:
+            Whether the object sees no change, and so sends nothing.
+        """
+        return same and not (
+            self.obj.write_mode == "eager" and field in self.pending
+        )
+
     def sends(self, unchanged: bool = False) -> bool:
         """Return whether an assignment sends a write at once.
 
@@ -754,6 +793,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             field: Name of the field to read.
         """
+        self.detect_before_load(field)
         value = getattr(self.obj, field)
         if not (field == "days" and self.poisoned):
             assert value == self.python_value(field, self.expected[field])
@@ -762,6 +802,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
     @rule()
     def read_owner(self) -> None:
         """A related object read nested has the expected key."""
+        self.detect_before_load("owner")
         assert self.obj.owner.pk == self.expected["owner"]
 
     @rule(name=WORDS)
@@ -771,6 +812,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             name: New name of the related object.
         """
+        self.detect_before_load("owner")
         owner = self.obj.owner
         owner.set_write_mode("lazy")
         owner.name = name
@@ -833,7 +875,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
             field: Name of the field to assign.
         """
         value = data.draw(self.VALUES[field])
-        unchanged = value == self.stored[field]
+        self.detect_before_load(field)
+        unchanged = self.same_assignment(field, value == self.stored[field])
         if self.poisoned and self.sends(unchanged):
             self.refused(
                 lambda: setattr(
@@ -860,8 +903,11 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             owner: Key of the related object to assign.
         """
+        self.detect_before_load("owner")
         state = vars(self.obj).get("_json")
-        unchanged = state is not None and state.get("owner") == owner
+        unchanged = self.same_assignment(
+            "owner", state is not None and state.get("owner") == owner
+        )
         if self.poisoned and self.sends(unchanged):
             self.refused(lambda: setattr(self.obj, "owner", Owner(id=owner)))
             return
@@ -901,12 +947,14 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             key: New primary key.
         """
-        if self.poisoned and self.sends(key == self.stored_key):
+        self.detect_before_load("id")
+        unchanged = self.same_assignment("id", key == self.stored_key)
+        if self.poisoned and self.sends(unchanged):
             self.refused(lambda: setattr(self.obj, "id", key))
             return
 
         self.obj.id = key
-        if key == self.stored_key:
+        if unchanged:
             return
 
         self.stored_key = key
@@ -1013,6 +1061,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             field: Name of the converted collection field to assign.
         """
+        self.detect_before_load(field)
         state = vars(self.obj).get("_json")
         before = copy.deepcopy(state) if state and field in state else None
         pending = copy.deepcopy(self.obj._pending_updates)
@@ -1271,10 +1320,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
         """The object's JSON agrees with the model and has no write-only value.
 
         The JSON is read without loading the object, so a partial object may
-        lack fields. A related object may be nested or a key, so only the
-        plain fields are compared. A load detects in-place changes before it
-        replaces the JSON, so a field changed in place may already hold its
-        new value, and is not compared.
+        lack fields. A related object may be nested or a key, so only the plain
+        fields are compared.
         """
         if not hasattr(self, "obj"):
             return
@@ -1283,7 +1330,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return
         assert "secret" not in state
         for field in self.FIELDS:
-            if field in state and field not in self.in_place:
+            if field in state:
                 assert state[field] == self.stored[field]
 
 
@@ -1524,7 +1571,11 @@ class LinkedStateMachine(RuleBasedStateMachine):
             written = person_url(key, "absolute")
         else:
             value = written = person_url(key, how)
-        unchanged = written == self.author_json
+        # A pending author is in the JSON but not on the server, so an eager
+        # assignment of the same URL still sends it.
+        unchanged = written == self.author_json and not (
+            self.note.write_mode == "eager" and self.pending is not None
+        )
         # A hyperlinked field also accepts a URL, which its type omits.
         self.note.author = value  # type: ignore[assignment]
         if unchanged:

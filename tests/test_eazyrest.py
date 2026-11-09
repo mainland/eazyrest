@@ -2512,6 +2512,85 @@ def test_eager_write_mode_patches_immediately(requests_mock: Any) -> None:
     assert patch.last_request.json() == {"title": "new"}
 
 
+def test_eager_assignment_sends_value_pending_from_in_place_change(
+    requests_mock: Any,
+) -> None:
+    """An eager assignment equal to an unsent in-place change is sent."""
+    api = API("https://example.com/v3/")
+
+    @json_object
+    class Doc(JSONObject):
+        """Model whose second field a partial object lacks."""
+
+        class_url = "/docs/"
+
+        id: int
+        meta: dict[str, int]
+        counts: dict[str, int]
+
+    Doc.register_api(api)
+    requests_mock.get(
+        "https://example.com/v3/docs/1/",
+        json={"id": 1, "meta": {}, "counts": {}},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v3/docs/1/",
+        json={"id": 1, "meta": {"": 0}, "counts": {}},
+    )
+
+    doc = Doc(id=1)
+    doc.update_from_json({"id": 1, "meta": {}})
+    doc.meta[""] = 0
+    doc.set_write_mode("eager")
+    # Reading a field the object lacks loads it and queues the change.
+    assert doc.counts == {}
+    assert not patch.called
+
+    doc.meta = {"": 0}
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"meta": {"": 0}}
+
+
+def test_eager_assignment_sends_value_queued_in_lazy_mode(
+    requests_mock: Any,
+) -> None:
+    """An eager assignment equal to an update queued in lazy mode is sent."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "new", "completed": False},
+    )
+
+    todo = Todo(id=1)
+    todo.title = "new"
+    todo.set_write_mode("eager")
+    assert not patch.called
+
+    todo.title = "new"
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"title": "new"}
+
+
+def test_lazy_assignment_equal_to_stored_value_queues_nothing(
+    requests_mock: Any,
+) -> None:
+    """A lazy assignment equal to the stored value is not a change."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "old", "completed": False},
+    )
+
+    todo = Todo(id=1)
+    todo.title = "old"
+
+    assert todo._pending_updates == {}
+
+
 def test_api_default_write_mode_is_used_for_new_objects(
     requests_mock: Any,
 ) -> None:
@@ -5323,6 +5402,57 @@ def test_request_options_cannot_set_the_body(
 
     assert requests_mock.call_count == 0
     assert todo._pending_updates == {"title": "new"}
+
+
+@json_object
+class TaggedTodo(ModelBase):
+    """Model with set fields."""
+
+    class_url = "/tagged-todos/"
+
+    id: int
+    tags: set[str]
+    marks: frozenset[int] | None
+
+
+@pytest.mark.parametrize(
+    ("field", "server", "equal", "different"),
+    [
+        ("tags", ["b", "a", "c"], {"c", "a", "b"}, {"a", "b"}),
+        ("marks", [3, 1, 2], frozenset({1, 2, 3}), frozenset({1, 2})),
+    ],
+)
+def test_assigning_an_equal_set_is_not_a_change(
+    requests_mock: Any,
+    field: str,
+    server: list[Any],
+    equal: Any,
+    different: Any,
+) -> None:
+    """A set equal to the server's sends nothing, whatever the server's order.
+
+    Args:
+        field: Name of the set field.
+        server: The server's items, in an order that is not the sorted one.
+        equal: Set with the same items.
+        different: Set with other items.
+    """
+    json = {"id": 1, "tags": ["a"], "marks": [1]}
+    json[field] = server
+    requests_mock.get("https://example.com/v1/tagged-todos/1/", json=json)
+    patch = requests_mock.patch(
+        "https://example.com/v1/tagged-todos/1/", status_code=204
+    )
+    todo = TaggedTodo(id=1)
+
+    setattr(todo, field, equal)
+    todo.save()
+    assert patch.call_count == 0
+
+    setattr(todo, field, different)
+    todo.save()
+    assert patch.call_count == 1
+    assert sorted(patch.last_request.json()[field]) == sorted(different)
 
 
 def test_delete_sends_request_options(requests_mock: Any) -> None:

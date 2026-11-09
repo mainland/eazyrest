@@ -13,6 +13,7 @@ import enum
 import functools
 import inspect
 import itertools
+import json
 import math
 import operator
 import re
@@ -3132,6 +3133,35 @@ def _each_item(
     return converted
 
 
+def _json_order(value: Any) -> tuple[int, Any]:
+    """Return a key that orders JSON values, for writing a set's items.
+
+    Every pair of JSON values compares. Numbers compare by value, and strings
+    by code point, which orders ISO 8601 dates by date. Arrays and objects
+    compare by their JSON text, with sorted keys.
+
+    Args:
+        value: JSON value.
+
+    Returns:
+        The kind of value, ranked, and a comparable form of it.
+    """
+    if value is None:
+        return (0, 0)
+    if isinstance(value, bool):
+        return (1, value)
+    if isinstance(value, (int, float)):
+        return (2, value)
+    if isinstance(value, str):
+        return (3, value)
+    return (
+        4,
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ),
+    )
+
+
 def _fixed_items(value: Any, length: int, direction: str) -> list[Any]:
     """Return the items of a fixed-length array, checking its length.
 
@@ -3322,6 +3352,42 @@ class JSONProperty:
             cls._pk = self
             cls._pk_json_field = json_field
 
+    def _same_as_stored(self, stored: Any, new: Any) -> bool:
+        """Return whether a newly encoded value matches the stored JSON.
+
+        The server may list a set's items in any order, while an encoded set
+        lists them in one fixed order, so a set field compares without regard
+        to order. Only the field's own set is compared so, whether the field is
+        optional or a ``NewType`` of a set. A set nested in another collection
+        or a mapping compares in order.
+
+        Args:
+            stored: JSON value that the object holds for this field.
+            new: Encoded value that is being assigned.
+
+        Returns:
+            Whether the values are equal, as ``_json_equal()`` compares them,
+            after sorting a stored set as an encoded one is sorted.
+        """
+        conversion = self.analyzed_type
+        while True:
+            if isinstance(conversion, OptionalType):
+                conversion = conversion.inner_type
+            elif isinstance(conversion, NewTypeType):
+                # A NewType of a set is analyzed as one only if the set is
+                # parameterized, and no conversion can be registered for such a
+                # NewType, so the field's own structure is always its set.
+                conversion = conversion.inner
+            else:
+                break
+        if (
+            isinstance(conversion, CollectionType)
+            and _READ_AS[conversion.collection_type] in (set, frozenset)
+            and isinstance(stored, list)
+        ):
+            stored = sorted(stored, key=_json_order)
+        return _json_equal(stored, new)
+
     def _is_key_of(self, obj: JSONObject) -> bool:
         """Return whether this property is the primary key of ``obj``.
 
@@ -3507,7 +3573,14 @@ class JSONProperty:
         with _converting(type(obj), self.field):
             new_value = obj._to_json(value, self.analyzed_type)
 
-        if not _json_equal(json[self.json_field], new_value):
+        # A pending update is not on the server, even though the JSON holds it.
+        # In eager mode, assigning the same value must send it.
+        unsent = (
+            obj.write_mode == "eager"
+            and self.json_field in obj._pending_updates
+        )
+        stored = json[self.json_field]
+        if unsent or not self._same_as_stored(stored, new_value):
             # Store a copy, so that changing the assigned value in place later
             # cannot match the stored JSON and suppress the next update.
             obj._update_json_field(self.json_field, _copy_json(new_value))
@@ -3522,7 +3595,7 @@ class JSONProperty:
         # An eager write's response can name other related objects, which
         # then replace the assigned ones, as after save().
         final = (obj._json or {}).get(self.json_field, _MISSING)
-        if not _json_equal(final, new_value):
+        if not self._same_as_stored(final, new_value):
             return
 
         kept = self._assigned_related(value)
@@ -4183,7 +4256,7 @@ class JSONObject:
                 # A value that is not JSON must fail here, naming the field,
                 # rather than in json.dumps() when it is sent.
                 return _checked_json(value)
-            case CollectionType(_, item_type):
+            case CollectionType(collection_type, item_type):
                 if isinstance(value, RelatedCollection):
                     # Encoding the collection must not use up its single
                     # traversal.
@@ -4194,9 +4267,16 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                return _each_item(
+                items = _each_item(
                     lambda item: cls._to_json(item, item_type), value
                 )
+                if _READ_AS[collection_type] in (set, frozenset):
+                    # A set's iteration order depends on how it was built, and
+                    # a string's hash on the process, so a set writes its items
+                    # sorted by their JSON. Equal sets then write equal JSON,
+                    # and replacing one with another is not a change.
+                    items.sort(key=_json_order)
+                return items
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
                 return [

@@ -101,7 +101,8 @@ that can break code written for 0.9.0, followed by what to do about it.
 - Fields convert their values by annotation. `datetime`, `date`, `time`,
   `timedelta`, `UUID`, `Decimal`, enum, optional, collection, and
   related-object fields read and write their JSON forms, and so do their items,
-  as in `list[datetime.datetime]`.
+  as in `list[datetime.datetime]`. A set writes its items in a fixed order, so
+  equal sets write equal JSON.
 - A `datetime` field writes ISO 8601 rather than a timestamp, and reads ISO
   8601 or a Unix timestamp. `parse_datetime()` no longer uses `dateparser` or
   the local time zone, so it reads only what a field reads, and its

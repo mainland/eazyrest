@@ -335,6 +335,7 @@ class _Mixin:
         ({Host: ADDRESS}, "the key Host, a model"),
         ({NewType("Owner", Host): ADDRESS}, "the key Owner, a model or a"),
         ({NewType("Ints", list[int]): ADDRESS}, "which is not a class"),
+        ({NewType("Labels", set[str]): ADDRESS}, "which is not a class"),
         # Python 3.10 refuses Any as not a type, and later Pythons, where it
         # is a class, as one that isinstance() cannot check.
         ({Any: ADDRESS}, r"the key typing\.Any, "),
@@ -1043,6 +1044,92 @@ def test_floats_that_are_not_finite_raise_when_assigned(value: float) -> None:
     with pytest.raises(FieldConversionError, match="not finite"):
         reading.level = value
     assert reading.json["level"] == 0.5
+
+
+def test_sets_write_their_items_in_order() -> None:
+    """A set's items are written in one order, whatever order they iterate.
+
+    Numbers sort by value, strings by code point, and arrays and objects by
+    their JSON text, after ``None``, booleans, numbers, and strings.
+    """
+    assert encode_json({10, 9, 1}, set[int]) == [1, 9, 10]
+    assert encode_json(frozenset({"b", "a", "B"}), frozenset[str]) == [
+        "B",
+        "a",
+        "b",
+    ]
+    days = {datetime.date(2026, 11, 9), datetime.date(2025, 12, 1)}
+    assert encode_json(days, set[datetime.date]) == [
+        "2025-12-01",
+        "2026-11-09",
+    ]
+    assert encode_json({"a", 2, None, 1.5}, set[int | float | str | None]) == [
+        None,
+        1.5,
+        2,
+        "a",
+    ]
+    assert encode_json({(2, "a"), (10, "a")}, set[tuple[int, str]]) == [
+        [10, "a"],
+        [2, "a"],
+    ]
+    # A list keeps its own order.
+    assert encode_json([10, 9, 1], list[int]) == [10, 9, 1]
+
+
+def test_an_equal_set_is_not_a_change() -> None:
+    """Replacing a set with an equal one built in another order saves nothing.
+
+    The values are a ``Hypothesis`` example whose equal sets iterate in
+    different orders.
+    """
+    days = [
+        datetime.timedelta(0),
+        datetime.timedelta(days=1, seconds=11102, microseconds=3879),
+        datetime.timedelta(days=14),
+    ]
+    first, second = frozenset(days), frozenset(reversed(days))
+    assert first == second
+    assert list(first) != list(second)
+
+    @json_object
+    class Schedule(TableBase):
+        class_url = "/schedules/"
+
+        id: int
+        gaps: frozenset[datetime.timedelta]
+
+    schedule = Schedule(json={"id": 1, "gaps": ["P14D", "P0D"]})
+    schedule.gaps = first
+    with requests_mock.Mocker() as mock:
+        patch = mock.patch(
+            "https://table.example.com/schedules/1/", status_code=204
+        )
+        schedule.save()
+        assert patch.last_request.json() == {
+            "gaps": ["P0D", "P14D", "P1DT3H5M2.003879S"]
+        }
+        schedule.gaps = second
+        schedule.save()
+
+    assert patch.call_count == 1
+
+
+def test_set_query_parameters_are_sent_in_order() -> None:
+    """A set passed as a query parameter sends its items in order."""
+
+    @json_object
+    class Tagged(TableBase):
+        class_url = "/tagged/"
+
+        id: int
+        tags: set[str]
+
+    with requests_mock.Mocker() as mock:
+        mock.get("https://table.example.com/tagged/", json=[])
+        list(Tagged.filter(tags={"c", "a", "b"}))
+
+        assert mock.last_request.query == "tags=a&tags=b&tags=c"
 
 
 Ends = NewType("Ends", tuple)  # type: ignore[type-arg]

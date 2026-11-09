@@ -129,7 +129,8 @@ class PydanticStateMachine(ObjectStateMachine):
         """
         value = data.draw(PYTHON_VALUES[field])
         encoded = encode(field, value)
-        unchanged = encoded == self.stored[field]
+        self.detect_before_load(field)
+        unchanged = self.same_assignment(field, encoded == self.stored[field])
         if self.poisoned and self.sends(unchanged):
             self.refused(lambda: setattr(self.obj, field, value))
             return
