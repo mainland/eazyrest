@@ -1330,13 +1330,16 @@ resends the already prepared multipart body.
 ### Request options
 
 `save()`, `create()`, and `delete()` take `request_options=`, keyword arguments
-for the request as requests takes them, such as `headers` or `params`. They
-cannot set the body, which the write builds, or enable `stream=True`, because
-model writes consume their responses. An unfollowed final 3xx raises
-`RedirectError`, including when `allow_redirects=False`, and pending updates
-remain pending. A server that supports optimistic concurrency, for example,
-refuses a write whose `If-Match` header no longer names the object's current
-version:
+for the request as requests takes them, such as `headers` or `params`. The
+names are those of the HTTP library that the client sends requests with,
+requests for `API`, so a client for another library, which a later release may
+add, can take other names. They cannot set the body, which the write builds, or
+enable `stream=True`, because model writes consume their responses. Options
+that are not a mapping raise `TypeError`, as they do for a query. An unfollowed
+final 3xx raises `RedirectError`, including when `allow_redirects=False`, and
+pending updates remain pending. A server that supports optimistic concurrency,
+for example, refuses a write whose `If-Match` header no longer names the
+object's current version:
 
 ```python
 todo.title = "new"
@@ -1727,10 +1730,11 @@ operation says.
 An HTTP error status raises whatever `API.raise_for_response()` raises,
 `APIError` or `NotFound` by default. Invalid JSON gives these errors
 `data=None`. A depth-limit violation instead raises `LimitExceeded`, including
-for an error body, and a transport failure raises the requests exception that
-describes it, such as `requests.ConnectionError`. Invalid decorator options
-raise `TypeError` or `ValueError` when the class is defined. Field annotations
-resolve lazily, so an invalid conversion declaration can raise
+for an error body, and a transport failure raises the exception of the HTTP
+library that sent the request. For `API`, that is the requests exception that
+describes the failure, such as `requests.ConnectionError`. Invalid decorator
+options raise `TypeError` or `ValueError` when the class is defined. Field
+annotations resolve lazily, so an invalid conversion declaration can raise
 `FieldConversionError` at first use.
 
 ## Threads

@@ -276,7 +276,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   or `api.session`. `bulk_get_by_pks()` and `bulk_get_by_urls()` return a
   `Mapping` of objects of the model, so an override may return a `dict` of its
   own class. The query methods, `create()`, and the model constructor take a
-  `Client` as `api=`.
+  `Client` as `api=`. The names that `request_options=` accepts and the
+  exceptions for a failed connection are those of the client's HTTP library,
+  requests for `API`.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.

@@ -5410,6 +5410,31 @@ def test_request_options_cannot_set_the_body(
     assert todo._pending_updates == {"title": "new"}
 
 
+def test_writes_refuse_request_options_that_are_not_a_mapping(
+    requests_mock: Any,
+) -> None:
+    """Writes check ``request_options`` as queries do.
+
+    A sequence of pairs is not a mapping, so it raises ``TypeError`` before
+    anything is sent, where a failed attribute lookup would otherwise surface.
+    """
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+    todo.title = "new"
+    options: Any = [("headers", {"If-Match": "x"})]
+
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        todo.save(request_options=options)
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        todo.delete(request_options=options)
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        Todo.create(title="a", request_options=options)
+
+    assert requests_mock.call_count == 0
+    assert todo._pending_updates == {"title": "new"}
+
+
 @json_object
 class TaggedTodo(ModelBase):
     """Model with set fields."""
