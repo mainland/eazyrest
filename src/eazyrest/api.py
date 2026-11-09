@@ -389,6 +389,28 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 _READ_SIZE = 64 * 1024
 
 
+def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
+    """Describe an unfollowed redirect that requests cannot prepare.
+
+    Args:
+        resp: Final response, a redirect that requests does not follow.
+
+    Returns:
+        The error to raise instead of the one that requests raised while it
+        prepared ``Response.next``. ``resp`` is closed first, and its requests
+        lose their response hooks, so that the error pickles.
+    """
+    resp.close()
+    _drop_response_hooks(resp)
+    location = resp.headers.get("Location", "")
+    return RedirectError(
+        f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
+        f"status {resp.status_code} to {_printable(location)}, for which "
+        "requests cannot prepare the next request, so it was not followed",
+        response=resp,
+    )
+
+
 class _Budget:
     """The limits of one request: its body bytes and its total time."""
 
@@ -415,6 +437,8 @@ class _Budget:
         """Bytes of the bodies that the request holds so far."""
         self.total_timeout = total_timeout
         self.streamed = streamed
+        self.unfollowed: requests.Response | None = None
+        """Final response that is a redirect that requests does not follow."""
         self.deadline = (
             None if total_timeout is None else time.monotonic() + total_timeout
         )
@@ -802,7 +826,10 @@ class API:
     there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
     the redirect. A raw request sent with ``allow_redirects=False`` follows
     nothing, so it returns a redirect as it is, without these checks, unless
-    its ``Location`` cannot be parsed, which raises ``RedirectError``.
+    requests raises ``ValueError`` or ``UnicodeError`` while it prepares
+    ``Response.next`` for it, which raises ``RedirectError``. Any other
+    exception that requests raises there, such as ``TooManyRedirects`` when
+    ``Session.max_redirects`` is 0, comes through unchanged.
     """
 
     base_url: str
@@ -1193,9 +1220,14 @@ class API:
         Raises:
             RedirectError: If a redirect leads to an origin that is not
                 allowed, or if requests would follow a redirect without the
-                request's body or with another method.
+                request's body or with another method, or if the final response
+                is a redirect that is not followed and requests raises
+                ``ValueError`` or ``UnicodeError`` while it prepares the next
+                request for it.
             requests.HTTPError: If ``raise_for_response()`` raises it for the
                 response.
+            ValueError: If requests raises it, unless the final response is a
+                redirect that requests does not follow.
         """
         if self._request_options:
             kwargs = _merge_request_options(self._request_options, kwargs)
@@ -1230,8 +1262,18 @@ class API:
         try:
             try:
                 resp = send(url, *args, **kwargs)
-            except requests.RequestException as err:
-                _drop_response_hooks(err.response, err.request)
+            except (requests.RequestException, ValueError) as err:
+                # Session.send() stores the response's cookies, and those of
+                # the responses that a hook put in its history, before it
+                # prepares Response.next. So the error of that preparation
+                # loses no cookie.
+                if (
+                    isinstance(err, ValueError)
+                    and (unfollowed := budget.unfollowed) is not None
+                ):
+                    raise _unpreparable_redirect(unfollowed) from err
+                if isinstance(err, requests.RequestException):
+                    _drop_response_hooks(err.response, err.request)
                 raise
             _drop_response_hooks(resp)
             self._check_redirects(resp)
@@ -1262,13 +1304,11 @@ class API:
             budget: Limits of the request, which each redirect's body and the
                 time to reach it must respect.
             follow: Whether requests follows redirects. If not, the hook
-                refuses only a ``Location`` that requests cannot prepare
-                ``Response.next`` for. The hook runs the preparation itself, so
-                that the ``ValueError`` or ``UnicodeError`` that any of its
-                steps raises, for instance on a port that is out of range,
-                becomes a ``RedirectError``. Otherwise it refuses nothing,
-                because no redirect is followed, and a caller that cannot
-                accept an unfollowed redirect refuses it itself.
+                refuses nothing, because no redirect is followed, and a caller
+                that cannot accept an unfollowed redirect refuses it itself. It
+                records a final redirect on ``budget``, so that ``_send()`` can
+                tell a ``ValueError`` that requests raises while it prepares
+                ``Response.next`` for the redirect from any other.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
@@ -1282,18 +1322,18 @@ class API:
 
             Args:
                 resp: Response, which may be a redirect.
-                kwargs: Arguments that requests passes to response hooks, which
-                    are those it sends the request with. They are passed on to
-                    prepare an unfollowed redirect's next request.
+                kwargs: Arguments that requests passes to response hooks.
 
             Raises:
-                RedirectError: If the ``Location`` of ``resp`` cannot be
-                    parsed, or requests cannot prepare the next request for it
-                    without following it, or if requests follows the redirect,
-                    and it leads to an origin that is not allowed or requests
-                    would follow it without the request's body. The response is
-                    closed first.
+                RedirectError: If requests follows the redirect, and its
+                    ``Location`` cannot be parsed, or it leads to an origin
+                    that is not allowed, or requests would follow it without
+                    the request's body. The response is closed first.
             """
+            if not follow:
+                if resp.is_redirect and budget is not None:
+                    budget.unfollowed = resp
+                return
             try:
                 target = self.session.get_redirect_target(resp)
                 # requests follows no redirect to an empty target.
@@ -1301,24 +1341,6 @@ class API:
                     return
                 destination = _redirect_destination(resp, target)
                 origins = _redirect_origins(resp, target)
-                if not follow:
-                    # Session.send() prepares Response.next in this way when it
-                    # does not follow redirects. Each step, such as the
-                    # comparison of ports to decide whether to strip
-                    # credentials, can raise a bare ValueError or UnicodeError
-                    # that no parse of the target here anticipates. Run the
-                    # preparation so that any such failure is refused here. It
-                    # sends nothing, and the repeat reads no more of the body
-                    # and closes the response, as requests does next.
-                    next(
-                        self.session.resolve_redirects(
-                            resp,
-                            resp.request,
-                            yield_requests=True,
-                            **kwargs,
-                        ),
-                        None,
-                    )
             except ValueError as err:
                 resp.close()
                 raise RedirectError(
@@ -1327,8 +1349,6 @@ class API:
                     "location that cannot be parsed, so it was not followed",
                     response=resp,
                 ) from err
-            if not follow:
-                return
             if origins <= allowed:
                 _check_write_redirect(resp, target)
                 if budget is not None:

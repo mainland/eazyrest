@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import io
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import pytest
@@ -905,9 +906,43 @@ def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
         headers={"Location": location},
     )
 
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         MockedDoc.create(
             title="new", request_options={"allow_redirects": False}
+        )
+
+
+@pytest.mark.parametrize(
+    ("location", "setup"),
+    [
+        ("http://127.0.0.1:99999/x", "authorization"),
+        ("http://127.0.0.1:abc/x", "authorization"),
+        ("http://localhost:99999/x", "no_proxy"),
+        ("http://localhost:abc/x", "no_proxy"),
+    ],
+)
+def test_write_refuses_an_unreadable_port_that_it_does_not_follow(
+    redirect_server: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    setup: str,
+) -> None:
+    """Requests cannot prepare the next request, so the write is refused.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        setup: ``authorization`` for a session that sends credentials, or
+            ``no_proxy`` for an environment that lists hosts to reach directly.
+    """
+    api = API(redirect_server(location))
+    if setup == "authorization":
+        api.session.headers["Authorization"] = "Token dummy"
+    else:
+        monkeypatch.setenv("NO_PROXY", "example.invalid")
+
+    with pytest.raises(RedirectError, match="cannot prepare"):
+        MockedDoc.create(
+            title="new", api=api, request_options={"allow_redirects": False}
         )
 
 

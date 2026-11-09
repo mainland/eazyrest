@@ -381,6 +381,35 @@ def test_errors_after_redirects_pickle_without_their_guards(
     assert type(loop) is requests.TooManyRedirects
 
 
+@pytest.mark.parametrize("digest", [False, True])
+def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
+    requests_mock: Any, digest: bool
+) -> None:
+    """The error keeps no response hook, so it reaches another process.
+
+    Args:
+        digest: Whether the session authenticates with a digest handler, which
+            also puts hooks on the request.
+    """
+    api = API("https://example.com/v1/")
+    if digest:
+        api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    requests_mock.get(
+        "https://example.com/v1/x",
+        status_code=302,
+        headers={"Location": "http://[::1/"},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/x", allow_redirects=False)
+
+    assert raised.value.response is not None
+    assert raised.value.response.request.hooks["response"] == []
+    copy = pickle.loads(pickle.dumps(raised.value))
+    assert type(copy) is RedirectError
+    assert "cannot prepare" in str(copy)
+
+
 def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
     """A server's names reach the message bounded and escaped.
 

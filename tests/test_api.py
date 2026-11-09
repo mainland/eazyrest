@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import re
 import threading
 from collections.abc import Callable
@@ -178,9 +179,9 @@ def test_unfollowed_unparsable_redirect_raises_redirect_error(
         headers={"Location": location},
     )
 
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         api.get("/r", allow_redirects=False)
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         api._scoped({"allow_redirects": False}).get("/r")
 
 
@@ -215,10 +216,169 @@ def test_unfollowed_redirect_with_an_unreadable_port_raises_redirect_error(
     else:
         monkeypatch.setenv("NO_PROXY", "example.invalid")
 
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         api.get("/r", allow_redirects=False)
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         api._scoped({"allow_redirects": False}).get("/r")
+
+
+def test_unfollowed_redirect_passes_on_the_other_failures_of_requests(
+    requests_mock: Any,
+) -> None:
+    """Only ``ValueError`` and ``UnicodeError`` become ``RedirectError``.
+
+    Requests raises ``TooManyRedirects`` when ``max_redirects`` is 0, and
+    ``UnrewindableBodyError`` for a 307 that resends a body that cannot rewind.
+    Both reach the caller as they do without eazyrest.
+    """
+    requests_mock.get(
+        "https://example.com/r",
+        status_code=302,
+        headers={"Location": "/elsewhere"},
+    )
+    requests_mock.post(
+        "https://example.com/up",
+        status_code=307,
+        headers={"Location": "/elsewhere"},
+    )
+    api = API("https://example.com/")
+    api.session.max_redirects = 0
+    with pytest.raises(requests.TooManyRedirects):
+        api.get("/r", allow_redirects=False)
+
+    read_end, write_end = os.pipe()
+    os.write(write_end, b"dummy")
+    os.close(write_end)
+    with (
+        os.fdopen(read_end, "rb") as body,
+        pytest.raises(requests.exceptions.UnrewindableBodyError),
+    ):
+        API("https://example.com/").post(
+            "/up", data=body, allow_redirects=False
+        )
+
+
+def test_unfollowed_redirect_keeps_the_cookies_of_an_authentication_challenge(
+    digest_redirect_server: Callable[[str], str],
+) -> None:
+    """The session stores the cookie of a challenge that a handler answered."""
+    api = API(digest_redirect_server("/elsewhere"))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+
+    resp = api.get("/", allow_redirects=False)
+
+    assert resp.status_code == 302
+    assert {cookie.name for cookie in api.session.cookies} == {
+        "challenge",
+        "redirect",
+    }
+
+
+def test_unfollowed_redirect_after_digest_authentication_returns_a_bad_port(
+    digest_redirect_server: Callable[[str], str],
+) -> None:
+    """A port that requests prepares without error is not refused.
+
+    requests compares ports for a redirect that keeps the host only when the
+    request it resent carries an ``Authorization`` header. It prepares the next
+    request from the original request, which has none.
+    """
+    api = API(digest_redirect_server("http://127.0.0.1:99999/x"))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+
+    resp = api.get("/", allow_redirects=False)
+
+    assert resp.status_code == 302
+
+
+@pytest.mark.parametrize(
+    "location", ["http://127.0.0.1:99999/x", "http://localhost:abc/x"]
+)
+def test_unfollowed_redirect_that_requests_prepares_is_returned(
+    redirect_server: Callable[[str], str], location: str
+) -> None:
+    """Without credentials or a proxy bypass list, requests reads no port.
+
+    Args:
+        location: A ``Location`` whose port cannot be read.
+    """
+    api = API(redirect_server(location))
+
+    resp = api.get("/r", allow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == location
+
+
+def test_unfollowed_redirect_to_another_host_with_a_bad_port_is_returned(
+    redirect_server: Callable[[str], str],
+) -> None:
+    """A redirect that leaves the host makes requests read no port."""
+    api = API(redirect_server("http://other.test:99999/x"))
+    api.session.headers["Authorization"] = "Token dummy"
+
+    assert api.get("/r", allow_redirects=False).status_code == 302
+
+
+def test_unfollowed_redirect_uses_the_no_proxy_list_of_the_request(
+    redirect_server: Callable[[str], str],
+) -> None:
+    """The request's own ``proxies`` reach requests, which reads the port."""
+    api = API(redirect_server("http://localhost:99999/x"))
+    options: dict[str, Any] = {
+        "allow_redirects": False,
+        "proxies": {"no_proxy": "example.invalid"},
+    }
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/r", **options)
+    with pytest.raises(RedirectError, match="cannot prepare"):
+        api._scoped(options).get("/r")
+
+    message = str(raised.value)
+    assert "GET http://127.0.0.1:" in message
+    assert "status 302" in message
+    assert "http://localhost:99999/x" in message
+
+
+def test_unfollowed_redirect_error_escapes_the_location() -> None:
+    """The message shows a control character of the ``Location`` escaped."""
+    api = API("https://example.com/")
+    with Mocker() as mock:
+        mock.get(
+            "https://example.com/r",
+            status_code=302,
+            headers={"Location": "http://[bad/\x85"},
+        )
+        with pytest.raises(RedirectError) as raised:
+            api.get("/r", allow_redirects=False)
+
+    assert "\\x85" in str(raised.value)
+
+
+@pytest.mark.parametrize("status", [200, 302])
+def test_value_error_of_a_response_hook_propagates(
+    requests_mock: Mocker, status: int
+) -> None:
+    """Only an error of requests' own preparation becomes ``RedirectError``.
+
+    Args:
+        status: Status of the response that the hook sees.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/r",
+        status_code=status,
+        headers={"Location": "/elsewhere"},
+    )
+
+    def hook(resp: requests.Response, **kwargs: Any) -> None:
+        raise ValueError("from the hook")
+
+    with pytest.raises(ValueError, match="from the hook") as raised:
+        api.get("/r", allow_redirects=False, hooks={"response": [hook]})
+
+    assert not isinstance(raised.value, RedirectError)
 
 
 def test_api_check_redirects_ignores_a_resent_401() -> None:

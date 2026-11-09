@@ -1475,15 +1475,21 @@ These checks guard the redirects that requests follows. A raw request sent with
 and the caller decides what to do with it. Requests does prepare
 `Response.next` even then, and raises its own `ValueError` or `UnicodeError`
 when it cannot. The request raises `RedirectError` instead, whether or not it
-follows redirects. A `Location` that requests prepares without error is
-returned. Requests cannot prepare a `Location` with a byte that is not UTF-8,
-or a host such as `http://[bad/`. It cannot prepare one with a port that is out
-of range either, when it must read the port: when the request carries an
-`Authorization` header and the redirect keeps the host, or when `NO_PROXY` is
-set and the redirect names a host that is not an IPv4 address. Without these,
-the same port is returned. A model write, and a client that a query's
-`request_options=` creates, expect a final response, so they raise
-`RedirectError` for any unfollowed 3xx.
+follows redirects. Any other exception that requests raises there, such as
+`requests.TooManyRedirects` when `session.max_redirects` is 0, or
+`requests.exceptions.UnrewindableBodyError` for a 307 or 308 that resends a
+body that cannot rewind, comes through unchanged. A `Location` that requests
+prepares without error is returned. Requests cannot prepare a `Location` with a
+byte that is not UTF-8, or a host such as `http://[bad/`. It cannot prepare one
+with a port that is out of range either, when it reads the port while it
+prepares the next request. Whether it does depends on the request. It reads the
+port, for example, when the request carries an `Authorization` header and the
+redirect keeps the host, or when a no-proxy list applies, from `NO_PROXY` or
+from a `no_proxy` entry in `proxies`, and the redirect names a host that is not
+an IPv4 address. It consults neither `NO_PROXY` nor a `no_proxy` entry in
+`proxies` when `session.trust_env` is false. When it does not read the port,
+the response is returned. A model write, a query, and a next-page request
+expect a final response, so they raise `RedirectError` for any unfollowed 3xx.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
@@ -1698,9 +1704,11 @@ exception type that it replaced, so code written for that type keeps working:
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
 - `RedirectError`, a `requests.HTTPError`, for an unsafe redirect, a redirect
-  that requests cannot prepare a request for when it is not followed, or an
-  unfollowed final 3xx on a model write or a request-scoped client. Its
-  `response` is the redirect.
+  that is not followed when requests raises `ValueError` or `UnicodeError`
+  while it prepares the next request, or an unfollowed final 3xx on a model
+  write, a query, or a next-page request, or on a request that a hook sends
+  through the `api` of a query with `request_options=`. Its `response` is the
+  redirect. Another exception from that preparation comes through unchanged.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
