@@ -1172,6 +1172,30 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
         getattr(api._scoped({"allow_redirects": False}), method)("/items/")
 
 
+@pytest.mark.parametrize("status", [302, 303])
+def test_redirect_error_escapes_control_characters_of_the_location(
+    requests_mock: Any, status: int
+) -> None:
+    """A ``Location`` with control characters is escaped in the message.
+
+    Args:
+        status: Redirect status, whose message differs.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.post(
+        "https://example.com/v1/items/",
+        status_code=status,
+        headers={"Location": "/next\x1b[2J\x07forged line"},
+    )
+
+    with pytest.raises(RedirectError) as info:
+        api.post("/items/", json={})
+
+    message = str(info.value)
+    assert message.isprintable()
+    assert "/next\\x1b[2J\\x07forged line" in message
+
+
 @pytest.mark.parametrize(
     ("url", "canonical"),
     [

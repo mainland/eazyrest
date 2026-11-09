@@ -30,6 +30,7 @@ from ._errors import (
     RedirectError,
     _api_error,
     _is_failure,
+    _printable,
     _response_json,
 )
 from .write_mode import WriteMode, validate_write_mode
@@ -337,12 +338,13 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         raise RedirectError(
             f"{method} {resp.url} was answered with status 303, which says "
             f"that the server performed it and points to its result at "
-            f"{target}, which was not read. Do not retry the {method}.",
+            f"{_printable(target)}, which was not read. Do not retry the "
+            f"{method}.",
             response=resp,
         )
     raise RedirectError(
         f"{method} {resp.url} was redirected with status {resp.status_code} "
-        f"to {target}, which requests follows "
+        f"to {_printable(target)}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
         "and 308 redirects resend a request unchanged. Send the request to "
@@ -1240,7 +1242,8 @@ class API:
             resp.close()
             raise RedirectError(
                 f"{resp.request.method} {resp.url} was redirected with status "
-                f"{resp.status_code} to {destination}, whose origin differs "
+                f"{resp.status_code} to {_printable(destination)}, whose "
+                "origin differs "
                 "from the request's, so it was not followed. Add the origin "
                 "to API.redirect_origins to follow it.",
                 response=resp,

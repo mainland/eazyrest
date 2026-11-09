@@ -275,6 +275,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   another host from the origin check.
 - Pydantic error messages leave out input values, mapping keys that the input
   chose, and discriminated-union tags.
+- A `RedirectError` escapes the control characters of the `Location` that it
+  quotes, as an HTTP error does for the reason phrase, so a server cannot write
+  escape sequences or forged lines into a log.
 - Response limits also cover intermediate retry bodies and retry delays with
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and
