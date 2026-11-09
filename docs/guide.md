@@ -1508,7 +1508,10 @@ By default, a request fails if connecting, or any single read from the socket,
 waits more than 10 seconds. That bounds each wait, not the whole request, so a
 server that sends a byte every few seconds could keep a request open
 indefinitely. Set the `timeout` attribute to change the default, or pass
-`timeout=` to a single request. Extra keyword arguments to `API()` configure a
+`timeout=` to a single request, as requests takes it: a number, a pair of
+connect and read timeouts, or a `urllib3.Timeout`. While `total_timeout` is
+set, each of these is cut to the time that remains, and a part that has no
+limit waits for that time. Extra keyword arguments to `API()` configure a
 `requests.adapters.HTTPAdapter` for the base URL's scheme, such as
 `max_retries=` for retries:
 
@@ -1598,9 +1601,12 @@ validator or a hook. Each request of a traversal has its own `total_timeout`,
 because a traversal is lazy and the time between pages is yours. A raw `API`
 request that passes `stream=True` reads its own body, so `max_response_bytes`
 does not apply to a successful response, though it does to the bodies of
-redirects and of a failed response, which eazyrest reads. Custom adapters and
-application hooks control their own work. Use `api.json(response)` in hooks to
-decode JSON with the client's depth limit and response-shape policy.
+redirects and of a failed response, which eazyrest reads. The adapter reads
+each body before any response hook runs, so an authentication handler such as
+`requests.auth.HTTPDigestAuth` cannot read the body of a challenge past the
+limits either. Custom adapters and application hooks control their own work.
+Use `api.json(response)` in hooks to decode JSON with the client's depth limit
+and response-shape policy.
 
 Use the client as a context manager to ensure the session is closed:
 

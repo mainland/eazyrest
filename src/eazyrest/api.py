@@ -23,7 +23,7 @@ from urllib3.exceptions import (
     SSLError,
 )
 from urllib3.response import BaseHTTPResponse
-from urllib3.util import Retry
+from urllib3.util import Retry, Timeout
 
 from ._errors import (
     LimitExceeded,
@@ -362,7 +362,10 @@ class _Budget:
     """The limits of one request: its body size and its total time."""
 
     def __init__(
-        self, max_bytes: int | None, total_timeout: float | None
+        self,
+        max_bytes: int | None,
+        total_timeout: float | None,
+        streamed: bool = False,
     ) -> None:
         """Start the budget of a request.
 
@@ -371,9 +374,12 @@ class _Budget:
                 ``None`` for no limit.
             total_timeout: Seconds that the request may take, including
                 redirects and reading bodies, or ``None`` for no limit.
+            streamed: Whether the caller reads the body of a successful final
+                response, so that the adapter leaves it unread.
         """
         self.max_bytes = max_bytes
         self.total_timeout = total_timeout
+        self.streamed = streamed
         self.deadline = (
             None if total_timeout is None else time.monotonic() + total_timeout
         )
@@ -383,16 +389,34 @@ class _Budget:
 
         Args:
             timeout: Timeout that the request would otherwise use, as requests
-                accepts it.
+                accepts it, also a ``urllib3.Timeout``.
 
         Returns:
-            ``timeout``, with each part reduced to the time remaining.
+            ``timeout``, with each part reduced to the time remaining. A part
+            that waits without a limit becomes the time remaining, as does a
+            part of a ``urllib3.Timeout`` that is unset, when the socket's
+            default timeout has no limit.
         """
         if self.deadline is None:
             return timeout
         remaining = max(self.deadline - time.monotonic(), 0.001)
         if timeout is None:
             return remaining
+        if isinstance(timeout, Timeout):
+
+            def cap(part: Any) -> float:
+                """Return a timeout part that ends by the deadline."""
+                part = Timeout.resolve_default_timeout(part)
+                return remaining if part is None else min(part, remaining)
+
+            # urllib3 keeps the parts in private attributes, and its properties
+            # raise or combine them with the total.
+            total = Timeout.resolve_default_timeout(timeout.total)
+            return Timeout(
+                total=None if total is None else min(total, remaining),
+                connect=cap(timeout._connect),
+                read=cap(timeout._read),
+            )
         if isinstance(timeout, tuple):
             return tuple(
                 remaining if part is None else min(part, remaining)
@@ -640,6 +664,54 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
         super().__init__(**kwargs)
         self.max_retries = _BudgetRetry.wrap(self.max_retries)
 
+    def send(
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: Any = True,
+        cert: Any = None,
+        proxies: Any = None,
+    ) -> requests.Response:
+        """Send a request, and bound the response before any hook sees it.
+
+        Requests runs its response hooks on the response that this returns, and
+        an authentication handler such as ``HTTPDigestAuth`` reads the body of
+        a 401 challenge there. Reading it here first, within the active budget,
+        keeps the size and time limits true for every handler. A body that the
+        caller asked to stream stays unread when the status reports neither a
+        failure nor a redirect. Requests reads the body of a redirect itself,
+        without a limit, even when it does not follow the redirect, so that it
+        can prepare ``Response.next``.
+
+        Args:
+            request: Prepared request to send.
+            stream: Whether to leave the body of a successful response unread,
+                as for Requests.
+            timeout: Timeout, as for Requests.
+            verify: Certificate verification, as for Requests.
+            cert: Client certificate, as for Requests.
+            proxies: Proxies for the request, as for Requests.
+
+        Returns:
+            The response.
+
+        Raises:
+            LimitExceeded: If the response body is larger than the limit, or
+                the request has run out of time.
+        """
+        resp = super().send(request, stream, timeout, verify, cert, proxies)
+        budget = _request_budget.get()
+        if budget is not None:
+            budget.check_time(resp)
+            if (
+                not budget.streamed
+                or _is_failure(resp.status_code)
+                or resp.is_redirect
+            ):
+                budget.read_body(resp)
+        return resp
+
 
 class API:
     """HTTP client wrapper for REST APIs.
@@ -692,18 +764,24 @@ class API:
     overruns it by at most one ``timeout``, but response headers, or the
     framing of a chunked or compressed body, that a server sends byte by byte
     can overrun it without bound. A request that overruns it raises
-    ``LimitExceeded``. Each request of an
-    operation that sends several, such as reading the pages of a collection,
-    has its own. Custom adapters and application hooks control their own work.
+    ``LimitExceeded``. Each request of an operation that sends several, such as
+    reading the pages of a collection, has its own. The adapter reads a
+    response's body before any response hook runs, so the limit also holds for
+    the body of a challenge that an authentication handler such as
+    ``requests.auth.HTTPDigestAuth`` reads. Custom adapters and application
+    hooks control their own work.
     """
 
     max_response_bytes: int | None = 16 * 1024 * 1024
     """Greatest size of a response body, decompressed, or ``None``.
 
     A larger body raises ``LimitExceeded`` as soon as it is seen to be too
-    large, before it is decoded. A request sent with ``stream=True``, which
-    reads its own body, is limited only in the bodies of redirects and of a
-    failed response, which eazyrest reads.
+    large, before it is decoded. The adapter reads each body before any
+    response hook runs, so an authentication handler such as
+    ``requests.auth.HTTPDigestAuth`` cannot read a challenge's body past the
+    limit. A request sent with ``stream=True``, which reads its own body, is
+    limited only in the bodies of redirects, of a challenge, and of a failed
+    response, which eazyrest reads.
     """
 
     max_json_depth: int | None = 128
@@ -1025,8 +1103,8 @@ class API:
         # A request that streams reads its own body, but not the bodies of
         # redirects, which requests reads, or of a failure, which the error
         # reads, so those are bounded too.
-        budget = _Budget(self.max_response_bytes, self.total_timeout)
         streamed = bool(kwargs.get("stream"))
+        budget = _Budget(self.max_response_bytes, self.total_timeout, streamed)
         kwargs["stream"] = True
         kwargs["timeout"] = budget.timeout(kwargs["timeout"])
         if self.session.verify is not True:

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 import requests
-from urllib3.util import Retry
+from urllib3.util import Retry, Timeout
 
 from eazyrest import (
     API,
@@ -23,6 +23,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
+from eazyrest.api import _Budget
 
 
 def test_limit_defaults() -> None:
@@ -319,6 +320,98 @@ def test_trickling_body_hits_total_timeout(
     assert time.monotonic() - started < 2
 
 
+def _digest_challenge(handler: Any, body: bytes, pause: float = 0.0) -> None:
+    """Answer a request with a digest challenge, and a body sent slowly.
+
+    Args:
+        handler: Request handler.
+        body: Body of the 401 response.
+        pause: Seconds to wait after each byte of the body.
+    """
+    if "Authorization" in handler.headers:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "2")
+        handler.end_headers()
+        handler.wfile.write(b"{}")
+        return
+    handler.send_response(401)
+    handler.send_header(
+        "WWW-Authenticate", 'Digest realm="r", nonce="n", qop="auth"'
+    )
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    try:
+        for index in range(len(body)):
+            handler.wfile.write(body[index : index + 1])
+            handler.wfile.flush()
+            time.sleep(pause)
+    except OSError:
+        pass
+
+
+def test_digest_challenge_body_obeys_the_size_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A 401 challenge larger than ``max_response_bytes`` raises.
+
+    ``HTTPDigestAuth`` reads the challenge's body in a response hook, so the
+    adapter must bound it first.
+    """
+    api = API(local_server(lambda h: _digest_challenge(h, b"x" * 5000)))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    api.max_response_bytes = 1000
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes"):
+        api.get("/x")
+
+
+def test_digest_challenge_within_the_limit_is_answered(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A challenge within the limits is answered as usual."""
+    api = API(local_server(lambda h: _digest_challenge(h, b"x" * 100)))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    api.max_response_bytes = 1000
+
+    resp = api.get("/x")
+
+    assert resp.status_code == 200
+    assert resp.history[0].content == b"x" * 100
+
+
+def test_slow_digest_challenge_hits_total_timeout(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A challenge body that trickles in cannot outlast ``total_timeout``."""
+    api = API(local_server(lambda h: _digest_challenge(h, b"x" * 500, 0.02)))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    api.total_timeout = 0.3
+    started = time.monotonic()
+
+    with pytest.raises(LimitExceeded, match="total_timeout"):
+        api.get("/x")
+
+    assert time.monotonic() - started < 2
+
+
+def test_streamed_success_is_left_unread_by_the_adapter(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A successful response that the caller streams is not read early."""
+
+    def ok(handler: Any) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "500")
+        handler.end_headers()
+        handler.wfile.write(b"x" * 500)
+
+    api = API(local_server(ok))
+    api.max_response_bytes = 10
+
+    with api.get("/x", stream=True) as resp:
+        assert resp.raw.read() == b"x" * 500
+
+
 @pytest.mark.parametrize("compress", [False, True])
 def test_chunked_body_is_limited_after_decoding(
     local_server: Callable[[Any], str], compress: bool
@@ -573,6 +666,68 @@ def test_body_stalled_until_the_deadline_raises_limit_exceeded(
 
     with pytest.raises(LimitExceeded, match="total_timeout"):
         api.get("/stalled")
+
+
+def test_urllib3_timeout_is_sent_with_total_timeout(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A ``urllib3.Timeout`` is accepted while ``total_timeout`` is set."""
+
+    def ok(handler: Any) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "2")
+        handler.end_headers()
+        handler.wfile.write(b"{}")
+
+    api = API(local_server(ok))
+
+    resp = api.get("/", timeout=Timeout(connect=1, read=2))
+
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("total", "connect", "read"),
+    [(100.0, 1, 2), (0.5, 1, 2), (0.5, 0.25, 0.125)],
+    ids=["within", "capped", "shorter"],
+)
+def test_urllib3_timeout_parts_are_capped_by_the_time_remaining(
+    total: float, connect: float, read: float
+) -> None:
+    """Each set part of a ``urllib3.Timeout`` is at most the time remaining.
+
+    Args:
+        total: ``total_timeout``.
+        connect: Connect timeout of the request.
+        read: Read timeout of the request.
+    """
+    capped = _Budget(None, total).timeout(Timeout(connect=connect, read=read))
+
+    assert capped.connect_timeout == pytest.approx(
+        min(connect, total), abs=0.1
+    )
+    assert capped.read_timeout == pytest.approx(min(read, total), abs=0.1)
+
+
+@pytest.mark.parametrize(
+    "timeout",
+    [Timeout(read=2), Timeout(connect=1), Timeout(connect=None, read=None)],
+    ids=["connect-unset", "read-unset", "none"],
+)
+def test_unset_urllib3_timeout_parts_wait_for_the_time_remaining(
+    timeout: Timeout,
+) -> None:
+    """A part that is unset, or ``None``, ends at the deadline.
+
+    Args:
+        timeout: Timeout with a part that waits without a limit.
+    """
+    capped = _Budget(None, 0.5).timeout(timeout)
+
+    assert capped.connect_timeout is not None
+    assert 0 < capped.connect_timeout <= 0.5
+    assert capped.read_timeout is not None
+    assert 0 < capped.read_timeout <= 0.5
 
 
 def _unavailable_once(attempts: list[str], body: bytes = b"") -> Any:
