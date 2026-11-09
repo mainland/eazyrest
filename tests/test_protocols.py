@@ -289,6 +289,10 @@ def test_only_an_api_sends_requests() -> None:
         Item.get_page(api=other)
     with pytest.raises(TypeError, match="only through an API, not _NotAnAPI"):
         Item.create(id=1, api=other)
+    with pytest.raises(TypeError, match="only through an API, not _NotAnAPI"):
+        Item.register_api(other)
+    with pytest.raises(TypeError, match="only through an API, not NoneType"):
+        Item.register_api(None)  # type: ignore[arg-type]
     page = {"results": [], "next": "https://example.com/v1/items/?page=2"}
     with pytest.raises(TypeError, match="only through an API, not _NotAnAPI"):
         list(follow_next_links(other, page))

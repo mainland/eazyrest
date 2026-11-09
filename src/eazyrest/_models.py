@@ -4900,8 +4900,12 @@ class JSONObject:
         Args:
             api: API that this class, and any subclass that registers none of
                 its own, uses by default.
+
+        Raises:
+            TypeError: If ``api`` is not an ``API``, as for the ``api=``
+                argument of a query or a model.
         """
-        _api_registry[cls] = api
+        _api_registry[cls] = _as_api(api)
 
     @property
     def pk(self) -> Any:
