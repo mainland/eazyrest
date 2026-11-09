@@ -1585,7 +1585,7 @@ attribute that sets it:
 
 | Attribute | Default | Limits |
 | --- | --- | --- |
-| `max_response_bytes` | 16 MiB | The decompressed size of each response body, checked as it is read. |
+| `max_response_bytes` | 16 MiB | The decompressed size of all the response bodies that one request reads, those of its redirects and challenges included, checked as they are read. |
 | `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
 | `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
 | `max_pages` | 1,000 | The pages that one `follow_next_links()` or `follow_link_headers()` traversal reads, counting the first. |
@@ -1610,15 +1610,23 @@ compressed body's header byte by byte, which `http.client` and urllib3 read in
 one call. So `total_timeout` bounds a slow body, not a hostile server, and
 `timeout` bounds each wait. It cannot interrupt your own code either, such as a
 validator or a hook. Each request of a traversal has its own `total_timeout`,
-because a traversal is lazy and the time between pages is yours. A raw `API`
-request that passes `stream=True` reads its own body, so `max_response_bytes`
-does not apply to a successful response, though it does to the bodies of
-redirects and of a failed response, which eazyrest reads. The adapter reads
-each body before any response hook runs, so an authentication handler such as
-`requests.auth.HTTPDigestAuth` cannot read the body of a challenge past the
-limits either. Custom adapters and application hooks control their own work.
-Use `api.json(response)` in hooks to decode JSON with the client's depth limit
-and response-shape policy.
+because a traversal is lazy and the time between pages is yours. Requests keeps
+the body of each redirect that it follows, and of each 401 challenge that an
+authentication handler answers, so `max_response_bytes` covers all the bodies
+that one request reads, redirects and challenges included, and a request never
+holds more than that in total. A challenge and a final body that together
+exceed it raise `LimitExceeded`, though each is within it alone. The
+`Content-Length` of a response that has no body, such as a 304, or the response
+to a `HEAD` request, is not checked, though it may name the size of the entity
+that it describes. A raw `API` request that passes `stream=True` reads its own
+body, so `max_response_bytes` does not apply to a successful response, though
+it does to the bodies of redirects, followed or not, and of a failed response,
+which eazyrest reads, because requests reads a redirect's body itself to
+prepare `Response.next`. The adapter reads each body before any response hook
+runs, so an authentication handler such as `requests.auth.HTTPDigestAuth`
+cannot read the body of a challenge past the limits either. Custom adapters and
+application hooks control their own work. Use `api.json(response)` in hooks to
+decode JSON with the client's depth limit and response-shape policy.
 
 Use the client as a context manager to ensure the session is closed:
 

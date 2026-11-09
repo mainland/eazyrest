@@ -109,7 +109,7 @@ class Client(Protocol):
 
     @property
     def max_response_bytes(self) -> int | None:
-        """Greatest size of a response body, or ``None``."""
+        """Greatest size of the response bodies of one request, or ``None``."""
         ...
 
     @property

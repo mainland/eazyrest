@@ -388,7 +388,7 @@ _READ_SIZE = 64 * 1024
 
 
 class _Budget:
-    """The limits of one request: its body size and its total time."""
+    """The limits of one request: its body bytes and its total time."""
 
     def __init__(
         self,
@@ -399,7 +399,9 @@ class _Budget:
         """Start the budget of a request.
 
         Args:
-            max_bytes: Greatest decoded body size of each response, or
+            max_bytes: Greatest decoded size of all the bodies that the request
+                keeps, those of its redirects, of the challenges that an
+                authentication handler answers, and of its final response, or
                 ``None`` for no limit.
             total_timeout: Seconds that the request may take, including
                 redirects and reading bodies, or ``None`` for no limit.
@@ -407,6 +409,8 @@ class _Budget:
                 response, so that the adapter leaves it unread.
         """
         self.max_bytes = max_bytes
+        self.held = 0
+        """Bytes of the bodies that the request holds so far."""
         self.total_timeout = total_timeout
         self.streamed = streamed
         self.deadline = (
@@ -472,36 +476,56 @@ class _Budget:
                 f"{where} took at least {self.total_timeout} seconds",
             )
 
-    def read_body(self, resp: requests.Response) -> None:
+    def read_body(self, resp: requests.Response, held: bool = True) -> None:
         """Read a streamed response's body within the budget.
 
         The body is read into the response, so ``resp.content`` and
-        ``resp.json()`` use it as if requests had read it.
+        ``resp.json()`` use it as if requests had read it. A request keeps the
+        body of each redirect in ``resp.history``, so the bodies of one request
+        count against one size limit. The length that a response declares is
+        not checked for a response that has no body, a 1xx, 204, or 304
+        response or the response to a ``HEAD`` request, which may declare the
+        length of the entity that it describes.
 
         Args:
             resp: Response sent with ``stream=True``, whose body is unread.
+            held: Whether the request keeps the body, so that it counts against
+                the size limit of the bodies the request holds. A response that
+                a retry discards does not.
 
         Raises:
-            LimitExceeded: If the body is larger than the limit, or reading it
-                passes the deadline. The response is closed first.
+            LimitExceeded: If the body, with the bodies read before it, is
+                larger than the limit, or reading it passes the deadline. The
+                response is closed first.
         """
         # requests marks a body that it has not read with False.
         if getattr(resp, "_content", None) is not False:
             return
 
-        declared = resp.headers.get("Content-Length", "")
+        allowed = (
+            None
+            if self.max_bytes is None
+            else self.max_bytes - (self.held if held else 0)
+        )
+        # A response without a body, by its status or its request, may still
+        # declare the length of the entity that it describes, as a 304 does.
+        # urllib3 reads no body for it, whatever it declares.
+        declared = (
+            ""
+            if resp.status_code < 200
+            or resp.status_code in (204, 304)
+            or resp.request.method == "HEAD"
+            else resp.headers.get("Content-Length", "")
+        )
         # A length longer than the limit's has more digits than int() reads
         # quickly, and str.isdigit() also accepts digits that int() refuses.
         if (
-            self.max_bytes is not None
+            allowed is not None
             and declared.isascii()
             and declared.isdigit()
-            and (
-                len(declared) > len(str(self.max_bytes))
-                or int(declared) > self.max_bytes
-            )
+            and (len(declared) > len(str(allowed)) or int(declared) > allowed)
         ):
-            self._too_large(resp)
+            self._too_large(resp, held)
 
         raw = resp.raw
         read = getattr(raw, "read1", None) or raw.read
@@ -514,8 +538,8 @@ class _Budget:
                 if not chunk:
                     break
                 size += len(chunk)
-                if self.max_bytes is not None and size > self.max_bytes:
-                    self._too_large(resp)
+                if allowed is not None and size > allowed:
+                    self._too_large(resp, held)
                 chunks.append(chunk)
         except (ProtocolError, DecodeError, ReadTimeoutError, SSLError) as err:
             if isinstance(err, ReadTimeoutError):
@@ -535,26 +559,37 @@ class _Budget:
             raise error_type(err, request=resp.request, response=resp) from err
         self.check_time(resp)
 
+        if held:
+            self.held += size
         resp._content = b"".join(chunks)
         resp._content_consumed = True  # type: ignore[attr-defined]
         release = getattr(raw, "release_conn", None)
         if release is not None:
             release()
 
-    def _too_large(self, resp: requests.Response) -> None:
+    def _too_large(self, resp: requests.Response, held: bool) -> None:
         """Close a response whose body is too large, and raise.
 
         Args:
             resp: Response whose body exceeds the limit.
+            held: Whether the request keeps the body, so that the bodies read
+                before it count.
 
         Raises:
             LimitExceeded: Always.
         """
         resp.close()
+        where = f"{resp.request.method} {resp.url}"
+        if held and self.held:
+            raise LimitExceeded(
+                "max_response_bytes",
+                f"The response to {where}, with the {self.held} bytes of "
+                f"bodies that the request read before it, is larger than "
+                f"{self.max_bytes} bytes",
+            )
         raise LimitExceeded(
             "max_response_bytes",
-            f"The response to {resp.request.method} {resp.url} is larger "
-            f"than {self.max_bytes} bytes",
+            f"The response to {where} is larger than {self.max_bytes} bytes",
         )
 
 
@@ -642,16 +677,16 @@ class _BudgetRetry(Retry):
             )
         except MaxRetryError:
             # With raise_on_status=False, urllib3 returns the unread response
-            # to Requests, and _send() reads it under the same budget.
+            # to Requests, and the adapter reads it under the same budget.
             if (
                 budget is not None
                 and wrapped is not None
                 and self.raise_on_status
             ):
-                budget.read_body(wrapped)
+                budget.read_body(wrapped, held=False)
             raise
         if budget is not None and wrapped is not None:
-            budget.read_body(wrapped)
+            budget.read_body(wrapped, held=False)
         return retry
 
     def sleep(self, response: BaseHTTPResponse | None = None) -> None:
@@ -802,15 +837,21 @@ class API:
     """
 
     max_response_bytes: int | None = 16 * 1024 * 1024
-    """Greatest size of a response body, decompressed, or ``None``.
+    """Greatest size of the response bodies of one request, or ``None``.
 
-    A larger body raises ``LimitExceeded`` as soon as it is seen to be too
-    large, before it is decoded. The adapter reads each body before any
-    response hook runs, so an authentication handler such as
-    ``requests.auth.HTTPDigestAuth`` cannot read a challenge's body past the
-    limit. A request sent with ``stream=True``, which reads its own body, is
-    limited only in the bodies of redirects, of a challenge, and of a failed
-    response, which eazyrest reads.
+    The limit covers all the bodies that one request reads, decompressed, those
+    of the redirects that requests follows, of the 401 challenges that an
+    authentication handler answers, and the final one, which requests keeps in
+    ``resp.history``, so one request never holds more than the limit in total.
+    A challenge and a final body that together exceed it raise
+    ``LimitExceeded``, though each is within it alone. A larger body raises
+    ``LimitExceeded`` as soon as it is seen to be too large, before it is
+    decoded. The adapter reads each body before any response hook runs, so an
+    authentication handler such as ``requests.auth.HTTPDigestAuth`` cannot read
+    a challenge's body past the limit. A request sent with ``stream=True``,
+    which reads its own body, is limited only in the bodies of redirects,
+    followed or not, of a challenge, and of a failed response, which eazyrest
+    reads.
     """
 
     max_json_depth: int | None = 128

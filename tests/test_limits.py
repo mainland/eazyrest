@@ -153,6 +153,46 @@ def test_large_redirect_body_raises(requests_mock: Any) -> None:
     assert not after.called
 
 
+@pytest.mark.parametrize(
+    ("sizes", "raises"),
+    [([40, 40, 20], False), ([40, 40, 21], True), ([60, 60], True)],
+    ids=["at-limit", "final-body-over", "redirect-bodies-over"],
+)
+def test_bodies_of_one_request_share_the_size_limit(
+    requests_mock: Any, sizes: list[int], raises: bool
+) -> None:
+    """The bodies of a request, redirects included, total at most the limit.
+
+    Requests keeps each redirect's body in ``resp.history``, so a limit on each
+    body alone would let one request hold it once per redirect.
+
+    Args:
+        sizes: Body sizes of the redirects and then the final response.
+        raises: Whether the bodies together exceed the limit.
+    """
+    api = API("https://example.com/")
+    api.max_response_bytes = 100
+    *redirects, last = sizes
+    for hop, size in enumerate(redirects):
+        requests_mock.get(
+            f"https://example.com/hop{hop}",
+            status_code=307,
+            headers={"Location": f"/hop{hop + 1}"},
+            content=b"x" * size,
+        )
+    requests_mock.get(
+        f"https://example.com/hop{len(redirects)}", content=b"y" * last
+    )
+
+    if raises:
+        with pytest.raises(LimitExceeded, match="max_response_bytes"):
+            api.get("/hop0")
+    else:
+        resp = api.get("/hop0")
+        held = sum(len(hop.content) for hop in (*resp.history, resp))
+        assert held == 100
+
+
 def _nested(depth: int) -> str:
     """Return JSON text of arrays nested ``depth`` levels deep.
 
@@ -268,6 +308,8 @@ def local_server() -> Iterator[Callable[[Any], str]]:
             def do_GET(self) -> None:
                 handle(self)
 
+            do_HEAD = do_GET
+
             def log_message(self, *args: Any) -> None:
                 pass
 
@@ -379,6 +421,31 @@ def test_digest_challenge_within_the_limit_is_answered(
     assert resp.history[0].content == b"x" * 100
 
 
+def test_challenge_and_final_bodies_share_the_size_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A challenge's body counts with the final body against the limit."""
+
+    def handle(handler: Any) -> None:
+        if "Authorization" in handler.headers:
+            handler.send_response(200)
+            handler.send_header("Content-Length", "60")
+            handler.end_headers()
+            handler.wfile.write(b"x" * 60)
+        else:
+            _digest_challenge(handler, b"x" * 60)
+
+    api = API(local_server(handle))
+    api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    api.max_response_bytes = 100
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes"):
+        api.get("/x")
+
+    api.max_response_bytes = 120
+    assert api.get("/x").content == b"x" * 60
+
+
 def test_slow_digest_challenge_hits_total_timeout(
     local_server: Callable[[Any], str],
 ) -> None:
@@ -410,6 +477,65 @@ def test_streamed_success_is_left_unread_by_the_adapter(
 
     with api.get("/x", stream=True) as resp:
         assert resp.raw.read() == b"x" * 500
+
+
+def _redirect(handler: Any, body: bytes, pause: float = 0.0) -> None:
+    """Answer a request with a 302, and a body sent slowly.
+
+    Args:
+        handler: Request handler.
+        body: Body of the redirect.
+        pause: Seconds to wait after each byte of the body.
+    """
+    handler.send_response(302)
+    handler.send_header("Location", "/next")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    try:
+        for index in range(len(body)):
+            handler.wfile.write(body[index : index + 1])
+            handler.wfile.flush()
+            time.sleep(pause)
+    except OSError:
+        pass
+
+
+def test_unfollowed_streamed_redirect_body_obeys_the_size_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """Requests reads an unfollowed redirect's body, so the limit applies."""
+    api = API(local_server(lambda h: _redirect(h, b"x" * 5000)))
+    api.max_response_bytes = 1000
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes"):
+        api.get("/x", stream=True, allow_redirects=False)
+
+
+def test_unfollowed_streamed_redirect_within_the_limit_is_returned(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A small unfollowed redirect comes back with its body read."""
+    api = API(local_server(lambda h: _redirect(h, b"x" * 100)))
+    api.max_response_bytes = 1000
+
+    resp = api.get("/x", stream=True, allow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.content == b"x" * 100
+
+
+def test_slow_unfollowed_streamed_redirect_hits_total_timeout(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A redirect body that trickles in cannot outlast ``total_timeout``."""
+    api = API(local_server(lambda h: _redirect(h, b"x" * 500, 0.02)))
+    api.total_timeout = 0.3
+    started = time.monotonic()
+
+    with pytest.raises(LimitExceeded, match="total_timeout"):
+        api.get("/x", stream=True, allow_redirects=False)
+
+    assert time.monotonic() - started < 2
 
 
 @pytest.mark.parametrize("compress", [False, True])
@@ -537,6 +663,38 @@ def test_discarded_retry_bodies_do_not_count_against_the_size_limit(
     assert resp.status_code == 200
     assert resp.content == b"x" * 80
     assert len(attempts) == 3
+
+
+@pytest.mark.parametrize(
+    ("method", "status"), [("GET", 204), ("GET", 304), ("HEAD", 200)]
+)
+def test_response_without_a_body_may_declare_a_length_over_the_limit(
+    local_server: Callable[[Any], str], method: str, status: int
+) -> None:
+    """A 204, a 304, or a ``HEAD`` response has no body, so its length is free.
+
+    Such a response may carry the ``Content-Length`` of the entity that it
+    describes.
+
+    Args:
+        method: Request method.
+        status: Status code of the response.
+    """
+
+    def handle(handler: Any) -> None:
+        handler.send_response(status)
+        handler.send_header("Content-Length", "1000")
+        handler.end_headers()
+
+    base_url = local_server(handle)
+    api = API(base_url)
+    api.max_response_bytes = 100
+
+    send = api.session.head if method == "HEAD" else api.session.get
+    resp = api._send(send, "/x")
+
+    assert resp.status_code == status
+    assert resp.content == b""
 
 
 def test_exhausted_retry_can_return_its_error_body(
