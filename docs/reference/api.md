@@ -7,6 +7,11 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.Client
+   :members:
+```
+
+```{eval-rst}
 .. autoclass:: eazyrest.Response
    :members:
 ```

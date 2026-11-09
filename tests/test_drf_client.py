@@ -18,6 +18,8 @@ from wsgiref.simple_server import WSGIRequestHandler, make_server
 
 import pytest
 
+import eazyrest
+
 pytest.importorskip("django")
 pytest.importorskip("rest_framework")
 pytest.importorskip("django_filters")
@@ -447,7 +449,11 @@ class LinkedContentTypeModel(ContentTypeModel):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls,
+        pks: set[Any],
+        *,
+        api: eazyrest.Client | None = None,
+        **kwargs: Any,
     ) -> dict[Any, LinkedContentTypeModel]:
         """Load content types by key from the list view.
 

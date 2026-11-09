@@ -10,6 +10,7 @@ import requests
 
 from eazyrest import (
     API,
+    Client,
     JSONObject,
     LimitExceeded,
     Page,
@@ -31,7 +32,9 @@ class PagedBase(JSONObject):
     """Base object for models with paginated collection responses."""
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
         """Read every page of a collection response.
 
         Args:
@@ -61,7 +64,7 @@ class ResponsePagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the first page's URL.
 
@@ -92,7 +95,7 @@ class LinkPagedBase(JSONObject):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Any:
         """Read every page named by a Link header.
 
@@ -132,7 +135,7 @@ class Owner(PagedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, Owner]:
         """Return an object for each primary key.
 
@@ -1141,7 +1144,7 @@ def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:
 
         @classmethod
         def collection_items(
-            cls, payload: Any, *, api: API, **kwargs: Any
+            cls, payload: Any, *, api: Client, **kwargs: Any
         ) -> Any:
             return Counted(payload["data"])
 
@@ -1206,7 +1209,7 @@ def test_query_api_is_the_class_api_during_the_hook(
 ) -> None:
     """While a hook runs, ``cls.api`` is the query's API, as ``api`` is."""
     tenant = API("https://tenant.example.com/v1/")
-    seen: list[tuple[API, API]] = []
+    seen: list[tuple[API, Client]] = []
 
     @json_object
     class Probe(PagedBase):
@@ -1216,7 +1219,7 @@ def test_query_api_is_the_class_api_during_the_hook(
 
         @classmethod
         def collection_items(
-            cls, payload: Any, *, api: API, **kwargs: Any
+            cls, payload: Any, *, api: Client, **kwargs: Any
         ) -> Any:
             seen.append((cls.api, api))
             return payload
@@ -1517,7 +1520,7 @@ def test_get_page_fetches_a_page_url(requests_mock: Any) -> None:
 
 def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
     """A model reads Link-header pages by returning ``link_headers_page()``."""
-    seen: list[tuple[API, API]] = []
+    seen: list[tuple[API, Client]] = []
     tenant = API("https://example.com/v1/")
 
     @json_object
@@ -1528,7 +1531,7 @@ def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
 
         @classmethod
         def collection_page(
-            cls, resp: Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: Client, **kwargs: Any
         ) -> Page[Any]:
             seen.append((cls.api, api))
             return link_headers_page(api, resp)
@@ -1564,7 +1567,7 @@ def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:
 
         @classmethod
         def collection_page(
-            cls, resp: Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: Client, **kwargs: Any
         ) -> Any:
             return api.json(resp)
 
@@ -1587,7 +1590,7 @@ def test_page_built_by_a_hook_holds_objects_but_cannot_navigate(
 
         @classmethod
         def collection_page(
-            cls, resp: Response, *, api: API, **kwargs: Any
+            cls, resp: Response, *, api: Client, **kwargs: Any
         ) -> Page[Any]:
             return Page(api.json(resp), url=resp.url, next_url="?page=2")
 

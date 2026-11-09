@@ -15,10 +15,10 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
 )
-from ._protocols import Response
+from ._protocols import Client, Response
 from ._results import Results
 from .api import (
-    API,
+    _as_api,
     _check_final_response,
     _origin,
     _redirect_destination,
@@ -151,7 +151,7 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
     return results
 
 
-def _check_page_origin(api: API, url: str) -> None:
+def _check_page_origin(api: Client, url: str) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
     Args:
@@ -173,7 +173,7 @@ def _check_page_origin(api: API, url: str) -> None:
 
 
 def _request_page(
-    api: API, url: str, allow_other_origins: bool
+    api: Client, url: str, allow_other_origins: bool
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
@@ -193,6 +193,7 @@ def _request_page(
         RedirectError: If a redirect is refused, as for any request, or the
             response is a redirect that was not followed.
     """
+    api = _as_api(api)
     api_origin = _origin(api.base_url)
     if not allow_other_origins:
         _check_page_origin(api, url)
@@ -270,7 +271,7 @@ def _request_page(
 class _PageReader:
     """Request the next pages of a collection, guarding their URLs."""
 
-    def __init__(self, api: API, allow_other_origins: bool) -> None:
+    def __init__(self, api: Client, allow_other_origins: bool) -> None:
         """Prepare to read pages through ``api``.
 
         Args:
@@ -365,7 +366,7 @@ def _count_of(payload: Any, count_key: str) -> int | None:
 
 
 def follow_next_links(
-    api: API,
+    api: Client,
     payload: Any,
     *,
     url: str | None = None,
@@ -475,7 +476,7 @@ def follow_next_links(
 
 
 def follow_link_headers(
-    api: API,
+    api: Client,
     resp: Response,
     *,
     allow_other_origins: bool = False,
@@ -567,8 +568,10 @@ class _Trail:
 class _PageSource(Generic[T]):
     """Reads the page at a URL, as the pages that it returns link to it."""
 
-    api: API
-    """Client that requests the pages."""
+    @property
+    def api(self) -> Client:
+        """Client that requests the pages, which never changes."""
+        raise NotImplementedError
 
     def read(self, url: str, allow_other_origins: bool) -> Page[T]:
         """Request and read the page at ``url``.
@@ -741,7 +744,7 @@ class Page(Generic[T]):
         return page
 
 
-def _check_page_size(api: API, items: list[Any]) -> None:
+def _check_page_size(api: Client, items: list[Any]) -> None:
     """Reject a page with more items than the API allows in a collection.
 
     Args:
@@ -763,7 +766,7 @@ class _JSONPageSource(_PageSource[Any]):
 
     def __init__(
         self,
-        api: API,
+        api: Client,
         parse: Callable[[Response], Page[Any]],
         allow_other_origins: bool,
     ) -> None:
@@ -774,9 +777,14 @@ class _JSONPageSource(_PageSource[Any]):
             parse: Reads a page from its response.
             allow_other_origins: Whether pages may have other origins.
         """
-        self.api = api
+        self._api = api
         self._parse = parse
         self._allow_other_origins = allow_other_origins
+
+    @property
+    def api(self) -> Client:
+        """Client that requests the pages."""
+        return self._api
 
     def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
         """Request and read the page at ``url``.
@@ -807,7 +815,7 @@ class _JSONPageSource(_PageSource[Any]):
 
 
 def next_links_page(
-    api: API,
+    api: Client,
     resp: Response,
     *,
     results_key: str = "results",
@@ -874,7 +882,7 @@ def next_links_page(
 
 
 def link_headers_page(
-    api: API,
+    api: Client,
     resp: Response,
     *,
     allow_other_origins: bool = False,

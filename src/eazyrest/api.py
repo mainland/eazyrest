@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
+import requests.adapters
+import requests.cookies
 from requests.structures import CaseInsensitiveDict
 from requests.utils import requote_uri
 from urllib3.exceptions import (
@@ -34,7 +36,7 @@ from ._errors import (
     _printable,
     _response_json,
 )
-from ._protocols import Response
+from ._protocols import Client, Response
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -1425,3 +1427,26 @@ class API:
             Validated HTTP response.
         """
         return self._send(self.session.delete, uri, *args, **kwargs)
+
+
+def _as_api(api: Client) -> API:
+    """Return a client that a hook passed back as the requests client.
+
+    ``API`` is the only client there is so far, so every ``Client`` that
+    eazyrest passes to a hook is one.
+
+    Args:
+        api: Client that a hook passed to eazyrest.
+
+    Returns:
+        ``api``.
+
+    Raises:
+        TypeError: If ``api`` is not an ``API``.
+    """
+    if not isinstance(api, API):
+        raise TypeError(
+            "eazyrest sends requests only through an API, not "
+            f"{type(api).__name__}"
+        )
+    return api

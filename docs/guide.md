@@ -1099,6 +1099,18 @@ the examples here do. A class that overrides a hook without `**kwargs`, also an
 undecorated base class, raises `TypeError` when it is defined, rather than when
 a query first calls the hook.
 
+The hooks are typed by two protocols rather than by requests' classes, so that
+a later 1.x release can send requests with another HTTP library without
+changing them. `api` is a `Client`, which has the request methods, `base_url`,
+`resolve_url()`, `json()`, and the limits, and a response is a `Response`,
+which has the status, reason, headers, body, URL, request method, and redirect
+history. At run time they are an `API` and a `requests.Response`. Annotate an
+override's parameters with the protocols, because an override that annotates
+them `API` or `requests.Response` fails type checking, and cast them to use
+anything else, such as `api.session` or `resp.links`. The query methods,
+`create()`, and the model constructor take a `Client` as `api=`, so a hook can
+pass its `api` on.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:

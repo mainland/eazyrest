@@ -13,6 +13,7 @@ from typing_extensions import TypeAliasType
 from eazyrest import (
     API,
     APIError,
+    Client,
     FieldConversionError,
     Hyperlinked,
     JSONObject,
@@ -45,7 +46,7 @@ class MockedUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, MockedUser]:
         """Return loaded users for the requested keys.
 
@@ -805,7 +806,7 @@ class PagedMockedBase(MockedBase):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the response's URL.
 
@@ -935,7 +936,7 @@ class CountingUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, CountingUser]:
         """Return loaded users for every key except 99.
 
@@ -964,7 +965,7 @@ class Profile(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, Profile]:
         """Return loaded profiles for the requested keys.
 

@@ -28,6 +28,7 @@ from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
+    Client,
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
@@ -70,7 +71,7 @@ class User(ModelBase):
         cls,
         pks: set[Any],
         *,
-        api: API | None = None,
+        api: Client | None = None,
         **kwargs: Any,
     ) -> dict[Any, User]:
         """Load users in one request for explicit prefetch support.
@@ -178,7 +179,9 @@ class SearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
         """Extract wrapped collection items for this test model.
 
         Args:
@@ -213,7 +216,9 @@ class PaginatedSearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
         """Follow ``next`` links and yield items across all pages.
 
         Args:
@@ -1395,7 +1400,7 @@ class UUIDUser(ModelBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, UUIDUser]:
         """Load users and key the result by their decoded primary keys.
 
@@ -4315,7 +4320,7 @@ def test_default_hooks_accept_and_pass_on_keyword_arguments(
 
         @classmethod
         def collection_items(
-            cls, payload: Any, *, api: API, **kwargs: Any
+            cls, payload: Any, *, api: Client, **kwargs: Any
         ) -> Any:
             seen.append(kwargs)
             return super().collection_items(payload, api=api, **kwargs)
