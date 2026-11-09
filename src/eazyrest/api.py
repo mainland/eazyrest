@@ -25,7 +25,13 @@ from urllib3.exceptions import (
 from urllib3.response import BaseHTTPResponse
 from urllib3.util import Retry
 
-from ._errors import LimitExceeded, RedirectError, _api_error, _response_json
+from ._errors import (
+    LimitExceeded,
+    RedirectError,
+    _api_error,
+    _is_failure,
+    _response_json,
+)
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -681,9 +687,12 @@ class API:
     """Seconds that a request may take in all, or ``None`` for no limit.
 
     The time includes redirects, retries, retry delays, and reading response
-    bodies with the adapters this client creates. It is checked between reads
-    and attempts, so a request can overrun it by at most one ``timeout``. A
-    request that overruns it raises ``LimitExceeded``. Each request of an
+    bodies with the adapters this client creates. It is checked between the
+    reads of a body and between attempts, so a body that arrives slowly
+    overruns it by at most one ``timeout``, but response headers, or the
+    framing of a chunked or compressed body, that a server sends byte by byte
+    can overrun it without bound. A request that overruns it raises
+    ``LimitExceeded``. Each request of an
     operation that sends several, such as reading the pages of a collection,
     has its own. Custom adapters and application hooks control their own work.
     """
@@ -693,7 +702,8 @@ class API:
 
     A larger body raises ``LimitExceeded`` as soon as it is seen to be too
     large, before it is decoded. A request sent with ``stream=True``, which
-    reads its own body, is not limited.
+    reads its own body, is limited only in the bodies of redirects and of a
+    failed response, which eazyrest reads.
     """
 
     max_json_depth: int | None = 128
@@ -895,7 +905,7 @@ class API:
         Raises:
             requests.HTTPError: If the response status indicates failure.
         """
-        if resp.ok:
+        if not _is_failure(resp.status_code):
             return resp
 
         self.raise_for_response(resp)
@@ -921,7 +931,7 @@ class API:
             APIError: If the response status indicates another failure.
             LimitExceeded: If the error body exceeds ``max_json_depth``.
         """
-        if resp.ok:
+        if not _is_failure(resp.status_code):
             return
         raise _api_error(resp, self.max_json_depth)
 
@@ -1012,12 +1022,10 @@ class API:
         if self._request_options:
             kwargs = _merge_request_options(self._request_options, kwargs)
         kwargs.setdefault("timeout", self.timeout)
-        # A request that streams reads its own body, so only its time and its
-        # redirects are checked.
-        budget = _Budget(
-            None if kwargs.get("stream") else self.max_response_bytes,
-            self.total_timeout,
-        )
+        # A request that streams reads its own body, but not the bodies of
+        # redirects, which requests reads, or of a failure, which the error
+        # reads, so those are bounded too.
+        budget = _Budget(self.max_response_bytes, self.total_timeout)
         streamed = bool(kwargs.get("stream"))
         kwargs["stream"] = True
         kwargs["timeout"] = budget.timeout(kwargs["timeout"])
@@ -1050,7 +1058,7 @@ class API:
             _drop_response_hooks(resp)
             self._check_redirects(resp)
             budget.check_time(resp)
-            if not streamed:
+            if not streamed or _is_failure(resp.status_code):
                 budget.read_body(resp)
             resp = self._check_response(resp)
             if self._request_scoped:

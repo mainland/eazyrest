@@ -8,21 +8,6 @@ from typing import Any, NoReturn
 import requests
 
 
-def _printable(text: object) -> str:
-    """Return text that a server chose, with its control characters escaped.
-
-    Args:
-        text: Text, such as a reason phrase.
-
-    Returns:
-        The text, with each character that is not printable escaped as
-        ``repr()`` escapes it.
-    """
-    return "".join(
-        char if char.isprintable() else repr(char)[1:-1] for char in str(text)
-    )
-
-
 class EazyrestError(Exception):
     """Base class of the exceptions that eazyrest defines.
 
@@ -275,6 +260,35 @@ class LimitExceeded(EazyrestError):
         """
         super().__init__(f"{message}, which exceeds API.{limit}")
         self.limit = limit
+
+
+def _is_failure(status_code: int) -> bool:
+    """Return whether a status reports a failed request.
+
+    A 4xx or 5xx status does, as for ``requests.Response.ok``.
+
+    Args:
+        status_code: HTTP status code.
+
+    Returns:
+        Whether the status is a client or server error.
+    """
+    return 400 <= status_code < 600
+
+
+def _printable(text: object) -> str:
+    """Return text that a server chose, with its control characters escaped.
+
+    Args:
+        text: Text, such as a reason phrase.
+
+    Returns:
+        The text, with each character that is not printable escaped as
+        ``repr()`` escapes it.
+    """
+    return "".join(
+        char if char.isprintable() else repr(char)[1:-1] for char in str(text)
+    )
 
 
 def _api_error(

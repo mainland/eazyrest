@@ -7,6 +7,7 @@ from typing import Any, Generic, TypeVar
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import requests
+from requests.utils import parse_header_links
 
 from ._errors import (
     LimitExceeded,
@@ -49,9 +50,17 @@ def _link(resp: requests.Response, rels: frozenset[str]) -> str | None:
         The URL of the first link whose relation types include one of
         ``rels``, or ``None`` if there is none.
     """
-    # requests parses the Link header into resp.links, keyed by the whole rel
-    # value.
-    for link in resp.links.values():
+    header = resp.headers.get("Link")
+    if not header:
+        return None
+    # As requests' Response.links does, key the links by their whole rel
+    # value, so that a later link with the same value replaces an earlier one.
+    links: dict[str, dict[str, str]] = {}
+    for link in parse_header_links(header):
+        key = link.get("rel") or link.get("url")
+        if key is not None:
+            links[key] = link
+    for link in links.values():
         if rels.intersection(link.get("rel", "").lower().split()):
             url: str | None = link.get("url")
             return url

@@ -1587,12 +1587,18 @@ api.max_pages = None
 
 A limit is never met by truncating. A traversal that would read too many pages
 raises rather than stopping early, so the items it yielded are never mistaken
-for the whole collection. `total_timeout` is checked between reads and retry
-attempts, so a request can overrun it by at most one `timeout`, and it cannot
-interrupt your own code, such as a validator or a hook. Each request of a
-traversal has its own `total_timeout`, because a traversal is lazy and the time
-between pages is yours. A raw `API` request that passes `stream=True` reads its
-own body, so `max_response_bytes` does not apply to it. Custom adapters and
+for the whole collection. `total_timeout` is checked between the reads of a
+body and between retry attempts. A server that sends a body's bytes no slower
+than `timeout` allows can therefore make a request overrun it by at most one
+`timeout`, but not one that sends the response's headers, a chunk's size, or a
+compressed body's header byte by byte, which `http.client` and urllib3 read in
+one call. So `total_timeout` bounds a slow body, not a hostile server, and
+`timeout` bounds each wait. It cannot interrupt your own code either, such as a
+validator or a hook. Each request of a traversal has its own `total_timeout`,
+because a traversal is lazy and the time between pages is yours. A raw `API`
+request that passes `stream=True` reads its own body, so `max_response_bytes`
+does not apply to a successful response, though it does to the bodies of
+redirects and of a failed response, which eazyrest reads. Custom adapters and
 application hooks control their own work. Use `api.json(response)` in hooks to
 decode JSON with the client's depth limit and response-shape policy.
 

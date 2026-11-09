@@ -108,6 +108,32 @@ def test_streamed_response_is_not_limited(requests_mock: Any) -> None:
     assert resp.raw.read() == b"x" * 200
 
 
+@pytest.mark.parametrize("status", [500, 302])
+def test_streamed_request_bounds_the_bodies_eazyrest_reads(
+    requests_mock: Any, status: int
+) -> None:
+    """A streamed request still bounds a failure's and a redirect's body.
+
+    eazyrest reads a failure's body for the error, and requests reads a
+    redirect's before it follows it, whatever ``stream`` is.
+
+    Args:
+        status: Status of the response with the large body.
+    """
+    api = API("https://example.com/")
+    api.max_response_bytes = 10
+    requests_mock.get(
+        "https://example.com/big",
+        status_code=status,
+        content=b"x" * 200,
+        headers={"Location": "https://example.com/ok"},
+    )
+    requests_mock.get("https://example.com/ok", content=b"y" * 200)
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes"):
+        api.get("/big", stream=True)
+
+
 def test_large_redirect_body_raises(requests_mock: Any) -> None:
     """A redirect's body counts too, because requests reads it."""
     api = API("https://example.com/")
