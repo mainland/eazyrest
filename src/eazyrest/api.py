@@ -34,6 +34,7 @@ from ._errors import (
     _api_error,
     _is_failure,
     _printable,
+    _redact_url,
     _response_json,
 )
 from ._protocols import Client, Response
@@ -304,7 +305,7 @@ def _check_final_response(
     if 300 <= resp.status_code < 400:
         resp.close()
         raise RedirectError(
-            f"{resp.request.method} {resp.url} returned status "
+            f"{resp.request.method} {_redact_url(resp.url)} returned status "
             f"{resp.status_code}, so {consequence}",
             response=resp,
         )
@@ -359,18 +360,19 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         return
 
     resp.close()
+    url = _redact_url(resp.url)
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
         # its result, so retrying the request would repeat it.
         raise RedirectError(
-            f"{method} {resp.url} was answered with status 303, which says "
-            f"that the server performed it and points to its result at "
+            f"{method} {url} was answered with status 303, which says that "
+            "the server performed it and points to its result at "
             f"{_printable(target)}, which was not read. Do not retry the "
             f"{method}.",
             response=resp,
         )
     raise RedirectError(
-        f"{method} {resp.url} was redirected with status {resp.status_code} "
+        f"{method} {url} was redirected with status {resp.status_code} "
         f"to {_printable(target)}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
@@ -470,7 +472,7 @@ class _Budget:
             where = "The request"
             if resp is not None:
                 resp.close()
-                where = f"{resp.request.method} {resp.url}"
+                where = f"{resp.request.method} {_redact_url(resp.url)}"
             raise LimitExceeded(
                 "total_timeout",
                 f"{where} took at least {self.total_timeout} seconds",
@@ -579,7 +581,7 @@ class _Budget:
             LimitExceeded: Always.
         """
         resp.close()
-        where = f"{resp.request.method} {resp.url}"
+        where = f"{resp.request.method} {_redact_url(resp.url)}"
         if held and self.held:
             raise LimitExceeded(
                 "max_response_bytes",
@@ -1320,9 +1322,9 @@ class API:
             except ValueError as err:
                 resp.close()
                 raise RedirectError(
-                    f"{resp.request.method} {resp.url} was redirected with "
-                    f"status {resp.status_code} to a location that cannot be "
-                    "parsed, so it was not followed",
+                    f"{resp.request.method} {_redact_url(resp.url)} was "
+                    f"redirected with status {resp.status_code} to a "
+                    "location that cannot be parsed, so it was not followed",
                     response=resp,
                 ) from err
             if not follow:
@@ -1337,11 +1339,11 @@ class API:
 
             resp.close()
             raise RedirectError(
-                f"{resp.request.method} {resp.url} was redirected with status "
-                f"{resp.status_code} to {_printable(destination)}, whose "
-                "origin differs "
-                "from the request's, so it was not followed. Add the origin "
-                "to API.redirect_origins to follow it.",
+                f"{resp.request.method} {_redact_url(resp.url)} was "
+                f"redirected with status {resp.status_code} to "
+                f"{_printable(_redact_url(destination))}, whose origin "
+                "differs from the request's, so it was not followed. Add the "
+                "origin to API.redirect_origins to follow it.",
                 response=resp,
             )
 
@@ -1384,10 +1386,10 @@ class API:
         )
         if dropped or resp.request.method != redirect.request.method:
             raise RedirectError(
-                f"{sent} {redirect.url} was redirected with status "
-                f"{redirect.status_code}, and requests resent it to "
-                f"{resp.url} as {resp.request.method}, so the {sent} request "
-                "was not performed",
+                f"{sent} {_redact_url(redirect.url)} was redirected with "
+                f"status {redirect.status_code}, and requests resent it to "
+                f"{_redact_url(resp.url)} as {resp.request.method}, so the "
+                f"{sent} request was not performed",
                 response=redirect,
             )
 

@@ -14,6 +14,7 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
+    _redact_url,
 )
 from ._protocols import Client, Response
 from ._results import Results
@@ -112,7 +113,9 @@ def _resolve(base: str, link: str) -> str:
     try:
         return urljoin(base, link)
     except ValueError as err:
-        raise PaginationError(f"Page URL {link!r} cannot be parsed") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(link)!r} cannot be parsed"
+        ) from err
 
 
 def _page_results(page: Any, results_key: str) -> list[Any] | None:
@@ -164,11 +167,14 @@ def _check_page_origin(api: Client, url: str) -> None:
     try:
         origin = _origin(url)
     except ValueError as err:
-        raise PaginationError(f"Page URL {url!r} cannot be parsed") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(url)!r} cannot be parsed"
+        ) from err
     if origin != _origin(api.base_url):
         raise PaginationError(
-            f"Page URL {url!r} has a different origin from the API's base URL "
-            f"{api.base_url!r}. Pass allow_other_origins=True to follow it."
+            f"Page URL {_redact_url(url)!r} has a different origin from the "
+            f"API's base URL {_redact_url(api.base_url)!r}. Pass "
+            "allow_other_origins=True to follow it."
         )
 
 
@@ -232,9 +238,9 @@ def _request_page(
         if origins != {api_origin}:
             resp.close()
             raise PaginationError(
-                f"Page request {resp.url!r} was redirected to "
-                f"{destination!r}, which has a different origin from the "
-                f"API's base URL {api.base_url!r}. Pass "
+                f"Page request {_redact_url(resp.url)!r} was redirected to "
+                f"{_redact_url(destination)!r}, which has a different origin "
+                f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
                 "allow_other_origins=True to follow it."
             )
 
@@ -264,7 +270,9 @@ def _request_page(
         requests.exceptions.InvalidURL,
         requests.exceptions.MissingSchema,
     ) as err:
-        raise PaginationError(f"Page URL {url!r} cannot be requested") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(url)!r} cannot be requested"
+        ) from err
     return _check_final_response(resp, "the page has no response to read")
 
 
@@ -329,7 +337,8 @@ class _PageReader:
         """
         if url in self.read_urls:
             raise PaginationError(
-                f"Next-page URL {url!r} names a page that was already read, "
+                f"Next-page URL {_redact_url(url)!r} names a page that was "
+                "already read, "
                 "so following it would never end"
             )
         if not self.allow_other_origins:
@@ -666,10 +675,13 @@ class Page(Generic[T]):
     def __repr__(self) -> str:
         """Return the page's URL and size.
 
+        The URL leaves out any user and password, as an error message does,
+        since a representation reaches logs in the same way.
+
         Returns:
             Representation of the page.
         """
-        return f"<Page url={self.url!r} items={len(self.items)}>"
+        return f"<Page url={_redact_url(self.url)!r} items={len(self.items)}>"
 
     def next_page(self) -> Page[T] | None:
         """Request the next page.
@@ -727,7 +739,8 @@ class Page(Generic[T]):
         trail = self._forward if forward else self._backward
         if url in trail.urls:
             raise PaginationError(
-                f"Page URL {url!r} names a page that was already read, so "
+                f"Page URL {_redact_url(url)!r} names a page that was already "
+                "read, so "
                 "following it would never end"
             )
         limit = self._source.api.max_pages

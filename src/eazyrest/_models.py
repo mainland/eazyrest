@@ -72,6 +72,7 @@ from ._errors import (
     PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
+    _redact_url,
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
@@ -3849,7 +3850,8 @@ class JSONObject:
         """Return the class and primary key without sending a request.
 
         The key is shown as its JSON value, whether or not the object has
-        loaded, as in ``<User id=1>``.
+        loaded, as in ``<User id=1>``. An object known only by its URL shows
+        the URL, without any user and password.
 
         Returns:
             The class name and primary key in angle brackets, or the class name
@@ -3871,7 +3873,7 @@ class JSONObject:
                 value = self._to_json(value, pk_property.analyzed_type)
 
         if value is None and self._url_override is not None:
-            return f"<{name} url={self._url_override!r}>"
+            return f"<{name} url={_redact_url(self._url_override)!r}>"
         return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, NoReturn, cast
 
 import requests
@@ -189,8 +190,8 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             too deeply for Python's decoder.
     """
     where = (
-        f"The response to {resp.request.method} {resp.url}, with status "
-        f"{resp.status_code},"
+        f"The response to {resp.request.method} {_redact_url(resp.url)}, with "
+        f"status {resp.status_code},"
     )
     try:
         value = resp.json(
@@ -277,6 +278,26 @@ def _is_failure(status_code: int) -> bool:
     return 400 <= status_code < 600
 
 
+_USERINFO = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@")
+
+
+def _redact_url(url: object) -> str:
+    """Return a URL, without any user and password, to quote in a message.
+
+    An error message quotes the URL of a request, with its query, and a URL
+    such as ``http://user:pass@host/`` would put the credentials into a log.
+
+    Args:
+        url: URL, as a string, or ``None``.
+
+    Returns:
+        The URL as it is, but for the user and password before the host, which
+        are left out, so ``http://user:pass@host/x?q=1`` becomes
+        ``http://host/x?q=1``.
+    """
+    return _USERINFO.sub(r"\1", str(url))
+
+
 def _printable(text: object) -> str:
     """Return text that a server chose, with its control characters escaped.
 
@@ -314,7 +335,7 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     kind = "Client" if 400 <= resp.status_code < 500 else "Server"
     message = (
         f"{resp.status_code} {kind} Error: {_printable(resp.reason)} for "
-        f"{resp.request.method} {resp.url}"
+        f"{resp.request.method} {_redact_url(resp.url)}"
     )
     if isinstance(data, dict):
         # A server chooses the names, so bound them, and quote them, so that

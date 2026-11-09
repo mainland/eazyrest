@@ -1322,6 +1322,23 @@ def test_next_links_page_navigates_both_ways(requests_mock: Any) -> None:
     assert "items=2" in repr(back)
 
 
+def test_page_repr_leaves_out_the_url_credentials(
+    requests_mock: Any,
+) -> None:
+    """A page's ``repr()`` does not quote the user and password of its URL."""
+    api = API("https://user:dummy-pass@example.com/v1/")
+    requests_mock.get(
+        "https://user:dummy-pass@example.com/v1/items/",
+        json={"results": [{"id": 1}], "next": None},
+    )
+
+    page = next_links_page(api, api.get("/items/"))
+
+    assert page.url is not None
+    assert "dummy-pass" in page.url
+    assert repr(page) == "<Page url='https://example.com/v1/items/' items=1>"
+
+
 def test_list_payload_is_a_page_without_links(requests_mock: Any) -> None:
     """A list payload is one page with no links and no count."""
     api = API("https://example.com/v1/")

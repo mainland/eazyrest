@@ -911,6 +911,18 @@ def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
         )
 
 
+def test_repr_leaves_out_the_credentials_of_a_hyperlink() -> None:
+    """A related object known only by its URL is shown without credentials."""
+    doc = MockedDoc(
+        json={
+            **DOC_JSON,
+            "linked": "https://user:dummy-pass@mocked.example/u/",
+        }
+    )
+
+    assert repr(doc.linked) == "<MockedUser url='https://mocked.example/u/'>"
+
+
 def test_unfollowed_redirects_allow_a_completed_write(
     requests_mock: Any,
 ) -> None:
