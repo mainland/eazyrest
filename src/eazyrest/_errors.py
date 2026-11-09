@@ -3,24 +3,12 @@
 from __future__ import annotations
 
 import math
-from typing import Any, NoReturn
+import re
+from typing import Any, NoReturn, cast
 
 import requests
 
-
-def _printable(text: object) -> str:
-    """Return text that a server chose, with its control characters escaped.
-
-    Args:
-        text: Text, such as a reason phrase.
-
-    Returns:
-        The text, with each character that is not printable escaped as
-        ``repr()`` escapes it.
-    """
-    return "".join(
-        char if char.isprintable() else repr(char)[1:-1] for char in str(text)
-    )
+from ._protocols import Response
 
 
 class EazyrestError(Exception):
@@ -103,7 +91,7 @@ class APIError(EazyrestError, requests.HTTPError):
     """The response's JSON body, or ``None`` if the body is not JSON."""
 
     def __init__(
-        self, message: str, *, response: requests.Response, data: object
+        self, message: str, *, response: Response, data: object
     ) -> None:
         """Describe a failed request.
 
@@ -112,7 +100,8 @@ class APIError(EazyrestError, requests.HTTPError):
             response: Response whose status reports the failure.
             data: The response's JSON body, or ``None``.
         """
-        super().__init__(message, response=response)
+        # requests types response= as its own Response, but stores any value.
+        super().__init__(message, response=cast(requests.Response, response))
         self.data = data
 
 
@@ -183,9 +172,7 @@ def _json_depth(value: object) -> int:
     return depth
 
 
-def _response_json(
-    resp: requests.Response, max_depth: int | None = None
-) -> object:
+def _response_json(resp: Response, max_depth: int | None = None) -> object:
     """Return the JSON that a response's body holds.
 
     Args:
@@ -203,8 +190,8 @@ def _response_json(
             too deeply for Python's decoder.
     """
     where = (
-        f"The response to {resp.request.method} {resp.url}, with status "
-        f"{resp.status_code},"
+        f"The response to {resp.request.method} {_redact_url(resp.url)}, with "
+        f"status {resp.status_code},"
     )
     try:
         value = resp.json(
@@ -277,9 +264,67 @@ class LimitExceeded(EazyrestError):
         self.limit = limit
 
 
-def _api_error(
-    resp: requests.Response, max_depth: int | None = None
-) -> APIError:
+def _is_failure(status_code: int) -> bool:
+    """Return whether a status reports a failed request.
+
+    A 4xx or 5xx status does, as for ``requests.Response.ok``.
+
+    Args:
+        status_code: HTTP status code.
+
+    Returns:
+        Whether the status is a client or server error.
+    """
+    return 400 <= status_code < 600
+
+
+_USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/?#]*@")
+_URL_NOISE = str.maketrans("", "", "\t\r\n")
+_URL_LEADING = "".join(map(chr, range(0x21)))
+
+
+def _redact_url(url: object) -> str:
+    """Return a URL, without any user and password, to quote in a message.
+
+    An error message quotes the URL of a request, with its query, and a URL
+    such as ``http://user:pass@host/`` would put the credentials into a log.
+
+    Args:
+        url: URL, as a string, or ``None``. It may lack a scheme, as a
+            ``Location`` header that begins with ``//`` does.
+
+    Returns:
+        The URL as it is, but for the user and password before the host, which
+        are left out, so ``http://user:pass@host/x?q=1`` becomes
+        ``http://host/x?q=1`` and ``//user:pass@host/x`` becomes ``//host/x``.
+        The match reads the URL as ``urlsplit()`` does, which ignores leading
+        control characters and spaces and removes tabs, carriage returns, and
+        line feeds. A URL that has a user and password is quoted in that form,
+        so ``http://user:pass@host/x`` with a form feed before it becomes
+        ``http://host/x``.
+    """
+    text = str(url)
+    normal = text.translate(_URL_NOISE).lstrip(_URL_LEADING)
+    redacted, count = _USERINFO.subn(r"\1", normal)
+    return redacted if count else text
+
+
+def _printable(text: object) -> str:
+    """Return text that a server chose, with its control characters escaped.
+
+    Args:
+        text: Text, such as a reason phrase.
+
+    Returns:
+        The text, with each character that is not printable escaped as
+        ``repr()`` escapes it.
+    """
+    return "".join(
+        char if char.isprintable() else repr(char)[1:-1] for char in str(text)
+    )
+
+
+def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     """Return the exception for a response whose status reports a failure.
 
     Args:
@@ -301,7 +346,7 @@ def _api_error(
     kind = "Client" if 400 <= resp.status_code < 500 else "Server"
     message = (
         f"{resp.status_code} {kind} Error: {_printable(resp.reason)} for "
-        f"{resp.request.method} {resp.url}"
+        f"{resp.request.method} {_redact_url(resp.url)}"
     )
     if isinstance(data, dict):
         # A server chooses the names, so bound them, and quote them, so that

@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.server
 import pickle
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
+from eazyrest._errors import _redact_url
 
 
 @pytest.mark.parametrize(
@@ -380,6 +382,124 @@ def test_errors_after_redirects_pickle_without_their_guards(
     assert type(loop) is requests.TooManyRedirects
 
 
+@pytest.mark.parametrize("digest", [False, True])
+def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
+    requests_mock: Any, digest: bool
+) -> None:
+    """The error keeps no response hook, so it reaches another process.
+
+    Args:
+        digest: Whether the session authenticates with a digest handler, which
+            also puts hooks on the request.
+    """
+    api = API("https://example.com/v1/")
+    if digest:
+        api.session.auth = requests.auth.HTTPDigestAuth("user", "dummy")
+    requests_mock.get(
+        "https://example.com/v1/x",
+        status_code=302,
+        headers={"Location": "http://[::1/"},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/x", allow_redirects=False)
+
+    assert raised.value.response is not None
+    assert raised.value.response.request.hooks["response"] == []
+    copy = pickle.loads(pickle.dumps(raised.value))
+    assert type(copy) is RedirectError
+    assert "cannot prepare" in str(copy)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://user:dummy@host/x?a=b", "http://host/x?a=b"),
+        ("//user:dummy@host/x", "//host/x"),
+        ("//user@host:99999/x", "//host:99999/x"),
+        ("//host/x@y", "//host/x@y"),
+        ("/x@y", "/x@y"),
+        ("http://host/x", "http://host/x"),
+        ("\x0chttp://user:dummy@host/x", "http://host/x"),
+        (" \x01//user:dummy@host/x", "//host/x"),
+        ("ht\ttp://user:dummy@host/x", "http://host/x"),
+        ("http:/\t/user:dummy@host/x", "http://host/x"),
+        ("http://user:dummy@host/\nx", "http://host/x"),
+        ("\x0chttp://host/x\t", "\x0chttp://host/x\t"),
+    ],
+)
+def test_redacted_url_leaves_out_a_user_and_password(
+    url: str, expected: str
+) -> None:
+    """A URL without a scheme, as a ``Location`` may be, is redacted too.
+
+    Args:
+        url: URL to quote.
+        expected: The URL without its user and password.
+    """
+    assert _redact_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://user:dummy@example.com:99999/x",
+        "//user:dummy@example.com:99999/x",
+    ],
+)
+def test_unpreparable_redirect_message_leaves_out_the_location_credentials(
+    requests_mock: Any, location: str
+) -> None:
+    """The message quotes the ``Location`` without its user and password.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    api.session.headers["Authorization"] = "Token dummy"
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert "dummy@" not in str(raised.value)
+    assert "dummy@" not in repr(raised.value)
+    assert "example.com:99999/x" in str(raised.value)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize(
+    "location",
+    ["https://user:dummy@example.com/x", "//user:dummy@example.com/x"],
+)
+def test_write_redirect_message_leaves_out_the_location_credentials(
+    requests_mock: Any, status: int, location: str
+) -> None:
+    """A write that requests would follow as another method quotes no user.
+
+    Args:
+        status: The redirect's status.
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.post(
+        "https://example.com/c",
+        status_code=status,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.post("/c", data=b"x")
+
+    assert "dummy@" not in str(raised.value)
+    assert "dummy@" not in repr(raised.value)
+    assert "example.com/x" in str(raised.value)
+
+
 def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
     """A server's names reach the message bounded and escaped.
 
@@ -409,3 +529,136 @@ def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
     assert "'n08'" not in message
     assert "and 12 more" in message
     assert len(message) < 600
+
+
+@pytest.fixture
+def credentialed_api() -> Iterator[tuple[API, str]]:
+    """Return an API whose base URL has a user and password.
+
+    The server answers by path: ``/fail`` with a 500, ``/html`` with a body
+    that is not JSON, ``/redirect`` with a 302, and ``/elsewhere`` with a 307
+    to another origin whose URL has a user and password too.
+
+    Yields:
+        The API, and the user and password text that no message may quote.
+    """
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def handle_any(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            path = self.path.split("?")[0]
+            body = b"<html>"
+            status = 200
+            headers: list[tuple[str, str]] = []
+            if path == "/fail":
+                status, body = 500, b'{"detail": "x"}'
+            elif path == "/redirect":
+                status, body = 302, b""
+                headers = [("Location", "/next")]
+            elif path == "/elsewhere":
+                status, body = 307, b""
+                headers = [
+                    ("Location", "http://u2:dummy-pass2@other.invalid/")
+                ]
+            self.send_response(status)
+            for name, value in headers:
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = handle_any
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://user:dummy-pass@127.0.0.1:{server.server_port}/"
+    try:
+        with API(base) as api:
+            yield api, base
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _quoted(error: BaseException) -> list[str]:
+    """Return every text of an error that can quote a URL.
+
+    Args:
+        error: Exception to inspect.
+
+    Returns:
+        Its message, its ``repr()``, and its ``args`` as text.
+    """
+    return [str(error), repr(error), *map(str, error.args)]
+
+
+def test_error_messages_leave_out_the_user_and_password_of_a_url(
+    credentialed_api: tuple[API, str],
+) -> None:
+    """An error quotes a URL's query, but not its user and password.
+
+    Args:
+        credentialed_api: API with a user and password in its base URL, and its
+            base URL.
+    """
+    api, base = credentialed_api
+    plain = base.replace("user:dummy-pass@", "")
+    query = "?api_key=dummy-key"
+    errors: list[BaseException] = []
+
+    def collect(action: Callable[[], object]) -> None:
+        with pytest.raises(Exception, match=r"127\.0\.0\.1") as raised:
+            action()
+        errors.append(raised.value)
+
+    collect(lambda: api.get(f"/fail{query}"))
+    collect(lambda: api.json(api.get(f"/html{query}")))
+    collect(lambda: api.post(f"/redirect{query}", json={}))
+    collect(lambda: api.get(f"/elsewhere{query}"))
+    collect(lambda: api._scoped({"allow_redirects": False}).get("/redirect"))
+    api.max_response_bytes = 1
+    collect(lambda: api.get(f"/html{query}"))
+    api.max_response_bytes = None
+    api.total_timeout = 0.0
+    collect(lambda: api.get(f"/html{query}"))
+    api.total_timeout = None
+    page = f"{base}fail{query}"
+    collect(
+        lambda: list(
+            follow_next_links(api, {"next": page, "results": []}, url=page)
+        )
+    )
+    other = "http://u3:dummy-pass3@other.invalid/p"
+    collect(
+        lambda: list(
+            follow_next_links(api, {"next": other, "results": []}, url=page)
+        )
+    )
+
+    assert len(errors) == 9
+    for error in errors:
+        for text in _quoted(error):
+            assert "dummy-pass" not in text, text
+            assert "u2:" not in text, text
+            assert "u3:" not in text, text
+    assert plain + f"fail{query}" in str(errors[0])
+    assert plain + f"html{query}" in str(errors[1])
+    assert isinstance(errors[0], APIError)
+    assert "dummy-pass" in errors[0].response.url
+    assert "dummy-pass" in str(errors[0].request.url)
+
+
+def test_error_messages_of_a_url_without_credentials_are_unchanged(
+    requests_mock: Any,
+) -> None:
+    """A URL that has no user and password is quoted as it is."""
+    api = API("https://example.com/v1/")
+    requests_mock.get("https://example.com/v1/x?a=b", status_code=500)
+
+    with pytest.raises(APIError) as raised:
+        api.get("/x?a=b")
+
+    assert "for GET https://example.com/v1/x?a=b" in str(raised.value)

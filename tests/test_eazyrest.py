@@ -28,6 +28,7 @@ from typing_extensions import TypeAliasType
 
 from eazyrest import (
     API,
+    Client,
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
@@ -36,6 +37,7 @@ from eazyrest import (
     MultipleObjectsReturned,
     PrefetchNotSupported,
     RedirectError,
+    Response,
     ResponseShapeError,
     WriteMode,
     encode_json,
@@ -69,7 +71,7 @@ class User(ModelBase):
         cls,
         pks: set[Any],
         *,
-        api: API | None = None,
+        api: Client | None = None,
         **kwargs: Any,
     ) -> dict[Any, User]:
         """Load users in one request for explicit prefetch support.
@@ -177,7 +179,9 @@ class SearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
         """Extract wrapped collection items for this test model.
 
         Args:
@@ -212,7 +216,9 @@ class PaginatedSearchResult(ModelBase):
     name: str
 
     @classmethod
-    def collection_items(cls, payload: Any, *, api: API, **kwargs: Any) -> Any:
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
         """Follow ``next`` links and yield items across all pages.
 
         Args:
@@ -1394,7 +1400,7 @@ class UUIDUser(ModelBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, UUIDUser]:
         """Load users and key the result by their decoded primary keys.
 
@@ -4314,7 +4320,7 @@ def test_default_hooks_accept_and_pass_on_keyword_arguments(
 
         @classmethod
         def collection_items(
-            cls, payload: Any, *, api: API, **kwargs: Any
+            cls, payload: Any, *, api: Client, **kwargs: Any
         ) -> Any:
             seen.append(kwargs)
             return super().collection_items(payload, api=api, **kwargs)
@@ -4743,7 +4749,7 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
 
         def merge_response(
             self,
-            resp: requests.Response,
+            resp: Response,
             current: Mapping[str, Any],
             sent: Mapping[str, Any],
             **kwargs: Any,
@@ -5399,6 +5405,31 @@ def test_request_options_cannot_set_the_body(
         todo.save(request_options={name: {}})
     with pytest.raises(TypeError, match=f"cannot set {name}"):
         Todo.create(title="a", request_options={name: {}})
+
+    assert requests_mock.call_count == 0
+    assert todo._pending_updates == {"title": "new"}
+
+
+def test_writes_refuse_request_options_that_are_not_a_mapping(
+    requests_mock: Any,
+) -> None:
+    """Writes check ``request_options`` as queries do.
+
+    A sequence of pairs is not a mapping, so it raises ``TypeError`` before
+    anything is sent, where a failed attribute lookup would otherwise surface.
+    """
+    todo = Todo(
+        json={"id": 1, "userId": 2, "title": "old", "completed": False}
+    )
+    todo.title = "new"
+    options: Any = [("headers", {"If-Match": "x"})]
+
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        todo.save(request_options=options)
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        todo.delete(request_options=options)
+    with pytest.raises(TypeError, match="must be a mapping, got list"):
+        Todo.create(title="a", request_options=options)
 
     assert requests_mock.call_count == 0
     assert todo._pending_updates == {"title": "new"}

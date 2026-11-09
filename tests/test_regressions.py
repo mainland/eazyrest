@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import io
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import pytest
@@ -13,11 +14,13 @@ from typing_extensions import TypeAliasType
 from eazyrest import (
     API,
     APIError,
+    Client,
     FieldConversionError,
     Hyperlinked,
     JSONObject,
     LimitExceeded,
     RedirectError,
+    Response,
     ResponseShapeError,
     UsageError,
     WriteMode,
@@ -44,7 +47,7 @@ class MockedUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, MockedUser]:
         """Return loaded users for the requested keys.
 
@@ -804,7 +807,7 @@ class PagedMockedBase(MockedBase):
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Any:
         """Read every page, resolving links against the response's URL.
 
@@ -903,10 +906,56 @@ def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
         headers={"Location": location},
     )
 
-    with pytest.raises(RedirectError, match="cannot be parsed"):
+    with pytest.raises(RedirectError, match="cannot prepare"):
         MockedDoc.create(
             title="new", request_options={"allow_redirects": False}
         )
+
+
+@pytest.mark.parametrize(
+    ("location", "setup"),
+    [
+        ("http://127.0.0.1:99999/x", "authorization"),
+        ("http://127.0.0.1:abc/x", "authorization"),
+        ("http://localhost:99999/x", "no_proxy"),
+        ("http://localhost:abc/x", "no_proxy"),
+    ],
+)
+def test_write_refuses_an_unreadable_port_that_it_does_not_follow(
+    redirect_server: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    setup: str,
+) -> None:
+    """Requests cannot prepare the next request, so the write is refused.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        setup: ``authorization`` for a session that sends credentials, or
+            ``no_proxy`` for an environment that lists hosts to reach directly.
+    """
+    api = API(redirect_server(location))
+    if setup == "authorization":
+        api.session.headers["Authorization"] = "Token dummy"
+    else:
+        monkeypatch.setenv("NO_PROXY", "example.invalid")
+
+    with pytest.raises(RedirectError, match="cannot prepare"):
+        MockedDoc.create(
+            title="new", api=api, request_options={"allow_redirects": False}
+        )
+
+
+def test_repr_leaves_out_the_credentials_of_a_hyperlink() -> None:
+    """A related object known only by its URL is shown without credentials."""
+    doc = MockedDoc(
+        json={
+            **DOC_JSON,
+            "linked": "https://user:dummy-pass@mocked.example/u/",
+        }
+    )
+
+    assert repr(doc.linked) == "<MockedUser url='https://mocked.example/u/'>"
 
 
 def test_unfollowed_redirects_allow_a_completed_write(
@@ -934,7 +983,7 @@ class CountingUser(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, CountingUser]:
         """Return loaded users for every key except 99.
 
@@ -963,7 +1012,7 @@ class Profile(MockedBase):
 
     @classmethod
     def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: API | None = None, **kwargs: Any
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, Profile]:
         """Return loaded profiles for the requested keys.
 

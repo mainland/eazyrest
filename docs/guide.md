@@ -280,10 +280,17 @@ either one keeps working.
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
-the code assigned. The exceptions are URLs: an HTTP error, a redirect error,
-and a pagination error name the URLs involved, with their query strings, so a
-query parameter's value can appear. Send a secret in a header or the body, not
-in the query. A Pydantic error says where and why a value is invalid, as in
+the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
+`NotFound`), `RedirectError`, `PaginationError`, `ResponseShapeError`, and
+`LimitExceeded` for a size or time limit name the URLs involved, with their
+query strings, so a query parameter's value can appear. Send a secret in a
+header or the body, not in the query. They leave out a user and password in a
+URL, including the `Location` of a redirect, so `http://user:pass@host/x?a=b`
+appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
+error's `request` and `response` keep the real URL. The `repr()` of a `Page`,
+and of an object known only by its URL, leaves them out too. An exception that
+requests itself raises, such as `requests.ConnectionError`, quotes the URL as
+requests does. A Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1099,6 +1106,18 @@ the examples here do. A class that overrides a hook without `**kwargs`, also an
 undecorated base class, raises `TypeError` when it is defined, rather than when
 a query first calls the hook.
 
+The hooks are typed by two protocols rather than by requests' classes, so that
+a later 1.x release can send requests with another HTTP library without
+changing them. `api` is a `Client`, which has the request methods, `base_url`,
+`resolve_url()`, `json()`, and the limits, and a response is a `Response`,
+which has the status, reason, headers, body, URL, request method, and redirect
+history. At run time they are an `API` and a `requests.Response`. Annotate an
+override's parameters with the protocols, because an override that annotates
+them `API` or `requests.Response` fails type checking, and cast them to use
+anything else, such as `api.session` or `resp.links`. The query methods,
+`create()`, and the model constructor take a `Client` as `api=`, so a hook can
+pass its `api` on.
+
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class
 derived from `JSONObject` with the following overrides:
@@ -1311,13 +1330,16 @@ resends the already prepared multipart body.
 ### Request options
 
 `save()`, `create()`, and `delete()` take `request_options=`, keyword arguments
-for the request as requests takes them, such as `headers` or `params`. They
-cannot set the body, which the write builds, or enable `stream=True`, because
-model writes consume their responses. An unfollowed final 3xx raises
-`RedirectError`, including when `allow_redirects=False`, and pending updates
-remain pending. A server that supports optimistic concurrency, for example,
-refuses a write whose `If-Match` header no longer names the object's current
-version:
+for the request as requests takes them, such as `headers` or `params`. The
+names are those of the HTTP library that the client sends requests with,
+requests for `API`, so a client for another library, which a later release may
+add, can take other names. They cannot set the body, which the write builds, or
+enable `stream=True`, because model writes consume their responses. Options
+that are not a mapping raise `TypeError`, as they do for a query. An unfollowed
+final 3xx raises `RedirectError`, including when `allow_redirects=False`, and
+pending updates remain pending. A server that supports optimistic concurrency,
+for example, refuses a write whose `If-Match` header no longer names the
+object's current version:
 
 ```python
 todo.title = "new"
@@ -1456,15 +1478,21 @@ These checks guard the redirects that requests follows. A raw request sent with
 and the caller decides what to do with it. Requests does prepare
 `Response.next` even then, and raises its own `ValueError` or `UnicodeError`
 when it cannot. The request raises `RedirectError` instead, whether or not it
-follows redirects. A `Location` that requests prepares without error is
-returned. Requests cannot prepare a `Location` with a byte that is not UTF-8,
-or a host such as `http://[bad/`. It cannot prepare one with a port that is out
-of range either, when it must read the port: when the request carries an
-`Authorization` header and the redirect keeps the host, or when `NO_PROXY` is
-set and the redirect names a host that is not an IPv4 address. Without these,
-the same port is returned. A model write, and a client that a query's
-`request_options=` creates, expect a final response, so they raise
-`RedirectError` for any unfollowed 3xx.
+follows redirects. Any other exception that requests raises there, such as
+`requests.TooManyRedirects` when `session.max_redirects` is 0, or
+`requests.exceptions.UnrewindableBodyError` for a 307 or 308 that resends a
+body that cannot rewind, comes through unchanged. A `Location` that requests
+prepares without error is returned. Requests cannot prepare a `Location` with a
+byte that is not UTF-8, or a host such as `http://[bad/`. It cannot prepare one
+with a port that is out of range either, when it reads the port while it
+prepares the next request. Whether it does depends on the request. It reads the
+port, for example, when the request carries an `Authorization` header and the
+redirect keeps the host, or when a no-proxy list applies, from `NO_PROXY` or
+from a `no_proxy` entry in `proxies`, and the redirect names a host that is not
+an IPv4 address. It consults neither `NO_PROXY` nor a `no_proxy` entry in
+`proxies` when `session.trust_env` is false. When it does not read the port,
+the response is returned. A model write, a query, and a next-page request
+expect a final response, so they raise `RedirectError` for any unfollowed 3xx.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
@@ -1508,7 +1536,10 @@ By default, a request fails if connecting, or any single read from the socket,
 waits more than 10 seconds. That bounds each wait, not the whole request, so a
 server that sends a byte every few seconds could keep a request open
 indefinitely. Set the `timeout` attribute to change the default, or pass
-`timeout=` to a single request. Extra keyword arguments to `API()` configure a
+`timeout=` to a single request, as requests takes it: a number, a pair of
+connect and read timeouts, or a `urllib3.Timeout`. While `total_timeout` is
+set, each of these is cut to the time that remains, and a part that has no
+limit waits for that time. Extra keyword arguments to `API()` configure a
 `requests.adapters.HTTPAdapter` for the base URL's scheme, such as
 `max_retries=` for retries:
 
@@ -1570,7 +1601,7 @@ attribute that sets it:
 
 | Attribute | Default | Limits |
 | --- | --- | --- |
-| `max_response_bytes` | 16 MiB | The decompressed size of each response body, checked as it is read. |
+| `max_response_bytes` | 16 MiB | The decompressed size of all the response bodies that one request reads, those of its redirects and challenges included, checked as they are read. |
 | `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
 | `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
 | `max_pages` | 1,000 | The pages that one `follow_next_links()` or `follow_link_headers()` traversal reads, counting the first. |
@@ -1587,12 +1618,29 @@ api.max_pages = None
 
 A limit is never met by truncating. A traversal that would read too many pages
 raises rather than stopping early, so the items it yielded are never mistaken
-for the whole collection. `total_timeout` is checked between reads and retry
-attempts, so a request can overrun it by at most one `timeout`, and it cannot
-interrupt your own code, such as a validator or a hook. Each request of a
-traversal has its own `total_timeout`, because a traversal is lazy and the time
-between pages is yours. A raw `API` request that passes `stream=True` reads its
-own body, so `max_response_bytes` does not apply to it. Custom adapters and
+for the whole collection. `total_timeout` is checked between the reads of a
+body and between retry attempts. A server that sends a body's bytes no slower
+than `timeout` allows can therefore make a request overrun it by at most one
+`timeout`, but not one that sends the response's headers, a chunk's size, or a
+compressed body's header byte by byte, which `http.client` and urllib3 read in
+one call. So `total_timeout` bounds a slow body, not a hostile server, and
+`timeout` bounds each wait. It cannot interrupt your own code either, such as a
+validator or a hook. Each request of a traversal has its own `total_timeout`,
+because a traversal is lazy and the time between pages is yours. Requests keeps
+the body of each redirect that it follows, and of each 401 challenge that an
+authentication handler answers, so `max_response_bytes` covers all the bodies
+that one request reads, redirects and challenges included, and a request never
+holds more than that in total. A challenge and a final body that together
+exceed it raise `LimitExceeded`, though each is within it alone. The
+`Content-Length` of a response that has no body, such as a 304, or the response
+to a `HEAD` request, is not checked, though it may name the size of the entity
+that it describes. A raw `API` request that passes `stream=True` reads its own
+body, so `max_response_bytes` does not apply to a successful response, though
+it does to the bodies of redirects, followed or not, and of a failed response,
+which eazyrest reads, because requests reads a redirect's body itself to
+prepare `Response.next`. The adapter reads each body before any response hook
+runs, so an authentication handler such as `requests.auth.HTTPDigestAuth`
+cannot read the body of a challenge past the limits either. Custom adapters and
 application hooks control their own work. Use `api.json(response)` in hooks to
 decode JSON with the client's depth limit and response-shape policy.
 
@@ -1659,9 +1707,11 @@ exception type that it replaced, so code written for that type keeps working:
 - `PrefetchNotSupported`, for a prefetch of a model without
   `bulk_get_by_pks()`.
 - `RedirectError`, a `requests.HTTPError`, for an unsafe redirect, a redirect
-  that requests cannot prepare a request for when it is not followed, or an
-  unfollowed final 3xx on a model write or a request-scoped client. Its
-  `response` is the redirect.
+  that is not followed when requests raises `ValueError` or `UnicodeError`
+  while it prepares the next request, or an unfollowed final 3xx on a model
+  write, a query, or a next-page request, or on a request that a hook sends
+  through the `api` of a query with `request_options=`. Its `response` is the
+  redirect. Another exception from that preparation comes through unchanged.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
@@ -1680,10 +1730,11 @@ operation says.
 An HTTP error status raises whatever `API.raise_for_response()` raises,
 `APIError` or `NotFound` by default. Invalid JSON gives these errors
 `data=None`. A depth-limit violation instead raises `LimitExceeded`, including
-for an error body, and a transport failure raises the requests exception that
-describes it, such as `requests.ConnectionError`. Invalid decorator options
-raise `TypeError` or `ValueError` when the class is defined. Field annotations
-resolve lazily, so an invalid conversion declaration can raise
+for an error body, and a transport failure raises the exception of the HTTP
+library that sent the request. For `API`, that is the requests exception that
+describes the failure, such as `requests.ConnectionError`. Invalid decorator
+options raise `TypeError` or `ValueError` when the class is defined. Field
+annotations resolve lazily, so an invalid conversion declaration can raise
 `FieldConversionError` at first use.
 
 ## Threads

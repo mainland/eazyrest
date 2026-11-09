@@ -72,14 +72,18 @@ from ._errors import (
     PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
+    _redact_url,
 )
+from ._protocols import Client, Response
 from ._results import Results, _count_of
 from .api import (
     API,
+    _as_api,
     _canonical_url,
     _check_final_response,
     _merge_request_options,
     _origin,
+    _takes_kwargs,
 )
 from .pagination import (
     Page,
@@ -254,10 +258,15 @@ class _ModelPageSource(_PageSource[Any]):
             query: The query, whose client requests the pages.
             prefetch: Related fields to prefetch on each page.
         """
-        self.api = query.client
+        self._client = query.client
         self._model = model
         self._query = query
         self._prefetch = prefetch
+
+    @property
+    def api(self) -> API:
+        """The query's client, which requests the pages."""
+        return self._client
 
     def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
         """Request and read the page at ``url``.
@@ -271,7 +280,7 @@ class _ModelPageSource(_PageSource[Any]):
         """
         return self.page(_request_page(self.api, url, allow_other_origins))
 
-    def page(self, resp: requests.Response) -> Page[Any]:
+    def page(self, resp: Response) -> Page[Any]:
         """Read a page of objects from its response.
 
         Args:
@@ -2259,29 +2268,6 @@ def _check_hook_signatures(cls: type[JSONObject]) -> None:
             )
 
 
-def _takes_kwargs(method: Any) -> bool:
-    """Return whether a method has a ``**kwargs`` parameter.
-
-    Args:
-        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
-            object.
-
-    Returns:
-        Whether it takes any keyword argument. A callable whose signature
-        cannot be read, such as a builtin, is taken to.
-    """
-    if isinstance(method, (classmethod, staticmethod)):
-        method = method.__func__
-    try:
-        parameters = inspect.signature(method).parameters
-    except (TypeError, ValueError):
-        return True
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-
-
 def encode_json(
     value: Any, annotation: Any, *, model: type[JSONObject] | None = None
 ) -> Any:
@@ -3800,7 +3786,7 @@ class JSONObject:
         self,
         *,
         json: Mapping[str, Any] | None = None,
-        api: API | None = None,
+        api: Client | None = None,
         write_mode: WriteMode | None = None,
         **kwargs: Any,
     ) -> None:
@@ -3824,7 +3810,7 @@ class JSONObject:
                 ``json`` is omitted, and in ``"eager"`` mode it sends a
                 ``PATCH``.
         """
-        self._api_override = api
+        self._api_override = None if api is None else _as_api(api)
         if write_mode is None:
             try:
                 write_mode = self.api.default_write_mode
@@ -3864,7 +3850,8 @@ class JSONObject:
         """Return the class and primary key without sending a request.
 
         The key is shown as its JSON value, whether or not the object has
-        loaded, as in ``<User id=1>``.
+        loaded, as in ``<User id=1>``. An object known only by its URL shows
+        the URL, without any user and password.
 
         Returns:
             The class name and primary key in angle brackets, or the class name
@@ -3886,7 +3873,7 @@ class JSONObject:
                 value = self._to_json(value, pk_property.analyzed_type)
 
         if value is None and self._url_override is not None:
-            return f"<{name} url={self._url_override!r}>"
+            return f"<{name} url={_redact_url(self._url_override)!r}>"
         return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(
@@ -4669,7 +4656,7 @@ class JSONObject:
 
     def merge_response(
         self,
-        resp: requests.Response,
+        resp: Response,
         current: Mapping[str, Any],
         sent: Mapping[str, Any],
         **kwargs: Any,
@@ -4915,8 +4902,12 @@ class JSONObject:
         Args:
             api: API that this class, and any subclass that registers none of
                 its own, uses by default.
+
+        Raises:
+            TypeError: If ``api`` is not an ``API``, as for the ``api=``
+                argument of a query or a model.
         """
-        _api_registry[cls] = api
+        _api_registry[cls] = _as_api(api)
 
     @property
     def pk(self) -> Any:
@@ -5291,7 +5282,7 @@ class JSONObject:
     def create(
         cls: type[Self],
         *,
-        api: API | None = None,
+        api: Client | None = None,
         fields: Mapping[str, Any] | None = None,
         files: Mapping[str, Any] | None = None,
         request_options: Mapping[str, Any] | None = None,
@@ -5342,6 +5333,7 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             )
         )
+        api = None if api is None else _as_api(api)
         client = cls.api if api is None else api
         resp = _check_model_write(
             client.post(
@@ -5370,7 +5362,7 @@ class JSONObject:
         cls: type[Self],
         pks: set[Any],
         *,
-        api: API,
+        api: Client,
         **kwargs: Any,
     ) -> Mapping[Any, Self]:
         """Bulk-load objects by primary key for explicit prefetch support.
@@ -5401,7 +5393,7 @@ class JSONObject:
         cls: type[Self],
         urls: set[str],
         *,
-        api: API,
+        api: Client,
         **kwargs: Any,
     ) -> Mapping[str, Self]:
         """Bulk-load objects by URL to prefetch a hyperlinked relation.
@@ -5435,7 +5427,7 @@ class JSONObject:
 
     @classmethod
     def collection_page(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Page[Any]:
         """Read one page of a collection response for ``get_page()``.
 
@@ -5460,7 +5452,7 @@ class JSONObject:
 
     @classmethod
     def collection_items_from_response(
-        cls, resp: requests.Response, *, api: API, **kwargs: Any
+        cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 
@@ -5491,7 +5483,7 @@ class JSONObject:
 
     @classmethod
     def collection_items(
-        cls, payload: Any, *, api: API, **kwargs: Any
+        cls, payload: Any, *, api: Client, **kwargs: Any
     ) -> Iterable[Any]:
         """Iterate JSON objects for a collection query.
 
@@ -5965,7 +5957,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
-        api: API | None = None,
+        api: Client | None = None,
         request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
@@ -6044,6 +6036,7 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
+        api = None if api is None else _as_api(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base
         context = _Query(api, client, options)
@@ -6073,7 +6066,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
-        api: API | None = None,
+        api: Client | None = None,
         request_options: Mapping[str, Any] | None = None,
     ) -> Results[Self]:
         """Return all objects for this resource type.
@@ -6110,7 +6103,7 @@ class JSONObject:
         *,
         url: str | None = None,
         prefetch: PrefetchFields = None,
-        api: API | None = None,
+        api: Client | None = None,
         request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
@@ -6167,6 +6160,7 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
+        api = None if api is None else _as_api(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base
         source = _ModelPageSource(
@@ -6188,7 +6182,7 @@ class JSONObject:
         cls: type[Self],
         *,
         prefetch: PrefetchFields = None,
-        api: API | None = None,
+        api: Client | None = None,
         request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,
@@ -6259,7 +6253,7 @@ class JSONObject:
         cls: type[Self],
         defaults: Mapping[str, Any] | None = None,
         *,
-        api: API | None = None,
+        api: Client | None = None,
         request_options: Mapping[str, Any] | None = None,
         params: Mapping[str, Any] | None = None,
         **kwargs: Any,

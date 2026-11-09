@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import inspect
 import sys
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -13,6 +14,8 @@ from typing import Any
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
+import requests.adapters
+import requests.cookies
 from requests.structures import CaseInsensitiveDict
 from requests.utils import requote_uri
 from urllib3.exceptions import (
@@ -23,9 +26,18 @@ from urllib3.exceptions import (
     SSLError,
 )
 from urllib3.response import BaseHTTPResponse
-from urllib3.util import Retry
+from urllib3.util import Retry, Timeout
 
-from ._errors import LimitExceeded, RedirectError, _api_error, _response_json
+from ._errors import (
+    LimitExceeded,
+    RedirectError,
+    _api_error,
+    _is_failure,
+    _printable,
+    _redact_url,
+    _response_json,
+)
+from ._protocols import Client, Response
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -53,6 +65,29 @@ _SESSION_SETTINGS = (
 )
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _takes_kwargs(method: Any) -> bool:
+    """Return whether a method has a ``**kwargs`` parameter.
+
+    Args:
+        method: Method to inspect, also a ``classmethod`` or ``staticmethod``
+            object.
+
+    Returns:
+        Whether it takes any keyword argument. A callable whose signature
+        cannot be read, such as a builtin, is taken to.
+    """
+    if isinstance(method, (classmethod, staticmethod)):
+        method = method.__func__
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 def _origin(url: str) -> tuple[str, str | None, int | None]:
@@ -270,7 +305,7 @@ def _check_final_response(
     if 300 <= resp.status_code < 400:
         resp.close()
         raise RedirectError(
-            f"{resp.request.method} {resp.url} returned status "
+            f"{resp.request.method} {_redact_url(resp.url)} returned status "
             f"{resp.status_code}, so {consequence}",
             response=resp,
         )
@@ -325,18 +360,20 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         return
 
     resp.close()
+    url = _redact_url(resp.url)
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
         # its result, so retrying the request would repeat it.
         raise RedirectError(
-            f"{method} {resp.url} was answered with status 303, which says "
-            f"that the server performed it and points to its result at "
-            f"{target}, which was not read. Do not retry the {method}.",
+            f"{method} {url} was answered with status 303, which says that "
+            "the server performed it and points to its result at "
+            f"{_printable(_redact_url(target))}, which was not read. Do not "
+            f"retry the {method}.",
             response=resp,
         )
     raise RedirectError(
-        f"{method} {resp.url} was redirected with status {resp.status_code} "
-        f"to {target}, which requests follows "
+        f"{method} {url} was redirected with status {resp.status_code} "
+        f"to {_printable(_redact_url(target))}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
         "and 308 redirects resend a request unchanged. Send the request to "
@@ -352,22 +389,57 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 _READ_SIZE = 64 * 1024
 
 
+def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
+    """Describe an unfollowed redirect that requests cannot prepare.
+
+    Args:
+        resp: Final response, a redirect that requests does not follow.
+
+    Returns:
+        The error to raise instead of the one that requests raised while it
+        prepared ``Response.next``. ``resp`` is closed first, and its requests
+        lose their response hooks, so that the error pickles.
+    """
+    resp.close()
+    _drop_response_hooks(resp)
+    location = resp.headers.get("Location", "")
+    return RedirectError(
+        f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
+        f"status {resp.status_code} to {_printable(_redact_url(location))}, "
+        "for which requests cannot prepare the next request, so it was not "
+        "followed",
+        response=resp,
+    )
+
+
 class _Budget:
-    """The limits of one request: its body size and its total time."""
+    """The limits of one request: its body bytes and its total time."""
 
     def __init__(
-        self, max_bytes: int | None, total_timeout: float | None
+        self,
+        max_bytes: int | None,
+        total_timeout: float | None,
+        streamed: bool = False,
     ) -> None:
         """Start the budget of a request.
 
         Args:
-            max_bytes: Greatest decoded body size of each response, or
+            max_bytes: Greatest decoded size of all the bodies that the request
+                keeps, those of its redirects, of the challenges that an
+                authentication handler answers, and of its final response, or
                 ``None`` for no limit.
             total_timeout: Seconds that the request may take, including
                 redirects and reading bodies, or ``None`` for no limit.
+            streamed: Whether the caller reads the body of a successful final
+                response, so that the adapter leaves it unread.
         """
         self.max_bytes = max_bytes
+        self.held = 0
+        """Bytes of the bodies that the request holds so far."""
         self.total_timeout = total_timeout
+        self.streamed = streamed
+        self.unfollowed: requests.Response | None = None
+        """Final response that is a redirect that requests does not follow."""
         self.deadline = (
             None if total_timeout is None else time.monotonic() + total_timeout
         )
@@ -377,16 +449,34 @@ class _Budget:
 
         Args:
             timeout: Timeout that the request would otherwise use, as requests
-                accepts it.
+                accepts it, also a ``urllib3.Timeout``.
 
         Returns:
-            ``timeout``, with each part reduced to the time remaining.
+            ``timeout``, with each part reduced to the time remaining. A part
+            that waits without a limit becomes the time remaining, as does a
+            part of a ``urllib3.Timeout`` that is unset, when the socket's
+            default timeout has no limit.
         """
         if self.deadline is None:
             return timeout
         remaining = max(self.deadline - time.monotonic(), 0.001)
         if timeout is None:
             return remaining
+        if isinstance(timeout, Timeout):
+
+            def cap(part: Any) -> float:
+                """Return a timeout part that ends by the deadline."""
+                part = Timeout.resolve_default_timeout(part)
+                return remaining if part is None else min(part, remaining)
+
+            # urllib3 keeps the parts in private attributes, and its properties
+            # raise or combine them with the total.
+            total = Timeout.resolve_default_timeout(timeout.total)
+            return Timeout(
+                total=None if total is None else min(total, remaining),
+                connect=cap(timeout._connect),
+                read=cap(timeout._read),
+            )
         if isinstance(timeout, tuple):
             return tuple(
                 remaining if part is None else min(part, remaining)
@@ -407,42 +497,62 @@ class _Budget:
             where = "The request"
             if resp is not None:
                 resp.close()
-                where = f"{resp.request.method} {resp.url}"
+                where = f"{resp.request.method} {_redact_url(resp.url)}"
             raise LimitExceeded(
                 "total_timeout",
                 f"{where} took at least {self.total_timeout} seconds",
             )
 
-    def read_body(self, resp: requests.Response) -> None:
+    def read_body(self, resp: requests.Response, held: bool = True) -> None:
         """Read a streamed response's body within the budget.
 
         The body is read into the response, so ``resp.content`` and
-        ``resp.json()`` use it as if requests had read it.
+        ``resp.json()`` use it as if requests had read it. A request keeps the
+        body of each redirect in ``resp.history``, so the bodies of one request
+        count against one size limit. The length that a response declares is
+        not checked for a response that has no body, a 1xx, 204, or 304
+        response or the response to a ``HEAD`` request, which may declare the
+        length of the entity that it describes.
 
         Args:
             resp: Response sent with ``stream=True``, whose body is unread.
+            held: Whether the request keeps the body, so that it counts against
+                the size limit of the bodies the request holds. A response that
+                a retry discards does not.
 
         Raises:
-            LimitExceeded: If the body is larger than the limit, or reading it
-                passes the deadline. The response is closed first.
+            LimitExceeded: If the body, with the bodies read before it, is
+                larger than the limit, or reading it passes the deadline. The
+                response is closed first.
         """
         # requests marks a body that it has not read with False.
         if getattr(resp, "_content", None) is not False:
             return
 
-        declared = resp.headers.get("Content-Length", "")
+        allowed = (
+            None
+            if self.max_bytes is None
+            else self.max_bytes - (self.held if held else 0)
+        )
+        # A response without a body, by its status or its request, may still
+        # declare the length of the entity that it describes, as a 304 does.
+        # urllib3 reads no body for it, whatever it declares.
+        declared = (
+            ""
+            if resp.status_code < 200
+            or resp.status_code in (204, 304)
+            or resp.request.method == "HEAD"
+            else resp.headers.get("Content-Length", "")
+        )
         # A length longer than the limit's has more digits than int() reads
         # quickly, and str.isdigit() also accepts digits that int() refuses.
         if (
-            self.max_bytes is not None
+            allowed is not None
             and declared.isascii()
             and declared.isdigit()
-            and (
-                len(declared) > len(str(self.max_bytes))
-                or int(declared) > self.max_bytes
-            )
+            and (len(declared) > len(str(allowed)) or int(declared) > allowed)
         ):
-            self._too_large(resp)
+            self._too_large(resp, held)
 
         raw = resp.raw
         read = getattr(raw, "read1", None) or raw.read
@@ -455,8 +565,8 @@ class _Budget:
                 if not chunk:
                     break
                 size += len(chunk)
-                if self.max_bytes is not None and size > self.max_bytes:
-                    self._too_large(resp)
+                if allowed is not None and size > allowed:
+                    self._too_large(resp, held)
                 chunks.append(chunk)
         except (ProtocolError, DecodeError, ReadTimeoutError, SSLError) as err:
             if isinstance(err, ReadTimeoutError):
@@ -476,26 +586,37 @@ class _Budget:
             raise error_type(err, request=resp.request, response=resp) from err
         self.check_time(resp)
 
+        if held:
+            self.held += size
         resp._content = b"".join(chunks)
         resp._content_consumed = True  # type: ignore[attr-defined]
         release = getattr(raw, "release_conn", None)
         if release is not None:
             release()
 
-    def _too_large(self, resp: requests.Response) -> None:
+    def _too_large(self, resp: requests.Response, held: bool) -> None:
         """Close a response whose body is too large, and raise.
 
         Args:
             resp: Response whose body exceeds the limit.
+            held: Whether the request keeps the body, so that the bodies read
+                before it count.
 
         Raises:
             LimitExceeded: Always.
         """
         resp.close()
+        where = f"{resp.request.method} {_redact_url(resp.url)}"
+        if held and self.held:
+            raise LimitExceeded(
+                "max_response_bytes",
+                f"The response to {where}, with the {self.held} bytes of "
+                f"bodies that the request read before it, is larger than "
+                f"{self.max_bytes} bytes",
+            )
         raise LimitExceeded(
             "max_response_bytes",
-            f"The response to {resp.request.method} {resp.url} is larger "
-            f"than {self.max_bytes} bytes",
+            f"The response to {where} is larger than {self.max_bytes} bytes",
         )
 
 
@@ -583,16 +704,16 @@ class _BudgetRetry(Retry):
             )
         except MaxRetryError:
             # With raise_on_status=False, urllib3 returns the unread response
-            # to Requests, and _send() reads it under the same budget.
+            # to Requests, and the adapter reads it under the same budget.
             if (
                 budget is not None
                 and wrapped is not None
                 and self.raise_on_status
             ):
-                budget.read_body(wrapped)
+                budget.read_body(wrapped, held=False)
             raise
         if budget is not None and wrapped is not None:
-            budget.read_body(wrapped)
+            budget.read_body(wrapped, held=False)
         return retry
 
     def sleep(self, response: BaseHTTPResponse | None = None) -> None:
@@ -634,6 +755,54 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
         super().__init__(**kwargs)
         self.max_retries = _BudgetRetry.wrap(self.max_retries)
 
+    def send(
+        self,
+        request: requests.PreparedRequest,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: Any = True,
+        cert: Any = None,
+        proxies: Any = None,
+    ) -> requests.Response:
+        """Send a request, and bound the response before any hook sees it.
+
+        Requests runs its response hooks on the response that this returns, and
+        an authentication handler such as ``HTTPDigestAuth`` reads the body of
+        a 401 challenge there. Reading it here first, within the active budget,
+        keeps the size and time limits true for every handler. A body that the
+        caller asked to stream stays unread when the status reports neither a
+        failure nor a redirect. Requests reads the body of a redirect itself,
+        without a limit, even when it does not follow the redirect, so that it
+        can prepare ``Response.next``.
+
+        Args:
+            request: Prepared request to send.
+            stream: Whether to leave the body of a successful response unread,
+                as for Requests.
+            timeout: Timeout, as for Requests.
+            verify: Certificate verification, as for Requests.
+            cert: Client certificate, as for Requests.
+            proxies: Proxies for the request, as for Requests.
+
+        Returns:
+            The response.
+
+        Raises:
+            LimitExceeded: If the response body is larger than the limit, or
+                the request has run out of time.
+        """
+        resp = super().send(request, stream, timeout, verify, cert, proxies)
+        budget = _request_budget.get()
+        if budget is not None:
+            budget.check_time(resp)
+            if (
+                not budget.streamed
+                or _is_failure(resp.status_code)
+                or resp.is_redirect
+            ):
+                budget.read_body(resp)
+        return resp
+
 
 class API:
     """HTTP client wrapper for REST APIs.
@@ -658,7 +827,10 @@ class API:
     there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
     the redirect. A raw request sent with ``allow_redirects=False`` follows
     nothing, so it returns a redirect as it is, without these checks, unless
-    its ``Location`` cannot be parsed, which raises ``RedirectError``.
+    requests raises ``ValueError`` or ``UnicodeError`` while it prepares
+    ``Response.next`` for it, which raises ``RedirectError``. Any other
+    exception that requests raises there, such as ``TooManyRedirects`` when
+    ``Session.max_redirects`` is 0, comes through unchanged.
     """
 
     base_url: str
@@ -681,19 +853,35 @@ class API:
     """Seconds that a request may take in all, or ``None`` for no limit.
 
     The time includes redirects, retries, retry delays, and reading response
-    bodies with the adapters this client creates. It is checked between reads
-    and attempts, so a request can overrun it by at most one ``timeout``. A
-    request that overruns it raises ``LimitExceeded``. Each request of an
-    operation that sends several, such as reading the pages of a collection,
-    has its own. Custom adapters and application hooks control their own work.
+    bodies with the adapters this client creates. It is checked between the
+    reads of a body and between attempts, so a body that arrives slowly
+    overruns it by at most one ``timeout``, but response headers, or the
+    framing of a chunked or compressed body, that a server sends byte by byte
+    can overrun it without bound. A request that overruns it raises
+    ``LimitExceeded``. Each request of an operation that sends several, such as
+    reading the pages of a collection, has its own. The adapter reads a
+    response's body before any response hook runs, so the limit also holds for
+    the body of a challenge that an authentication handler such as
+    ``requests.auth.HTTPDigestAuth`` reads. Custom adapters and application
+    hooks control their own work.
     """
 
     max_response_bytes: int | None = 16 * 1024 * 1024
-    """Greatest size of a response body, decompressed, or ``None``.
+    """Greatest size of the response bodies of one request, or ``None``.
 
-    A larger body raises ``LimitExceeded`` as soon as it is seen to be too
-    large, before it is decoded. A request sent with ``stream=True``, which
-    reads its own body, is not limited.
+    The limit covers all the bodies that one request reads, decompressed, those
+    of the redirects that requests follows, of the 401 challenges that an
+    authentication handler answers, and the final one, which requests keeps in
+    ``resp.history``, so one request never holds more than the limit in total.
+    A challenge and a final body that together exceed it raise
+    ``LimitExceeded``, though each is within it alone. A larger body raises
+    ``LimitExceeded`` as soon as it is seen to be too large, before it is
+    decoded. The adapter reads each body before any response hook runs, so an
+    authentication handler such as ``requests.auth.HTTPDigestAuth`` cannot read
+    a challenge's body past the limit. A request sent with ``stream=True``,
+    which reads its own body, is limited only in the bodies of redirects,
+    followed or not, of a challenge, and of a failed response, which eazyrest
+    reads.
     """
 
     max_json_depth: int | None = 128
@@ -748,6 +936,29 @@ class API:
 
     _request_scoped: bool = False
     """Whether this client is a request-scoped copy made by ``_scoped()``."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Check that an override of ``raise_for_response()`` takes kwargs.
+
+        Args:
+            **kwargs: Keyword arguments for ``object.__init_subclass__()``.
+
+        Raises:
+            TypeError: If the class overrides ``raise_for_response()``, also
+                through a mixin, with a method that takes no ``**kwargs``,
+                which later releases may pass.
+        """
+        super().__init_subclass__(**kwargs)
+        owner = next(
+            base for base in cls.__mro__ if "raise_for_response" in vars(base)
+        )
+        if owner is not API and not _takes_kwargs(
+            vars(owner)["raise_for_response"]
+        ):
+            raise TypeError(
+                f"{owner.__name__}.raise_for_response() must accept "
+                "**kwargs, which later releases may pass to it"
+            )
 
     def __init__(
         self,
@@ -895,13 +1106,13 @@ class API:
         Raises:
             requests.HTTPError: If the response status indicates failure.
         """
-        if resp.ok:
+        if not _is_failure(resp.status_code):
             return resp
 
         self.raise_for_response(resp)
         return resp
 
-    def raise_for_response(self, resp: requests.Response) -> None:
+    def raise_for_response(self, resp: Response, **kwargs: Any) -> None:
         """Raise an exception if ``resp`` represents a failed request.
 
         The default raises ``NotFound`` for a 404 and ``APIError`` for any
@@ -913,19 +1124,24 @@ class API:
         ``DoesNotExist`` when it loads an object that the server deleted, and
         callers catch ``APIError``.
 
+        An override must accept ``**kwargs``, which later releases may pass,
+        or the subclass raises ``TypeError`` when it is defined.
+
         Args:
             resp: Response object to validate.
+            **kwargs: Keyword arguments that later releases may pass, which
+                an override must accept.
 
         Raises:
             NotFound: If the response status is 404.
             APIError: If the response status indicates another failure.
             LimitExceeded: If the error body exceeds ``max_json_depth``.
         """
-        if resp.ok:
+        if not _is_failure(resp.status_code):
             return
         raise _api_error(resp, self.max_json_depth)
 
-    def json(self, resp: requests.Response) -> Any:
+    def json(self, resp: Response) -> Any:
         """Decode response JSON with this client's depth and number policy.
 
         Use this in collection, bulk-lookup, and error hooks that decode a
@@ -1005,20 +1221,23 @@ class API:
         Raises:
             RedirectError: If a redirect leads to an origin that is not
                 allowed, or if requests would follow a redirect without the
-                request's body or with another method.
+                request's body or with another method, or if the final response
+                is a redirect that is not followed and requests raises
+                ``ValueError`` or ``UnicodeError`` while it prepares the next
+                request for it.
             requests.HTTPError: If ``raise_for_response()`` raises it for the
                 response.
+            ValueError: If requests raises it, unless the final response is a
+                redirect that requests does not follow.
         """
         if self._request_options:
             kwargs = _merge_request_options(self._request_options, kwargs)
         kwargs.setdefault("timeout", self.timeout)
-        # A request that streams reads its own body, so only its time and its
-        # redirects are checked.
-        budget = _Budget(
-            None if kwargs.get("stream") else self.max_response_bytes,
-            self.total_timeout,
-        )
+        # A request that streams reads its own body, but not the bodies of
+        # redirects, which requests reads, or of a failure, which the error
+        # reads, so those are bounded too.
         streamed = bool(kwargs.get("stream"))
+        budget = _Budget(self.max_response_bytes, self.total_timeout, streamed)
         kwargs["stream"] = True
         kwargs["timeout"] = budget.timeout(kwargs["timeout"])
         if self.session.verify is not True:
@@ -1044,13 +1263,23 @@ class API:
         try:
             try:
                 resp = send(url, *args, **kwargs)
-            except requests.RequestException as err:
-                _drop_response_hooks(err.response, err.request)
+            except (requests.RequestException, ValueError) as err:
+                # Session.send() stores the response's cookies, and those of
+                # the responses that a hook put in its history, before it
+                # prepares Response.next. So the error of that preparation
+                # loses no cookie.
+                if (
+                    isinstance(err, ValueError)
+                    and (unfollowed := budget.unfollowed) is not None
+                ):
+                    raise _unpreparable_redirect(unfollowed) from err
+                if isinstance(err, requests.RequestException):
+                    _drop_response_hooks(err.response, err.request)
                 raise
             _drop_response_hooks(resp)
             self._check_redirects(resp)
             budget.check_time(resp)
-            if not streamed:
+            if not streamed or _is_failure(resp.status_code):
                 budget.read_body(resp)
             resp = self._check_response(resp)
             if self._request_scoped:
@@ -1076,13 +1305,11 @@ class API:
             budget: Limits of the request, which each redirect's body and the
                 time to reach it must respect.
             follow: Whether requests follows redirects. If not, the hook
-                refuses only a ``Location`` that requests cannot prepare
-                ``Response.next`` for. The hook runs the preparation itself, so
-                that the ``ValueError`` or ``UnicodeError`` that any of its
-                steps raises, for instance on a port that is out of range,
-                becomes a ``RedirectError``. Otherwise it refuses nothing,
-                because no redirect is followed, and a caller that cannot
-                accept an unfollowed redirect refuses it itself.
+                refuses nothing, because no redirect is followed, and a caller
+                that cannot accept an unfollowed redirect refuses it itself. It
+                records a final redirect on ``budget``, so that ``_send()`` can
+                tell a ``ValueError`` that requests raises while it prepares
+                ``Response.next`` for the redirect from any other.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
@@ -1096,18 +1323,18 @@ class API:
 
             Args:
                 resp: Response, which may be a redirect.
-                kwargs: Arguments that requests passes to response hooks, which
-                    are those it sends the request with. They are passed on to
-                    prepare an unfollowed redirect's next request.
+                kwargs: Arguments that requests passes to response hooks.
 
             Raises:
-                RedirectError: If the ``Location`` of ``resp`` cannot be
-                    parsed, or requests cannot prepare the next request for it
-                    without following it, or if requests follows the redirect,
-                    and it leads to an origin that is not allowed or requests
-                    would follow it without the request's body. The response is
-                    closed first.
+                RedirectError: If requests follows the redirect, and its
+                    ``Location`` cannot be parsed, or it leads to an origin
+                    that is not allowed, or requests would follow it without
+                    the request's body. The response is closed first.
             """
+            if not follow:
+                if resp.is_redirect and budget is not None:
+                    budget.unfollowed = resp
+                return
             try:
                 target = self.session.get_redirect_target(resp)
                 # requests follows no redirect to an empty target.
@@ -1115,34 +1342,14 @@ class API:
                     return
                 destination = _redirect_destination(resp, target)
                 origins = _redirect_origins(resp, target)
-                if not follow:
-                    # Session.send() prepares Response.next in this way when it
-                    # does not follow redirects. Each step, such as the
-                    # comparison of ports to decide whether to strip
-                    # credentials, can raise a bare ValueError or UnicodeError
-                    # that no parse of the target here anticipates. Run the
-                    # preparation so that any such failure is refused here. It
-                    # sends nothing, and the repeat reads no more of the body
-                    # and closes the response, as requests does next.
-                    next(
-                        self.session.resolve_redirects(
-                            resp,
-                            resp.request,
-                            yield_requests=True,
-                            **kwargs,
-                        ),
-                        None,
-                    )
             except ValueError as err:
                 resp.close()
                 raise RedirectError(
-                    f"{resp.request.method} {resp.url} was redirected with "
-                    f"status {resp.status_code} to a location that cannot be "
-                    "parsed, so it was not followed",
+                    f"{resp.request.method} {_redact_url(resp.url)} was "
+                    f"redirected with status {resp.status_code} to a "
+                    "location that cannot be parsed, so it was not followed",
                     response=resp,
                 ) from err
-            if not follow:
-                return
             if origins <= allowed:
                 _check_write_redirect(resp, target)
                 if budget is not None:
@@ -1153,10 +1360,11 @@ class API:
 
             resp.close()
             raise RedirectError(
-                f"{resp.request.method} {resp.url} was redirected with status "
-                f"{resp.status_code} to {destination}, whose origin differs "
-                "from the request's, so it was not followed. Add the origin "
-                "to API.redirect_origins to follow it.",
+                f"{resp.request.method} {_redact_url(resp.url)} was "
+                f"redirected with status {resp.status_code} to "
+                f"{_printable(_redact_url(destination))}, whose origin "
+                "differs from the request's, so it was not followed. Add the "
+                "origin to API.redirect_origins to follow it.",
                 response=resp,
             )
 
@@ -1199,10 +1407,10 @@ class API:
         )
         if dropped or resp.request.method != redirect.request.method:
             raise RedirectError(
-                f"{sent} {redirect.url} was redirected with status "
-                f"{redirect.status_code}, and requests resent it to "
-                f"{resp.url} as {resp.request.method}, so the {sent} request "
-                "was not performed",
+                f"{sent} {_redact_url(redirect.url)} was redirected with "
+                f"status {redirect.status_code}, and requests resent it to "
+                f"{_redact_url(resp.url)} as {resp.request.method}, so the "
+                f"{sent} request was not performed",
                 response=redirect,
             )
 
@@ -1283,3 +1491,26 @@ class API:
             Validated HTTP response.
         """
         return self._send(self.session.delete, uri, *args, **kwargs)
+
+
+def _as_api(api: Client) -> API:
+    """Return a client that a hook passed back as the requests client.
+
+    ``API`` is the only client there is so far, so every ``Client`` that
+    eazyrest passes to a hook is one.
+
+    Args:
+        api: Client that a hook passed to eazyrest.
+
+    Returns:
+        ``api``.
+
+    Raises:
+        TypeError: If ``api`` is not an ``API``.
+    """
+    if not isinstance(api, API):
+        raise TypeError(
+            "eazyrest sends requests only through an API, not "
+            f"{type(api).__name__}"
+        )
+    return api

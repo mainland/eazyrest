@@ -23,6 +23,7 @@ from ._models import (
     encode_json,
     json_object,
 )
+from ._protocols import Client, Request, Response
 from ._results import Results
 from .api import API
 from .dateparse import parse_datetime, parse_duration
@@ -45,6 +46,7 @@ __all__ = [
     "API",
     "DEFAULT_CONVERSIONS",
     "APIError",
+    "Client",
     "Conversion",
     "DoesNotExist",
     "EazyrestError",
@@ -58,6 +60,8 @@ __all__ = [
     "PaginationError",
     "PrefetchNotSupported",
     "RedirectError",
+    "Request",
+    "Response",
     "ResponseShapeError",
     "Results",
     "UsageError",

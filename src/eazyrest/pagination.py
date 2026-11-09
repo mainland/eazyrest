@@ -7,16 +7,19 @@ from typing import Any, Generic, TypeVar
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import requests
+from requests.utils import parse_header_links
 
 from ._errors import (
     LimitExceeded,
     PaginationError,
     ResponseShapeError,
     UsageError,
+    _redact_url,
 )
+from ._protocols import Client, Response
 from ._results import Results
 from .api import (
-    API,
+    _as_api,
     _check_final_response,
     _origin,
     _redirect_destination,
@@ -35,7 +38,7 @@ __all__ = [
 T = TypeVar("T")
 
 
-def _link(resp: requests.Response, rels: frozenset[str]) -> str | None:
+def _link(resp: Response, rels: frozenset[str]) -> str | None:
     """Return the URL of a link with one of ``rels`` in a Link header.
 
     A link may have several relation types, as in ``rel="next last"``, and
@@ -49,9 +52,17 @@ def _link(resp: requests.Response, rels: frozenset[str]) -> str | None:
         The URL of the first link whose relation types include one of
         ``rels``, or ``None`` if there is none.
     """
-    # requests parses the Link header into resp.links, keyed by the whole rel
-    # value.
-    for link in resp.links.values():
+    header = resp.headers.get("Link")
+    if not header:
+        return None
+    # As requests' Response.links does, key the links by their whole rel
+    # value, so that a later link with the same value replaces an earlier one.
+    links: dict[str, dict[str, str]] = {}
+    for link in parse_header_links(header):
+        key = link.get("rel") or link.get("url")
+        if key is not None:
+            links[key] = link
+    for link in links.values():
         if rels.intersection(link.get("rel", "").lower().split()):
             url: str | None = link.get("url")
             return url
@@ -102,7 +113,9 @@ def _resolve(base: str, link: str) -> str:
     try:
         return urljoin(base, link)
     except ValueError as err:
-        raise PaginationError(f"Page URL {link!r} cannot be parsed") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(link)!r} cannot be parsed"
+        ) from err
 
 
 def _page_results(page: Any, results_key: str) -> list[Any] | None:
@@ -141,7 +154,7 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
     return results
 
 
-def _check_page_origin(api: API, url: str) -> None:
+def _check_page_origin(api: Client, url: str) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
     Args:
@@ -154,16 +167,19 @@ def _check_page_origin(api: API, url: str) -> None:
     try:
         origin = _origin(url)
     except ValueError as err:
-        raise PaginationError(f"Page URL {url!r} cannot be parsed") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(url)!r} cannot be parsed"
+        ) from err
     if origin != _origin(api.base_url):
         raise PaginationError(
-            f"Page URL {url!r} has a different origin from the API's base URL "
-            f"{api.base_url!r}. Pass allow_other_origins=True to follow it."
+            f"Page URL {_redact_url(url)!r} has a different origin from the "
+            f"API's base URL {_redact_url(api.base_url)!r}. Pass "
+            "allow_other_origins=True to follow it."
         )
 
 
 def _request_page(
-    api: API, url: str, allow_other_origins: bool
+    api: Client, url: str, allow_other_origins: bool
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
@@ -183,6 +199,7 @@ def _request_page(
         RedirectError: If a redirect is refused, as for any request, or the
             response is a redirect that was not followed.
     """
+    api = _as_api(api)
     api_origin = _origin(api.base_url)
     if not allow_other_origins:
         _check_page_origin(api, url)
@@ -221,9 +238,9 @@ def _request_page(
         if origins != {api_origin}:
             resp.close()
             raise PaginationError(
-                f"Page request {resp.url!r} was redirected to "
-                f"{destination!r}, which has a different origin from the "
-                f"API's base URL {api.base_url!r}. Pass "
+                f"Page request {_redact_url(resp.url)!r} was redirected to "
+                f"{_redact_url(destination)!r}, which has a different origin "
+                f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
                 "allow_other_origins=True to follow it."
             )
 
@@ -253,14 +270,16 @@ def _request_page(
         requests.exceptions.InvalidURL,
         requests.exceptions.MissingSchema,
     ) as err:
-        raise PaginationError(f"Page URL {url!r} cannot be requested") from err
+        raise PaginationError(
+            f"Page URL {_redact_url(url)!r} cannot be requested"
+        ) from err
     return _check_final_response(resp, "the page has no response to read")
 
 
 class _PageReader:
     """Request the next pages of a collection, guarding their URLs."""
 
-    def __init__(self, api: API, allow_other_origins: bool) -> None:
+    def __init__(self, api: Client, allow_other_origins: bool) -> None:
         """Prepare to read pages through ``api``.
 
         Args:
@@ -318,7 +337,8 @@ class _PageReader:
         """
         if url in self.read_urls:
             raise PaginationError(
-                f"Next-page URL {url!r} names a page that was already read, "
+                f"Next-page URL {_redact_url(url)!r} names a page that was "
+                "already read, "
                 "so following it would never end"
             )
         if not self.allow_other_origins:
@@ -355,7 +375,7 @@ def _count_of(payload: Any, count_key: str) -> int | None:
 
 
 def follow_next_links(
-    api: API,
+    api: Client,
     payload: Any,
     *,
     url: str | None = None,
@@ -465,8 +485,8 @@ def follow_next_links(
 
 
 def follow_link_headers(
-    api: API,
-    resp: requests.Response,
+    api: Client,
+    resp: Response,
     *,
     allow_other_origins: bool = False,
 ) -> Results[Any]:
@@ -557,8 +577,10 @@ class _Trail:
 class _PageSource(Generic[T]):
     """Reads the page at a URL, as the pages that it returns link to it."""
 
-    api: API
-    """Client that requests the pages."""
+    @property
+    def api(self) -> Client:
+        """Client that requests the pages, which never changes."""
+        raise NotImplementedError
 
     def read(self, url: str, allow_other_origins: bool) -> Page[T]:
         """Request and read the page at ``url``.
@@ -653,10 +675,13 @@ class Page(Generic[T]):
     def __repr__(self) -> str:
         """Return the page's URL and size.
 
+        The URL leaves out any user and password, as an error message does,
+        since a representation reaches logs in the same way.
+
         Returns:
             Representation of the page.
         """
-        return f"<Page url={self.url!r} items={len(self.items)}>"
+        return f"<Page url={_redact_url(self.url)!r} items={len(self.items)}>"
 
     def next_page(self) -> Page[T] | None:
         """Request the next page.
@@ -714,7 +739,8 @@ class Page(Generic[T]):
         trail = self._forward if forward else self._backward
         if url in trail.urls:
             raise PaginationError(
-                f"Page URL {url!r} names a page that was already read, so "
+                f"Page URL {_redact_url(url)!r} names a page that was already "
+                "read, so "
                 "following it would never end"
             )
         limit = self._source.api.max_pages
@@ -731,7 +757,7 @@ class Page(Generic[T]):
         return page
 
 
-def _check_page_size(api: API, items: list[Any]) -> None:
+def _check_page_size(api: Client, items: list[Any]) -> None:
     """Reject a page with more items than the API allows in a collection.
 
     Args:
@@ -753,8 +779,8 @@ class _JSONPageSource(_PageSource[Any]):
 
     def __init__(
         self,
-        api: API,
-        parse: Callable[[requests.Response], Page[Any]],
+        api: Client,
+        parse: Callable[[Response], Page[Any]],
         allow_other_origins: bool,
     ) -> None:
         """Read pages through ``api`` with ``parse``.
@@ -764,9 +790,14 @@ class _JSONPageSource(_PageSource[Any]):
             parse: Reads a page from its response.
             allow_other_origins: Whether pages may have other origins.
         """
-        self.api = api
+        self._api = api
         self._parse = parse
         self._allow_other_origins = allow_other_origins
+
+    @property
+    def api(self) -> Client:
+        """Client that requests the pages."""
+        return self._api
 
     def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
         """Request and read the page at ``url``.
@@ -780,7 +811,7 @@ class _JSONPageSource(_PageSource[Any]):
         """
         return self.page(_request_page(self.api, url, allow_other_origins))
 
-    def page(self, resp: requests.Response) -> Page[Any]:
+    def page(self, resp: Response) -> Page[Any]:
         """Read a page from its response and attach this source.
 
         Args:
@@ -797,8 +828,8 @@ class _JSONPageSource(_PageSource[Any]):
 
 
 def next_links_page(
-    api: API,
-    resp: requests.Response,
+    api: Client,
+    resp: Response,
     *,
     results_key: str = "results",
     next_key: str = "next",
@@ -839,7 +870,7 @@ def next_links_page(
             ``max_items``, or exceeds another of its limits.
     """
 
-    def parse(resp: requests.Response) -> Page[Any]:
+    def parse(resp: Response) -> Page[Any]:
         """Read a page from its response.
 
         Args:
@@ -864,8 +895,8 @@ def next_links_page(
 
 
 def link_headers_page(
-    api: API,
-    resp: requests.Response,
+    api: Client,
+    resp: Response,
     *,
     allow_other_origins: bool = False,
 ) -> Page[Any]:
@@ -892,7 +923,7 @@ def link_headers_page(
             ``max_items``, or exceeds another of its limits.
     """
 
-    def parse(resp: requests.Response) -> Page[Any]:
+    def parse(resp: Response) -> Page[Any]:
         """Read a page from its response.
 
         Args:

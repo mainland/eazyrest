@@ -7,6 +7,21 @@
 ```
 
 ```{eval-rst}
+.. autoclass:: eazyrest.Client
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.Response
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: eazyrest.Request
+   :members:
+```
+
+```{eval-rst}
 .. autoexception:: eazyrest.APIError
    :members:
 ```
