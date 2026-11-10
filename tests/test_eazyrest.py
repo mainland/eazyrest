@@ -8,6 +8,7 @@ import email
 import email.message
 import enum
 import inspect
+import re
 import sys
 import types
 import typing
@@ -39,10 +40,12 @@ from eazyrest import (
     RedirectError,
     Response,
     ResponseShapeError,
+    UsageError,
     WriteMode,
     encode_json,
     json_object,
 )
+from eazyrest._models import _api_registry
 
 if typing.TYPE_CHECKING:
     # Imported only for type checkers, so the name is unbound at run time.
@@ -2027,8 +2030,8 @@ def test_prefetch_preserves_related_write_mode(
     related_api = API(
         "https://users.example.com/", default_write_mode=related_mode
     )
-    monkeypatch.setattr(Todo, "api", parent_api)
-    monkeypatch.setattr(User, "api", related_api)
+    monkeypatch.setitem(_api_registry, Todo, parent_api)
+    monkeypatch.setitem(_api_registry, User, related_api)
     requests_mock.get(
         "https://parents.example.com/todos/",
         json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
@@ -5166,7 +5169,7 @@ def test_query_request_options_stay_on_the_query_origin(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A bulk lookup on another origin does not receive the query's options."""
-    monkeypatch.setattr(User, "api", API("https://users.example.net/"))
+    monkeypatch.setitem(_api_registry, User, API("https://users.example.net/"))
     requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
     users = requests_mock.get(
         "https://users.example.net/users/", json=[{"id": 2, "name": "Ada"}]
@@ -6634,3 +6637,286 @@ def test_json_schema_reports_an_unresolvable_annotation() -> None:
 
     with pytest.raises(NameError, match="NoSuchType"):
         Broken.json_schema()
+
+
+def test_alpha_conversion_overrides_are_refused() -> None:
+    """An override of ``from_json()`` or ``to_json()`` with an old signature.
+
+    eazyrest no longer calls them, so the override would be skipped without a
+    word. The alphas' signature has a ``conversion`` parameter, and 0.9.0's has
+    a ``ty`` parameter. A method of either name with neither parameter is the
+    class's own.
+    """
+    with pytest.raises(TypeError, match=r"from_json\(\) is no longer called"):
+
+        class Reading(JSONObject):
+            def from_json(
+                self, value: Any, conversion: Any, **kwargs: Any
+            ) -> Any:
+                return value
+
+    with pytest.raises(TypeError, match=r"to_json\(\) is no longer called"):
+
+        class Writing(JSONObject):
+            @classmethod
+            def to_json(cls, value: Any, conversion: Any) -> Any:
+                return value
+
+    with pytest.raises(TypeError, match=r"from_json\(\) is no longer called"):
+
+        class OldReading(JSONObject):
+            def from_json(self, value: Any, ty: Any) -> Any:
+                return value
+
+    with pytest.raises(TypeError, match=r"to_json\(\) is no longer called"):
+
+        class OldWriting(JSONObject):
+            def to_json(self, value: Any, ty: Any) -> Any:
+                return value
+
+    class Helper(JSONObject):
+        def to_json(self) -> dict[str, Any]:
+            return {}
+
+    assert Helper().to_json() == {}
+
+    class ConversionMixin:
+        def from_json(self, value: Any, conversion: Any) -> Any:
+            return value
+
+    with pytest.raises(
+        TypeError, match=r"ConversionMixin\.from_json\(\) is no longer called"
+    ):
+
+        class Mixed(ConversionMixin, JSONObject):
+            pass
+
+
+def test_an_assigned_api_is_refused(requests_mock: Any) -> None:
+    """An API assigned to a class's ``api``, rather than registered, raises.
+
+    The assignment would replace what resolves each object's own API, so
+    every ``api=`` would be ignored.
+    """
+    with pytest.raises(TypeError, match=r"register_api"):
+
+        class Defining(JSONObject):
+            api = API("https://service.example.com")
+
+    class Base(JSONObject):
+        pass
+
+    @json_object
+    class Assigned(Base):
+        class_url = "/assigned/"
+
+        id: int
+
+    Base.api = API("https://service.example.com")
+
+    with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+        Assigned(id=1, api=API("https://alice.example.com"))
+    # Nothing is sent, so a create() is not repeated after the correction.
+    for call in (
+        lambda: Assigned.create(id=1),
+        lambda: list(Assigned.filter()),
+        lambda: Assigned.get(id=1),
+        lambda: Assigned.get_page(),
+    ):
+        with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+            call()
+    assert requests_mock.call_count == 0
+
+
+def test_an_api_assigned_none_is_refused(requests_mock: Any) -> None:
+    """``None`` assigned to a class's ``api`` is an assignment like any API."""
+
+    class Base(JSONObject):
+        pass
+
+    @json_object
+    class Nulled(Base):
+        class_url = "/nulled/"
+
+        id: int
+        name: str
+
+    Base.register_api(API("https://alice.example.com"))
+    for method in ("GET", "PATCH"):
+        requests_mock.register_uri(
+            method, re.compile(".*"), json={"id": 1, "name": "n"}
+        )
+    existing = Nulled(json={"id": 1, "name": "a"})
+    existing.name = "b"
+    Base.api = None  # type: ignore[assignment]
+    try:
+        for call in (
+            lambda: Nulled(id=1),
+            lambda: list(Nulled.filter()),
+            existing.save,
+        ):
+            with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+                call()
+    finally:
+        del Base.api
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "request_kind",
+    [
+        "save",
+        "full save",
+        "delete",
+        "lazy load",
+        "eager assign",
+        "eager write-only",
+    ],
+)
+def test_an_api_assigned_after_an_object_is_built_is_refused(
+    requests_mock: Any, request_kind: str
+) -> None:
+    """An existing object's requests do not follow an assigned ``api``.
+
+    The assignment would send them through that API and ignore the API that the
+    object was built with.
+
+    Args:
+        request_kind: The request that the object sends.
+    """
+
+    class Base(JSONObject):
+        pass
+
+    @json_object(write_only={"secret"})
+    class Later(Base):
+        class_url = "/later/"
+
+        id: int
+        name: str
+        secret: str
+
+    for method in ("GET", "PATCH", "DELETE"):
+        requests_mock.register_uri(
+            method, re.compile(".*"), json={"id": 1, "name": "n"}
+        )
+    alice = API("https://alice.example.com")
+    if request_kind == "lazy load":
+        obj = Later(id=1, api=alice)
+    elif request_kind.startswith("eager"):
+        obj = Later(json={"id": 1, "name": "a"}, api=alice, write_mode="eager")
+    else:
+        obj = Later(json={"id": 1, "name": "a"}, api=alice)
+
+    def send() -> None:
+        if request_kind == "save":
+            obj.save()
+        elif request_kind == "full save":
+            obj.save(full=True)
+        elif request_kind == "eager assign":
+            obj.name = "b"
+        elif request_kind == "eager write-only":
+            obj.secret = "s"
+        elif request_kind == "delete":
+            obj.delete()
+        else:
+            _ = obj.name
+
+    if request_kind == "save":
+        obj.name = "b"
+    Base.api = API("https://mallory.example.com")
+    try:
+        with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+            send()
+    finally:
+        del Base.api
+
+    assert requests_mock.call_count == 0
+
+
+class WriterBase(JSONObject):
+    """Base of a related model, whose ``api`` the tests assign."""
+
+
+class ArticleBase(JSONObject):
+    """Base of a model that relates to a ``Writer``."""
+
+
+WriterBase.register_api(API("https://alice.example.com"))
+ArticleBase.register_api(API("https://alice.example.com"))
+
+
+@json_object
+class Writer(WriterBase):
+    """Related model that implements bulk lookup."""
+
+    class_url = "/writers/"
+
+    id: int
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: Any, *, api: Any, **kwargs: Any
+    ) -> dict[Any, Any]:
+        """Send a bulk request through ``api``."""
+        api.get("/writers/bulk/")
+        return {}
+
+
+@json_object
+class Article(ArticleBase):
+    """Model with a plain and a hyperlinked relation to a ``Writer``."""
+
+    class_url = "/articles/"
+
+    id: int
+    author: Writer
+    link: Annotated[Writer, Hyperlinked()]
+
+
+@pytest.mark.parametrize("query", ["filter", "get_page"])
+def test_a_prefetch_of_a_model_with_an_assigned_api_is_refused(
+    requests_mock: Any, query: str
+) -> None:
+    """A prefetch raises before any request when the related ``api`` is set.
+
+    The bulk request would go through the assigned API.
+
+    Args:
+        query: The query that prefetches.
+    """
+    requests_mock.register_uri(
+        "GET", re.compile(".*"), json=[{"id": 1, "author": 1}]
+    )
+    WriterBase.api = API("https://mallory.example.com")
+
+    def send() -> None:
+        if query == "filter":
+            list(Article.filter(prefetch="author"))
+        else:
+            Article.get_page(prefetch="author")
+
+    try:
+        with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+            send()
+    finally:
+        del WriterBase.api
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_hyperlinked_read_of_a_model_with_an_assigned_api_is_refused() -> (
+    None
+):
+    """The assignment is reported, not the origin of the hyperlink."""
+    obj = Article(
+        json={"id": 1, "author": 1, "link": "https://alice.example.com/u/1/"}
+    )
+    WriterBase.api = API("https://mallory.example.com")
+    try:
+        with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
+            _ = obj.link
+    finally:
+        del WriterBase.api

@@ -2268,6 +2268,75 @@ def _check_hook_signatures(cls: type[JSONObject]) -> None:
             )
 
 
+def _check_removed_methods(cls: type[JSONObject]) -> None:
+    """Refuse an override of a conversion method that 1.0 removed.
+
+    ``from_json(self, value, conversion)`` and ``to_json(cls, value,
+    conversion)`` were the alphas' override points, and ``from_json(self,
+    value, ty)`` and ``to_json(self, value, ty)`` were 0.9.0's. eazyrest no
+    longer calls any of them, so an override would be skipped without a word. A
+    method of either name that takes neither a ``conversion`` nor a ``ty``
+    parameter is the class's own.
+
+    Args:
+        cls: Class being defined.
+
+    Raises:
+        TypeError: If the class defines one of the methods with a
+            ``conversion`` or ``ty`` parameter.
+    """
+    for name in ("from_json", "to_json"):
+        # A mixin's method is found as the class's own would be.
+        owner = next(
+            (base for base in cls.__mro__ if name in vars(base)), None
+        )
+        method = None if owner is None else vars(owner)[name]
+        if isinstance(method, (classmethod, staticmethod)):
+            method = method.__func__
+        if not callable(method):
+            continue
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            continue
+        if "conversion" in parameters or "ty" in parameters:
+            assert owner is not None
+            raise TypeError(
+                f"{owner.__name__}.{name}() is no longer called. Declare the "
+                "conversions of the class's types in its conversions, as the "
+                "guide's Custom field conversion section shows."
+            )
+
+
+def _check_api_attribute(
+    cls: type[JSONObject], error: type[Exception]
+) -> None:
+    """Refuse an API assigned to a model's ``api`` attribute.
+
+    The attribute resolves each object's own API, from ``api=`` or the
+    registry, so a value assigned to it on a class replaces that, and every
+    ``api=`` is ignored.
+
+    Args:
+        cls: Model class.
+        error: Exception type to raise.
+
+    Raises:
+        Exception: Of type ``error``, if a class in the MRO of ``cls`` has its
+            own ``api`` other than eazyrest's.
+    """
+    for base in cls.__mro__:
+        # Test for presence, since ``None`` is an assignment too.
+        if "api" in (own := vars(base)) and not isinstance(
+            own["api"], APIDescriptor
+        ):
+            raise error(
+                f"{base.__name__}.api was assigned, which would make every "
+                f"api= ignored. Use {base.__name__}.register_api(api) "
+                "instead."
+            )
+
+
 def encode_json(
     value: Any, annotation: Any, *, model: type[JSONObject] | None = None
 ) -> Any:
@@ -3651,7 +3720,16 @@ class JSONObject:
     """Relative URL for this class."""
 
     api: ClassVar[API] = cast(Any, APIDescriptor())
-    """The API associated with this object."""
+    """The API of this object or class, read only.
+
+    An object's own API, from ``api=``, comes first, then the API that
+    ``register_api()`` bound to the nearest class in the MRO. Assigning it
+    would replace what resolves an object's own API. In a class body, that
+    raises ``TypeError``. After the class is defined, the class's next
+    construction, query, or ``create()`` raises ``UsageError`` before sending
+    anything, and so does the next request of an existing object, such as
+    ``save()``, ``delete()``, or a lazy load.
+    """
 
     _pk: ClassVar[JSONProperty]
     """The JSONProperty that is the primary key."""
@@ -3746,10 +3824,15 @@ class JSONObject:
 
         Raises:
             TypeError: If the class's ``conversions`` or a base's has a bad
-                entry, such as one keyed by a model, or if two decorated
-                ancestors of the class are not subclasses of one another.
+                entry, such as one keyed by a model, if two decorated
+                ancestors of the class are not subclasses of one another, if
+                the class overrides ``from_json()`` or ``to_json()`` with the
+                alphas' signature, which is no longer called, or if it
+                assigns ``api``, which ``register_api()`` sets.
         """
         super().__init_subclass__(**kwargs)
+        _check_removed_methods(cls)
+        _check_api_attribute(cls, TypeError)
         _check_hook_signatures(cls)
 
         for base in cls.__mro__:
@@ -3810,6 +3893,8 @@ class JSONObject:
                 ``json`` is omitted, and in ``"eager"`` mode it sends a
                 ``PATCH``.
         """
+        # A class's api can be assigned after the class is defined.
+        _check_api_attribute(type(self), UsageError)
         self._api_override = None if api is None else _as_api(api)
         if write_mode is None:
             try:
@@ -3915,10 +4000,14 @@ class JSONObject:
             TypeError: If a hyperlinked value is neither a URL nor a mapping.
             ValueError: If a URL's origin is not one that the related model's
                 API allows.
+            UsageError: If a class in the MRO of ``ty`` had ``api`` assigned.
         """
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
             return arg
+        # A hyperlink is checked against the related model's API before the
+        # object is built, so refuse an assigned ``api`` first.
+        _check_api_attribute(ty, UsageError)
         # Pass on only an instance override. Without one, the related object
         # uses the API registered for its own class.
         api = self._api_override
@@ -4354,6 +4443,7 @@ class JSONObject:
                 block.
 
         Raises:
+            UsageError: If a class had ``api`` assigned.
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response.
             APIError: If the server returns an HTTP error status.
@@ -4363,7 +4453,22 @@ class JSONObject:
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
-        _check_model_write(self.api.delete(self.url, **options))
+        _check_model_write(self._request_api().delete(self.url, **options))
+
+    def _request_api(self) -> API:
+        """Return the API that this object's own requests go through.
+
+        Returns:
+            The API of this object, after checking that no class in its MRO had
+            ``api`` assigned since the object was built.
+
+        Raises:
+            UsageError: If a class in the MRO had ``api`` assigned. The
+                assignment would send the request through that API and ignore
+                the object's own.
+        """
+        _check_api_attribute(type(self), UsageError)
+        return self.api
 
     @property
     def write_mode(self) -> WriteMode:
@@ -4423,7 +4528,7 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(
+            resp = self._request_api().patch(
                 self.url, json=self._to_wire(payload), **self._write_options
             )
             self._apply_patch_response(resp, payload)
@@ -4442,7 +4547,7 @@ class JSONObject:
             self._queue_in_place_changes()
             payload = dict(self._pending_updates)
             payload[json_field] = value
-            resp = self.api.patch(
+            resp = self._request_api().patch(
                 self.url, json=self._to_wire(payload), **self._write_options
             )
             self._apply_patch_response(resp, payload)
@@ -4753,6 +4858,7 @@ class JSONObject:
                 ``write_options()`` block.
 
         Raises:
+            UsageError: If a class had ``api`` assigned.
             ResponseShapeError: If the response body does not hold a JSON
                 object. The server may have applied the updates, but they
                 remain pending.
@@ -4771,7 +4877,7 @@ class JSONObject:
         if full:
             payload = self._full_payload()
             body = self._write_body(payload, files)
-            resp = self.api.put(self.url, **body, **options)
+            resp = self._request_api().put(self.url, **body, **options)
             self._apply_patch_response(resp, payload)
             return
         if len(self._pending_updates) == 0 and not files:
@@ -4779,7 +4885,7 @@ class JSONObject:
 
         payload = dict(self._pending_updates)
         body = self._write_body(payload, files)
-        resp = self.api.patch(self.url, **body, **options)
+        resp = self._request_api().patch(self.url, **body, **options)
         self._apply_patch_response(resp, payload)
 
     def _full_payload(self) -> dict[str, Any]:
@@ -5047,7 +5153,7 @@ class JSONObject:
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_in_place_changes()
         json = self._object_from_response(
-            self.api.json(self.api.get(self.url))
+            self.api.json(self._request_api().get(self.url))
         )
 
         # Some APIs leave the primary key out of a detail response, because the
@@ -5333,6 +5439,9 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             )
         )
+        # A class's api can be assigned after the class is defined, and the
+        # request must not be sent with it.
+        _check_api_attribute(cls, UsageError)
         api = None if api is None else _as_api(api)
         client = cls.api if api is None else api
         resp = _check_model_write(
@@ -5713,6 +5822,8 @@ class JSONObject:
             PrefetchNotSupported: If the related model does not override
                 ``bulk_get_by_pks()``, or ``bulk_get_by_urls()`` for a
                 hyperlinked field.
+            UsageError: If a class in the MRO of the related model had ``api``
+                assigned, because the bulk request would be sent through it.
         """
         descriptor = getattr(cls, field, None)
         if not isinstance(descriptor, JSONProperty):
@@ -5744,6 +5855,9 @@ class JSONObject:
                 f"{cls.__name__}.{field} cannot be prefetched, because "
                 f"{model_type.__name__} does not implement {hook}()"
             )
+        # The bulk request goes through the related model's class API, which an
+        # assignment to its ``api`` would replace.
+        _check_api_attribute(model_type, UsageError)
 
         return descriptor, analyzed_type, collection_type
 
@@ -6036,6 +6150,9 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
+        # A class's api can be assigned after the class is defined, and the
+        # request must not be sent with it.
+        _check_api_attribute(cls, UsageError)
         api = None if api is None else _as_api(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base
@@ -6160,6 +6277,9 @@ class JSONObject:
         for field in prefetch_fields:
             cls._prefetch_info(field)
 
+        # A class's api can be assigned after the class is defined, and the
+        # request must not be sent with it.
+        _check_api_attribute(cls, UsageError)
         api = None if api is None else _as_api(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base

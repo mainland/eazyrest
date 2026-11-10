@@ -38,9 +38,11 @@ describe them further.
   and `RelatedType`. Declare conversions instead, as
   `conversions = {T: Conversion(decode=..., encode=..., schema=...)}` on a
   model's base class, and encode a request body with
-  `encode_json(value, annotation, model=...)`. No public function decodes a
-  value as a field does, so code that called `from_json()` to read an action's
-  response must construct a model or read the JSON itself.
+  `encode_json(value, annotation, model=...)`. A class that still overrides
+  either method with its `conversion` parameter raises `TypeError` when it is
+  defined, since the override would never be called. No public function decodes
+  a value as a field does, so code that called `from_json()` to read an
+  action's response must construct a model or read the JSON itself.
 - A plain `TypedDict`, `dict[str, T]`, fixed-length tuple, `NamedTuple`, or
   dataclass field converts its keys, items, or fields, where `v1.0.0a5` kept
   their JSON, so a `datetime.datetime` under a `TypedDict` key reads as a
@@ -310,7 +312,9 @@ that can break code written for 0.9.0, followed by what to do about it.
 - `from_json()` and `to_json()` are no longer override points. Declare a
   model's `conversions` instead, mapping each type to a `Conversion` that
   decodes and encodes it, as the guide's Custom field conversion section shows.
-  `create_related()` is private.
+  `create_related()` is private. A class that still overrides either method
+  with 0.9.0's `ty` parameter, as `from_json(self, value, ty)`, raises
+  `TypeError` when it is defined, since the override would never be called.
 
 #### Declarations
 
@@ -325,6 +329,11 @@ that can break code written for 0.9.0, followed by what to do about it.
 - The `JSONObject` constructor takes `json` and `api` as keyword arguments
   only. Replace `Item(payload)` with `Item(json=payload)`.
 - A decorated subclass keeps the primary key that it inherits.
+- Bind an API with `Base.register_api(api)`. Assigning it, as in
+  `Base.api = api`, which 0.9.0's README showed, would make `api=` ignored, so
+  a class body that assigns `api` raises `TypeError`, and constructing an
+  object of a class whose base had it assigned, or querying or creating one,
+  raises `UsageError` before sending anything.
 - Redeclaring a field also preserves its read and write keys and, when those
   options are omitted, its write-only and read-only policies. Explicit mappings
   or policy sets override those defaults.
