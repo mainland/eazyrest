@@ -1404,3 +1404,19 @@ def test_raise_for_response_may_be_a_classmethod() -> None:
             pass
 
     assert ClassLevel("https://example.com/") is not None
+
+
+def test_requests_accept_json(requests_mock: Any) -> None:
+    """A request asks for JSON, also after the session is reset."""
+    api = API("https://example.com/")
+    requests_mock.get("https://example.com/a", json={})
+
+    api.get("/a")
+    api.reset_session()
+    api.get("/a")
+    api.get("/a", headers={"Accept": "text/csv"})
+
+    accepts = [
+        request.headers["Accept"] for request in requests_mock.request_history
+    ]
+    assert accepts == ["application/json", "application/json", "text/csv"]

@@ -115,6 +115,9 @@ describe them further.
   the field another attribute name, with `field_map=` to keep its JSON key.
 - `api=` and `register_api()` take an `API`. Another object, such as a test
   double, raises `TypeError`.
+- Requests send `Accept: application/json`, where `v1.0.0a5` sent requests'
+  `*/*`. Set `api.session.headers["Accept"]` for a server that answers JSON
+  only to another type.
 - `json_schema()` describes fields that it gave as `{}`, such as `Decimal`,
   `time`, `int | str`, `dict[str, Any]`, and tuples, and names its dialect,
   JSON Schema 2020-12, in `$schema`, so a schema that a client compared with a
@@ -426,6 +429,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   `MultipleObjectsReturned`, where 0.9.0 read the first item.
 - `reset_session()` keeps the session's headers, cookies, and query parameters,
   which 0.9.0 dropped.
+- Requests send `Accept: application/json`, where 0.9.0 sent requests' `*/*`.
+  Set `api.session.headers["Accept"]` for a server that answers JSON only to
+  another type.
 - A relation, assigned, given to `create()` or a query, or in a collection of
   relations, refuses an object of a class that is neither the field's model nor
   a subclass of it with `FieldConversionError`. 0.9.0 sent that object's key on

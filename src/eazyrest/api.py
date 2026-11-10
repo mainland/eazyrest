@@ -1040,7 +1040,8 @@ class API:
         The new session keeps the configuration of the session it replaces,
         including its headers, authentication, cookies, proxies, query
         parameters, hooks, and TLS settings. It does not keep connection pools
-        or mounted adapters. The replaced session is closed.
+        or mounted adapters. The replaced session is closed. A first session
+        sends ``Accept: application/json``, which a request may override.
 
         Args:
             verify: Whether TLS certificates should be verified, or the path of
@@ -1059,6 +1060,10 @@ class API:
             for name in _SESSION_SETTINGS:
                 setattr(session, name, getattr(old_session, name))
             old_session.close()
+        else:
+            # A server that negotiates content, such as Django REST
+            # Framework's browsable API, would otherwise answer with HTML.
+            session.headers["Accept"] = "application/json"
 
         if verify is not None:
             session.verify = verify
