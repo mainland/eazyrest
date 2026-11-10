@@ -46,6 +46,15 @@ go unnoticed. It also raises `ValueError` if two fields, including inherited
 ones, map to the same JSON key, because each field caches its own value and
 assigning one would leave the other stale.
 
+A primary key can be a relation to another model, as in `pk="user"` with
+`user: User`, but it cannot be a `Hyperlinked()` relation. Decorating a model
+whose key is one raises `TypeError`, naming the field, because the key reads as
+the related object's own key, which is no URL, so the model's own URL could not
+be built from it. A key whose type is defined later in the module raises the
+same `TypeError`, not `FieldConversionError`, when the key is first read,
+written, or used for the URL, also when the model is an item of another model's
+collection field. Annotate the key as a relation without `Hyperlinked()`.
+
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`,
 or `save`, and `@json_object` raises `ValueError` for such a field. Use
 `field_map=` to give the JSON key another attribute name:
@@ -127,10 +136,27 @@ object's `url`, caches the payload, and caches converted field values as they
 are read. Reading the primary key returns the value given to the constructor
 without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
-loads, and the constructor raises `ValueError` for a key that is not a UUID. An
-object constructed from `json=` starts with that payload already loaded. It
-keeps a deep copy of the payload, as `update_from_json()` does, so changing the
-payload or its nested values afterward does not change the object.
+loads, and the constructor raises `ValueError` for a key that is not a UUID. A
+key that is a relation takes an object of the related model or a subclass, and
+any other model object raises `FieldConversionError`, as does a model object
+given for a key that is not a relation. The model holds the related object's
+key, not the object, so the related object must have its key without a request:
+it holds the key, as `User(id=1)` does, or its JSON has the key field. A
+related object that is known only by its URL, as one named by a `Hyperlinked()`
+relation is until it loads, raises `FieldConversionError`, whose message says
+to load or save it first. So does one whose own key is a relation that is not
+known. Once such an object has loaded, it is accepted if its JSON has the key.
+If its JSON lacks the key field, loading again cannot help, and the message
+says that the key is missing from its JSON. If it holds the key as `null`, the
+message says that the key is `None`. A related object without a key, such as
+`User()`, raises `FieldConversionError` too, as a relation write does. The
+constructor and the `pk` setter therefore never send a request, and neither do
+`repr()` and `update_from_json()` of such a model. Reading the field returns a
+new related object that holds the key, not the object that was given, also
+after `refresh()`. An object constructed from `json=` starts with that payload
+already loaded. It keeps a deep copy of the payload, as `update_from_json()`
+does, so changing the payload or its nested values afterward does not change
+the object.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
@@ -164,7 +190,10 @@ loading it.
 
 Call `refresh()` to discard cached JSON, converted field values, prefetched
 related objects, and pending lazy updates. The next field read reloads the
-object from the API.
+object from the API. An object that has no URL cannot reload, so `refresh()`
+raises `ValueError` before it discards anything. That is the case for an object
+built without a key and for one whose key is empty, `.`, or `..`, as well as
+for one read from JSON that lacks its key.
 
 ```python
 user.refresh()
@@ -177,6 +206,20 @@ that its JSON lacks raises `AttributeError` rather than sending a request. An
 API whose collection returns summaries, with fewer fields than its detail
 endpoint, therefore gives objects that lack the other fields. Call `refresh()`
 on such an object to load its detail from its `url` at the next read.
+
+A model without a primary-key field can be read on its own, as in
+`Entry(json=item)` for each item of an endpoint's collection. Its objects are
+read-only values with the key `None` and no `url`, so they never load. You read
+their fields, related fields, and `json`, and merge JSON into them with
+`update_from_json()`. Giving field values to the constructor or assigning a
+field raises `UsageError`, as do `save()`, `refresh()`, and `delete()`, even
+`save()` with nothing pending, because there is nothing to address. `create()`
+and `get_or_create()` raise `UsageError` too, before sending anything. To add
+such an object, post to the endpoint with the API and build the object from the
+response with `json=`. `url` raises `ValueError`. It cannot be the type of a
+field, also inside an optional, a collection, or a `NewType`, and such a field
+raises `TypeError`. Declare nested JSON that has no key as a `TypedDict` or a
+Pydantic model instead, or declare the key field.
 
 ## Resource URLs
 
@@ -211,7 +254,21 @@ example, the key `a/b` becomes `a%2Fb`.
 
 The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
 raises `ValueError` because those keys could address the collection or another
-resource.
+resource. An object built without a key, or read from JSON that lacks the key
+field, has the key `None`, so `url`, `save()`, `delete()`, and `refresh()`
+raise `ValueError` for it, and a relation write raises `FieldConversionError`.
+An object read through a `Hyperlinked()` relation has the URL that the relation
+named, so its `url`, `save()`, `delete()`, and `refresh()` work.
+
+Reading `pk` is like reading any field. If the object holds partial JSON that
+lacks the key, as after `update_from_json()` with a payload that omits it, the
+read loads the object first when it can load, because it has a key or its own
+URL. A key that is a relation never loads the related object, because the
+object holds the related key. The key is `None` only if the object's complete
+JSON lacks it, and then the object behaves as one built without a key. For an
+object read through a `Hyperlinked()` relation, that means a relation write by
+key raises `FieldConversionError`, but a `Hyperlinked()` relation write still
+sends its URL.
 
 ## Field conversion
 
@@ -322,8 +379,13 @@ leaves the server's value alone. Assigning `TicketStatus.UNKNOWN` to the field
 sends `"unknown"`.
 
 Related-object writes encode primary keys using the related model's primary-key
-annotation. Prefetch lookups and `update_from_json()` compare decoded keys, so
-equivalent UUID spellings identify the same object.
+annotation. An object whose class is neither the field's model nor a subclass
+of it raises `FieldConversionError`, naming the field, the expected model, and
+the given class, when it is assigned, given to `create()` or a query, or is an
+item of a collection of relations or the value of a `Hyperlinked()` relation.
+An object without a key is refused with `FieldConversionError`, rather than
+written as `null`. Prefetch lookups and `update_from_json()` compare decoded
+keys, so equivalent UUID spellings identify the same object.
 
 Collection annotations are converted recursively, so item annotations are
 honored inside `list`, `tuple`, `set`, `frozenset`, and `deque` fields, and

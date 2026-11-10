@@ -17,7 +17,15 @@ from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from ipaddress import IPv4Address
-from typing import Annotated, Any, ClassVar, TypeVar, cast
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    NewType,
+    Optional,
+    TypeVar,
+    cast,
+)
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -440,6 +448,7 @@ class IssueSnapshot(ModelBase):
     statuses: tuple[IssueStatus, ...]
 
 
+@json_object
 class NoBulkUser(ModelBase):
     """Related model without bulk prefetch support."""
 
@@ -5438,6 +5447,9 @@ def test_writes_refuse_request_options_that_are_not_a_mapping(
     assert todo._pending_updates == {"title": "new"}
 
 
+Labels = NewType("Labels", set[str])
+
+
 @json_object
 class TaggedTodo(ModelBase):
     """Model with set fields."""
@@ -5447,11 +5459,13 @@ class TaggedTodo(ModelBase):
     id: int
     tags: set[str]
     marks: frozenset[int] | None
+    labels: Labels
 
 
 @pytest.mark.parametrize(
     ("field", "server", "equal", "different"),
     [
+        ("labels", ["b", "a", "c"], {"c", "a", "b"}, {"a", "b"}),
         ("tags", ["b", "a", "c"], {"c", "a", "b"}, {"a", "b"}),
         ("marks", [3, 1, 2], frozenset({1, 2, 3}), frozenset({1, 2})),
     ],
@@ -5471,7 +5485,7 @@ def test_assigning_an_equal_set_is_not_a_change(
         equal: Set with the same items.
         different: Set with other items.
     """
-    json = {"id": 1, "tags": ["a"], "marks": [1]}
+    json = {"id": 1, "tags": ["a"], "marks": [1], "labels": ["a"]}
     json[field] = server
     requests_mock.get("https://example.com/v1/tagged-todos/1/", json=json)
     patch = requests_mock.patch(
@@ -6573,13 +6587,6 @@ def test_json_schema_follows_declaration_order() -> None:
     ]
 
 
-@json_object
-class Keyless(ModelBase):
-    """Model without a primary key, such as an embedded value."""
-
-    name: str
-
-
 @json_object(pk="partner")
 class Left(ModelBase):
     """Model whose primary key is a related object, which names it back."""
@@ -6596,25 +6603,23 @@ class Right(ModelBase):
 
 @json_object
 class Odd(ModelBase):
-    """Model with relations whose keys have no schema, and an unknown type."""
+    """Model with a relation whose key has no schema, and an unknown type."""
 
     class_url = "/odd/"
 
     id: int
-    keyless: Keyless
     left: Left
     address: IPv4Address
 
 
 def test_json_schema_allows_any_key_it_cannot_describe() -> None:
-    """A relation without a key, or in a cycle of keys, accepts any key.
+    """A relation in a cycle of keys accepts any key.
 
-    So does a type that eazyrest does not convert, whose JSON form it does
-    not know.
+    So does a type that eazyrest does not convert, whose JSON form it does not
+    know.
     """
     properties = Odd.json_schema("write")["properties"]
 
-    assert properties["keyless"] == {}
     assert properties["left"] == {}
     assert properties["address"] == {}
 
@@ -6920,3 +6925,413 @@ def test_a_hyperlinked_read_of_a_model_with_an_assigned_api_is_refused() -> (
             _ = obj.link
     finally:
         del WriterBase.api
+
+
+_READ_ONLY_VALUE = (
+    "Address has no primary-key field, so it is a read-only value. Build it "
+    "with json="
+)
+
+
+@json_object
+class Address(ModelBase):
+    """Model without a key, as a nested serializer without an id sends."""
+
+    street: str
+    city: str = ""
+
+
+@json_object
+class AddressWithUrl(ModelBase):
+    """Model without a key that has a collection URL to create from."""
+
+    class_url = "/addresses/"
+
+    street: str
+    city: str = ""
+
+
+@json_object
+class AddressWithTags(ModelBase):
+    """Model without a key that has a list field."""
+
+    street: str
+    city: str = ""
+    tags: list[str]
+
+
+AddressAlias = NewType("AddressAlias", Address)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Address,
+        Optional[Address],  # noqa: UP045
+        Address | None,
+        list[Address],
+        Iterable[Address],
+        tuple[Address, ...],
+        set[Address],
+        dict[str, Address],
+        list[Address | None],
+        AddressAlias,
+        Annotated[Address, "note"],
+        Annotated[Address, Hyperlinked()],
+        "Address",
+        "list[Address]",
+    ],
+    ids=repr,
+)
+def test_a_model_without_a_key_is_refused_as_the_type_of_a_field(
+    annotation: Any,
+) -> None:
+    """A field of such a type is refused when its class is defined."""
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Address has no primary-key field, so it cannot be the type of a "
+            "field. Declare nested JSON as a TypedDict or a Pydantic model, "
+            "or declare the key field of Address."
+        ),
+    ):
+        json_object(
+            type(
+                "Holder",
+                (ModelBase,),
+                {
+                    "__module__": __name__,
+                    "__annotations__": {"id": int, "address": annotation},
+                },
+            )
+        )
+
+
+class Undecorated(ModelBase):
+    """Model that declares a key but lacks ``@json_object``."""
+
+    class_url = "/undecorated/"
+
+    id: int
+
+
+def test_an_undecorated_model_is_refused_as_the_type_of_a_field() -> None:
+    """A model that lacks ``@json_object`` is told to use it.
+
+    The class declares a key, so a message about a missing key field would
+    mislead.
+    """
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "Undecorated must be decorated with @json_object, which declares "
+            "its fields, before it can be the type of a field."
+        ),
+    ):
+
+        @json_object
+        class Holder(ModelBase):
+            class_url = "/holders/"
+
+            id: int
+            member: Undecorated
+
+
+class UndecoratedAddress(Address):
+    """Subclass of a decorated model without a key, which declares one."""
+
+    id: int
+
+
+class UndecoratedAlias(Address):
+    """Subclass of a decorated model without a key, which declares nothing."""
+
+
+def test_an_undecorated_subclass_without_a_key_is_told_what_it_needs() -> None:
+    """One message names the decorator, the key, and the alternative.
+
+    Decorating the class would otherwise only change the message to one about
+    the missing key, and a class meant as nested JSON needs a value type.
+    """
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "UndecoratedAlias must be decorated with @json_object, which "
+            "declares its fields, before it can be the type of a field. Its "
+            "decorator also needs a primary-key field, which the class "
+            "declares or json_object(pk=...) names. Declare nested JSON "
+            "without a key as a TypedDict or a Pydantic model instead."
+        ),
+    ):
+
+        @json_object
+        class Holder(ModelBase):
+            class_url = "/holders/"
+
+            id: int
+            member: UndecoratedAlias
+
+
+def test_an_undecorated_subclass_is_refused_as_the_type_of_a_field() -> None:
+    """A subclass that lacks ``@json_object`` is told to use it.
+
+    Its decorated base has no key, but the subclass declares one, so a message
+    that only called it keyless would mislead.
+    """
+    with pytest.raises(
+        TypeError,
+        match=re.escape(
+            "UndecoratedAddress must be decorated with @json_object, which "
+            "declares its fields, before it can be the type of a field."
+        ),
+    ):
+
+        @json_object
+        class Holder(ModelBase):
+            class_url = "/holders/"
+
+            id: int
+            member: UndecoratedAddress
+
+
+def test_a_model_without_a_key_is_refused_when_a_later_class_is_defined(
+    requests_mock: Any,
+) -> None:
+    """A type defined after its holder is refused when it is first used.
+
+    The holder cannot resolve the name when it is defined.
+    """
+    holder = EarlyHolder(json={"id": 1, "late": {"name": "x"}, "n": 2})
+    message = "LateKeyless has no primary-key field, so it cannot be the type"
+
+    assert holder.n == 2
+    with pytest.raises(TypeError, match=message):
+        _ = holder.late
+    with pytest.raises(TypeError, match=message):
+        holder.late = LateKeyless(json={"name": "y"})
+    with pytest.raises(TypeError, match=message):
+        EarlyHolder.json_schema()
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class EarlyHolder(ModelBase):
+    """Model whose field names a model without a key defined after it."""
+
+    class_url = "/early-holders/"
+
+    id: int
+    late: LateKeyless
+    n: int
+
+
+@json_object
+class LateKeyless(ModelBase):
+    """Model without a key, defined after the model that names it."""
+
+    name: str
+
+
+@json_object
+class Chapter(ModelBase):
+    """Model that refers to itself and to a model defined after it."""
+
+    class_url = "/chapters/"
+
+    id: int
+    parent: Chapter | None
+    children: list[Chapter]
+    book: Book
+
+
+@json_object
+class Book(ModelBase):
+    """Model that refers back to the model that refers to it."""
+
+    class_url = "/books/"
+
+    id: int
+    chapters: list[Chapter]
+
+
+def test_models_with_keys_may_refer_to_themselves_and_each_other() -> None:
+    """A key that exists is found while a class is being defined."""
+    chapter = Chapter(
+        json={
+            "id": 2,
+            "parent": {"id": 1, "parent": None, "children": [], "book": 5},
+            "children": [3],
+            "book": {"id": 5, "chapters": [1, 2]},
+        }
+    )
+
+    assert chapter.parent is not None
+    assert chapter.parent.id == 1
+    assert [child.pk for child in chapter.children] == [3]
+    assert [item.pk for item in chapter.book.chapters] == [1, 2]
+
+    @json_object
+    class Node(ModelBase):
+        class_url = "/nodes/"
+
+        id: int
+        next: Node | None
+
+    assert (
+        Node(json={"id": 1, "next": {"id": 2, "next": None}}).next is not None
+    )
+
+
+def test_encoding_a_model_without_a_key_as_an_annotation_is_refused() -> None:
+    """``encode_json()`` reads an annotation as a field does."""
+    with pytest.raises(TypeError, match="Address has no primary-key field"):
+        encode_json([], list[Address])
+
+
+def test_an_object_without_a_key_merges_json_from_a_push(
+    requests_mock: Any,
+) -> None:
+    """It has no key to compare, so the payload merges as it is."""
+    address = Address(json={"street": "1 Main St"})
+
+    address.update_from_json({"city": "Z"})
+
+    assert address.city == "Z"
+    assert address.street == "1 Main St"
+    assert address.json == {"street": "1 Main St", "city": "Z"}
+    assert requests_mock.call_count == 0
+
+
+def test_fields_given_to_an_object_without_a_key_are_refused(
+    requests_mock: Any,
+) -> None:
+    """Such an object is a read-only value, built with ``json=``."""
+    with pytest.raises(UsageError, match=_READ_ONLY_VALUE):
+        Address(street="1 Main St")
+    with pytest.raises(UsageError, match=_READ_ONLY_VALUE):
+        Address(json={"street": "1 Main St"}, city="Z")
+    with pytest.raises(UsageError, match=_READ_ONLY_VALUE):
+        Address(pk=1)
+    assert Address().pk is None
+    assert Address(api=API("https://example.com/v1/")).pk is None
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize("field", ["street", "city"])
+def test_assigning_a_field_of_an_object_without_a_key_is_refused(
+    requests_mock: Any, write_mode: WriteMode, field: str
+) -> None:
+    """A field in the object's JSON and one it lacks are both refused.
+
+    Args:
+        write_mode: Write mode of the object.
+        field: Name of the assigned field.
+    """
+    address = Address(
+        json={"street": "1 Main St"},
+        api=API("https://example.com/v1/", default_write_mode=write_mode),
+    )
+
+    with pytest.raises(UsageError, match=_READ_ONLY_VALUE):
+        setattr(address, field, "x")
+    assert address.json == {"street": "1 Main St"}
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("verb", ["save", "refresh", "delete"])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_an_object_without_a_key_has_nothing_to_save_refresh_or_delete(
+    requests_mock: Any, write_mode: WriteMode, verb: str
+) -> None:
+    """These raise always, also ``save()`` with nothing pending.
+
+    Args:
+        write_mode: Write mode of the object.
+        verb: Name of the method.
+    """
+    address = Address(
+        json={"street": "1 Main St"},
+        api=API("https://example.com/v1/", default_write_mode=write_mode),
+    )
+
+    with pytest.raises(
+        UsageError,
+        match=f"Address has no primary-key field, so it has nothing to {verb}",
+    ):
+        getattr(address, verb)()
+    assert address.json == {"street": "1 Main St"}
+    assert requests_mock.call_count == 0
+
+
+def test_saving_an_object_without_a_key_in_full_is_refused(
+    requests_mock: Any,
+) -> None:
+    """``save(full=True)`` has no URL to send to."""
+    address = Address(json={"street": "1 Main St"})
+
+    with pytest.raises(UsageError, match="nothing to save"):
+        address.save(full=True)
+    assert requests_mock.call_count == 0
+
+
+def test_creating_an_object_without_a_key_is_refused_before_a_request(
+    requests_mock: Any,
+) -> None:
+    """There is nothing to create, so no request is sent."""
+    requests_mock.post(
+        "https://example.com/v1/addresses/", json={"street": "1 Main St"}
+    )
+
+    with pytest.raises(UsageError, match="nothing to create"):
+        AddressWithUrl.create(
+            api=API("https://example.com/v1/"), street="1 Main St"
+        )
+    assert requests_mock.request_history == []
+
+
+def test_getting_or_creating_an_object_without_a_key_sends_no_request(
+    requests_mock: Any,
+) -> None:
+    """The refusal comes before the lookup, not after it finds nothing."""
+    requests_mock.get(
+        "https://example.com/v1/addresses/", json={"results": []}
+    )
+
+    with pytest.raises(UsageError, match="nothing to create"):
+        AddressWithUrl.get_or_create(
+            api=API("https://example.com/v1/"), street="1 Main St"
+        )
+    assert requests_mock.request_history == []
+
+
+def test_a_partial_object_without_a_key_never_loads_or_queues_changes(
+    requests_mock: Any,
+) -> None:
+    """A missing field raises ``AttributeError`` and nothing is queued."""
+    address = AddressWithTags(json={"street": "1 Main St", "tags": ["a"]})
+    address.update_from_json({"street": "2 Main St"})
+    address._json_is_partial = True
+    address.tags.append("b")
+
+    with pytest.raises(AttributeError, match="missing"):
+        _ = address.city
+
+    assert requests_mock.request_history == []
+    assert address.json == {"street": "2 Main St", "tags": ["a"]}
+    assert address._pending_updates == {}
+
+
+def test_an_object_without_a_key_has_no_key_and_no_url(
+    requests_mock: Any,
+) -> None:
+    """It reads its JSON, has the key ``None``, and cannot be addressed."""
+    address = Address(json={"street": "1 Main St", "city": "X"})
+
+    assert address.street == "1 Main St"
+    assert address.pk is None
+    with pytest.raises(ValueError, match="has no primary-key field"):
+        _ = address.url
+    with pytest.raises(AttributeError, match="has no primary-key field"):
+        address.pk = 1
+    assert requests_mock.call_count == 0

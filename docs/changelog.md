@@ -169,6 +169,45 @@ describe them further.
   where it raised `requests.ConnectionError` when `timeout` was `None` or above
   `total_timeout`. A read that times out below the deadline, because of a
   `timeout` that you set, still raises requests' own exception.
+- `save()`, `delete()`, and `create()` raise `TypeError` for `request_options`
+  that is not a mapping, as the query methods do, where `v1.0.0a5` raised
+  `AttributeError`.
+- An object read from JSON that lacks its key field, such as an item that a
+  `HyperlinkedModelSerializer` without `id` returned, has the key `None`, where
+  `v1.0.0a5` raised `AttributeError` from `pk`, `url`, `save()`, `delete()`,
+  `refresh()`, and a relation write. `url`, `save()`, `delete()`, and
+  `refresh()` raise `ValueError`, and a relation write raises
+  `FieldConversionError`. That includes an object read through a
+  `Hyperlinked()` relation, whose `pk` is `None` once it loads and still lacks
+  the key, where `v1.0.0a5` raised `AttributeError`. Reading `pk` loads an
+  object that holds partial JSON without the key, as reading any field does.
+- A model whose primary key is a `Hyperlinked()` relation raises `TypeError`
+  when it is decorated, naming the field, where `v1.0.0a5` defined it and
+  raised a bare `TypeError` from `url`, `save()`, and `delete()`. Annotate the
+  key as a relation without `Hyperlinked()`. A key whose type is not defined
+  yet when the class is decorated raises the same `TypeError`, not
+  `FieldConversionError`, when the key is first used, also when the model is an
+  item of another model's collection field.
+- `refresh()` raises `ValueError` for an object built without a key, such as
+  `Todo()`, and for one whose key is empty, `.`, or `..`, where `v1.0.0a5`
+  reset it without an error. It raises before it discards anything.
+- Bind an API with `Base.register_api(api)`. Assigning it, as in
+  `Base.api = api`, would make `api=` ignored, so a class body that assigns
+  `api` raises `TypeError`, and constructing an object of a class whose base
+  had it assigned, or querying or creating one, raises `UsageError` before
+  sending anything.
+- A field whose type is a model without a primary-key field raises `TypeError`
+  when the class is defined or, for a class defined later, when the field is
+  first used, where `v1.0.0a5` defined the class and read the holder's other
+  fields. Declare nested JSON without a key as a `TypedDict` or a Pydantic
+  model.
+- A relation given an object without a key, as in `Todo.create(user=User())`,
+  raises `FieldConversionError`, where `v1.0.0a5` wrote it as `null`. Save the
+  related object first, or assign `None` to clear an optional relation.
+- In eager mode, assigning a field a value equal to one of its updates that has
+  not been sent sends the `PATCH`, where `v1.0.0a5` sent nothing and left the
+  update pending. An update is unsent when it was made in lazy mode, or when a
+  change made in place was found as the object loaded missing fields.
 
 ### Migrating from 0.9.0
 
@@ -205,6 +244,12 @@ that can break code written for 0.9.0, followed by what to do about it.
   the URL that the server expects, for example by setting `API.trailing_slash`.
 - `create()` sends each field under its JSON key, as `field_map` names it, as a
   write does, where 0.9.0 sent the Python name.
+- `create()` and `get_or_create()` on a model without a primary-key field raise
+  `UsageError` before sending anything. 0.9.0 created such an object, and its
+  `get_or_create()` returned one that matched if there was one. Look an object
+  up with `get()` or `filter()`, which still work on such a model, and to add
+  one, post to the endpoint with the API and build the object from the
+  response's JSON with `json=`.
 - `delete()` takes request options in `request_options=`, as `save()` and
   `create()` do, rather than as positional and keyword arguments for
   `API.delete()`. Replace `obj.delete(headers=h)` with
@@ -318,6 +363,13 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 #### Declarations
 
+- A field whose type is a model without a primary-key field now raises
+  `TypeError` when the class is defined or, for a class defined later, when the
+  field is first used. 0.9.0 read such a field but could not write it. Declare
+  nested JSON without a key as a `TypedDict` or a Pydantic model. For a model
+  class that is not decorated with `@json_object`, the error says to decorate
+  it and that it also needs a key field, or to declare nested JSON as a
+  `TypedDict` or a Pydantic model instead.
 - An attribute annotated `ClassVar`, such as `limit: ClassVar[int] = 10`, is a
   class attribute, not a field. 0.9.0 made it a field, read from the object's
   JSON.
@@ -350,7 +402,13 @@ that can break code written for 0.9.0, followed by what to do about it.
 - `reset_session()` keeps the session's headers, cookies, and query parameters,
   which 0.9.0 dropped.
 - `url` percent-encodes the primary key as one path segment, and an object
-  whose key is missing, empty, `.`, or `..` has no URL.
+  whose key is missing, empty, `.`, or `..` has no URL. An object read from
+  JSON that lacks its key field has the key `None`, so `url`, `save()`,
+  `delete()`, and `refresh()` raise `ValueError` for it, and a relation write
+  raises `FieldConversionError`. `refresh()` raises `ValueError` for an object
+  whose key is `None`, empty, `.`, or `..`, where 0.9.0 reset an object with an
+  empty or dot key without an error and raised `AttributeError` for one built
+  without a key.
 - The second positional argument of `API()` is `proxy`, not `pool_connections`.
   Pass connection-pool settings, and other `requests.adapters.HTTPAdapter`
   arguments such as `max_retries=`, as keyword arguments.
@@ -380,6 +438,18 @@ that can break code written for 0.9.0, followed by what to do about it.
 
 ### New features
 
+- A model without a primary-key field can be read on its own, for example from
+  each item of an endpoint with `Entry(json=item)`. Its objects are read-only
+  values with the key `None` and no URL. Giving field values to the
+  constructor, assigning a field, and calling `save()`, `refresh()`,
+  `delete()`, `create()`, or `get_or_create()` raise `UsageError`, and `url`
+  raises `ValueError`. Such an object never loads, so reading a field that its
+  JSON lacks raises `AttributeError`. To add one, post with the API and build
+  the object from the response with `json=`. Using such a model as the type of
+  a field, alone or inside an optional, a collection, or a `NewType`, raises
+  `TypeError`, when the class is defined or, for a class defined later, when
+  the field is first used. Declare nested JSON without a key as a `TypedDict`
+  or a Pydantic model.
 - Lazy loading of objects and related objects, and explicit bulk prefetch
   through `prefetch=` and `bulk_get_by_pks()`.
 - `filter()` and `all()` read every page of a collection in Django REST

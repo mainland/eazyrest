@@ -170,8 +170,9 @@ leaves it unchanged.
 so add the key to the serializer's fields, as in
 `fields = ["url", "id", "name"]`. Without it, an object that a query returns
 reads, but cannot be saved, deleted, or passed as a relation or a query value,
-because it has no key. `url` is reserved for `JSONObject.url`, so map the field
-to another attribute name:
+because it has no key. Its `pk` is `None`, and `save()`, `delete()`, and
+`refresh()` raise `ValueError`. `url` is reserved for `JSONObject.url`, so map
+the field to another attribute name:
 
 ```python
 @json_object(field_map={"resource_url": "url"})
@@ -224,6 +225,15 @@ client, with its credentials, to another host. A hyperlinked field can be
 prefetched when the related model implements `bulk_get_by_urls()`, which
 receives the URLs rather than primary keys, as
 [Prefetch hyperlinked relations](#prefetch-hyperlinked-relations) shows.
+
+A primary key cannot be a `Hyperlinked()` relation. A model whose key is one,
+whether `pk=` names it or it is the default `id`, raises `TypeError` when it is
+decorated, because the key reads as the related object's own key and cannot
+form the model's URL. If the key's type is defined later in the module, the
+model raises the same `TypeError` when the key is first used, whether read,
+written, or needed for the URL, also when the model is an item of another
+model's collection field. Annotate the key as a relation without
+`Hyperlinked()`.
 
 ## Match DRF serializer fields
 
@@ -282,6 +292,20 @@ Related fields can be represented as primary keys, embedded objects, or
 hyperlinks depending on the serializer. Primary keys and embedded objects work
 naturally with `JSONObject` annotations, and hyperlinks with
 [`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
+
+A nested serializer without an `id`, such as one for an address, is declared as
+a `TypedDict` or a Pydantic model, not as a `JSONObject`. A model without a
+primary-key field has no URL to load from or save to, so it cannot be the type
+of a field. Such a field raises `TypeError`, whether the type stands alone or
+is an optional, a collection, or a `NewType`. A model without a key field can
+still be read on its own, for example from the items of an endpoint, as in
+`Entry(json=item)`. Its objects are read-only values with the key `None`. They
+read their fields from their JSON. Giving field values to the constructor,
+assigning a field, and calling `save()`, `refresh()`, or `delete()` raise
+`UsageError`, as does `create()` or `get_or_create()`, which have nothing to
+create. Post to the endpoint with the API and build the object from the
+response with `json=`. Such an object never loads, so reading a field that its
+JSON lacks raises `AttributeError`.
 
 A common serializer reads a relation nested and writes it as a primary key
 under another name:

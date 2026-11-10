@@ -1618,3 +1618,101 @@ def test_page_built_by_a_hook_holds_objects_but_cannot_navigate(
     assert [item.id for item in page] == [1]
     with pytest.raises(UsageError, match="cannot read other pages"):
         page.next_page()
+
+
+@json_object
+class Team(JSONObject):
+    """Model of a team, which has its own endpoint."""
+
+    class_url = "/teams/"
+
+    id: int
+    name: str
+
+
+@json_object
+class LeaderboardEntry(JSONObject):
+    """Model without a key, read whole from a paginated endpoint."""
+
+    rank: int
+    points: float
+    team: Team
+
+    @classmethod
+    def collection_items(
+        cls, payload: Any, *, api: Client, **kwargs: Any
+    ) -> Any:
+        """Read every page of a collection response.
+
+        Args:
+            payload: Decoded JSON body of the collection's first page.
+            api: The query's client.
+
+        Returns:
+            An iterator over the items of every page, following next links.
+        """
+        return follow_next_links(api, payload)
+
+
+def test_a_model_without_a_key_is_read_from_the_items_of_an_endpoint(
+    requests_mock: Any,
+) -> None:
+    """An object without a key reads its fields from the item it is built on.
+
+    Its related object, of a model with a key, is embedded or named by its key.
+    A key alone loads from the object's own URL when a field is read.
+    """
+    api = API("https://example.com/v1/")
+    Team.register_api(api)
+    LeaderboardEntry.register_api(api)
+    first = requests_mock.get(
+        "https://example.com/v1/leaderboard/",
+        json={
+            "count": 3,
+            "next": "https://example.com/v1/leaderboard/?page=2",
+            "previous": None,
+            "results": [
+                {"rank": 1, "points": 9.5, "team": 7},
+                {"rank": 2, "points": 8.0, "team": 8},
+            ],
+        },
+    )
+    second = requests_mock.get(
+        "https://example.com/v1/leaderboard/?page=2",
+        json={
+            "count": 3,
+            "next": None,
+            "previous": "https://example.com/v1/leaderboard/",
+            "results": [
+                {
+                    "rank": 3,
+                    "points": 4.25,
+                    "team": {"id": 9, "name": "Greens"},
+                }
+            ],
+        },
+    )
+    team = requests_mock.get(
+        "https://example.com/v1/teams/7/", json={"id": 7, "name": "Reds"}
+    )
+
+    response = api.get("/leaderboard/")
+    entries = [
+        LeaderboardEntry(json=item)
+        for item in LeaderboardEntry.collection_items(response.json(), api=api)
+    ]
+
+    assert first.call_count == 1
+    assert second.call_count == 1
+    assert [entry.rank for entry in entries] == [1, 2, 3]
+    assert [entry.points for entry in entries] == [9.5, 8.0, 4.25]
+    assert all(entry.pk is None for entry in entries)
+    assert [entry.team.pk for entry in entries] == [7, 8, 9]
+    assert team.call_count == 0
+    assert entries[2].team.name == "Greens"
+    assert team.call_count == 0
+    assert entries[0].team.name == "Reds"
+    assert team.call_count == 1
+    assert team.last_request.url == "https://example.com/v1/teams/7/"
+    with pytest.raises(ValueError, match="has no primary-key field"):
+        _ = entries[0].url

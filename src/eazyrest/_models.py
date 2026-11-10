@@ -146,6 +146,10 @@ class FieldConversionError(EazyrestError, TypeError, ValueError):
         self.field = field
 
 
+_DECLARATION_ERROR = "_eazyrest_declaration_error"
+"""Attribute that marks a ``TypeError`` that refuses a model's declaration."""
+
+
 @contextlib.contextmanager
 def _converting(model: type, field: str) -> Generator[None, None, None]:
     """Report a conversion error of ``field`` as a FieldConversionError.
@@ -160,13 +164,16 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
     Raises:
         FieldConversionError: If the conversion raises a ``TypeError`` or a
             ``ValueError``. A ``FieldConversionError`` that the conversion
-            raises propagates unchanged.
+            raises propagates unchanged, and so does a refusal of the model's
+            declaration, which is no conversion of a value.
     """
     try:
         yield
     except FieldConversionError:
         raise
     except (TypeError, ValueError) as err:
+        if getattr(err, _DECLARATION_ERROR, False):
+            raise
         raise FieldConversionError(model, field, err) from err
 
 
@@ -546,7 +553,8 @@ class Hyperlinked:
     key. Annotate such a field as ``Annotated[User, Hyperlinked()]``, or a
     collection as ``list[Annotated[User, Hyperlinked()]]``. Reading it gives a
     related object that loads from that URL, and writing it sends the related
-    object's absolute URL.
+    object's absolute URL. The related model needs a primary-key field, as an
+    object's key comes from its JSON once it loads.
 
     A URL is followed only if its origin is the related model's API's, or one
     of that API's ``redirect_origins``. Otherwise reading the field raises
@@ -1000,6 +1008,10 @@ def _expand_aliases(
     return origin[new_args]
 
 
+class _KeylessFieldTypeError(TypeError):
+    """A model without a primary-key field is the type of a field."""
+
+
 def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
     """Return type metadata whose related types are hyperlinked.
 
@@ -1045,12 +1057,14 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     Raises:
         TypeError: If ``ty`` holds a named type alias that refers to itself, or
             whose type parameters cannot be substituted. Also raised for a
-            mapping whose keys are not strings, whose JSON form would read
-            them as strings, for a model inside a mapping, for a union that
-            holds a ``TypedDict``, and for a ``TypedDict`` that is
-            parameterized or has a Pydantic config that eazyrest would not
-            apply. A closed ``TypedDict`` raises when its keys are first
-            analyzed, since a conversion may replace it.
+            model without a primary-key field, which cannot be the type of a
+            field, whether alone or inside an optional, a collection, or a
+            ``NewType``. Also raised for a mapping whose keys are not strings,
+            whose JSON form would read them as strings, for a model inside a
+            mapping, for a union that holds a ``TypedDict``, and for a
+            ``TypedDict`` that is parameterized or has a Pydantic config that
+            eazyrest would not apply. A closed ``TypedDict`` raises when its
+            keys are first analyzed, since a conversion may replace it.
     """
     ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
@@ -1093,6 +1107,27 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
 
     if lenient_issubclass(ty, JSONObject):
         assert issubclass(ty, JSONObject)
+        if _pk_property_of(ty) is None:
+            if "_json_fields" not in vars(ty):
+                # Only json_object() declares a class's fields, and it does so
+                # on the class itself. A subclass inherits the attribute from a
+                # decorated base, so look in the class's own namespace. A class
+                # that it has not decorated has no key field either, and
+                # decorating it is not enough if it still declares none, so the
+                # message says both.
+                raise _KeylessFieldTypeError(
+                    f"{ty.__name__} must be decorated with @json_object, "
+                    "which declares its fields, before it can be the type of "
+                    "a field. Its decorator also needs a primary-key field, "
+                    "which the class declares or json_object(pk=...) names. "
+                    "Declare nested JSON without a key as a TypedDict or a "
+                    "Pydantic model instead."
+                )
+            raise _KeylessFieldTypeError(
+                f"{ty.__name__} has no primary-key field, so it cannot be "
+                "the type of a field. Declare nested JSON as a TypedDict or "
+                f"a Pydantic model, or declare the key field of {ty.__name__}."
+            )
         return RelatedType(ty)
 
     if ty is tuple:
@@ -1429,6 +1464,28 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
     return False
 
 
+def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
+    """Refuse a related object that is not of the relation's model.
+
+    Writing the key or URL of an object of another model would name a resource
+    of the wrong collection.
+
+    Args:
+        value: Object written as a relation.
+        model_type: Model that the relation's field names.
+
+    Raises:
+        TypeError: If ``value``'s class is neither ``model_type`` nor a
+            subclass of it. The field's name is added where the conversion
+            runs.
+    """
+    if not isinstance(value, model_type):
+        raise TypeError(
+            f"A relation to {model_type.__name__} cannot take an object of "
+            f"{type(value).__name__}, which is another model"
+        )
+
+
 def _check_no_models(analyzed: AnalyzedType, container: Any) -> None:
     """Refuse a model inside a ``TypedDict`` or a mapping.
 
@@ -1512,6 +1569,91 @@ def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
         analyzed_type = analyzed_type.inner_type
 
     return analyzed_type
+
+
+def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
+    """Return the relation that a primary key's type names, if it does.
+
+    Args:
+        analyzed_type: Analyzed type metadata of a primary key field.
+
+    Returns:
+        The relation inside any optional or ``NewType`` wrappers, or ``None``
+        if the type is not a relation.
+    """
+    while isinstance(analyzed_type, OptionalType | NewTypeType):
+        analyzed_type = (
+            analyzed_type.inner_type
+            if isinstance(analyzed_type, OptionalType)
+            else analyzed_type.inner
+        )
+
+    return analyzed_type if isinstance(analyzed_type, RelatedType) else None
+
+
+def _known_key(obj: JSONObject) -> Any:
+    """Return a related object's primary key if it is known without a request.
+
+    The key is known if the object holds it, or its JSON has it. A key that is
+    itself a related object gives that object's key in turn, so no level loads
+    anything.
+
+    Args:
+        obj: Related object that is to be the key of a model.
+
+    Returns:
+        The object's key as a plain value, as ``pk`` returns it.
+
+    Raises:
+        ValueError: If the object has no key, or its key is not known without a
+            request. The message says to load or save it first in the second
+            case, unless the object has loaded complete JSON that lacks the key
+            field, which loading again cannot change. If that JSON holds the
+            key as ``None``, the message says that the key is None.
+    """
+    cls = type(obj)
+    prop = _pk_property_of(cls)
+    state = vars(obj)
+    json = state.get("_json")
+    if prop is None:
+        value = None
+    elif json is not None and prop.json_field in json:
+        value = obj._from_json(
+            json[prop.json_field], prop.analyzed_type, field=prop.field
+        )
+    else:
+        value = state.get("_pk_value")
+    if isinstance(value, JSONObject):
+        return _known_key(value)
+    if value is not None:
+        return value
+    has_own_url = obj._url_override is not None or _url_is_overridden(cls)
+    if has_own_url and (json is None or state.get("_json_is_partial")):
+        raise ValueError(
+            f"The {cls.__name__} object's primary key is not known without "
+            "a request, so load or save the object first, or give its key"
+        )
+    if has_own_url and (prop is None or prop.json_field not in (json or {})):
+        raise ValueError(
+            f"The {cls.__name__} object's primary key is missing from its "
+            "JSON, so it cannot be the key of another model"
+        )
+    raise ValueError(
+        f"The {cls.__name__} object's primary key is None, so it cannot be "
+        "the key of another model"
+    )
+
+
+def _url_is_overridden(cls: type[JSONObject]) -> bool:
+    """Return whether a model class defines its own ``url``.
+
+    Args:
+        cls: Model class.
+
+    Returns:
+        Whether ``url`` is not ``JSONObject.url``, which needs the primary key.
+    """
+    return cls.url is not JSONObject.url
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -2308,6 +2450,149 @@ def _check_removed_methods(cls: type[JSONObject]) -> None:
             )
 
 
+def _pk_property_of(cls: type[JSONObject]) -> JSONProperty | None:
+    """Return the property of a model's primary key.
+
+    Args:
+        cls: Model class.
+
+    Returns:
+        The property, or ``None`` for a model without a key field.
+    """
+    return getattr(cls, "_pk", None)
+
+
+def _missing_field_error(
+    obj: JSONObject, field: str, json_field: str
+) -> AttributeError:
+    """Return the error for a field that an object's loaded JSON lacks.
+
+    Args:
+        obj: Object that was read.
+        field: Python attribute name.
+        json_field: JSON key that the object's JSON lacks.
+
+    Returns:
+        The ``AttributeError`` to raise.
+    """
+    return AttributeError(
+        f"'{type(obj).__name__}' object has no attribute '{field}': "
+        f"JSON field '{json_field}' is missing"
+    )
+
+
+def _refuse_keyless_assignment(cls: type[JSONObject]) -> None:
+    """Refuse a field value for an object of a model without a key.
+
+    Args:
+        cls: Model class.
+
+    Raises:
+        UsageError: If ``cls`` has no primary-key field. Such an object is a
+            value read from JSON, which nothing can address to write.
+    """
+    if _pk_property_of(cls) is None:
+        raise UsageError(
+            f"{cls.__name__} has no primary-key field, so it is a read-only "
+            "value. Build it with json=."
+        )
+
+
+def _refuse_keyless_request(cls: type[JSONObject], verb: str) -> None:
+    """Refuse a request that needs an object of a model without a key.
+
+    Args:
+        cls: Model class.
+        verb: What the request would do, such as ``"save"``.
+
+    Raises:
+        UsageError: If ``cls`` has no primary-key field, so its objects have
+            nothing to address.
+    """
+    if _pk_property_of(cls) is None:
+        raise UsageError(
+            f"{cls.__name__} has no primary-key field, so it has nothing to "
+            f"{verb}."
+        )
+
+
+def _refuse_keyless_field_types(properties: Iterable[JSONProperty]) -> None:
+    """Refuse a field whose type is a model without a key, if it resolves.
+
+    A field whose annotation names a class that is not defined yet is checked
+    when it is first used.
+
+    Args:
+        properties: The fields that a class declares.
+
+    Raises:
+        TypeError: If a field's type is a model without a primary-key field.
+    """
+    for prop in properties:
+        try:
+            analyze_type(prop._resolve_type())
+        except _KeylessFieldTypeError:
+            raise
+        except Exception:  # noqa: BLE001, S112
+            # An unresolved reference, or a type that is refused when the field
+            # is first used, which says why.
+            continue
+
+
+def _check_key_not_hyperlinked(
+    cls: type[JSONObject], field: str, analyzed: AnalyzedType
+) -> None:
+    """Refuse a primary key whose type is a hyperlinked relation.
+
+    A key that is a hyperlinked relation reads as the related object's own key,
+    which is no URL, so the model's own URL could not be built from it.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+        analyzed: Analyzed type of the field.
+
+    Raises:
+        TypeError: If ``analyzed`` is a ``Hyperlinked()`` relation.
+    """
+    related = _related_key_type(analyzed)
+    if related is not None and related.hyperlinked:
+        error = TypeError(
+            f"{cls.__name__}.{field} is the primary key, and a primary key "
+            "cannot be a hyperlinked relation. Declare it as a relation to "
+            "the model without Hyperlinked()."
+        )
+        # A conversion reports the error as a plain TypeError, as decorating
+        # the class does, not as the conversion of a value.
+        setattr(error, _DECLARATION_ERROR, True)
+        raise error
+
+
+def _refuse_hyperlinked_key(cls: type[JSONObject]) -> None:
+    """Refuse a primary key that is a hyperlinked relation, if it resolves.
+
+    A key whose annotation names a class that is not defined yet is checked
+    when the key's type is first used, which is the first read or write of the
+    key or the object's ``url``.
+
+    Args:
+        cls: Decorated model class.
+
+    Raises:
+        TypeError: If the model's primary key is a ``Hyperlinked()`` relation.
+    """
+    prop = _pk_property_of(cls)
+    if prop is None:
+        return
+    try:
+        analyzed = analyze_type(prop._resolve_type())
+    except Exception:  # noqa: BLE001
+        # An unresolved reference, or a type that is refused when the field is
+        # first used, which says why.
+        return
+    _check_key_not_hyperlinked(cls, prop.field, analyzed)
+
+
 def _check_api_attribute(
     cls: type[JSONObject], error: type[Exception]
 ) -> None:
@@ -2590,6 +2875,13 @@ def json_object(
             JSON key.
         TypeError: If the class overrides a hook that takes ``api``, such as
             ``collection_items()``, with a method that takes no ``**kwargs``.
+            Also raised if a field's type is a model without a primary-key
+            field, alone or inside an optional, a collection, or a ``NewType``.
+            Declare nested JSON without a key as a ``TypedDict`` or a Pydantic
+            model. A class defined later raises when the field is first used.
+            Also raised if the primary key is a ``Hyperlinked()`` relation,
+            which cannot form the model's URL. A key whose type is not yet
+            defined raises when the key is first used.
     """
     if field_map is None:
         field_map = {}
@@ -2609,6 +2901,8 @@ def json_object(
             ValueError: If a field would replace a ``JSONObject`` attribute, if
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
+            TypeError: If a field's type is a model without a primary-key
+                field, or the primary key is a ``Hyperlinked()`` relation.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
@@ -2651,6 +2945,7 @@ def json_object(
         # decorated superclasses already have descriptors. We also want to
         # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
+        declared: list[JSONProperty] = []
         for field, annotation in _annotations(cls).items():
             if field in exclude or _is_class_var(annotation):
                 continue
@@ -2677,9 +2972,12 @@ def json_object(
             setattr(cls, field, prop)
 
             fields.add(field)
+            declared.append(prop)
 
         # pylint: disable=protected-access
         cls._json_fields = frozenset(fields)
+        _refuse_keyless_field_types(declared)
+        _refuse_hyperlinked_key(cls)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
@@ -3034,8 +3332,8 @@ def _json_schema_of(
             if hyperlinked:
                 key: Any = {"type": "string", "format": "uri"}
             else:
-                pk = getattr(model_type, "_pk", None)
-                if pk is None or model_type in seen:
+                pk = model_type._pk
+                if model_type in seen:
                     key = {}
                 else:
                     with _converting(model_type, pk.field):
@@ -3140,7 +3438,8 @@ def _at_key(where: str) -> Generator[None, None, None]:
 
     Yields:
         Nothing. A ``TypeError`` or ``ValueError`` raised inside the block is
-        raised again with ``where`` before its message.
+        raised again with ``where`` before its message, but for a refusal of a
+        model's declaration, which is raised as it is.
 
     Raises:
         TypeError: If the block raises a ``TypeError``.
@@ -3150,6 +3449,8 @@ def _at_key(where: str) -> Generator[None, None, None]:
     try:
         yield
     except TypeError as err:
+        if getattr(err, _DECLARATION_ERROR, False):
+            raise
         raise TypeError(f"{where}: {err}") from err
     except ValueError as err:
         raise ValueError(f"{where}: {err}") from err
@@ -3171,7 +3472,8 @@ def _each_item(
         The converted items, in order.
 
     Raises:
-        TypeError: If converting an item raises a ``TypeError``.
+        TypeError: If converting an item raises a ``TypeError``. A refusal of a
+            model's declaration is raised as it is, without the position.
         ValueError: If converting an item raises a ``ValueError`` that is
             not a ``TypeError``.
     """
@@ -3182,6 +3484,8 @@ def _each_item(
         for index, item in enumerate(items):  # noqa: B007
             converted.append(convert(item))
     except TypeError as err:
+        if getattr(err, _DECLARATION_ERROR, False):
+            raise
         raise TypeError(f"[{index}]: {err}") from err
     except ValueError as err:
         raise ValueError(f"[{index}]: {err}") from err
@@ -3456,7 +3760,8 @@ class JSONProperty:
         Returns:
             Whether this property is the primary key of ``obj``'s class.
         """
-        return type(obj)._pk is self
+        # A model without a key field has none.
+        return getattr(type(obj), "_pk", None) is self
 
     @cached_property
     def ty(self) -> Any:
@@ -3464,6 +3769,18 @@ class JSONProperty:
 
         Returns:
             Resolved Python type for the owning class attribute.
+        """
+        return self._resolve_type()
+
+    def _resolve_type(self) -> Any:
+        """Resolve the field type without caching it.
+
+        Returns:
+            Resolved Python type for the owning class attribute.
+
+        Raises:
+            Exception: If the annotation names something undefined, as a
+                reference to a class defined later does until it is.
         """
         # Evaluate only this field's annotation. Another annotation, such as a
         # ClassVar or an excluded field, may name a type that exists only for
@@ -3497,8 +3814,17 @@ class JSONProperty:
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:
-        """Resolve and cache recursive type metadata."""
-        return analyze_type(self.ty)
+        """Resolve and cache recursive type metadata.
+
+        Raises:
+            TypeError: If the type is refused, such as a primary key that is a
+                ``Hyperlinked()`` relation. A type that names a class defined
+                later is refused here, when it is first used.
+        """
+        analyzed = analyze_type(self.ty)
+        if self.is_primary_key:
+            _check_key_not_hyperlinked(self.cls, self.field, analyzed)
+        return analyzed
 
     def __get__(
         self,
@@ -3529,21 +3855,27 @@ class JSONProperty:
                 "cannot be read"
             )
 
-        if (
-            self._is_key_of(obj)
-            and obj._url_override is None
-            and (
-                obj._json is None
-                or (obj._json_is_partial and self.json_field not in obj._json)
-            )
-        ):
-            # An object created without a key has none until it loads, and so
-            # has one whose partial JSON, from a push or a write response,
-            # lacks the key. Loading it would need its URL, which needs the
-            # key.
-            return getattr(obj, "_pk_value", None)
+        json = obj._json
+        if json is None or self.json_field not in json:
+            # The field is not in loaded JSON. The key is read like any other
+            # field, which loads the object when it can load, except that an
+            # object that holds its key returns it without a load, and a key
+            # that the object lacks even when it is loaded or cannot load reads
+            # as None, because an object may have no key.
+            is_key = self._is_key_of(obj)
+            if is_key:
+                held = getattr(obj, "_pk_value", None)
+                if held is not None:
+                    return held
+                if obj._url_override is None:
+                    # Loading would need a URL, which needs the key.
+                    return None
+            json = obj._json_having(self.json_field)
+            if self.json_field not in json:
+                if is_key:
+                    return None
+                raise _missing_field_error(obj, self.field, self.json_field)
 
-        json = obj._json_with_field(self.json_field, self.field)
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
 
@@ -3588,11 +3920,14 @@ class JSONProperty:
         it does not load the object.
 
         Raises:
+            UsageError: If the model has no primary-key field, so its objects
+                are read-only values.
             AttributeError: If the backing JSON does not contain this field.
             FieldConversionError: If the value cannot be converted to the
                 field's JSON value, or a primary key that initializes an
                 unloaded object is not a valid value of the field's type.
         """
+        _refuse_keyless_assignment(type(obj))
         if self.write_only:
             with _converting(type(obj), self.field):
                 encoded = obj._to_json(value, self.analyzed_type)
@@ -3609,13 +3944,18 @@ class JSONProperty:
         ):
             # Convert the key as if it were read from JSON, so it has the same
             # type before and after the object loads. A related object passed
-            # as the key is kept as is.
-            if not isinstance(value, JSONObject):
-                conversion = self.analyzed_type
-                with _converting(type(obj), self.field):
-                    value = obj._from_json(
-                        obj._to_json(value, conversion), conversion
-                    )
+            # as the key gives its own key, which it must know without a
+            # request, and the object holds that key, not the related object.
+            # Its class is checked as a relation write checks it, so a key that
+            # is not a relation refuses an object, and one that is refuses an
+            # object of another model.
+            conversion = self.analyzed_type
+            with _converting(type(obj), self.field):
+                related = _related_key_type(conversion)
+                if isinstance(value, JSONObject) and related is not None:
+                    _check_related_class(value, related.model_type)
+                    value = _known_key(value)
+                value = obj._key_as_read_from_json(value)
 
             obj._pk_value = value
             return
@@ -3891,10 +4231,17 @@ class JSONObject:
                 primary key is set first. Every other field value is an
                 assignment, as after construction: it loads the object if
                 ``json`` is omitted, and in ``"eager"`` mode it sends a
-                ``PATCH``.
+                ``PATCH``. A model without a primary-key field takes none.
+
+        Raises:
+            UsageError: If field values are given for a model without a
+                primary-key field. Its objects are read-only values, built with
+                ``json=``.
         """
         # A class's api can be assigned after the class is defined.
         _check_api_attribute(type(self), UsageError)
+        if kwargs:
+            _refuse_keyless_assignment(type(self))
         self._api_override = None if api is None else _as_api(api)
         if write_mode is None:
             try:
@@ -3919,12 +4266,15 @@ class JSONObject:
             self._json = None
         if self._json is not None:
             self._json = self._readable_json(self._json)
+        elif _pk_property_of(type(self)) is None:
+            # An object without a key has no URL, so nothing to load.
+            self._json = {}
         self._json_is_partial = False
 
         # Set the primary key first, because assigning any other field loads
         # the object from its URL.
         pk_names = {"pk"}
-        pk_property = getattr(type(self), "_pk", None)
+        pk_property = _pk_property_of(type(self))
         if pk_property is not None:
             pk_names.add(pk_property.field)
 
@@ -4301,6 +4651,7 @@ class JSONObject:
                 return cls._to_json(value, inner_type)
             case RelatedType(model_type, hyperlinked=True):
                 if isinstance(value, JSONObject):
+                    _check_related_class(value, model_type)
                     return value.absolute_url
                 if isinstance(value, str):
                     return value
@@ -4310,6 +4661,7 @@ class JSONObject:
                 )
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
+                    _check_related_class(value, model_type)
                     model_type = type(value)
                     value = value.pk
 
@@ -4443,13 +4795,18 @@ class JSONObject:
                 block.
 
         Raises:
-            UsageError: If a class had ``api`` assigned.
+            UsageError: If the model has no primary-key field, or a class had
+                ``api`` assigned.
+            ValueError: If the object has no URL, because its primary key is
+                ``None``, as for an object built without a key or read from
+                JSON that lacks it.
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response.
             APIError: If the server returns an HTTP error status.
             RedirectError: If a redirect is unsafe or the final status is 3xx.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
+        _refuse_keyless_request(type(self), "delete")
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
@@ -4667,9 +5024,15 @@ class JSONObject:
         Every changed value is encoded before any is queued, so a value that
         cannot be encoded leaves the pending updates as they were.
 
+        An object of a model without a key is a read-only value that can never
+        be written, so nothing is queued for it.
+
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
         """
+        if _pk_property_of(type(self)) is None:
+            return
+
         changed: list[tuple[str, JSONProperty, Any]] = []
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
@@ -4858,7 +5221,11 @@ class JSONObject:
                 ``write_options()`` block.
 
         Raises:
-            UsageError: If a class had ``api`` assigned.
+            UsageError: If the model has no primary-key field, even when
+                nothing is pending, or a class had ``api`` assigned.
+            ValueError: If the object has no URL, because its primary key is
+                ``None``, as for an object built without a key or read from
+                JSON that lacks it.
             ResponseShapeError: If the response body does not hold a JSON
                 object. The server may have applied the updates, but they
                 remain pending.
@@ -4870,6 +5237,7 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
+        _refuse_keyless_request(type(self), "save")
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
@@ -4945,6 +5313,10 @@ class JSONObject:
             ValueError: If the payload refers to a different primary key.
         """
         payload = copy.deepcopy(dict(json))
+        if _pk_property_of(type(self)) is None:
+            # An object without a key has no key to compare.
+            self._merge_json(payload)
+            return
 
         unknown_key = self._url_override is not None and (
             (self._json is None and getattr(self, "_pk_value", None) is None)
@@ -4972,6 +5344,16 @@ class JSONObject:
                 )
             self._json_is_partial = True
 
+        self._merge_json(payload)
+
+    def _merge_json(self, payload: dict[str, Any]) -> None:
+        """Merge authoritative JSON members into this object's JSON.
+
+        Args:
+            payload: JSON members, which replace those of the same keys, and
+                discard their cached values and pending updates.
+        """
+        assert self._json is not None
         self._json.update(self._readable_json(payload))
 
         for field in self._json_fields:
@@ -4985,13 +5367,35 @@ class JSONObject:
             self._pending_updates.pop(descriptor.json_field, None)
 
     def refresh(self) -> None:
-        """Mark this object stale and discard pending local updates."""
+        """Mark this object stale and discard pending local updates.
+
+        Raises:
+            UsageError: If the model has no key field. Such an object has
+                nothing to reload.
+            ValueError: If the object has no URL to reload from, because its
+                primary key is ``None``, empty, or a dot segment, as for an
+                object built without a key or read from JSON that lacks it.
+                Nothing is discarded then. Before 1.0.0, an object with an
+                empty key was reset without an error.
+        """
+        _refuse_keyless_request(type(self), "refresh")
+        # An object without a URL cannot reload, so refuse before discarding
+        # its state.
+        _ = self.url
         # Store value of primary key. An object read from a hyperlink may not
         # know its key, before it loads or from JSON that lacks it.
         unknown_key = self._url_override is not None and (
             self._json is None or self._pk_json_field not in self._json
         )
-        self._pk_value = None if unknown_key else self._persisted_pk()
+        if unknown_key:
+            self._pk_value = None
+        else:
+            # Hold the key as the constructor does, so a key that is a relation
+            # reads as a related object, not as its own key.
+            with _converting(type(self), type(self)._pk.field):
+                self._pk_value = self._key_as_read_from_json(
+                    self._persisted_pk()
+                )
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -5017,8 +5421,15 @@ class JSONObject:
 
     @property
     def pk(self) -> Any:
-        """Return this object's primary key value."""
-        value = type(self)._pk.__get__(self, type(self))
+        """Return this object's primary key value.
+
+        A model without a key field has the key ``None``, and so has an object
+        built without a key or read from JSON that lacks it.
+        """
+        pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
+        if pk_property is None:
+            return None
+        value = pk_property.__get__(self, type(self))
         # If the primary key is another JSON object, return its primary key.
         if isinstance(value, JSONObject):
             return value.pk
@@ -5030,11 +5441,44 @@ class JSONObject:
         """Set this object's primary key value.
 
         Args:
-            value: Primary-key value or nested ``JSONObject`` used as key.
+            value: Primary-key value, or a related object when the key is a
+                relation. The model holds the related object's key, so the
+                object must have it without a request: it holds the key, or its
+                JSON has it. An object of a model that is neither the
+                relation's nor a subclass of it is refused, and so is any
+                object when the key is not a relation, an object without a key,
+                and one known only by its URL or whose own key is a relation
+                that is not known. The assignment sends no request.
+
+        Raises:
+            AttributeError: If the model has no key field.
+            FieldConversionError: If the first assignment to an unloaded
+                object's key gives a related object that the key cannot take.
+                For one whose key is not known, the message says to load or
+                save it first.
         """
+        pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
+        if pk_property is None:
+            raise AttributeError(
+                f"{type(self).__name__} has no primary-key field. Declare "
+                "one, or name it with json_object(pk=...)."
+            )
         # Delegate to the class-installed descriptor instead of shadowing the
         # class variable on this instance.
-        type(self)._pk.__set__(self, value)
+        pk_property.__set__(self, value)
+
+    def _key_as_read_from_json(self, key: Any) -> Any:
+        """Return a primary key in the form that the field reads.
+
+        Args:
+            key: The key, as ``pk`` returns it.
+
+        Returns:
+            The key converted as if it were read from JSON, so a key that is a
+            relation is a related object that holds the key.
+        """
+        conversion = type(self)._pk.analyzed_type
+        return self._from_json(self._to_json(key, conversion), conversion)
 
     def _persisted_pk(self) -> Any:
         """Return the primary key under which the object is saved.
@@ -5087,11 +5531,18 @@ class JSONObject:
 
         Raises:
             ValueError: If the primary key is ``None``, empty, or a dot
-                segment. The URL would name another resource, such as the
-                collection.
+                segment, or the class has no primary-key field. The URL would
+                name another resource, such as the collection. The key is
+                ``None`` for an object built without it or read from JSON that
+                lacks it.
         """
         if self._url_override is not None:
             return self._url_override
+        if getattr(type(self), "_pk", None) is None:
+            raise ValueError(
+                f"{type(self).__name__} has no primary-key field, so it has "
+                "no URL."
+            )
         pk = self._to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
@@ -5181,6 +5632,30 @@ class JSONObject:
         self._replace_json(json)
         self._json_is_partial = False
 
+    def _json_having(self, json_field: str) -> Any:
+        """Return this object's JSON, loaded when it may lack a field.
+
+        Args:
+            json_field: JSON key to look for.
+
+        Returns:
+            JSON payload, which still lacks ``json_field`` if the full object
+            does, or if the object cannot load.
+        """
+        json = self.json
+        if (
+            json_field not in json
+            and self._json_is_partial
+            and _pk_property_of(type(self)) is not None
+        ):
+            # The partial payload from update_from_json() does not say whether
+            # the server has this field, so load the full object. An object
+            # without a key never loads, because it has no URL.
+            self._load_json()
+            json = self.json
+
+        return json
+
     def _json_with_field(self, json_field: str, field: str) -> Any:
         """Return this object's JSON after checking that it has a field.
 
@@ -5194,18 +5669,9 @@ class JSONObject:
         Raises:
             AttributeError: If the loaded JSON does not contain ``json_field``.
         """
-        json = self.json
-        if json_field not in json and self._json_is_partial:
-            # The partial payload from update_from_json() does not say whether
-            # the server has this field, so load the full object.
-            self._load_json()
-            json = self.json
-
+        json = self._json_having(json_field)
         if json_field not in json:
-            raise AttributeError(
-                f"'{type(self).__name__}' object has no attribute '{field}': "
-                f"JSON field '{json_field}' is missing"
-            )
+            raise _missing_field_error(self, field, json_field)
 
         return json
 
@@ -5421,6 +5887,9 @@ class JSONObject:
             Newly created object instance.
 
         Raises:
+            UsageError: If the model has no primary-key field, so there is
+                nothing to create. Post with the API and build the object with
+                ``json=`` instead.
             ResponseShapeError: If the response does not hold a JSON object.
             TypeError: If a field is given both as a keyword argument and in
                 ``fields``, if ``request_options`` is not a mapping or sets the
@@ -5433,6 +5902,7 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
+        _refuse_keyless_request(cls, "create")
         options = _request_options(request_options)
         payload = cls._encode_fields(
             _query_params(
@@ -6427,6 +6897,8 @@ class JSONObject:
             object was created.
 
         Raises:
+            UsageError: If the model has no primary-key field, so there is
+                nothing to create. No request is sent.
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
@@ -6435,6 +6907,7 @@ class JSONObject:
                 query and a creation.
             RedirectError: If a response is a redirect that was not followed.
         """
+        _refuse_keyless_request(cls, "create")
         # Check the options for both requests before sending either.
         _query_request_options(request_options)
         _request_options(request_options)
