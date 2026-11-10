@@ -3308,3 +3308,124 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
     )
     write = Mark.json_schema("write")["properties"]
     assert write["annotated"] == {"type": "number"}
+
+
+class Boom(Exception):
+    """A bug in an application's own serializer."""
+
+
+def _boom(value: int) -> int:
+    """Serialize a number, failing for 13.
+
+    Args:
+        value: Number.
+
+    Returns:
+        ``value``.
+
+    Raises:
+        Boom: For 13.
+    """
+    if value == 13:
+        raise Boom("bug")
+    return value
+
+
+class Holder(pydantic.BaseModel):
+    """Model with a serializer of the application's own."""
+
+    n: Annotated[int, PlainSerializer(_boom)]
+
+
+@json_object
+class WithSerializer(PydanticBase):
+    """Model with a Pydantic model field."""
+
+    class_url = "/serializers/"
+
+    id: int
+    holder: Holder
+
+
+def test_a_bug_in_an_applications_serializer_propagates() -> None:
+    """A serializer's own exception is a bug, not a refusal of the value."""
+    obj = WithSerializer(json={"id": 1, "holder": {"n": 1}})
+
+    with pytest.raises(Boom):
+        obj.holder = {"n": 13}  # type: ignore[assignment]
+
+
+@with_config(ConfigDict(extra="ignore"))
+class EdgeDropper(TypedDict):
+    """``TypedDict`` that drops the keys it does not declare."""
+
+    v: int
+
+
+@pydantic.dataclasses.dataclass(config=ConfigDict(extra="forbid"))
+class PydanticInitOnly:
+    """Pydantic dataclass with an init-only field."""
+
+    a: int
+    b: dataclasses.InitVar[int]
+
+
+EdgeT = TypeVar("EdgeT")
+Listed = TypeAliasType(
+    "Listed", "dict[str, EdgeT] | EdgeDropper", type_params=(EdgeT,)
+)
+
+
+@with_config(ConfigDict(extra="allow"))
+class ListBox(TypedDict, Generic[EdgeT]):
+    """Generic ``TypedDict`` whose key holds a list of its argument."""
+
+    items: list[EdgeT]
+
+
+def _edge_model(annotation: Any) -> Any:
+    """Return a model whose field ``value`` has an annotation.
+
+    Args:
+        annotation: The field's annotation.
+
+    Returns:
+        The model.
+    """
+    namespace = {
+        "__annotations__": {"id": int, "value": annotation},
+        "class_url": "/held/",
+    }
+    return json_object(type("Held", (PydanticBase,), namespace))
+
+
+def test_a_pydantic_dataclass_init_only_field_is_refused() -> None:
+    """A Pydantic dataclass's init-only field drops its key on a write."""
+    obj = _edge_model(Annotated[PydanticInitOnly, Field()])(
+        json={"id": 1, "value": {"a": 1, "b": 2}}
+    )
+
+    with pytest.raises(FieldConversionError, match="init-only field b"):
+        _ = obj.value
+
+
+def test_a_parameterized_alias_naming_a_dropper_is_refused() -> None:
+    """The value of a parameterized named alias is checked."""
+    outer = with_config(ConfigDict(extra="forbid"))(
+        TypedDict("Outer", {"inner": Listed[int]})  # type: ignore[operator]
+    )
+    obj = _edge_model(Annotated[outer, Field()])(
+        json={"id": 1, "value": {"inner": {"v": 1, "x": 2}}}
+    )
+
+    with pytest.raises(FieldConversionError, match="EdgeDropper would drop"):
+        _ = obj.value
+
+
+def test_a_container_of_a_generic_argument_is_checked() -> None:
+    """A type argument inside a container of a generic class is checked."""
+    obj = _edge_model(Annotated[ListBox[EdgeDropper], Field()])
+    held = obj(json={"id": 1, "value": {"items": [{"v": 1, "x": 2}]}})
+
+    with pytest.raises(FieldConversionError, match="EdgeDropper would drop"):
+        _ = held.value
