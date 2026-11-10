@@ -172,6 +172,31 @@ describe them further.
 - `save()`, `delete()`, and `create()` raise `TypeError` for `request_options`
   that is not a mapping, as the query methods do, where `v1.0.0a5` raised
   `AttributeError`.
+- A relation, assigned, given to `create()` or a query, or in a collection of
+  relations, refuses an object of a class that is neither the field's model nor
+  a subclass of it with `FieldConversionError`, where `v1.0.0a5` sent that
+  object's key or URL. So does a primary key that is a relation, given to the
+  constructor or the `pk` setter, and a model object given for a primary key
+  that is not a relation. A related object without a key is refused there too,
+  where `v1.0.0a5` accepted it and `url` raised `ValueError`. The model holds
+  the related object's key, so the object must have its key without a request,
+  as an object built from a key or loaded from JSON that has it does. A related
+  object that `Hyperlinked()` named and that has not loaded, or whose own key
+  is a relation that is not known, raises `FieldConversionError`, where
+  `v1.0.0a5` accepted it and loaded it when the key was first read, even for
+  `repr()` and `update_from_json()`. Load or save it first. If it has loaded
+  and its JSON lacks the key field, the message says that the key is missing
+  from its JSON, and if the JSON holds the key as `null`, that the key is
+  `None`. The constructor, the setter, `repr()`, and `update_from_json()` send
+  no request, and the field reads as a new related object that holds the key,
+  also after `refresh()`, where `v1.0.0a5` returned the object that was given,
+  and the plain key after `refresh()`.
+- A primary key that is a relation reads as a related object after `refresh()`,
+  however it was set: as a related object, as a plain value such as
+  `Profile(user=2)`, or from JSON. `v1.0.0a5` read the plain key, an `int` for
+  `user: User`, after `refresh()` in every case. Code that works with that
+  `int`, such as `User(id=profile.user)` after a refresh, raises
+  `FieldConversionError`. Use `profile.user` or `profile.user.pk`.
 - An object read from JSON that lacks its key field, such as an item that a
   `HyperlinkedModelSerializer` without `id` returned, has the key `None`, where
   `v1.0.0a5` raised `AttributeError` from `pk`, `url`, `save()`, `delete()`,
@@ -401,6 +426,23 @@ that can break code written for 0.9.0, followed by what to do about it.
   `MultipleObjectsReturned`, where 0.9.0 read the first item.
 - `reset_session()` keeps the session's headers, cookies, and query parameters,
   which 0.9.0 dropped.
+- A relation, assigned, given to `create()` or a query, or in a collection of
+  relations, refuses an object of a class that is neither the field's model nor
+  a subclass of it with `FieldConversionError`. 0.9.0 sent that object's key on
+  assignment, raised `TypeError` from `create()`, and sent the object's
+  `repr()` as the parameter of a query. A primary key that is a relation, given
+  to the constructor or the `pk` setter, refuses such an object too, and so
+  does a primary key that is not a relation. A related object without a key is
+  refused there as well, where 0.9.0 accepted it and `url` raised
+  `AttributeError`. The field reads as a new related object that holds the key,
+  also after `refresh()`, where 0.9.0 returned the object that was given, and
+  the plain key after `refresh()`.
+- A primary key that is a relation reads as a related object when it is given
+  as a plain value, as `Profile(user=2)` does, where 0.9.0 read the plain
+  value, an `int` for `user: User`. It reads as a related object after
+  `refresh()` too, however it was set, where 0.9.0 read the plain key. Code
+  that works with that `int`, such as `User(id=profile.user)`, raises
+  `FieldConversionError`. Use `profile.user` or `profile.user.pk`.
 - `url` percent-encodes the primary key as one path segment, and an object
   whose key is missing, empty, `.`, or `..` has no URL. An object read from
   JSON that lacks its key field has the key `None`, so `url`, `save()`,

@@ -4663,6 +4663,12 @@ class JSONObject:
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
                     model_type = type(value)
+                    if value.pk is None:
+                        # Writing None would clear the relation.
+                        raise ValueError(
+                            f"The {model_type.__name__} object's primary key "
+                            "is None, so it cannot be written as a relation"
+                        )
                     value = value.pk
 
                 return model_type._to_json(value, model_type._pk.analyzed_type)
