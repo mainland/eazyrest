@@ -426,16 +426,19 @@ def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
         ("http:/\t/user:dummy@host/x", "http://host/x"),
         ("http://user:dummy@host/\nx", "http://host/x"),
         ("\x0chttp://host/x\t", "\x0chttp://host/x\t"),
+        (b"http://user:dummy@host/x?a=b", "http://host/x?a=b"),
+        (b"http://host/x", "http://host/x"),
+        ("http://user:dummy@h\u00f6st/x".encode(), "http://h\u00f6st/x"),
     ],
 )
 def test_redacted_url_leaves_out_a_user_and_password(
-    url: str, expected: str
+    url: str | bytes, expected: str
 ) -> None:
     """A URL without a scheme, as a ``Location`` may be, is redacted too.
 
     Args:
-        url: URL to quote.
-        expected: The URL without its user and password.
+        url: URL to quote, as requests accepts it, also as ``bytes``.
+        expected: The URL without its user and password, as text.
     """
     assert _redact_url(url) == expected
 

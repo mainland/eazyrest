@@ -290,7 +290,8 @@ def _redact_url(url: object) -> str:
     such as ``http://user:pass@host/`` would put the credentials into a log.
 
     Args:
-        url: URL, as a string, or ``None``. It may lack a scheme, as a
+        url: URL, as a string or as ``bytes``, which are decoded as UTF-8 as
+            requests decodes them, or ``None``. It may lack a scheme, as a
             ``Location`` header that begins with ``//`` does.
 
     Returns:
@@ -303,7 +304,10 @@ def _redact_url(url: object) -> str:
         so ``http://user:pass@host/x`` with a form feed before it becomes
         ``http://host/x``.
     """
-    text = str(url)
+    if isinstance(url, bytes):
+        text = url.decode("utf-8", "replace")
+    else:
+        text = str(url)
     normal = text.translate(_URL_NOISE).lstrip(_URL_LEADING)
     redacted, count = _USERINFO.subn(r"\1", normal)
     return redacted if count else text

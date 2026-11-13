@@ -1136,3 +1136,19 @@ def test_retried_response_over_the_size_limit_names_the_request(
     assert f"The response to GET {base}retry?q=1 is larger" in str(
         raised.value
     )
+
+
+def test_bytes_uri_past_the_deadline_names_the_decoded_url() -> None:
+    """A ``bytes`` URI is quoted as text, without its user and password."""
+    url = _refused_url()
+    api = API("http://example.invalid/")
+    api.total_timeout = 0.0
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get(f"{url}refused?q=1".encode())  # type: ignore[arg-type]
+
+    message = str(raised.value)
+    plain = url.replace("user:dummy-pass@", "")
+    assert f"GET {plain}refused?q=1 took at least 0.0 seconds" in message
+    assert "dummy-pass" not in message
+    assert "b'" not in message
