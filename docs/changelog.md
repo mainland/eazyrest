@@ -423,9 +423,6 @@ that can break code written for 0.9.0, followed by what to do about it.
   class that is not decorated with `@json_object`, the error says to decorate
   it and that it also needs a key field, or to declare nested JSON as a
   `TypedDict` or a Pydantic model instead.
-- A field whose type is a set of `Hyperlinked()` relations raises `TypeError`
-  when the class is defined. An object known only by its URL has no hash, so a
-  set of them could not be read. Declare a `list` or a `tuple`.
 - An attribute annotated `ClassVar`, such as `limit: ClassVar[int] = 10`, is a
   class attribute, not a field. 0.9.0 made it a field, read from the object's
   JSON.
