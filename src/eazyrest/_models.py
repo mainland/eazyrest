@@ -5532,13 +5532,7 @@ class JSONObject:
             self._merge_json(payload)
             return
 
-        unknown_key = self._url_override is not None and (
-            (self._json is None and getattr(self, "_pk_value", None) is None)
-            or (
-                self._json is not None
-                and self._pk_json_field not in self._json
-            )
-        )
+        unknown_key = self._key_is_unknown()
         existing_pk = (
             payload.get(self._pk_json_field)
             if unknown_key
@@ -5559,6 +5553,24 @@ class JSONObject:
             self._json_is_partial = True
 
         self._merge_json(payload)
+
+    def _key_is_unknown(self) -> bool:
+        """Return whether an object with its own URL does not know its key.
+
+        An object read from a hyperlink knows its key if it holds one or its
+        JSON has the field, and its URL does not say. Whether the object has
+        loaded is not the question, so a key that a ``refresh()`` kept stays
+        known across another.
+
+        Returns:
+            Whether the object has its own URL and neither its JSON nor a held
+            key gives the key.
+        """
+        if self._url_override is None:
+            return False
+        if self._json is None:
+            return getattr(self, "_pk_value", None) is None
+        return self._pk_json_field not in self._json
 
     def _merge_json(self, payload: dict[str, Any]) -> None:
         """Merge authoritative JSON members into this object's JSON.
@@ -5598,9 +5610,7 @@ class JSONObject:
         _ = self.url
         # Store value of primary key. An object read from a hyperlink may not
         # know its key, before it loads or from JSON that lacks it.
-        unknown_key = self._url_override is not None and (
-            self._json is None or self._pk_json_field not in self._json
-        )
+        unknown_key = self._key_is_unknown()
         if unknown_key:
             self._pk_value = None
         else:

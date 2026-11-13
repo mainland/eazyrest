@@ -6795,6 +6795,26 @@ def test_a_key_compares_as_it_is_held_not_as_its_field_converts_it(
     assert hash(user) == hash(User(id=1))
 
 
+def test_an_object_read_from_a_hyperlink_keeps_its_key_across_refreshes(
+    requests_mock: Any,
+) -> None:
+    """Once loaded, the object holds its key, however often it is refreshed."""
+    get = requests_mock.get(
+        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
+    )
+    author = Note(json=NOTE_JSON).author
+    assert author.name == "Ada"
+
+    author.refresh()
+    author.refresh()
+
+    assert get.call_count == 1
+    assert author == User(id=2)
+    assert hash(author) == hash(User(id=2))
+    assert author in {User(id=2)}
+    assert get.call_count == 1
+
+
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
     requests_mock: Any,
 ) -> None:
