@@ -6809,6 +6809,52 @@ class TokenOwner(ModelBase):
     id: uuid.UUID
 
 
+def test_a_key_change_sent_eagerly_replaces_the_key_that_a_payload_held(
+    requests_mock: Any,
+) -> None:
+    """The JSON's key takes precedence over the key that the object held.
+
+    A payload from ``update_from_json()`` leaves the object partial, with the
+    key it was constructed with still held. A change of the key that is sent at
+    once makes the response's key the object's key, though it never loaded.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", json={"id": 2, "name": "Ada"}
+    )
+    user = User(id=1, write_mode="eager")
+    user.update_from_json({"id": 1, "name": "Ada"})
+    assert user == User(id=1)
+
+    user.pk = 2
+
+    assert patch.call_count == 1
+    assert user == User(id=2)
+    assert user != User(id=1)
+    assert hash(user) == hash(User(id=2))
+    assert requests_mock.call_count == 1
+
+
+def test_a_pending_change_of_a_relation_key_compares_by_the_saved_key(
+    requests_mock: Any,
+) -> None:
+    """The saved key is the related object's key, not a related object.
+
+    Until ``save()``, the object still equals one built with the saved key, and
+    hashes as it does.
+    """
+    profile = UserProfile(json={"user": 2, "bio": "Hi"}, write_mode="lazy")
+    saved = UserProfile(user=User(id=2))
+
+    profile.user = User(id=3)
+
+    assert profile._pending_updates == {"user": 3}
+    assert profile == saved
+    assert saved == profile
+    assert profile != UserProfile(user=User(id=3))
+    assert hash(profile) == hash(saved)
+    assert requests_mock.call_count == 0
+
+
 def test_a_key_that_cannot_be_converted_equals_only_itself(
     requests_mock: Any,
 ) -> None:
