@@ -1626,7 +1626,10 @@ def _saved_key(obj: JSONObject) -> Any:
 
     Nothing here sends a request, reads ``url``, or raises. While a lazy key
     change waits for ``save()``, the saved key is the one before the change. A
-    key that is a relation gives the related object's plain key.
+    key that is a relation gives the related object's plain key. The key is
+    converted once and kept until the object's JSON or held key changes, so
+    that it is the same object on every call, which a hash needs for a type
+    that hashes by identity.
 
     Args:
         obj: Model object.
@@ -1641,15 +1644,24 @@ def _saved_key(obj: JSONObject) -> Any:
     state = vars(obj)
     if cls._pk_json_field in state.get("_pending_updates", ()):
         value = state.get("_saved_pk")
-    else:
-        try:
-            value = _held_key(obj)
-            while isinstance(value, JSONObject):
-                value = _held_key(value)
-        except (TypeError, ValueError):
-            # A key that cannot be converted is not a known key.
-            return _MISSING
-    return _MISSING if value is None else value
+        return _MISSING if value is None else value
+
+    # Converting the key makes a new object for some types, so convert it once.
+    # The cache holds the result in a tuple, since _MISSING is a result too.
+    cached = state.get("_saved_key_cache")
+    if cached is not None:
+        return cached[0]
+    try:
+        value = _held_key(obj)
+        while isinstance(value, JSONObject):
+            value = _held_key(value)
+    except (TypeError, ValueError):
+        # A key that cannot be converted is not a known key.
+        value = _MISSING
+    if value is None:
+        value = _MISSING
+    state["_saved_key_cache"] = (value,)
+    return value
 
 
 def _known_key(obj: JSONObject) -> Any:
@@ -4088,6 +4100,7 @@ class JSONProperty:
                 value = obj._key_as_read_from_json(value)
 
             obj._pk_value = value
+            obj._forget_saved_key()
             return
 
         if self.read_only:
@@ -4258,6 +4271,13 @@ class JSONObject:
     """Primary key of the saved object while a primary-key change is pending.
 
     Set only while ``_pending_updates`` holds the primary-key JSON field.
+    """
+
+    _saved_key_cache: tuple[Any]
+    """The key that ``_saved_key()`` found, in a tuple, once it is computed.
+
+    Every place that replaces or changes the object's JSON, or changes the
+    held key, calls ``_forget_saved_key()``.
     """
 
     _api_override: API | None
@@ -5214,6 +5234,14 @@ class JSONObject:
         hidden = cls._write_only_keys()
         return {key: value for key, value in json.items() if key not in hidden}
 
+    def _forget_saved_key(self) -> None:
+        """Drop the saved key that comparing found, after the key can change.
+
+        Call it wherever the object's JSON is replaced or changed, or its held
+        key or pending updates change.
+        """
+        vars(self).pop("_saved_key_cache", None)
+
     def _queue_update(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update locally and queue it for ``save()``.
 
@@ -5231,6 +5259,7 @@ class JSONObject:
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
+        self._forget_saved_key()
 
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.
@@ -5325,6 +5354,7 @@ class JSONObject:
             ):
                 self._url_override = None
         self._json = json
+        self._forget_saved_key()
 
         for field in getattr(self, "_json_fields", ()):
             json_field = getattr(type(self), field).json_field
@@ -5581,6 +5611,7 @@ class JSONObject:
         """
         assert self._json is not None
         self._json.update(self._readable_json(payload))
+        self._forget_saved_key()
 
         for field in self._json_fields:
             descriptor: JSONProperty = getattr(type(self), field)
@@ -5628,6 +5659,7 @@ class JSONObject:
         # Clear JSON
         self._json = None
         self._json_is_partial = False
+        self._forget_saved_key()
 
     @classmethod
     def register_api(cls, api: API) -> None:
@@ -5816,6 +5848,7 @@ class JSONObject:
             # The JSON now holds the primary key. An object whose subclass
             # overrides url may have loaded without one.
             vars(self).pop("_pk_value", None)
+            self._forget_saved_key()
 
         return self._json
 

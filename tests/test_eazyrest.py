@@ -6815,6 +6815,154 @@ def test_an_object_read_from_a_hyperlink_keeps_its_key_across_refreshes(
     assert get.call_count == 1
 
 
+class Cell:
+    """Key type that hashes and compares by identity."""
+
+    def __init__(self, value: int) -> None:
+        """Keep the value."""
+        self.value = value
+
+
+_CELL_DECODES: list[int] = []
+"""The values that the conversion of ``Cell`` decoded."""
+
+
+def _decode_cell(value: int, cls: type[Cell]) -> Cell:
+    """Decode a ``Cell`` and count the call."""
+    _CELL_DECODES.append(value)
+    return cls(value)
+
+
+class CellBase(JSONObject):
+    """Base whose conversion reads a ``Cell`` from its integer."""
+
+    conversions: ClassVar[dict[type, Conversion]] = {
+        Cell: Conversion(
+            decode=_decode_cell, encode=lambda value, cls: value.value
+        )
+    }
+
+
+@json_object
+class Grid(CellBase):
+    """Model whose key is a ``Cell``, which hashes by identity."""
+
+    class_url = "/grids/"
+
+    id: Cell
+
+
+def test_the_hash_of_a_key_that_hashes_by_identity_is_stable() -> None:
+    """The key is converted once, so each hash is that of the same key."""
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 1})
+    members = {grid: "grid"}
+
+    assert len({hash(grid) for _ in range(5)}) == 1
+    assert grid in members
+    assert members[grid] == "grid"
+    assert grid == grid  # noqa: PLR0124
+    assert grid != Grid(json={"id": 1})
+
+
+def test_comparing_objects_converts_each_key_once() -> None:
+    """Comparing and hashing reuse the key that the first comparison found."""
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 1})
+    other = Grid(json={"id": 1})
+    _CELL_DECODES.clear()
+
+    for _ in range(3):
+        assert grid != other
+        hash(grid)
+        hash(other)
+
+    assert _CELL_DECODES == [1, 1]
+
+
+def test_the_saved_key_follows_a_load_that_spells_the_key_differently(
+    requests_mock: Any,
+) -> None:
+    """A key that was compared before a load is compared again after it."""
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    user = User(id=cast(Any, "1"))
+    assert user == User(id=cast(Any, "1"))
+    assert hash(user) == hash(User(id=cast(Any, "1")))
+
+    assert user.name == "Ada"
+
+    assert user == User(id=1)
+    assert user != User(id=cast(Any, "1"))
+    assert hash(user) == hash(User(id=1))
+
+
+def test_the_saved_key_follows_a_load_of_a_partial_object(
+    requests_mock: Any,
+) -> None:
+    """A payload held its key as given, and a load that follows replaces it."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "user": 2, "title": "t", "completed": False},
+    )
+    todo = Todo(id=cast(Any, "1"))
+    todo.update_from_json({"id": "1", "title": "t"})
+    assert todo == Todo(id=cast(Any, "1"))
+
+    assert todo.completed is False
+
+    assert todo == Todo(id=1)
+    assert hash(todo) == hash(Todo(id=1))
+
+
+def test_the_saved_key_follows_the_first_assignment_of_a_key() -> None:
+    """An object that had no key equals the object with its key once given."""
+    user = User()
+    assert user != User(id=4)
+    with pytest.raises(TypeError):
+        hash(user)
+
+    user.pk = 4
+
+    assert user == User(id=4)
+    assert hash(user) == hash(User(id=4))
+
+
+def test_the_saved_key_follows_a_save_of_a_key_change(
+    requests_mock: Any,
+) -> None:
+    """The key that a save sends counts, or the one its response names."""
+    requests_mock.patch(
+        "https://example.com/v1/users/1/", json={"id": 3, "name": "Ada"}
+    )
+    user = User(json={"id": 1, "name": "Ada"}, write_mode="lazy")
+    assert user == User(id=1)
+    user.pk = 2
+    assert user == User(id=1)
+
+    user.save()
+
+    assert user == User(id=3)
+    assert user != User(id=1)
+    assert user != User(id=2)
+    assert hash(user) == hash(User(id=3))
+
+
+def test_the_saved_key_follows_update_from_json(requests_mock: Any) -> None:
+    """An object known by its URL equals its key once a payload gives it."""
+    author = Note(json=NOTE_JSON).author
+    assert author != User(id=2)
+    with pytest.raises(TypeError):
+        hash(author)
+
+    author.update_from_json({"id": 2, "name": "Ada"})
+
+    assert author == User(id=2)
+    assert hash(author) == hash(User(id=2))
+    assert requests_mock.call_count == 0
+
+
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
     requests_mock: Any,
 ) -> None:
