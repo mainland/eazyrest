@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import decimal
 import email
 import email.message
 import enum
 import inspect
+import pickle
 import re
 import sys
 import types
@@ -7019,6 +7021,30 @@ def test_the_saved_key_follows_a_load_that_spells_the_key_differently(
     assert user == User(id=1)
     assert user != User(id=cast(Any, "1"))
     assert hash(user) == hash(User(id=1))
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [copy.deepcopy, copy.copy, lambda obj: pickle.loads(pickle.dumps(obj))],
+    ids=["deepcopy", "copy", "pickle"],
+)
+def test_a_copy_of_an_object_whose_key_is_unknown_cannot_be_hashed(
+    duplicate: Callable[[JSONObject], JSONObject],
+) -> None:
+    """A copy or pickle made after a failed hash is still unhashable.
+
+    Args:
+        duplicate: Makes a copy of the object.
+    """
+    user = User(json={"name": "x"})
+    with pytest.raises(TypeError, match="cannot be hashed"):
+        hash(user)
+
+    twin = duplicate(user)
+
+    with pytest.raises(TypeError, match="cannot be hashed"):
+        hash(twin)
+    assert twin != User(id=1)
 
 
 def test_the_saved_key_follows_a_load_of_a_partial_object(

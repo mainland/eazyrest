@@ -1660,7 +1660,9 @@ def _saved_key(obj: JSONObject) -> Any:
         return _MISSING if value is None else value
 
     # Converting the key makes a new object for some types, so convert it once.
-    # The cache holds the result in a tuple, since _MISSING is a result too.
+    # Only a known key is kept. An unknown key is found again, which is cheap,
+    # and a copy or pickle of the object must not carry the _MISSING sentinel,
+    # which would then be another object.
     cached = state.get("_saved_key_cache")
     if cached is not None:
         return cached[0]
@@ -1671,8 +1673,8 @@ def _saved_key(obj: JSONObject) -> Any:
     except (TypeError, ValueError):
         # A key that cannot be converted is not a known key.
         value = _MISSING
-    if value is None:
-        value = _MISSING
+    if value is None or value is _MISSING:
+        return _MISSING
     state["_saved_key_cache"] = (value,)
     return value
 
@@ -4339,7 +4341,7 @@ class JSONObject:
     """
 
     _saved_key_cache: tuple[Any]
-    """The key that ``_saved_key()`` found, in a tuple, once it is computed.
+    """The known key that ``_saved_key()`` found, in a tuple.
 
     Every place that replaces or changes the object's JSON, or changes the
     held key, calls ``_forget_saved_key()``.
