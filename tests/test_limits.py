@@ -1152,3 +1152,23 @@ def test_bytes_uri_past_the_deadline_names_the_decoded_url() -> None:
     assert f"GET {plain}refused?q=1 took at least 0.0 seconds" in message
     assert "dummy-pass" not in message
     assert "b'" not in message
+
+
+@pytest.mark.parametrize("method", ["get", "post", "put", "patch", "delete"])
+def test_total_timeout_error_names_the_method_of_the_request(
+    method: str,
+) -> None:
+    """The error names the method that the caller used.
+
+    Args:
+        method: Name of the API method that sends the request.
+    """
+    url = _refused_url()
+    api = API(url)
+    api.total_timeout = 0.0
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        getattr(api, method)("/refused")
+
+    plain = url.replace("user:dummy-pass@", "")
+    assert f"{method.upper()} {plain}refused took" in str(raised.value)
