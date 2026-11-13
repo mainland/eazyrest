@@ -1035,6 +1035,29 @@ def test_retry_without_a_response_past_the_deadline_names_the_request(
     ) in str(raised.value)
 
 
+@pytest.mark.parametrize("space", ["\xa0", "\u3000", "\x85", "\u2028"])
+def test_expired_total_timeout_leaves_out_credentials_after_unicode_space(
+    space: str,
+) -> None:
+    """A base URL after Unicode whitespace is quoted without credentials.
+
+    Requests strips the whitespace and sends the user and password, so the
+    message must leave them out.
+
+    Args:
+        space: Unicode whitespace character before the base URL.
+    """
+    url = _refused_url()
+    api = API(space + url)
+    api.total_timeout = 0.0
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get("/refused")
+
+    assert "dummy-pass" not in str(raised.value)
+    assert "dummy-pass" not in repr(raised.value)
+
+
 def test_retry_wait_past_the_deadline_names_the_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

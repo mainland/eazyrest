@@ -280,7 +280,7 @@ def _is_failure(status_code: int) -> bool:
 
 _USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/?#]*@")
 _URL_NOISE = str.maketrans("", "", "\t\r\n")
-_URL_LEADING = "".join(map(chr, range(0x21)))
+_URL_LEADING = re.compile(r"^[\s\x00-\x20]+")
 
 
 def _redact_url(url: object) -> str:
@@ -298,17 +298,18 @@ def _redact_url(url: object) -> str:
         The URL as it is, but for the user and password before the host, which
         are left out, so ``http://user:pass@host/x?q=1`` becomes
         ``http://host/x?q=1`` and ``//user:pass@host/x`` becomes ``//host/x``.
-        The match reads the URL as ``urlsplit()`` does, which ignores leading
-        control characters and spaces and removes tabs, carriage returns, and
-        line feeds. A URL that has a user and password is quoted in that form,
-        so ``http://user:pass@host/x`` with a form feed before it becomes
+        The match reads the URL as requests and ``urlsplit()`` do, which ignore
+        leading control characters, spaces, and Unicode whitespace such as a
+        no-break space, and remove tabs, carriage returns, and line feeds. A
+        URL that has a user and password is quoted in that form, so
+        ``http://user:pass@host/x`` with a form feed before it becomes
         ``http://host/x``.
     """
     if isinstance(url, bytes):
         text = url.decode("utf-8", "replace")
     else:
         text = str(url)
-    normal = text.translate(_URL_NOISE).lstrip(_URL_LEADING)
+    normal = _URL_LEADING.sub("", text.translate(_URL_NOISE))
     redacted, count = _USERINFO.subn(r"\1", normal)
     return redacted if count else text
 

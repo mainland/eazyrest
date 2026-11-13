@@ -1397,6 +1397,31 @@ def test_page_link_to_another_origin_is_refused(requests_mock: Any) -> None:
     assert not other.called
 
 
+@pytest.mark.parametrize("space", ["\xa0", "\u3000", "\x85", "\u2028"])
+def test_origin_error_leaves_out_base_url_credentials_after_unicode_space(
+    requests_mock: Any, space: str
+) -> None:
+    """A base URL after Unicode whitespace is quoted without credentials.
+
+    Args:
+        space: Unicode whitespace character before the base URL.
+    """
+    api = API(space + "https://user:dummy-pass@example.com/v1/")
+    page = _page(
+        api,
+        requests_mock,
+        "https://example.com/v1/items/",
+        results=[],
+        next="https://other.example/items/",
+    )
+
+    with pytest.raises(PaginationError, match="different origin") as raised:
+        page.next_page()
+
+    assert "dummy-pass" not in str(raised.value)
+    assert "dummy-pass" not in repr(raised.value)
+
+
 def test_page_larger_than_max_items_is_refused(requests_mock: Any) -> None:
     """A single page with more items than ``max_items`` raises."""
     api = API("https://example.com/v1/")
