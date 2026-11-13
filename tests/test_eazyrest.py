@@ -7174,8 +7174,11 @@ def test_the_saved_key_follows_a_load_of_a_partial_object(
     assert hash(todo) == hash(Todo(id=1))
 
 
-def test_the_saved_key_follows_the_first_assignment_of_a_key() -> None:
-    """An object that had no key equals the object with its key once given."""
+def test_an_object_equals_one_with_its_key_once_the_key_is_assigned() -> None:
+    """An object that had no key equals the object with its key once given.
+
+    Before the assignment it equals only itself and cannot be hashed.
+    """
     user = User()
     assert user != User(id=4)
     with pytest.raises(TypeError):
@@ -7207,8 +7210,13 @@ def test_the_saved_key_follows_a_save_of_a_key_change(
     assert hash(user) == hash(User(id=3))
 
 
-def test_the_saved_key_follows_update_from_json(requests_mock: Any) -> None:
-    """An object known by its URL equals its key once a payload gives it."""
+def test_an_object_known_by_its_url_equals_its_key_after_update_from_json(
+    requests_mock: Any,
+) -> None:
+    """An object known by its URL equals its key once a payload gives it.
+
+    Before the payload it equals only itself and cannot be hashed.
+    """
     author = Note(json=NOTE_JSON).author
     assert author != User(id=2)
     with pytest.raises(TypeError):

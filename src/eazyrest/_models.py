@@ -4352,8 +4352,9 @@ class JSONObject:
     """The known key that ``_saved_key()`` found, in a tuple.
 
     A key that is a relation is not kept, because ``_saved_key()`` asks the
-    related object for it. Every place that replaces or changes the object's
-    JSON, or changes the held key, calls ``_forget_saved_key()``.
+    related object for it. ``_forget_saved_key()`` drops the entry. Loading or
+    writing the object's JSON must drop it, and the other places that change
+    the JSON or the held key drop it as well.
     """
 
     _api_override: API | None
@@ -5328,7 +5329,9 @@ class JSONObject:
         """Drop the saved key that comparing found, after the key can change.
 
         Call it wherever the object's JSON is replaced or changed, or its held
-        key or pending updates change.
+        key or pending updates change. The call in ``_replace_json()`` is the
+        one that a load or a write needs. The others are kept so that a later
+        change to how the key is held cannot leave the cache stale.
         """
         vars(self).pop("_saved_key_cache", None)
 
