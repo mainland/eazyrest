@@ -2593,6 +2593,78 @@ def _refuse_keyless_field_types(properties: Iterable[JSONProperty]) -> None:
             continue
 
 
+def _holds_hyperlinked_set(analyzed: AnalyzedType) -> bool:
+    """Return whether a type is a set of ``Hyperlinked()`` relations.
+
+    The walk goes through optional wrappers and the items of collections, so a
+    set inside a list is found, and so is a set of optional relations.
+
+    Args:
+        analyzed: Analyzed type of a field.
+
+    Returns:
+        Whether a set type, as ``set``, ``frozenset``, ``AbstractSet``, or
+        ``MutableSet``, has hyperlinked related objects as its items.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    if not isinstance(analyzed, CollectionType):
+        return False
+    item = _unwrap_optional_type(analyzed.item_type)
+    if _READ_AS[analyzed.collection_type] in (set, frozenset):
+        return isinstance(item, RelatedType) and item.hyperlinked
+    return _holds_hyperlinked_set(item)
+
+
+def _check_not_hyperlinked_set(
+    cls: type[JSONObject], field: str, analyzed: AnalyzedType
+) -> None:
+    """Refuse a field that is a set of ``Hyperlinked()`` relations.
+
+    An object known only by its URL has no hash until it loads, and a set needs
+    one for each member, so such a set could not be read.
+
+    Args:
+        cls: Model class that declares the field.
+        field: Name of the field.
+        analyzed: Analyzed type of the field.
+
+    Raises:
+        TypeError: If ``analyzed`` is a set of ``Hyperlinked()`` relations.
+    """
+    if _holds_hyperlinked_set(analyzed):
+        error = TypeError(
+            f"{cls.__name__}.{field} is a set of hyperlinked relations, and "
+            "an object that is known only by its URL has no hash, so it "
+            "cannot be in a set. Declare a list or a tuple instead."
+        )
+        # A conversion reports the error as a plain TypeError, as decorating
+        # the class does, not as the conversion of a value.
+        setattr(error, _DECLARATION_ERROR, True)
+        raise error
+
+
+def _refuse_hyperlinked_sets(properties: Iterable[JSONProperty]) -> None:
+    """Refuse a field that is a set of ``Hyperlinked()`` relations.
+
+    A field whose annotation names a class that is not defined yet is checked
+    when it is first used.
+
+    Args:
+        properties: The fields that a class declares.
+
+    Raises:
+        TypeError: If a field is a set of ``Hyperlinked()`` relations.
+    """
+    for prop in properties:
+        try:
+            analyzed = analyze_type(prop._resolve_type())
+        except Exception:  # noqa: BLE001, S112
+            # An unresolved reference, or a type that is refused when the field
+            # is first used, which says why.
+            continue
+        _check_not_hyperlinked_set(prop.cls, prop.field, analyzed)
+
+
 def _check_key_not_hyperlinked(
     cls: type[JSONObject], field: str, analyzed: AnalyzedType
 ) -> None:
@@ -2935,7 +3007,9 @@ def json_object(
             model. A class defined later raises when the field is first used.
             Also raised if the primary key is a ``Hyperlinked()`` relation,
             which cannot form the model's URL. A key whose type is not yet
-            defined raises when the key is first used.
+            defined raises when the key is first used. Also raised if a field
+            is a set of ``Hyperlinked()`` relations, since an object known only
+            by its URL has no hash. Declare a list or a tuple.
     """
     if field_map is None:
         field_map = {}
@@ -3031,6 +3105,7 @@ def json_object(
         # pylint: disable=protected-access
         cls._json_fields = frozenset(fields)
         _refuse_keyless_field_types(declared)
+        _refuse_hyperlinked_sets(declared)
         _refuse_hyperlinked_key(cls)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
@@ -3872,12 +3947,13 @@ class JSONProperty:
 
         Raises:
             TypeError: If the type is refused, such as a primary key that is a
-                ``Hyperlinked()`` relation. A type that names a class defined
-                later is refused here, when it is first used.
+                ``Hyperlinked()`` relation, or a set of them. A type that names
+                a class defined later is refused here, when it is first used.
         """
         analyzed = analyze_type(self.ty)
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
+        _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed
 
     def __get__(
@@ -4021,6 +4097,10 @@ class JSONProperty:
         json = obj._json_with_field(self.json_field, self.field)
         with _converting(type(obj), self.field):
             new_value = obj._to_json(value, self.analyzed_type)
+            # Build the collection that the field keeps before anything is sent
+            # or queued, so that a value it cannot hold, such as an object that
+            # has no hash for a set, writes nothing.
+            kept = self._assigned_related(value)
 
         # A pending update is not on the server, even though the JSON holds it.
         # In eager mode, assigning the same value must send it.
@@ -4047,7 +4127,6 @@ class JSONProperty:
         if not self._same_as_stored(final, new_value):
             return
 
-        kept = self._assigned_related(value)
         if kept is not _MISSING:
             # Keep the assigned related objects, so that reading the field
             # returns them. Assigning the objects the field already holds

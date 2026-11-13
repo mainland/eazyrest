@@ -14,7 +14,14 @@ import types
 import typing
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableSet,
+    Sequence,
+)
+from collections.abc import Set as AbstractSet
 from copy import deepcopy
 from ipaddress import IPv4Address
 from typing import (
@@ -6293,6 +6300,136 @@ def test_a_primary_key_cannot_be_a_hyperlinked_relation() -> None:
 
             user: Annotated[User | None, Hyperlinked()]
             bio: str
+
+
+_HYPERLINKED_USER = Annotated[User, Hyperlinked()]
+
+
+def _model_with_field(annotation: Any) -> Any:
+    """Decorate a model whose ``links`` field has the given annotation.
+
+    Args:
+        annotation: Type of the field.
+
+    Returns:
+        The decorated model class.
+    """
+    namespace: dict[str, Any] = {
+        "class_url": "/linked-teams/",
+        "__annotations__": {"id": int, "links": annotation},
+    }
+    cls = types.new_class(
+        "LinkedTeam", (ModelBase,), exec_body=lambda ns: ns.update(namespace)
+    )
+    return json_object(cls)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        set[_HYPERLINKED_USER],
+        frozenset[_HYPERLINKED_USER],
+        typing.AbstractSet[_HYPERLINKED_USER],
+        AbstractSet[_HYPERLINKED_USER],
+        MutableSet[_HYPERLINKED_USER],
+        typing.MutableSet[_HYPERLINKED_USER],
+        set[Annotated[User | None, Hyperlinked()]],
+        Optional[set[_HYPERLINKED_USER]],  # noqa: UP045
+        Annotated[frozenset[_HYPERLINKED_USER], "note"],
+        list[set[_HYPERLINKED_USER]],
+    ],
+)
+def test_a_set_of_hyperlinked_relations_is_refused(annotation: Any) -> None:
+    """A set cannot hold objects known only by their URLs, which have no hash.
+
+    The message says to declare a list or a tuple.
+
+    Args:
+        annotation: A set type of hyperlinked relations, as one spelling.
+    """
+    message = (
+        r"LinkedTeam\.links is a set of hyperlinked relations.*"
+        "Declare a list or a tuple"
+    )
+    with pytest.raises(TypeError, match=message):
+        _model_with_field(annotation)
+
+
+_USER_URL = "https://example.com/v1/users/2/"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "links"),
+    [
+        (list[_HYPERLINKED_USER], [_USER_URL]),
+        (tuple[_HYPERLINKED_USER, ...], [_USER_URL]),
+        (Optional[list[_HYPERLINKED_USER]], [_USER_URL]),  # noqa: UP045
+        (set[User], [2]),
+        (frozenset[User], [2]),
+    ],
+)
+def test_other_collections_of_relations_are_accepted(
+    annotation: Any, links: list[Any], requests_mock: Any
+) -> None:
+    """A list or tuple of hyperlinked relations, and sets by key, are fine.
+
+    Args:
+        annotation: A collection type of relations.
+        links: JSON value of the field, with one related object.
+    """
+    team = _model_with_field(annotation)(json={"id": 1, "links": links})
+
+    assert len(list(team.links)) == 1
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class ListKeyed(ModelBase):
+    """Model whose key is a list, so an object of it has no hash."""
+
+    class_url = "/list-keyed/"
+
+    id: list[int]
+
+
+@json_object
+class SetOfListKeyed(ModelBase):
+    """Model with a set of objects that cannot be hashed."""
+
+    class_url = "/set-of-list-keyed/"
+
+    id: int
+    items: set[ListKeyed]
+
+
+def test_a_failed_set_assignment_sends_no_patch(requests_mock: Any) -> None:
+    """An assignment that the field cannot keep writes nothing, in eager mode.
+
+    The value encodes, because the object holds its key, but a set cannot hold
+    an object whose key cannot be hashed.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/set-of-list-keyed/1/", json={"id": 1}
+    )
+    team = SetOfListKeyed(json={"id": 1, "items": []}, write_mode="eager")
+
+    with pytest.raises(FieldConversionError, match=r"SetOfListKeyed\.items"):
+        cast(Any, team).items = [ListKeyed(id=[1])]
+
+    assert patch.call_count == 0
+    assert team._pending_updates == {}
+
+
+def test_a_failed_set_assignment_queues_nothing(requests_mock: Any) -> None:
+    """An assignment that the field cannot keep queues no update, when lazy."""
+    team = SetOfListKeyed(json={"id": 1, "items": []}, write_mode="lazy")
+
+    with pytest.raises(FieldConversionError, match=r"SetOfListKeyed\.items"):
+        cast(Any, team).items = [ListKeyed(id=[1])]
+
+    assert team._pending_updates == {}
+    assert team.json["items"] == []
+    assert requests_mock.call_count == 0
 
 
 def test_a_key_that_is_a_relation_refuses_an_object_without_a_key(

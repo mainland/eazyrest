@@ -417,19 +417,20 @@ inside the abstract `Iterable`, `Collection`, `Sequence`, `MutableSequence`,
 `Set`, and `MutableSet` from `collections.abc`. An abstract type reads as a
 concrete one: `Iterable`, `Collection`, and `Sequence` as a tuple,
 `MutableSequence` as a list, `Set` as a `frozenset`, and `MutableSet` as a
-`set`. A set writes its items in one order, whatever order it iterates them in:
-numbers by value, strings by code point, and arrays and objects by their JSON
-text. Equal sets therefore write equal JSON, and replacing a set with an equal
-one is not a change that `save()` sends, even when the server lists the items
-in another order. That holds for a field annotated as a set or frozenset, an
-optional one, or a `NewType` of either. A set nested in a list, tuple, or
-mapping field is compared in the server's order. A set inside a
-Pydantic-converted field is written by Pydantic, in iteration order. Any other
-parameterized type, such as `Counter[str]`, raises `FieldConversionError` when
-the field is first used, because its items would otherwise pass through
-unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As Python's
-types say, `tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a
-tuple of any length whose items read as they are:
+`set`. A set of `Hyperlinked()` relations is refused, so declare a `list` or a
+`tuple` of them. A set writes its items in one order, whatever order it
+iterates them in: numbers by value, strings by code point, and arrays and
+objects by their JSON text. Equal sets therefore write equal JSON, and
+replacing a set with an equal one is not a change that `save()` sends, even
+when the server lists the items in another order. That holds for a field
+annotated as a set or frozenset, an optional one, or a `NewType` of either. A
+set nested in a list, tuple, or mapping field is compared in the server's
+order. A set inside a Pydantic-converted field is written by Pydantic, in
+iteration order. Any other parameterized type, such as `Counter[str]`, raises
+`FieldConversionError` when the field is first used, because its items would
+otherwise pass through unconverted. Annotate a tuple of any length as
+`tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of exactly one
+item, and a bare `tuple` is a tuple of any length whose items read as they are:
 
 ```python
 import datetime
@@ -472,7 +473,11 @@ with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
 gives an object that loads from that URL, and writing it sends the object's
 absolute URL, or a URL assigned as a string as given. Queries send its primary
 key, as DRF relation filters expect. A URL on an origin that the related
-model's API does not allow raises `FieldConversionError`. The
+model's API does not allow raises `FieldConversionError`. An object known only
+by its URL has no hash until it loads, so a set of them cannot exist. A field
+of type `set`, `frozenset`, `Set`, or `MutableSet` whose items are
+`Hyperlinked()` relations raises `TypeError` when the class is decorated.
+Declare a `list` or a `tuple` instead. The
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 
