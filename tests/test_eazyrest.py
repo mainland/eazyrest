@@ -6868,6 +6868,104 @@ def test_a_pending_change_of_a_relation_key_compares_by_the_saved_key(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("mode", ["lazy", "eager"])
+def test_a_relation_key_follows_a_change_of_the_related_objects_key(
+    requests_mock: Any,
+    mode: str,
+) -> None:
+    """A profile that was hashed follows a change of its user's key.
+
+    The profile holds its user, so it equals and hashes like any profile in the
+    same state, whether or not it was compared before the change.
+
+    Args:
+        mode: Write mode of the user.
+    """
+    requests_mock.get(
+        "https://example.com/v1/users/5/", json={"id": 5, "name": "Ada"}
+    )
+    requests_mock.patch(
+        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
+    )
+    hashed = UserProfile(user=User(id=5))
+    fresh = UserProfile(user=User(id=5))
+    hash(hashed)
+
+    for profile in (hashed, fresh):
+        profile.user.set_write_mode(cast(Any, mode))
+        profile.user.id = 6
+    if mode == "lazy":
+        hashed.user.save()
+        fresh.user.save()
+
+    assert hashed.pk == fresh.pk == 6
+    assert hashed == fresh
+    assert hashed == UserProfile(user=User(id=6))
+    assert fresh == UserProfile(user=User(id=6))
+    assert hash(hashed) == hash(UserProfile(user=User(id=6)))
+    assert hash(fresh) == hash(UserProfile(user=User(id=6)))
+
+
+def test_profiles_that_share_a_prefetched_user_follow_its_key_change(
+    requests_mock: Any,
+) -> None:
+    """A key change through one profile reaches the other and its cache."""
+    requests_mock.get(
+        "https://example.com/v1/profiles/",
+        json=[{"user": 5, "bio": "a"}, {"user": 5, "bio": "b"}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
+    )
+    requests_mock.patch(
+        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
+    )
+    first, second = UserProfile.filter(prefetch=["user"])
+    assert first.user is second.user
+    hash(first)
+
+    first.user.set_write_mode("eager")
+    first.user.id = 6
+
+    assert first.pk == second.pk == 6
+    assert first == second
+    assert first == UserProfile(user=User(id=6))
+    assert second == UserProfile(user=User(id=6))
+    assert hash(first) == hash(second)
+
+
+def test_a_relation_key_compares_by_the_related_objects_saved_key(
+    requests_mock: Any,
+) -> None:
+    """While the user's key change waits, the profile has the saved key.
+
+    ``pk`` already gives the new key, and after ``save()`` so does equality.
+    """
+    requests_mock.get(
+        "https://example.com/v1/users/5/", json={"id": 5, "name": "Ada"}
+    )
+    requests_mock.patch(
+        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
+    )
+    profile = UserProfile(user=User(id=5))
+    user = profile.user
+    user.set_write_mode("lazy")
+    hash(profile)
+
+    user.id = 6
+
+    assert profile.pk == 6
+    assert profile == UserProfile(user=User(id=5))
+    assert profile != UserProfile(user=User(id=6))
+    assert hash(profile) == hash(UserProfile(user=User(id=5)))
+
+    user.save()
+
+    assert profile == UserProfile(user=User(id=6))
+    assert profile != UserProfile(user=User(id=5))
+    assert hash(profile) == hash(UserProfile(user=User(id=6)))
+
+
 def test_a_key_that_cannot_be_converted_equals_only_itself(
     requests_mock: Any,
 ) -> None:

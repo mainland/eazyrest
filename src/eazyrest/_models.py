@@ -1630,9 +1630,10 @@ def _saved_key(obj: JSONObject) -> Any:
 
     Nothing here sends a request or reads ``url``. While a lazy key change
     waits for ``save()``, the saved key is the one before the change. A key
-    that is a relation gives the related object's plain key. The key is
-    converted once and kept until the object's JSON or held key changes, so
-    that it is the same object on every call, which a hash needs for a type
+    that is a relation is asked of the related object, so it follows that
+    object's own key, including a change of it, and is not kept here. Any other
+    key is converted once and kept until the object's JSON or held key changes,
+    so that it is the same object on every call, which a hash needs for a type
     that hashes by identity.
 
     Args:
@@ -1668,11 +1669,13 @@ def _saved_key(obj: JSONObject) -> Any:
         return cached[0]
     try:
         value = _held_key(obj)
-        while isinstance(value, JSONObject):
-            value = _held_key(value)
     except (TypeError, ValueError):
         # A key that cannot be converted is not a known key.
         value = _MISSING
+    if isinstance(value, JSONObject):
+        # The related object's key can change without this object knowing, so
+        # leave it to the related object's own cache.
+        return _saved_key(value)
     if value is None or value is _MISSING:
         return _MISSING
     state["_saved_key_cache"] = (value,)
@@ -4348,8 +4351,9 @@ class JSONObject:
     _saved_key_cache: tuple[Any]
     """The known key that ``_saved_key()`` found, in a tuple.
 
-    Every place that replaces or changes the object's JSON, or changes the
-    held key, calls ``_forget_saved_key()``.
+    A key that is a relation is not kept, because ``_saved_key()`` asks the
+    related object for it. Every place that replaces or changes the object's
+    JSON, or changes the held key, calls ``_forget_saved_key()``.
     """
 
     _api_override: API | None
