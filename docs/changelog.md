@@ -249,6 +249,10 @@ describe them further.
   is a relation compares as the related object's key. An object without a known
   key still equals only itself, and `hash()` of one raises `TypeError`, unless
   its model has no key field. Load or save the object, or give its key, first.
+  A key is compared as it is held, so `User(id="1")` does not equal
+  `User(id=1)`, and a load or a write's response that spells the key another
+  way, or names another key, changes the hash. Give the key in its field's
+  type.
 
 ### Migrating from 0.9.0
 
@@ -406,7 +410,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   known if the object holds it or its loaded JSON has it, and a key that is a
   relation compares as the related object's key. An object without a known key
   still equals only itself, and `hash()` of one raises `TypeError`, unless its
-  model has no key field. Load or save the object, or give its key, first.
+  model has no key field. Load or save the object, or give its key, first. A
+  key is compared as it is held, so `User(id="1")` does not equal `User(id=1)`,
+  and a load or a write's response that spells the key another way, or names
+  another key, changes the hash. Give the key in its field's type.
 
 #### Declarations
 

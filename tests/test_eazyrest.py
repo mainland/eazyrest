@@ -6767,6 +6767,34 @@ def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
     assert requests_mock.call_count == 0
 
 
+def test_a_key_compares_as_it_is_held_not_as_its_field_converts_it(
+    requests_mock: Any,
+) -> None:
+    """A key of another spelling is another key, and a load can change it.
+
+    ``User(id="1")`` holds the string it was given, so it does not equal
+    ``User(id=1)``. When it loads and the JSON spells the key as ``1``, the
+    JSON's key takes precedence, so the hash changes. The same happens when a
+    load names another key.
+    """
+    requests_mock.get(
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
+    )
+    user = User(id=cast(Any, "1"))
+    held_hash = hash(user)
+
+    assert user != User(id=1)
+    assert User(id=1) != user
+    assert user == User(id=cast(Any, "1"))
+
+    assert user.name == "Ada"
+
+    assert user == User(id=1)
+    assert user != User(id=cast(Any, "1"))
+    assert hash(user) != held_hash
+    assert hash(user) == hash(User(id=1))
+
+
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
     requests_mock: Any,
 ) -> None:

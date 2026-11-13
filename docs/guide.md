@@ -180,7 +180,12 @@ by identity. For any other object whose key is not known, `hash()` raises
 hash that changed when the key became known would lose the object in a set or
 dict that held it. A pending key change does not change the hash until `save()`
 sends it. Then the hash changes, as a Django model's does, so take the object
-out of a set or dict before it saves a new key, and put it back after.
+out of a set or dict before it saves a new key, and put it back after. A key is
+compared as it is held, without converting it, so `User(id="1")` does not equal
+`User(id=1)` and hashes differently. A load, or a write's response, that spells
+the key another way, or names another key, replaces the held key with the
+JSON's, so it changes the hash, and a set or dict that holds the object no
+longer finds it. Give the key in its field's type, as the server returns it.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues

@@ -4197,6 +4197,11 @@ class JSONObject:
     object whose key is not known raises ``TypeError``, so the hash cannot
     change when the key becomes known. Saving a change of the key changes the
     hash, so take the object out of a set or dict before ``save()`` sends one.
+
+    A key is compared as it is held, without converting it, so ``User(id="1")``
+    does not equal ``User(id=1)``. A load, or a write's response, that spells
+    the key another way, or names another key, replaces the held key with the
+    JSON's and so changes the hash. Give the key in its field's type.
     """
 
     class_url: ClassVar[str]
