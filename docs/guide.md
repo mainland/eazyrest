@@ -170,22 +170,29 @@ the related object's key, so `UserProfile(user=User(id=2))` equals another
 given, though it is not the same object. Any other object equals only itself.
 That includes an object of a model without a key field, one built without a
 key, such as `User()`, one known only by its URL that has not loaded, and one
-whose loaded JSON lacks the key or holds `null`. Comparing never sends a
-request. Comparing with a value that is not a model object is `False`.
+whose loaded JSON lacks the key, holds `null`, or holds a key that the field
+cannot convert, such as `"not-a-uuid"` for a `UUID` key, which `repr()` still
+shows. Comparing never sends a request. Comparing with a value that is not a
+model object is `False`.
 
 An object hashes by its model and key, so objects that are equal are one member
 of a set or one key of a dict. An object of a model without a key field hashes
 by identity. For any other object whose key is not known, `hash()` raises
-`TypeError`, which says to load or save the object, or give its key, because a
-hash that changed when the key became known would lose the object in a set or
-dict that held it. A pending key change does not change the hash until `save()`
-sends it. Then the hash changes, as a Django model's does, so take the object
-out of a set or dict before it saves a new key, and put it back after. A key is
-compared as it is held, without converting it, so `User(id="1")` does not equal
-`User(id=1)` and hashes differently. A load, or a write's response, that spells
-the key another way, or names another key, replaces the held key with the
-JSON's, so it changes the hash, and a set or dict that holds the object no
-longer finds it. Give the key in its field's type, as the server returns it.
+`TypeError`, because a hash that changed when the key became known would lose
+the object in a set or dict that held it. The message advises loading or saving
+the object, or giving its key, only for an object that has no JSON yet or only
+part of it. Otherwise it says that the key is missing from the JSON, is `None`,
+or cannot be read, because none of those would help. A key whose type cannot be
+hashed, such as a `list`, still makes equal objects, and `hash()` raises
+Python's own `TypeError` for it. A pending key change does not change the hash
+until `save()` sends it. Then the hash changes, as a Django model's does, so
+take the object out of a set or dict before it saves a new key, and put it back
+after. A key is compared as it is held, without converting it, so
+`User(id="1")` does not equal `User(id=1)` and hashes differently. A load, or a
+write's response, that spells the key another way, or names another key,
+replaces the held key with the JSON's, so it changes the hash, and a set or
+dict that holds the object no longer finds it. Give the key in its field's
+type, as the server returns it.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues

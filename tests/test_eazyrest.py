@@ -6753,17 +6753,94 @@ def test_an_object_whose_key_is_not_known_equals_only_itself(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize("make", _objects_with_unknown_keys())
+_ADVISED = (
+    r"key is not known, so it cannot be hashed\. Load or save the object, or "
+    "give its key, first"
+)
+_UNKNOWN_KEY_HASH_MESSAGES = [
+    _ADVISED,
+    r"key is missing from its JSON, so it cannot be hashed$",
+    r"key is None, so it cannot be hashed$",
+    _ADVISED,
+    _ADVISED,
+]
+"""The message for each object of ``_objects_with_unknown_keys()``."""
+
+
+@pytest.mark.parametrize(
+    ("make", "message"),
+    list(
+        zip(
+            _objects_with_unknown_keys(),
+            _UNKNOWN_KEY_HASH_MESSAGES,
+            strict=True,
+        )
+    ),
+)
 def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
-    make: Callable[[], JSONObject], requests_mock: Any
+    make: Callable[[], JSONObject], message: str, requests_mock: Any
 ) -> None:
-    """The message says how to make the key known, and nothing is requested."""
+    """The message says what is wrong, and advises only what can help.
+
+    Loading, saving, or giving the key can help an object that has no JSON yet
+    or only some of it. Complete JSON without the key, or with ``null``, cannot
+    be mended that way, so the message says what the JSON lacks. Nothing is
+    requested.
+
+    Args:
+        make: Builds an object whose key is not known.
+        message: Pattern that the error message matches.
+    """
     obj = make()
 
-    with pytest.raises(TypeError, match=r"key is not known.*[Ll]oad or save"):
+    with pytest.raises(TypeError, match=message):
         hash(obj)
     with pytest.raises(TypeError):
         {obj}  # noqa: B018
+    assert requests_mock.call_count == 0
+
+
+@json_object
+class TokenOwner(ModelBase):
+    """Model whose key is a ``UUID``, which JSON can spell wrongly."""
+
+    class_url = "/token-owners/"
+
+    id: uuid.UUID
+
+
+def test_a_key_that_cannot_be_converted_equals_only_itself(
+    requests_mock: Any,
+) -> None:
+    """An unreadable key is not a known key, though ``repr()`` shows it.
+
+    The message of ``hash()`` says that the key cannot be read, with the
+    conversion's reason, and does not advise loading the object.
+    """
+    owner = TokenOwner(json={"id": "not-a-uuid"})
+    twin = TokenOwner(json={"id": "not-a-uuid"})
+
+    assert repr(owner) == "<TokenOwner id='not-a-uuid'>"
+    assert owner == owner  # noqa: PLR0124
+    assert owner != twin
+    with pytest.raises(
+        TypeError, match=r"key cannot be read from its JSON"
+    ) as e:
+        hash(owner)
+    assert "Load or save" not in str(e.value)
+    assert requests_mock.call_count == 0
+
+
+def test_a_key_that_cannot_be_hashed_makes_equal_objects_that_cannot_hash(
+    requests_mock: Any,
+) -> None:
+    """Objects with equal keys are equal, and Python will not hash the key."""
+    first = ListKeyed(json={"id": [1]})
+    second = ListKeyed(json={"id": [1]})
+
+    assert first == second
+    with pytest.raises(TypeError, match="unhashable type: 'list'"):
+        hash(first)
     assert requests_mock.call_count == 0
 
 

@@ -1677,6 +1677,60 @@ def _saved_key(obj: JSONObject) -> Any:
     return value
 
 
+def _key_problem(obj: JSONObject) -> str:
+    """Say why an object's key is not known without a request.
+
+    Args:
+        obj: Model object whose key ``_held_key()`` does not give.
+
+    Returns:
+        ``"unloaded"`` if the object has no JSON yet or only a partial payload,
+        so loading it, or giving its key, may help. Otherwise the JSON is
+        complete: ``"missing"`` if it lacks the key field, ``"none"`` if it
+        holds ``null`` for the key, and ``"unreadable"`` if it holds a key that
+        the field cannot convert.
+    """
+    state = vars(obj)
+    json = state.get("_json")
+    if json is None or state.get("_json_is_partial"):
+        return "unloaded"
+    prop = _pk_property_of(type(obj))
+    if prop is None or prop.json_field not in json:
+        return "missing"
+    return "none" if json[prop.json_field] is None else "unreadable"
+
+
+def _unhashable_key_message(obj: JSONObject) -> str:
+    """Say why an object cannot be hashed, and what could help.
+
+    Args:
+        obj: Model object whose key is not known.
+
+    Returns:
+        The message of the ``TypeError`` that ``hash()`` raises. It advises
+        loading, saving, or giving the key only if that can help.
+    """
+    name = type(obj).__name__
+    match _key_problem(obj):
+        case "missing":
+            reason = "is missing from its JSON"
+        case "none":
+            reason = "is None"
+        case "unreadable":
+            detail = ""
+            try:
+                _held_key(obj)
+            except (TypeError, ValueError) as err:
+                detail = f" ({err})"
+            reason = f"cannot be read from its JSON{detail}"
+        case _:
+            return (
+                f"The {name} object's primary key is not known, so it cannot "
+                "be hashed. Load or save the object, or give its key, first"
+            )
+    return f"The {name} object's primary key {reason}, so it cannot be hashed"
+
+
 def _known_key(obj: JSONObject) -> Any:
     """Return a related object's primary key if it is known without a request.
 
@@ -1698,21 +1752,19 @@ def _known_key(obj: JSONObject) -> Any:
             key as ``None``, the message says that the key is None.
     """
     cls = type(obj)
-    prop = _pk_property_of(cls)
-    state = vars(obj)
-    json = state.get("_json")
     value = _held_key(obj)
     if isinstance(value, JSONObject):
         return _known_key(value)
     if value is not None:
         return value
     has_own_url = obj._url_override is not None or _url_is_overridden(cls)
-    if has_own_url and (json is None or state.get("_json_is_partial")):
+    problem = _key_problem(obj)
+    if has_own_url and problem == "unloaded":
         raise ValueError(
             f"The {cls.__name__} object's primary key is not known without "
             "a request, so load or save the object first, or give its key"
         )
-    if has_own_url and (prop is None or prop.json_field not in (json or {})):
+    if has_own_url and problem == "missing":
         raise ValueError(
             f"The {cls.__name__} object's primary key is missing from its "
             "JSON, so it cannot be the key of another model"
@@ -4516,8 +4568,12 @@ class JSONObject:
         Raises:
             TypeError: If the model has a key field but the object's key is not
                 known, or is ``None``. A hash that changed when the key became
-                known would corrupt a set or dict that held the object. Load or
-                save the object, or give its key, first.
+                known would corrupt a set or dict that held the object. The
+                message advises loading, saving, or giving the key only for an
+                object that has no JSON yet or only part of it, and otherwise
+                says that the key is missing from the JSON, is ``None``, or
+                cannot be read. Also raised by Python if the key's type cannot
+                be hashed.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
             NameError: If the key's annotation names a class that is not
@@ -4529,11 +4585,7 @@ class JSONObject:
             return object.__hash__(self)
         key = _saved_key(self)
         if key is _MISSING:
-            raise TypeError(
-                f"The {type(self).__name__} object's primary key is not "
-                "known, so it cannot be hashed. Load or save the object, or "
-                "give its key, first"
-            )
+            raise TypeError(_unhashable_key_message(self))
         return hash((type(self), key))
 
     def __repr__(self) -> str:
