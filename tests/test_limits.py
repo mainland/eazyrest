@@ -1053,3 +1053,86 @@ def test_retry_wait_past_the_deadline_names_the_request(
         f"POST {url.replace('user:dummy-pass@', '')}refused took at least "
         "5.0 seconds"
     ) in str(raised.value)
+
+
+def _retried_response_api(
+    local_server: Callable[[Any], str], body: bytes = b""
+) -> tuple[API, str]:
+    """Return an API whose first response is a 503 that the retry policy sees.
+
+    Args:
+        local_server: Fixture that serves a handler.
+        body: Body of the 503 response.
+
+    Returns:
+        The API, with a ``total_timeout`` of 5 seconds and one retry on 503,
+        and its base URL.
+    """
+    base = local_server(_unavailable_once([], body))
+    api = API(base, max_retries=Retry(total=1, status_forcelist=[503]))
+    api.total_timeout = 5.0
+    return api, base
+
+
+def test_retried_response_past_the_deadline_names_the_request(
+    monkeypatch: pytest.MonkeyPatch, local_server: Callable[[Any], str]
+) -> None:
+    """A 503 that arrives after the deadline is named by its full URL."""
+    clock = _FakeClock()
+    monkeypatch.setattr("eazyrest.api.time", clock)
+    timeout = _Budget.timeout
+
+    def timeout_then_expire(budget: _Budget, value: Any) -> Any:
+        capped = timeout(budget, value)
+        clock.now = 100.0
+        return capped
+
+    monkeypatch.setattr(_Budget, "timeout", timeout_then_expire)
+    api, base = _retried_response_api(local_server)
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get("/retry?q=1")
+
+    assert f"GET {base}retry?q=1 took at least 5.0 seconds" in str(
+        raised.value
+    )
+
+
+def test_retried_response_body_past_the_deadline_names_the_request(
+    monkeypatch: pytest.MonkeyPatch, local_server: Callable[[Any], str]
+) -> None:
+    """A 503 body that is read after the deadline is named by its full URL."""
+    clock = _FakeClock()
+    monkeypatch.setattr("eazyrest.api.time", clock)
+    read_body = _Budget.read_body
+
+    def expire_then_read(
+        budget: _Budget, resp: requests.Response, held: bool = True
+    ) -> None:
+        clock.now = 100.0
+        read_body(budget, resp, held)
+
+    monkeypatch.setattr(_Budget, "read_body", expire_then_read)
+    api, base = _retried_response_api(local_server, b"x" * 10)
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get("/retry?q=1")
+
+    assert f"GET {base}retry?q=1 took at least 5.0 seconds" in str(
+        raised.value
+    )
+
+
+def test_retried_response_over_the_size_limit_names_the_request(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A 503 body that is too large is named by its full URL."""
+    api, base = _retried_response_api(local_server, b"x" * 200)
+    api.max_response_bytes = 100
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes") as raised:
+        api.get("/retry?q=1")
+
+    assert f"The response to GET {base}retry?q=1 is larger" in str(
+        raised.value
+    )

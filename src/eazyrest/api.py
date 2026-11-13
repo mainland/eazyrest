@@ -489,6 +489,21 @@ class _Budget:
             )
         return min(timeout, remaining)
 
+    def _name(self, resp: requests.Response) -> str:
+        """Return the method and URL that an error names for a response.
+
+        Args:
+            resp: Response being handled. One that urllib3 hands to a retry
+                policy has no URL, because urllib3 passes the policy only the
+                path of the request, so it is named by the budget's request.
+
+        Returns:
+            Method and URL, with the URL's user and password left out.
+        """
+        if not resp.url and self.request is not None:
+            return self.request
+        return f"{resp.request.method} {_redact_url(resp.url)}"
+
     def check_time(self, resp: requests.Response | None = None) -> None:
         """Raise if the request has run out of time.
 
@@ -504,7 +519,7 @@ class _Budget:
             where = self.request or "The request"
             if resp is not None:
                 resp.close()
-                where = f"{resp.request.method} {_redact_url(resp.url)}"
+                where = self._name(resp)
             raise LimitExceeded(
                 "total_timeout",
                 f"{where} took at least {self.total_timeout} seconds",
@@ -613,7 +628,7 @@ class _Budget:
             LimitExceeded: Always.
         """
         resp.close()
-        where = f"{resp.request.method} {_redact_url(resp.url)}"
+        where = self._name(resp)
         if held and self.held:
             raise LimitExceeded(
                 "max_response_bytes",
@@ -700,7 +715,7 @@ class _BudgetRetry(Retry):
                 wrapped.raw = response
                 wrapped.status_code = response.status
                 wrapped.headers.update(response.headers)
-                wrapped.url = url or ""
+                wrapped.url = ""
                 wrapped.request = requests.PreparedRequest()
                 wrapped.request.method = method
             budget.check_time(wrapped)
