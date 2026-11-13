@@ -1606,8 +1606,12 @@ def _held_key(obj: JSONObject) -> Any:
         no key, or holds ``None``.
 
     Raises:
-        FieldConversionError: If the JSON holds a key that the field cannot
-            convert.
+        ValueError: If the JSON holds a key that the field cannot convert. A
+            conversion's own ``TypeError`` propagates too, and so does any
+            other exception that a custom conversion raises.
+        UsageError: If the key is a relation whose model's ``api`` was assigned
+            after the class was defined.
+        NameError: If the key's annotation names a class that is not defined.
     """
     prop = _pk_property_of(type(obj))
     if prop is None:
@@ -1624,9 +1628,9 @@ def _held_key(obj: JSONObject) -> Any:
 def _saved_key(obj: JSONObject) -> Any:
     """Return the key that an object is saved under, if it is known.
 
-    Nothing here sends a request, reads ``url``, or raises. While a lazy key
-    change waits for ``save()``, the saved key is the one before the change. A
-    key that is a relation gives the related object's plain key. The key is
+    Nothing here sends a request or reads ``url``. While a lazy key change
+    waits for ``save()``, the saved key is the one before the change. A key
+    that is a relation gives the related object's plain key. The key is
     converted once and kept until the object's JSON or held key changes, so
     that it is the same object on every call, which a hash needs for a type
     that hashes by identity.
@@ -1636,7 +1640,16 @@ def _saved_key(obj: JSONObject) -> Any:
 
     Returns:
         The key as ``pk`` returns it, or ``_MISSING`` if the model has no key
-        field or the key is not known without a request or is ``None``.
+        field or the key is not known without a request or is ``None``. A key
+        that the field cannot convert is not known.
+
+    Raises:
+        UsageError: If the key is a relation whose model's ``api`` was assigned
+            after the class was defined.
+        NameError: If the key's annotation names a class that is not defined.
+            Both refuse the model's declaration, so they propagate, as does any
+            exception other than ``TypeError`` or ``ValueError`` that a custom
+            conversion raises.
     """
     cls = type(obj)
     if _pk_property_of(cls) is None:
@@ -4470,6 +4483,14 @@ class JSONObject:
         Returns:
             Whether the objects are equal, or ``NotImplemented`` if ``other``
             is not a model object.
+
+        Raises:
+            UsageError: If a key is a relation whose model's ``api`` was
+                assigned after the class was defined.
+            NameError: If a key's annotation names a class that is not defined.
+                Both refuse the model's declaration, so they propagate, as does
+                an exception that a custom conversion raises, other than
+                ``TypeError`` or ``ValueError``.
         """
         if not isinstance(other, JSONObject):
             return NotImplemented
@@ -4497,6 +4518,12 @@ class JSONObject:
                 known, or is ``None``. A hash that changed when the key became
                 known would corrupt a set or dict that held the object. Load or
                 save the object, or give its key, first.
+            UsageError: If the key is a relation whose model's ``api`` was
+                assigned after the class was defined.
+            NameError: If the key's annotation names a class that is not
+                defined. Both refuse the model's declaration, so they
+                propagate, as does an exception that a custom conversion
+                raises, other than ``TypeError`` or ``ValueError``.
         """
         if _pk_property_of(type(self)) is None:
             return object.__hash__(self)
