@@ -4181,6 +4181,11 @@ class JSONProperty:
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
             kept = self._assigned_related(value)
+            # A set drops the objects that are equal by key, so encode what it
+            # keeps. Then the write and the snapshot agree, and a later write
+            # of another field does not send this one again.
+            if isinstance(kept, AbstractSet):
+                new_value = obj._to_json(kept, self.analyzed_type)
 
         # A pending update is not on the server, even though the JSON holds it.
         # In eager mode, assigning the same value must send it.

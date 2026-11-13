@@ -353,6 +353,17 @@ class SetTeam(ModelBase):
 
 
 @json_object
+class NamedSetTeam(ModelBase):
+    """Model with a set of related users and a plain field."""
+
+    class_url = "/named-set-teams/"
+
+    id: int
+    members: set[User]
+    name: str
+
+
+@json_object
 class Event(ModelBase):
     """Model with a datetime field used to verify caching."""
 
@@ -7150,6 +7161,27 @@ def test_objects_with_equal_keys_are_one_member_of_a_set_or_dict(
     assert by_user[User(id=1)] == "first"
     assert by_user[UserProfile(user=User(id=1))] == "profile"
     assert requests_mock.call_count == 0
+
+
+def test_objects_of_one_key_assigned_to_an_eager_set_are_written_once(
+    requests_mock: Any,
+) -> None:
+    """An eager set field sends the set it keeps, and only once."""
+    patch = requests_mock.patch(
+        "https://example.com/v1/named-set-teams/1/", status_code=204
+    )
+    team = NamedSetTeam(
+        json={"id": 1, "members": [], "name": "n"}, write_mode="eager"
+    )
+
+    team.members = cast(Any, [User(id=1), User(id=1)])
+    team.name = "m"
+
+    assert team.members == {User(id=1)}
+    assert [call.json() for call in patch.request_history] == [
+        {"members": [1]},
+        {"name": "m"},
+    ]
 
 
 @given(st.integers(), st.integers())
