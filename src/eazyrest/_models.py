@@ -1591,6 +1591,67 @@ def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
     return analyzed_type if isinstance(analyzed_type, RelatedType) else None
 
 
+def _held_key(obj: JSONObject) -> Any:
+    """Return the primary key that an object holds, without a request.
+
+    The object holds its key if it was constructed with it or has refreshed, or
+    if its loaded JSON has the key field. The JSON takes precedence.
+
+    Args:
+        obj: Model object.
+
+    Returns:
+        The key as the field reads it, so a related object if the key is a
+        relation. ``None`` if the model has no key field, or the object holds
+        no key, or holds ``None``.
+
+    Raises:
+        FieldConversionError: If the JSON holds a key that the field cannot
+            convert.
+    """
+    prop = _pk_property_of(type(obj))
+    if prop is None:
+        return None
+    state = vars(obj)
+    json = state.get("_json")
+    if json is not None and prop.json_field in json:
+        return obj._from_json(
+            json[prop.json_field], prop.analyzed_type, field=prop.field
+        )
+    return state.get("_pk_value")
+
+
+def _saved_key(obj: JSONObject) -> Any:
+    """Return the key that an object is saved under, if it is known.
+
+    Nothing here sends a request, reads ``url``, or raises. While a lazy key
+    change waits for ``save()``, the saved key is the one before the change. A
+    key that is a relation gives the related object's plain key.
+
+    Args:
+        obj: Model object.
+
+    Returns:
+        The key as ``pk`` returns it, or ``_MISSING`` if the model has no key
+        field or the key is not known without a request or is ``None``.
+    """
+    cls = type(obj)
+    if _pk_property_of(cls) is None:
+        return _MISSING
+    state = vars(obj)
+    if cls._pk_json_field in state.get("_pending_updates", ()):
+        value = state.get("_saved_pk")
+    else:
+        try:
+            value = _held_key(obj)
+            while isinstance(value, JSONObject):
+                value = _held_key(value)
+        except (TypeError, ValueError):
+            # A key that cannot be converted is not a known key.
+            return _MISSING
+    return _MISSING if value is None else value
+
+
 def _known_key(obj: JSONObject) -> Any:
     """Return a related object's primary key if it is known without a request.
 
@@ -1615,14 +1676,7 @@ def _known_key(obj: JSONObject) -> Any:
     prop = _pk_property_of(cls)
     state = vars(obj)
     json = state.get("_json")
-    if prop is None:
-        value = None
-    elif json is not None and prop.json_field in json:
-        value = obj._from_json(
-            json[prop.json_field], prop.analyzed_type, field=prop.field
-        )
-    else:
-        value = state.get("_pk_value")
+    value = _held_key(obj)
     if isinstance(value, JSONObject):
         return _known_key(value)
     if value is not None:
@@ -4054,6 +4108,16 @@ class JSONObject:
     Reading a field of an object that has not been loaded sends a ``GET``
     request, so field access can raise ``requests`` exceptions. Instances cache
     state without locking and are not safe to share between threads.
+
+    Objects compare by key, as Django models do. Two objects of exactly the
+    same model are equal if their primary keys are known without a request, are
+    not ``None``, and are equal. The key is the one the object is saved under,
+    and a key that is a relation compares as the related object's key, so
+    ``profile.user == user`` though they are different objects. Any other
+    object, such as one built without a key, equals only itself. Hashing an
+    object whose key is not known raises ``TypeError``, so the hash cannot
+    change when the key becomes known. Saving a change of the key changes the
+    hash, so take the object out of a set or dict before ``save()`` sends one.
     """
 
     class_url: ClassVar[str]
@@ -4280,6 +4344,66 @@ class JSONObject:
 
         for name in sorted(kwargs, key=lambda name: name not in pk_names):
             setattr(self, name, kwargs[name])
+
+    def __eq__(self, other: object) -> bool:
+        """Return whether another object is this object's resource.
+
+        Two objects are equal if they are the same object, or are of exactly
+        the same model, with known primary keys that are equal. A subclass is
+        not equal to its base. The API, the JSON, and the field values are not
+        compared. The key is the one that the object is saved under, so while a
+        lazy key change waits for ``save()`` it is the key before the change. A
+        key that is a relation compares as the related object's plain key.
+
+        A key is known if the object holds it or its loaded JSON has it, as for
+        ``repr()``. An object whose key is not known, or is ``None``, or whose
+        model has no key field, equals only itself. Comparing sends no request
+        and never reads ``url``.
+
+        Args:
+            other: Object to compare with.
+
+        Returns:
+            Whether the objects are equal, or ``NotImplemented`` if ``other``
+            is not a model object.
+        """
+        if not isinstance(other, JSONObject):
+            return NotImplemented
+        if self is other:
+            return True
+        if type(self) is not type(other):
+            return False
+        key = _saved_key(self)
+        return key is not _MISSING and key == _saved_key(other)
+
+    def __hash__(self) -> int:
+        """Return a hash that agrees with equality.
+
+        The hash is that of the model and the key that the object is saved
+        under, so it does not change while a key change waits for ``save()``,
+        and changes when ``save()`` sends it, as a Django model's does. An
+        object of a model without a key field hashes by identity, because its
+        key can never become known. Hashing sends no request.
+
+        Returns:
+            The hash.
+
+        Raises:
+            TypeError: If the model has a key field but the object's key is not
+                known, or is ``None``. A hash that changed when the key became
+                known would corrupt a set or dict that held the object. Load or
+                save the object, or give its key, first.
+        """
+        if _pk_property_of(type(self)) is None:
+            return object.__hash__(self)
+        key = _saved_key(self)
+        if key is _MISSING:
+            raise TypeError(
+                f"The {type(self).__name__} object's primary key is not "
+                "known, so it cannot be hashed. Load or save the object, or "
+                "give its key, first"
+            )
+        return hash((type(self), key))
 
     def __repr__(self) -> str:
         """Return the class and primary key without sending a request.

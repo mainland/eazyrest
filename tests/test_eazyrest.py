@@ -6493,6 +6493,197 @@ def test_a_key_that_is_a_relation_refuses_a_related_key_that_is_unknown(
     assert requests_mock.call_count == 0
 
 
+def test_objects_of_one_model_with_equal_known_keys_are_equal(
+    requests_mock: Any,
+) -> None:
+    """Objects of one model are equal if they have the same known key.
+
+    The key is known if the object holds it or its loaded JSON has it, and the
+    objects need not agree in anything else. Comparing sends no request.
+    """
+    held = User(id=2)
+    loaded = User(json={"id": 2, "name": "Ada"})
+    other_api = User(id=2, api=API("https://other.example.com/"))
+
+    assert held == loaded
+    assert loaded == held
+    assert held == other_api
+    assert held == held  # noqa: PLR0124
+    assert held != User(id=3)
+    assert loaded != User(json={"id": 3, "name": "Ada"})
+    assert hash(held) == hash(loaded) == hash(other_api)
+    assert requests_mock.call_count == 0
+
+
+def test_a_key_that_is_a_relation_compares_as_the_related_key(
+    requests_mock: Any,
+) -> None:
+    """A model keyed by a relation equals one with the related key.
+
+    Reading the field gives a new related object, so the model compares the key
+    and not the object.
+    """
+    user = User(id=2)
+    profile = UserProfile(user=user)
+    same = UserProfile(user=User(id=2))
+    from_json = UserProfile(json={"user": 2, "bio": "Hi"})
+    settings = ProfileSettings(profile=profile)
+
+    assert profile.user is not user
+    assert profile.user == user
+    assert profile == same
+    assert profile == from_json
+    assert profile != UserProfile(user=User(id=3))
+    assert settings == ProfileSettings(profile=same)
+    assert hash(profile) == hash(same) == hash(from_json)
+    assert requests_mock.call_count == 0
+
+
+def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
+    requests_mock: Any,
+) -> None:
+    """A subclass does not equal its base, nor does a model with the key."""
+    user = User(id=1)
+    admin = Admin(id=1)
+
+    assert user != admin
+    assert admin != user
+    assert user != UserProfile(user=User(id=1))
+    assert user != Note(id=1)
+    assert admin == Admin(id=1)
+    assert requests_mock.call_count == 0
+
+
+def test_a_pending_key_change_compares_by_the_saved_key(
+    requests_mock: Any,
+) -> None:
+    """Until ``save()`` sends a key change, the object has its saved key.
+
+    The hash does not change while the object sits in a set, and after
+    ``save()`` the object has the new key.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", status_code=204
+    )
+    user = User(json={"id": 1, "name": "Ada"}, write_mode="lazy")
+    before = hash(user)
+    members = {user}
+    user.pk = 2
+
+    assert user == User(id=1)
+    assert user != User(id=2)
+    assert hash(user) == before
+    assert User(id=1) in members
+    user.save()
+
+    assert patch.call_count == 1
+    assert user == User(id=2)
+    assert user != User(id=1)
+    assert hash(user) == hash(User(id=2))
+
+
+def _objects_with_unknown_keys() -> list[Callable[[], JSONObject]]:
+    """Return constructors of objects whose key is not known."""
+    return [
+        lambda: User(),
+        lambda: User(json={"name": "No key"}),
+        lambda: User(json={"id": None, "name": "Null key"}),
+        lambda: (
+            Note(
+                json={"id": 1, "author": "https://example.com/v1/users/4/"}
+            ).author
+        ),
+        lambda: UserProfile(),
+    ]
+
+
+@pytest.mark.parametrize("make", _objects_with_unknown_keys())
+def test_an_object_whose_key_is_not_known_equals_only_itself(
+    make: Callable[[], JSONObject], requests_mock: Any
+) -> None:
+    """Without a known key, equality is identity, and no request is sent.
+
+    The cases are an object built without a key, complete JSON that lacks the
+    key or holds ``null``, an object known only by its URL, and a key that is a
+    relation and was not given.
+    """
+    obj = make()
+    twin = make()
+
+    assert obj == obj  # noqa: PLR0124
+    assert obj != twin
+    assert obj != User(id=1)
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("make", _objects_with_unknown_keys())
+def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
+    make: Callable[[], JSONObject], requests_mock: Any
+) -> None:
+    """The message says how to make the key known, and nothing is requested."""
+    obj = make()
+
+    with pytest.raises(TypeError, match=r"key is not known.*[Ll]oad or save"):
+        hash(obj)
+    with pytest.raises(TypeError):
+        {obj}  # noqa: B018
+    assert requests_mock.call_count == 0
+
+
+def test_objects_of_a_model_without_a_key_equal_only_themselves(
+    requests_mock: Any,
+) -> None:
+    """A keyless model compares and hashes by identity, and never fails."""
+    address = Address(json={"street": "1 Main St"})
+    twin = Address(json={"street": "1 Main St"})
+
+    assert address == address  # noqa: PLR0124
+    assert address != twin
+    assert hash(address) == hash(address)
+    assert len({address, twin}) == 2
+    assert requests_mock.call_count == 0
+
+
+def test_a_model_object_is_not_equal_to_a_value_that_is_not_a_model() -> None:
+    """Comparing with a value that is not a model defers to the other side."""
+    user = User(id=1)
+
+    assert user.__eq__(1) is NotImplemented
+    assert user.__eq__({"id": 1}) is NotImplemented
+    assert user != 1
+    assert user != {"id": 1, "name": "Ada"}
+
+
+def test_objects_with_equal_keys_are_one_member_of_a_set_or_dict(
+    requests_mock: Any,
+) -> None:
+    """A set or dict keeps one object for each key and finds it by key."""
+    first = User(id=1)
+    members = {first, User(json={"id": 1, "name": "Ada"}), User(id=2)}
+    by_user = {first: "first", UserProfile(user=first): "profile"}
+
+    assert len(members) == 2
+    assert User(id=2) in members
+    assert User(id=3) not in members
+    assert by_user[User(id=1)] == "first"
+    assert by_user[UserProfile(user=User(id=1))] == "profile"
+    assert requests_mock.call_count == 0
+
+
+@given(st.integers(), st.integers())
+def test_equality_of_objects_by_key_is_reflexive_symmetric_and_hashable(
+    left: int, right: int
+) -> None:
+    """Equal objects hash alike, and equality is that of the keys."""
+    a = User(id=left)
+    b = User(json={"id": right, "name": "Ada"})
+
+    assert a == a  # noqa: PLR0124
+    assert (a == b) == (b == a) == (left == right)
+    if a == b:
+        assert hash(a) == hash(b)
+
+
 def test_hyperlinked_relation_loads_from_its_url(requests_mock: Any) -> None:
     """A hyperlinked field reads as an object that loads from the URL."""
     get = requests_mock.get(

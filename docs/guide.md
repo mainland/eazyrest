@@ -152,11 +152,35 @@ message says that the key is `None`. A related object without a key, such as
 `User()`, raises `FieldConversionError` too, as a relation write does. The
 constructor and the `pk` setter therefore never send a request, and neither do
 `repr()` and `update_from_json()` of such a model. Reading the field returns a
-new related object that holds the key, not the object that was given, also
-after `refresh()`. An object constructed from `json=` starts with that payload
-already loaded. It keeps a deep copy of the payload, as `update_from_json()`
-does, so changing the payload or its nested values afterward does not change
-the object.
+new related object that holds the key, not the object that was given, though it
+equals that object, also after `refresh()`. An object constructed from `json=`
+starts with that payload already loaded. It keeps a deep copy of the payload,
+as `update_from_json()` does, so changing the payload or its nested values
+afterward does not change the object.
+
+Objects compare by key, as Django models do. Two objects are equal if they are
+of exactly the same model, so a subclass does not equal its base, and their
+primary keys are known without a request, are not `None`, and are equal. The
+API and the fields are not compared. A key is known as `repr()` knows it: the
+object holds it, as `User(id=1)` does, or its loaded JSON has it. The key is
+the one the object is saved under, so while a lazy change of the key waits for
+`save()`, it is the key before the change. A key that is a relation compares as
+the related object's key, so `UserProfile(user=User(id=2))` equals another
+`UserProfile(user=User(id=2))`, and `profile.user` equals the object that was
+given, though it is not the same object. Any other object equals only itself.
+That includes an object of a model without a key field, one built without a
+key, such as `User()`, one known only by its URL that has not loaded, and one
+whose loaded JSON lacks the key or holds `null`. Comparing never sends a
+request. Comparing with a value that is not a model object is `False`.
+
+An object hashes by its model and key, so objects that are equal are one member
+of a set or one key of a dict. An object of a model without a key field hashes
+by identity. For any other object whose key is not known, `hash()` raises
+`TypeError`, which says to load or save the object, or give its key, because a
+hash that changed when the key became known would lose the object in a set or
+dict that held it. A pending key change does not change the hash until `save()`
+sends it. Then the hash changes, as a Django model's does, so take the object
+out of a set or dict before it saves a new key, and put it back after.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues

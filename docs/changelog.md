@@ -236,6 +236,12 @@ describe them further.
   not been sent sends the `PATCH`, where `v1.0.0a5` sent nothing and left the
   update pending. An update is unsent when it was made in lazy mode, or when a
   change made in place was found as the object loaded missing fields.
+- Two objects of one model with the same known primary key are equal, where
+  `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. A
+  key is known if the object holds it or its loaded JSON has it, and a key that
+  is a relation compares as the related object's key. An object without a known
+  key still equals only itself, and `hash()` of one raises `TypeError`, unless
+  its model has no key field. Load or save the object, or give its key, first.
 
 ### Migrating from 0.9.0
 
@@ -388,6 +394,12 @@ that can break code written for 0.9.0, followed by what to do about it.
   `create_related()` is private. A class that still overrides either method
   with 0.9.0's `ty` parameter, as `from_json(self, value, ty)`, raises
   `TypeError` when it is defined, since the override would never be called.
+- Two objects of one model with the same known primary key are equal, where
+  0.9.0 compared them by identity, so a set or dict of them keeps one. A key is
+  known if the object holds it or its loaded JSON has it, and a key that is a
+  relation compares as the related object's key. An object without a known key
+  still equals only itself, and `hash()` of one raises `TypeError`, unless its
+  model has no key field. Load or save the object, or give its key, first.
 
 #### Declarations
 
