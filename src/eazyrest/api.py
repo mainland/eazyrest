@@ -420,6 +420,7 @@ class _Budget:
         max_bytes: int | None,
         total_timeout: float | None,
         streamed: bool = False,
+        request: str | None = None,
     ) -> None:
         """Start the budget of a request.
 
@@ -432,8 +433,12 @@ class _Budget:
                 redirects and reading bodies, or ``None`` for no limit.
             streamed: Whether the caller reads the body of a successful final
                 response, so that the adapter leaves it unread.
+            request: Method and URL of the request, as ``"GET http://host/"``
+                with the URL's user and password left out, which an error names
+                when it has no response to name, or ``None`` if unknown.
         """
         self.max_bytes = max_bytes
+        self.request = request
         self.held = 0
         """Bytes of the bodies that the request holds so far."""
         self.total_timeout = total_timeout
@@ -488,13 +493,15 @@ class _Budget:
         """Raise if the request has run out of time.
 
         Args:
-            resp: Response being handled, if any, which is closed first.
+            resp: Response being handled, if any, which is closed first. An
+                error names the request of the response, or else the request
+                that the budget bounds.
 
         Raises:
             LimitExceeded: If the deadline has passed.
         """
         if self.deadline is not None and time.monotonic() >= self.deadline:
-            where = "The request"
+            where = self.request or "The request"
             if resp is not None:
                 resp.close()
                 where = f"{resp.request.method} {_redact_url(resp.url)}"
@@ -1207,6 +1214,7 @@ class API:
 
     def _send(
         self,
+        method: str,
         send: Callable[..., requests.Response],
         uri: str,
         *args: Any,
@@ -1215,7 +1223,8 @@ class API:
         """Send a request with this client's defaults and check the response.
 
         Args:
-            send: Session method that sends the request.
+            method: The request's method, as ``"GET"``, which an error names.
+            send: Session method that sends the request with that method.
             uri: Relative or absolute request URI.
             *args: Positional arguments forwarded to ``send``.
             **kwargs: Keyword arguments forwarded to ``send``.
@@ -1242,7 +1251,13 @@ class API:
         # redirects, which requests reads, or of a failure, which the error
         # reads, so those are bounded too.
         streamed = bool(kwargs.get("stream"))
-        budget = _Budget(self.max_response_bytes, self.total_timeout, streamed)
+        url = self.resolve_url(uri)
+        budget = _Budget(
+            self.max_response_bytes,
+            self.total_timeout,
+            streamed,
+            f"{method} {_redact_url(url)}",
+        )
         kwargs["stream"] = True
         kwargs["timeout"] = budget.timeout(kwargs["timeout"])
         if self.session.verify is not True:
@@ -1257,7 +1272,6 @@ class API:
             # environment proxies to the dict it receives, so pass a copy.
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
-        url = self.resolve_url(uri)
         kwargs["hooks"] = self._guard_redirects(
             url,
             kwargs.get("hooks"),
@@ -1430,7 +1444,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        return self._send(self.session.get, uri, *args, **kwargs)
+        return self._send("GET", self.session.get, uri, *args, **kwargs)
 
     def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``POST`` request.
@@ -1446,7 +1460,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        return self._send(self.session.post, uri, *args, **kwargs)
+        return self._send("POST", self.session.post, uri, *args, **kwargs)
 
     def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PATCH`` request.
@@ -1464,7 +1478,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        return self._send(self.session.patch, uri, *args, **kwargs)
+        return self._send("PATCH", self.session.patch, uri, *args, **kwargs)
 
     def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``PUT`` request.
@@ -1480,7 +1494,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        return self._send(self.session.put, uri, *args, **kwargs)
+        return self._send("PUT", self.session.put, uri, *args, **kwargs)
 
     def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
         """Issue a ``DELETE`` request.
@@ -1495,7 +1509,7 @@ class API:
         Returns:
             Validated HTTP response.
         """
-        return self._send(self.session.delete, uri, *args, **kwargs)
+        return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 
 
 def _as_api(api: Client) -> API:

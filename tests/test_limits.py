@@ -691,7 +691,7 @@ def test_response_without_a_body_may_declare_a_length_over_the_limit(
     api.max_response_bytes = 100
 
     send = api.session.head if method == "HEAD" else api.session.get
-    resp = api._send(send, "/x")
+    resp = api._send(method, send, "/x")
 
     assert resp.status_code == status
     assert resp.content == b""
@@ -970,3 +970,86 @@ def test_connection_retries_keep_requests_exception_type() -> None:
 
     with pytest.raises(requests.ConnectionError):
         api.get("/refused")
+
+
+class _FakeClock:
+    """A clock that moves only when the test or a sleep moves it."""
+
+    def __init__(self) -> None:
+        """Start the clock at zero."""
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        """Return the fake time.
+
+        Returns:
+            Seconds since the clock started.
+        """
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        """Advance the fake time instead of waiting.
+
+        Args:
+            seconds: Seconds to advance.
+        """
+        self.now += seconds
+
+
+def _refused_url() -> str:
+    """Return the URL of a port that refuses connections, with credentials.
+
+    Returns:
+        A URL whose user and password no message may quote.
+    """
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        port = unused.getsockname()[1]
+    return f"http://user:dummy-pass@127.0.0.1:{port}/"
+
+
+def test_retry_without_a_response_past_the_deadline_names_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection error that retries after the deadline names its request."""
+    clock = _FakeClock()
+    monkeypatch.setattr("eazyrest.api.time", clock)
+    timeout = _Budget.timeout
+
+    def timeout_then_expire(budget: _Budget, value: Any) -> Any:
+        capped = timeout(budget, value)
+        clock.now = 100.0
+        return capped
+
+    monkeypatch.setattr(_Budget, "timeout", timeout_then_expire)
+    url = _refused_url()
+    api = API(url, max_retries=Retry(total=1))
+    api.total_timeout = 5.0
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get("/refused")
+
+    assert (
+        f"GET {url.replace('user:dummy-pass@', '')}refused took at least "
+        "5.0 seconds"
+    ) in str(raised.value)
+
+
+def test_retry_wait_past_the_deadline_names_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backoff that runs out the deadline raises with the request named."""
+    clock = _FakeClock()
+    monkeypatch.setattr("eazyrest.api.time", clock)
+    url = _refused_url()
+    api = API(url, max_retries=Retry(total=5, backoff_factor=1))
+    api.total_timeout = 5.0
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.post("/refused", json={})
+
+    assert clock.now == 5.0
+    assert (
+        f"POST {url.replace('user:dummy-pass@', '')}refused took at least "
+        "5.0 seconds"
+    ) in str(raised.value)
