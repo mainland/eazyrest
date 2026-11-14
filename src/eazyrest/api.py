@@ -346,9 +346,9 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         resp: Redirect response.
         target: Redirect target, from ``Session.get_redirect_target()``. A
             message quotes the URL that requests follows, which can differ from
-            the target. requests joins a relative target onto the request's
-            URL, and percent-encodes a backslash, a space, and a control
-            character.
+            the target: requests joins a relative target onto the request's
+            URL, and percent-encodes a backslash, a space, a control character,
+            and a character outside ASCII.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -397,8 +397,10 @@ _READ_SIZE = 64 * 1024
 def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     """Describe an unfollowed redirect that requests cannot prepare.
 
-    The message quotes the URL that requests prepares from the ``Location``, or
-    the ``Location`` itself when ``urlparse()`` rejects it.
+    The message quotes the URL that requests prepares from the ``Location``,
+    which it reads as ``get_redirect_target()`` does: the header's characters
+    are encoded as Latin-1 and decoded as UTF-8. The message quotes the header
+    as it is when that conversion fails or ``urlparse()`` rejects the result.
 
     Args:
         resp: Final response, a redirect that requests does not follow.
@@ -412,9 +414,13 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     _drop_response_hooks(resp)
     location = resp.headers.get("Location", "")
     try:
-        destination = _redirect_destination(resp, location)
+        # http.client decodes a header as Latin-1, and requests decodes the
+        # bytes again as UTF-8 before it prepares the target.
+        target = location.encode("latin1").decode("utf8")
+        destination = _redirect_destination(resp, target)
     except ValueError:
-        # A target that urlparse() rejects has no prepared form to quote.
+        # UnicodeError is a ValueError. A header that is not UTF-8, or a target
+        # that urlparse() rejects, has no prepared form to quote.
         destination = location
     quoted = _printable(_redact_url(destination))
     return RedirectError(

@@ -774,3 +774,58 @@ def test_unpreparable_redirect_message_quotes_a_location_that_cannot_be_parsed(
         api.get("/a", allow_redirects=False)
 
     assert "http://[::1/x" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("location", "quoted"),
+    [
+        ("http://l\u00c3\u00b3calhost:abc/x", "http://l%C3%B3calhost:abc/x"),
+        ("http://h.test:abc/p\u00c3\u00a5th", "http://h.test:abc/p%C3%A5th"),
+    ],
+)
+def test_unpreparable_redirect_message_decodes_a_utf8_location(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    quoted: str,
+) -> None:
+    """The message quotes a UTF-8 ``Location`` as requests prepares it.
+
+    http.client decodes the header's bytes as Latin-1, and requests decodes
+    them again as UTF-8, so the message must not percent-encode the Latin-1
+    characters.
+
+    Args:
+        location: The redirect's ``Location`` header, decoded as Latin-1.
+        quoted: The URL that the message quotes.
+    """
+    monkeypatch.setenv("NO_PROXY", "example.invalid")
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert f"to {quoted}," in str(raised.value)
+
+
+def test_unpreparable_redirect_message_quotes_a_location_that_is_not_utf8(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``Location`` that is not UTF-8 is quoted as it is."""
+    monkeypatch.setenv("NO_PROXY", "example.invalid")
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "http://h.test:abc/p\u00e5th"},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert "to http://h.test:abc/p\u00e5th," in str(raised.value)
