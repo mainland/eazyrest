@@ -6348,6 +6348,88 @@ def test_a_primary_key_that_holds_related_objects_is_refused_on_first_use(
         RosterNote(json={"roster": [1]}).url  # noqa: B018
 
 
+def test_equality_and_hash_raise_a_key_declaration_refused_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declaration that is refused is not an unknown key.
+
+    ``==`` and ``hash()`` raise it as ``url`` does, instead of returning
+    ``False`` or saying that the key cannot be read.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the model that names
+            it is decorated.
+    """
+
+    @json_object(pk="later")
+    class Anchor(ModelBase):
+        class_url = "/anchors/"
+
+        later: Annotated[Later, Hyperlinked()]
+        x: str
+
+    @json_object
+    class Later(ModelBase):
+        class_url = "/laters/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "Later", Later)
+    first = Anchor(json={"later": 1, "x": "p"})
+    second = Anchor(json={"later": 1, "x": "q"})
+    message = r"Anchor\.later is the primary key.*hyperlinked"
+
+    with pytest.raises(TypeError, match=message):
+        first == second  # noqa: B015
+    with pytest.raises(TypeError, match=message) as error:
+        hash(first)
+    assert "cannot be read" not in str(error.value)
+    with pytest.raises(TypeError, match=message):
+        first == second  # noqa: B015
+
+
+def test_update_from_json_raises_a_refused_declaration_at_the_end_of_a_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The payload is not taken for an unknown key when a chain is refused.
+
+    The model's own key declares fine, and the model at the end of its chain of
+    keys is refused when the key is first used.
+
+    Args:
+        monkeypatch: Defines the classes as globals, after the models that name
+            them are decorated.
+    """
+
+    @json_object
+    class Crew(ModelBase):
+        class_url = "/crews/"
+
+        id: list[Hand]
+
+    @json_object(pk="crew")
+    class CrewNote(ModelBase):
+        class_url = "/crew-notes/"
+
+        crew: Crew
+        note: str
+
+    @json_object
+    class Hand(ModelBase):
+        class_url = "/hands/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "Hand", Hand)
+    monkeypatch.setitem(globals(), "Crew", Crew)
+    note = CrewNote(json={"crew": [1], "note": "a"})
+
+    with pytest.raises(TypeError, match=r"Crew\.id is the primary key"):
+        note.update_from_json({"crew": [1], "note": "b"})
+
+    assert note.note == "a"
+
+
 def test_a_primary_key_cannot_be_a_relation_to_its_own_model() -> None:
     """Decorating a model keyed by itself is refused, naming the model."""
     with pytest.raises(

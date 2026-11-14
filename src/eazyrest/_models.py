@@ -4774,10 +4774,12 @@ class JSONObject:
             is not a model object.
 
         Raises:
+            TypeError: If the model's key declaration is refused when the key
+                is first used, as ``url`` refuses it.
             UsageError: If a key is a relation whose model's ``api`` was
                 assigned after the class was defined.
             NameError: If a key's annotation names a class that is not defined.
-                Both refuse the model's declaration, so they propagate, as does
+                Each refuses the model's declaration, so it propagates, as does
                 an exception that a custom conversion raises, other than
                 ``TypeError`` or ``ValueError``.
         """
@@ -4814,12 +4816,13 @@ class JSONObject:
                 message advises loading, saving, or giving the key only for an
                 object that has no JSON yet or only part of it, and otherwise
                 says that the key is missing from the JSON, is ``None``, or
-                cannot be read.
+                cannot be read. Also raised, as ``url`` raises it, if the
+                model's key declaration is refused when the key is first used.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
             NameError: If the key's annotation names a class that is not
-                defined. Both refuse the model's declaration, so they
-                propagate, as does an exception that a custom conversion
+                defined. Each refuses the model's declaration, so it
+                propagates, as does an exception that a custom conversion
                 raises, other than ``TypeError`` or ``ValueError``.
         """
         if _pk_property_of(type(self)) is None:
@@ -5580,11 +5583,13 @@ class JSONObject:
             decode or encode.
 
         Raises:
+            TypeError: If the model's key declaration is refused, as for a
+                hyperlinked key whose model is defined after it.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
             NameError: If the key's annotation names a class that is not
-                defined. Both refuse the model's declaration, so they
-                propagate, as does any exception other than ``TypeError`` or
+                defined. Each refuses the model's declaration, so it
+                propagates, as does any exception other than ``TypeError`` or
                 ``ValueError`` that a custom conversion raises.
         """
         state = vars(self)
@@ -5594,7 +5599,9 @@ class JSONObject:
             pass
         try:
             canonical = _canonical_key_of(self, self._saved_key_json)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as err:
+            if getattr(err, _DECLARATION_ERROR, False):
+                raise
             canonical = None
         state["_canonical"] = canonical
         return canonical
@@ -5959,7 +5966,9 @@ class JSONObject:
         if self._pk_json_field in payload and not self._key_is_unknown():
             try:
                 named = _canonical_key_of(self, payload[self._pk_json_field])
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as err:
+                if getattr(err, _DECLARATION_ERROR, False):
+                    raise
                 named = None
             saved = self._canonical_key()
             if (None if named is None else named[1]) != (
