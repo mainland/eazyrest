@@ -723,3 +723,54 @@ def test_error_messages_of_a_url_without_credentials_are_unchanged(
         api.get("/x?a=b")
 
     assert "for GET https://example.com/v1/x?a=b" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://h.test\\u:dummy-pass@localhost:abc/x",
+        "http://u:dummy-pass@localhost:abc/x",
+    ],
+)
+def test_unpreparable_redirect_message_quotes_the_url_that_requests_prepares(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    """The message quotes no text that requests reads as a password.
+
+    requests percent-encodes the backslash of the first target, so it reads
+    ``h.test%5Cu:dummy-pass`` as the user and password.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    monkeypatch.setenv("NO_PROXY", "example.invalid")
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert "dummy-pass" not in str(raised.value)
+    assert "dummy-pass" not in repr(raised.value)
+    assert "localhost:abc/x" in str(raised.value)
+
+
+def test_unpreparable_redirect_message_quotes_a_location_that_cannot_be_parsed(
+    requests_mock: Any,
+) -> None:
+    """A ``Location`` that ``urlparse()`` rejects is quoted as it is."""
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "http://[::1/x"},
+    )
+
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
+        api.get("/a", allow_redirects=False)
+
+    assert "http://[::1/x" in str(raised.value)

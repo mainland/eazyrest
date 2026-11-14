@@ -345,8 +345,10 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
     Args:
         resp: Redirect response.
         target: Redirect target, from ``Session.get_redirect_target()``. A
-            message quotes the URL that requests follows, which differs from
-            the target when the target has a backslash.
+            message quotes the URL that requests follows, which can differ from
+            the target. requests joins a relative target onto the request's
+            URL, and percent-encodes a backslash, a space, and a control
+            character.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -395,6 +397,9 @@ _READ_SIZE = 64 * 1024
 def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     """Describe an unfollowed redirect that requests cannot prepare.
 
+    The message quotes the URL that requests prepares from the ``Location``, or
+    the ``Location`` itself when ``urlparse()`` rejects it.
+
     Args:
         resp: Final response, a redirect that requests does not follow.
 
@@ -406,9 +411,15 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     resp.close()
     _drop_response_hooks(resp)
     location = resp.headers.get("Location", "")
+    try:
+        destination = _redirect_destination(resp, location)
+    except ValueError:
+        # A target that urlparse() rejects has no prepared form to quote.
+        destination = location
+    quoted = _printable(_redact_url(destination))
     return RedirectError(
         f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
-        f"status {resp.status_code} to {_printable(_redact_url(location))}, "
+        f"status {resp.status_code} to {quoted}, "
         "for which requests cannot prepare the next request, so it was not "
         "followed",
         response=resp,
