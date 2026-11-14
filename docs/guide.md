@@ -120,6 +120,98 @@ appending to a list, is not tracked or sent. A read-only primary key can still
 identify a lazy object, as in `User(id=1)`. Explicit `files=` uploads are
 separate from the returned value and may name a read-only file field.
 
+## Equality by key
+
+Objects compare by key. Two objects are equal if they are of exactly the same
+model, so a subclass does not equal its base, and their primary keys are known
+without a request, are not `None`, and are equal. The API and the fields are
+not compared. A key is known as `repr()` knows it: the object holds it, as
+`User(id=1)` does, or its loaded JSON has it. The key is the one the object is
+saved under, so while a lazy change of the key waits for `save()`, it is the
+key before the change. Any other object equals only itself. That includes an
+object of a model without a key field, one built without a key, such as
+`User()`, one known only by its URL that has not loaded, and one whose loaded
+JSON lacks the key, holds `null`, or holds a key that the field cannot convert,
+such as `"not-a-uuid"` for a `UUID` key, which `repr()` still shows. Comparing
+never sends a request. Comparing with a value that is not a model object is
+`False`.
+
+An object hashes by its model and key, so objects that are equal are one member
+of a set or one key of a dict. An object of a model without a key field hashes
+by identity. For any other object whose key is not known, `hash()` raises
+`TypeError`, because a hash that changed when the key became known would lose
+the object in a set or dict that held it. The message advises loading or saving
+the object, or giving its key, only for an object that has no JSON yet or only
+part of it. Otherwise it says that the key is missing from the JSON, is `None`,
+or cannot be read, because none of those would help. A key whose type cannot be
+hashed, such as a `list`, still makes equal objects, and `hash()` raises
+Python's own `TypeError` for it. A key is compared as it is held, without
+converting it, so `User(id="1")` does not equal `User(id=1)` and hashes
+differently. Give the key in its field's type, as the server returns it.
+
+### A key that is a relation
+
+A key that is a relation compares as the saved key of the related object, so
+`UserProfile(user=User(id=2))` equals another `UserProfile(user=User(id=2))`.
+Reading `profile.user` gives a related object that equals the one that was
+given, though it is not the same object. Which related object a profile
+compares by depends on how it got its key.
+
+- A profile that holds its user, because it was constructed with it or shares
+  it by prefetch, asks that user for its saved key on each comparison. The
+  profile follows the user: after `profile.user.id = 6` is saved, the profile
+  equals `UserProfile(user=User(id=6))`, not one with the old key, and its hash
+  is that of the new key. Until `save()` sends the change, the user's saved key
+  is still the old one. Profiles that share one prefetched user follow it
+  together.
+- A profile that was loaded, or that embeds its user in its JSON, compares by
+  the key that its JSON has. It does not follow `profile.user`, which reads
+  another object. After a change of `profile.user`'s key is saved, such a
+  profile still equals one with the old key, while its `pk` and `url` give the
+  new key. It can then differ from a profile constructed with the same user.
+
+A change of the profile's own key, as in `profile.user = User(id=3)` in lazy
+mode, waits for `save()`. Until then the profile compares by the saved key of
+the user that it held when the change began, so it still equals
+`UserProfile(user=User(id=2))`, and it keeps its hash and its place in a set.
+It follows that user's own saved key if it changes meanwhile. After `save()`
+sends the change, the profile holds the new user, and a second change begins
+from that user, not from the first change's.
+
+### When the hash changes
+
+The hash is that of the model and its saved key, so it changes only when the
+saved key does. That happens at three points:
+
+- at `save()` of the object's own key change, which sends the new key, or at
+  the assignment in eager mode, which sends it at once,
+- at `save()` of the key change of a related object that a model keyed by a
+  relation follows, and
+- at a load, or a write's response, that spells the key another way or names
+  another key, which replaces the held key with the JSON's.
+
+A set or dict that holds the object then no longer finds it. Take the object
+out before such a change, and put it back after. A pending change does not
+change the hash.
+
+### Key cycles
+
+A key that is a relation must lead to a model whose key is not. A model keyed
+by itself, or two models keyed by each other, raises `TypeError` when it is
+decorated, naming the models in the cycle. A key whose model is not defined yet
+when the class is decorated raises the same `TypeError` when the key is first
+used.
+
+### Differences from Django
+
+Django models also compare and hash by primary key. Django copies a related
+object's key when the relation is assigned. The `pk` of a model keyed by a
+one-to-one relation is the copied column value, such as `user_id`, so it never
+follows the related object. eazyrest's `pk` and `url` give the related object's
+current key, and a model that holds the object compares by its saved key.
+Django also has no pending key change: assigning `pk` changes the hash at once,
+where eazyrest keeps the saved key until `save()` sends the change.
+
 ## Loading and caching
 
 You can construct an object from a primary key or from an already-loaded JSON
@@ -158,41 +250,8 @@ starts with that payload already loaded. It keeps a deep copy of the payload,
 as `update_from_json()` does, so changing the payload or its nested values
 afterward does not change the object.
 
-Objects compare by key, as Django models do. Two objects are equal if they are
-of exactly the same model, so a subclass does not equal its base, and their
-primary keys are known without a request, are not `None`, and are equal. The
-API and the fields are not compared. A key is known as `repr()` knows it: the
-object holds it, as `User(id=1)` does, or its loaded JSON has it. The key is
-the one the object is saved under, so while a lazy change of the key waits for
-`save()`, it is the key before the change. A key that is a relation compares as
-the related object's key, so `UserProfile(user=User(id=2))` equals another
-`UserProfile(user=User(id=2))`, and `profile.user` equals the object that was
-given, though it is not the same object. Any other object equals only itself.
-That includes an object of a model without a key field, one built without a
-key, such as `User()`, one known only by its URL that has not loaded, and one
-whose loaded JSON lacks the key, holds `null`, or holds a key that the field
-cannot convert, such as `"not-a-uuid"` for a `UUID` key, which `repr()` still
-shows. Comparing never sends a request. Comparing with a value that is not a
-model object is `False`.
-
-An object hashes by its model and key, so objects that are equal are one member
-of a set or one key of a dict. An object of a model without a key field hashes
-by identity. For any other object whose key is not known, `hash()` raises
-`TypeError`, because a hash that changed when the key became known would lose
-the object in a set or dict that held it. The message advises loading or saving
-the object, or giving its key, only for an object that has no JSON yet or only
-part of it. Otherwise it says that the key is missing from the JSON, is `None`,
-or cannot be read, because none of those would help. A key whose type cannot be
-hashed, such as a `list`, still makes equal objects, and `hash()` raises
-Python's own `TypeError` for it. A pending key change does not change the hash
-until `save()` sends it. Then the hash changes, as a Django model's does, so
-take the object out of a set or dict before it saves a new key, and put it back
-after. A key is compared as it is held, without converting it, so
-`User(id="1")` does not equal `User(id=1)` and hashes differently. A load, or a
-write's response, that spells the key another way, or names another key,
-replaces the held key with the JSON's, so it changes the hash, and a set or
-dict that holds the object no longer finds it. Give the key in its field's
-type, as the server returns it.
+Objects compare by key and hash by key, with the rules and the cases that
+[Equality by key](#equality-by-key) describes.
 
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues

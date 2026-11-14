@@ -4639,7 +4639,10 @@ class JSONObject:
         not equal to its base. The API, the JSON, and the field values are not
         compared. The key is the one that the object is saved under, so while a
         lazy key change waits for ``save()`` it is the key before the change. A
-        key that is a relation compares as the related object's plain key.
+        key that is a relation compares as the related object's saved key. An
+        object that holds the related object asks it on each comparison, so it
+        follows that object's own saved key. A loaded or embedded object
+        compares by the key in its JSON.
 
         A key is known if the object holds it or its loaded JSON has it, as for
         ``repr()``. An object whose key is not known, or is ``None``, or whose
@@ -4674,8 +4677,10 @@ class JSONObject:
         """Return a hash that agrees with equality.
 
         The hash is that of the model and the key that the object is saved
-        under, so it does not change while a key change waits for ``save()``,
-        and changes when ``save()`` sends it, as a Django model's does. An
+        under, so it does not change while a key change waits for ``save()``.
+        It changes when ``save()`` sends the change, when ``save()`` of a
+        related object that a relation key follows sends that object's change,
+        and when a load or a write response spells the key another way. An
         object of a model without a key field hashes by identity, because its
         key can never become known. Hashing sends no request.
 
