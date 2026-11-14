@@ -271,6 +271,11 @@ describe them further.
   known key still equals only itself, and `hash()` of one raises `TypeError`,
   unless its model has no key field. The message says what is wrong with the
   key.
+- A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
+  the key that each object holds, compared as `==` compares keys, not by the
+  key of the returned dictionary. A key that hashes by identity is found
+  without a load, and `Decimal` keys spelled `1.0` and `1.00` get two objects,
+  where `v1.0.0a5` gave both the same one.
 
 ### Migrating from 0.9.0
 

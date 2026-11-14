@@ -509,7 +509,7 @@ of it raises `FieldConversionError`, naming the field, the expected model, and
 the given class, when it is assigned, given to `create()` or a query, or is an
 item of a collection of relations or the value of a `Hyperlinked()` relation.
 An object without a key is refused with `FieldConversionError`, rather than
-written as `null`. Prefetch lookups and `update_from_json()` compare decoded
+written as `null`. Prefetch lookups and `update_from_json()` compare canonical
 keys, so equivalent UUID spellings identify the same object.
 
 Collection annotations are converted recursively, so item annotations are
@@ -1233,7 +1233,10 @@ Prefetch works for single related-object fields and typed related collections.
 Embedded related objects do not need prefetching, because `eazyrest` only
 bulk-loads primary-key-style values. When the same related primary key appears
 more than once in a prefetch batch, parent objects share the same related
-instance.
+instance. A parent finds a returned object by the key that the object holds,
+compared as `==` compares keys, so the dictionary's own keys do not matter. A
+key spelled another way that encodes differently, such as `1.00` for `1.0`, is
+another key, and its object loads on its own unless the method returned it.
 
 A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
 its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`

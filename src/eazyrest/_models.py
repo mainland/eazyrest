@@ -198,7 +198,11 @@ def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
 
 
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
-"""Prefetched related objects keyed by field name and then by primary key."""
+"""Prefetched related objects, by field name and then by canonical key.
+
+The key is the text of the canonical key of a key, or the canonical URL of a
+hyperlink.
+"""
 
 PrefetchFields: TypeAlias = str | Sequence[str] | None
 """Related field names requested for explicit prefetch."""
@@ -4857,7 +4861,8 @@ class JSONObject:
 
         Args:
             prefetched_related: Mapping from each prefetched field name to the
-                related objects loaded for it, keyed by primary key.
+                related objects loaded for it, keyed by the text of their
+                canonical key, or by canonical URL for a hyperlinked field.
         """
         # Copy the outer mapping so each parent can drop an entire prefetched
         # field cache independently while still sharing the related objects.
@@ -4924,9 +4929,11 @@ class JSONObject:
 
         related = ty(pk=arg, api=api, write_mode=self.write_mode)
         if field is not None and field in self._prefetched_related:
-            pk = related._normalize_pk(arg)
-            if pk in self._prefetched_related[field]:
-                return cast(T, self._prefetched_related[field][pk])
+            canonical = related._canonical_key()
+            if canonical is not None:
+                prefetched = self._prefetched_related[field].get(canonical[1])
+                if prefetched is not None:
+                    return cast(T, prefetched)
 
         return related
 
@@ -6136,24 +6143,6 @@ class JSONObject:
                 _canonical_key_of(self, self._saved_key_json)
         return None
 
-    def _normalize_pk(self, value: Any) -> Any:
-        """Return a decoded scalar primary key from a Python or JSON value.
-
-        Args:
-            value: Primary key, as a Python value or a JSON value.
-
-        Returns:
-            The primary key, encoded and decoded by the primary-key field's
-            type. A key that decodes to a model instance gives that instance's
-            own decoded primary key.
-        """
-        conversion = type(self)._pk.analyzed_type
-        value = self._from_json(self._to_json(value, conversion), conversion)
-        if isinstance(value, JSONObject):
-            return value._normalize_pk(_held_key(value))
-
-        return value
-
     @property
     def url(self) -> str:
         """Return the resource URL for this object.
@@ -7003,8 +6992,10 @@ class JSONObject:
             query: The query that prefetches.
 
         Returns:
-            Mapping of each prefetched field name to related objects keyed by
-            primary key. Fields with no primary keys to fetch are omitted.
+            Mapping of each prefetched field name to related objects. A key
+            that is not hyperlinked is keyed by the text of its canonical key,
+            as ``==`` compares keys, and a hyperlink by its canonical URL.
+            Fields with no primary keys to fetch are omitted.
 
         Raises:
             ValueError: If any field is not a JSON-backed related-object field.
@@ -7071,9 +7062,12 @@ class JSONObject:
             related_objects = model_type.bulk_get_by_pks(
                 pks, api=query.related_client(model_type)
             )
+            # A hook keys its result as it likes, by the key as the parents
+            # spell it or as it decodes, so each object gives its own key.
             prefetched_related[field] = {
-                obj._normalize_pk(pk): obj
-                for pk, obj in related_objects.items()
+                canonical[1]: obj
+                for obj in related_objects.values()
+                if (canonical := obj._canonical_key()) is not None
             }
 
         return prefetched_related

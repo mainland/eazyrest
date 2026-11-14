@@ -7875,6 +7875,114 @@ def test_a_datetime_key_spelled_two_ways_is_one_key() -> None:
     assert first.url == second.url == built.url
 
 
+@json_object
+class BulkPrice(ModelBase):
+    """Model keyed by a ``Decimal``, which loads in bulk."""
+
+    class_url = "/bulk-prices/"
+
+    id: decimal.Decimal
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, BulkPrice]:
+        """Return an object named ``bulk`` for each key, without a request.
+
+        Args:
+            pks: Keys as the parents' JSON spells them.
+            api: Ignored.
+            **kwargs: Ignored.
+
+        Returns:
+            The objects, keyed as the parents spell the keys.
+        """
+        return {pk: cls(json={"id": pk, "name": "bulk"}) for pk in pks}
+
+
+@json_object
+class PriceHolder(ModelBase):
+    """Model with a relation to ``BulkPrice``."""
+
+    class_url = "/price-holders/"
+
+    id: int
+    price: BulkPrice
+
+
+@json_object
+class BulkGrid(CellBase):
+    """Model keyed by a ``Cell``, which loads in bulk."""
+
+    class_url = "/bulk-grids/"
+
+    id: Cell
+    name: str
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, BulkGrid]:
+        """Return an object named ``bulk`` for each key, without a request.
+
+        Args:
+            pks: Keys as the parents' JSON spells them.
+            api: Ignored.
+            **kwargs: Ignored.
+
+        Returns:
+            The objects, keyed as the parents spell the keys.
+        """
+        return {pk: cls(json={"id": pk, "name": "bulk"}) for pk in pks}
+
+
+@json_object
+class GridHolder(CellBase):
+    """Model with a relation to ``BulkGrid``."""
+
+    class_url = "/grid-holders/"
+
+    id: int
+    grid: BulkGrid
+
+
+def test_prefetch_keeps_decimal_keys_of_another_precision_apart(
+    requests_mock: Any,
+) -> None:
+    """Parents that spell a ``Decimal`` key two ways get two objects."""
+    requests_mock.get(
+        "https://example.com/v1/price-holders/",
+        json=[{"id": 1, "price": "1.0"}, {"id": 2, "price": "1.00"}],
+    )
+
+    first, second = PriceHolder.filter(prefetch="price")
+
+    assert first.price is not second.price
+    assert first.price.url == "/bulk-prices/1.0/"
+    assert second.price.url == "/bulk-prices/1.00/"
+    assert first.price.name == second.price.name == "bulk"
+    assert requests_mock.call_count == 1
+
+
+def test_prefetch_finds_a_key_that_hashes_by_identity(
+    requests_mock: Any,
+) -> None:
+    """A key that compares by identity is found without a load."""
+    BulkGrid.register_api(test_api)
+    GridHolder.register_api(test_api)
+    requests_mock.get(
+        "https://example.com/v1/grid-holders/",
+        json=[{"id": 1, "grid": 5}, {"id": 2, "grid": 5}],
+    )
+
+    first, second = GridHolder.filter(prefetch="grid")
+
+    assert first.grid is second.grid
+    assert first.grid.name == second.grid.name == "bulk"
+    assert requests_mock.call_count == 1
+
+
 def test_a_bare_and_an_embedded_relation_key_are_one_key(
     requests_mock: Any,
 ) -> None:

@@ -1043,8 +1043,6 @@ def test_model_valued_primary_key_identifies_by_its_key() -> None:
 
     assert profile.pk == 3
     assert profile.url == "/profiles/3/"
-    assert profile._normalize_pk(CountingUser(id=3)) == 3
-    assert profile._normalize_pk(3) == 3
 
 
 def test_prefetch_matches_model_keys_and_loads_misses(
