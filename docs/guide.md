@@ -146,9 +146,10 @@ resource, and these laws follow:
   as a `list`, still gives equal objects when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
   their values. `User(id=1.0)` and `User(id=True)` do not equal `User(id=1)`,
-  `User(id="1")` does not equal `User(id=1)`, and `Decimal` keys of `"1.0"` and
-  `"1.00"` differ, because each pair names different URLs. Give the key in its
-  field's type, as the server returns it.
+  and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each pair names
+  different URLs. `User(id="1")` does not equal `User(id=1)` either, although
+  both name `/users/1/`, because a string and a number are different JSON. Give
+  the key in its field's type, as the server returns it.
 - A change to a Python value, including the value that `pk` returns, changes
   nothing until a write sends it and its response is recorded.
 
@@ -205,8 +206,8 @@ happens at two points:
 
 - at `save()` of the object's own key change, which sends the new key, or at
   the assignment in eager mode, which sends it at once, and
-- at a load, a write's response, or `update_from_json()` that names another
-  key.
+- at a load or a write's response that names another key. `update_from_json()`
+  refuses a payload that names another key.
 
 A set or dict that holds the object then no longer finds it. Take the object
 out before such a change, and put it back after. A pending change, a change
