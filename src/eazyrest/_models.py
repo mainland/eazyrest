@@ -1450,6 +1450,10 @@ def _check_no_alias(hint: Any, ty: type[Any], key: str) -> None:
             )
 
 
+class _ModelInContainerError(TypeError):
+    """A model inside a ``TypedDict``, a mapping, a tuple, or the like."""
+
+
 def _holds_model(analyzed: AnalyzedType) -> bool:
     """Return whether an analyzed type reads related objects.
 
@@ -1465,6 +1469,57 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
             return True
         case OptionalType(inner) | CollectionType(_, inner):
             return _holds_model(inner)
+    return False
+
+
+def _holds_model_anywhere(
+    analyzed: AnalyzedType, seen: set[type[Any]] | None = None
+) -> bool:
+    """Return whether a type holds a related model in any form.
+
+    Unlike ``_holds_model()``, it looks inside mappings, fixed-length tuples,
+    and the ``TypedDict``, ``NamedTuple``, and dataclass forms, which analyze
+    their fields when first needed.
+
+    Args:
+        analyzed: Analyzed type.
+        seen: Forms already visited, which keeps a self-referential one from
+            looping.
+
+    Returns:
+        Whether ``analyzed`` is a related model or holds one. A form whose
+        fields cannot be analyzed for another reason holds none that this
+        reports, since that reason is refused when it is first used.
+    """
+    seen = set() if seen is None else seen
+    match analyzed:
+        case RelatedType():
+            return True
+        case (
+            OptionalType(inner) | CollectionType(_, inner) | MappingType(inner)
+        ):
+            return _holds_model_anywhere(inner, seen)
+        case FixedTupleType(item_types):
+            return any(
+                _holds_model_anywhere(item, seen) for item in item_types
+            )
+        case TypedDictType(form) | NamedTupleType(form) | DataclassType(form):
+            if form in seen:
+                return False
+            seen.add(form)
+            try:
+                if isinstance(analyzed, TypedDictType):
+                    members = list(analyzed.keys.values())
+                elif isinstance(analyzed, NamedTupleType):
+                    members = [member for _, member in analyzed.fields]
+                else:
+                    assert isinstance(analyzed, DataclassType)
+                    members = [member for _, member, _ in analyzed.fields]
+            except _ModelInContainerError:
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+            return any(_holds_model_anywhere(item, seen) for item in members)
     return False
 
 
@@ -1507,7 +1562,7 @@ def _check_no_models(analyzed: AnalyzedType, container: Any) -> None:
     match analyzed:
         case RelatedType(model_type):
             name = getattr(container, "__name__", repr(container))
-            raise TypeError(
+            raise _ModelInContainerError(
                 f"{name} holds the model {model_type.__name__}, which "
                 "eazyrest does not convert inside a TypedDict, a mapping, a "
                 "fixed-length tuple, a NamedTuple, or a dataclass. Annotate "
@@ -2837,6 +2892,27 @@ def _check_key_not_hyperlinked(
         raise error
 
 
+def _key_holds_relation_error(cls: type[JSONObject], field: str) -> TypeError:
+    """Return the refusal of a primary key that holds related objects.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+
+    Returns:
+        A ``TypeError`` that a conversion reports as a plain one, as decorating
+        the class does, not as the conversion of a value.
+    """
+    error = TypeError(
+        f"{cls.__name__}.{field} is the primary key, and a primary key "
+        "cannot hold related objects inside a collection, a mapping, a "
+        "fixed-length tuple, a TypedDict, a NamedTuple, or a dataclass. "
+        "Declare the key as the related model, or as the type of its key."
+    )
+    setattr(error, _DECLARATION_ERROR, True)
+    return error
+
+
 def _check_key_holds_no_relation(
     cls: type[JSONObject], field: str, analyzed: AnalyzedType
 ) -> None:
@@ -2845,7 +2921,9 @@ def _check_key_holds_no_relation(
     A key that is a relation reads as the related object's key, which the model
     copies, and equality and ``url`` read the key's JSON without an object of
     the model. A key such as ``list[User]`` would need each related object
-    built, with the API and the write mode of the object that holds it.
+    built, with the API and the write mode of the object that holds it. So
+    would one in a mapping, a fixed-length tuple, or a ``TypedDict``,
+    ``NamedTuple``, or dataclass.
 
     Args:
         cls: Model class that declares the key.
@@ -2856,16 +2934,8 @@ def _check_key_holds_no_relation(
         TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
             other than being the relation itself.
     """
-    if _related_key_type(analyzed) is None and _holds_model(analyzed):
-        error = TypeError(
-            f"{cls.__name__}.{field} is the primary key, and a primary key "
-            "cannot hold related objects inside a collection. Declare the "
-            "key as the related model, or as the type of its key."
-        )
-        # A conversion reports the error as a plain TypeError, as decorating
-        # the class does, not as the conversion of a value.
-        setattr(error, _DECLARATION_ERROR, True)
-        raise error
+    if _related_key_type(analyzed) is None and _holds_model_anywhere(analyzed):
+        raise _key_holds_relation_error(cls, field)
 
 
 def _resolve_chain_key(
@@ -2988,13 +3058,17 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
     Raises:
         TypeError: If the model's primary key is a ``Hyperlinked()`` relation,
             or a relation whose chain of key relations returns to a model in
-            it, or holds relations inside a collection, as ``list[User]`` does.
+            it, or holds relations inside a collection, a mapping, a tuple, a
+            ``TypedDict``, a ``NamedTuple``, or a dataclass, as ``list[User]``
+            does.
     """
     prop = _pk_property_of(cls)
     if prop is None:
         return
     try:
         analyzed = analyze_type(prop._resolve_type())
+    except _ModelInContainerError as err:
+        raise _key_holds_relation_error(cls, prop.field) from err
     except Exception:  # noqa: BLE001
         # An unresolved reference, or a type that is refused when the field is
         # first used, which says why.
@@ -4244,7 +4318,12 @@ class JSONProperty:
                 ``Hyperlinked()`` relation, or a set of them. A type that names
                 a class defined later is refused here, when it is first used.
         """
-        analyzed = analyze_type(self.ty)
+        try:
+            analyzed = analyze_type(self.ty)
+        except _ModelInContainerError as err:
+            if self.is_primary_key:
+                raise _key_holds_relation_error(self.cls, self.field) from err
+            raise
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
             _check_key_holds_no_relation(self.cls, self.field, analyzed)

@@ -224,10 +224,12 @@ describe them further.
   raises the same `TypeError` when the key is first used. End the chain at a
   model whose key is not a relation.
 - A model whose primary key holds related objects inside a collection, such as
-  `list[User]`, raises `TypeError` when it is decorated, naming the field,
-  where `v1.0.0a5` defined it. A key whose type names a class that is not
-  defined yet raises the same `TypeError` when the key is first used. Declare
-  the key as a relation to the model, or as the type of that model's key.
+  `list[User]`, or inside a mapping, a fixed-length tuple, a `TypedDict`, a
+  `NamedTuple`, or a dataclass, raises `TypeError` when it is decorated, naming
+  the field, where `v1.0.0a5` defined it. A key whose type names a class that
+  is not defined yet raises the same `TypeError` when the key is first used.
+  Declare the key as a relation to the model, or as the type of that model's
+  key.
 - A field whose type is a set of `Hyperlinked()` relations, as
   `set[Annotated[User, Hyperlinked()]]`, also as a `frozenset`, `Set`, or
   `MutableSet`, and inside an optional, raises `TypeError` when the class is

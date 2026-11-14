@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime
 import decimal
 import email
@@ -6307,6 +6308,143 @@ def test_a_primary_key_cannot_hold_related_objects_in_a_collection() -> None:
             class_url = "/squads/"
 
             id: set[User] | None
+
+
+class _UserPair(typing.NamedTuple):
+    """A ``NamedTuple`` that holds a related model."""
+
+    user: User
+    size: int
+
+
+class _UserRecord(TypedDict):
+    """A ``TypedDict`` that holds a related model."""
+
+    user: User
+
+
+@dataclasses.dataclass
+class _UserEntry:
+    """A dataclass that holds a related model."""
+
+    user: User
+
+
+class _NestedRecord(TypedDict):
+    """A ``TypedDict`` that holds a list of another one that holds a model."""
+
+    records: list[_UserRecord]
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        pytest.param(dict[str, User], id="mapping"),
+        pytest.param(dict[str, list[User]], id="mapping-of-lists"),
+        pytest.param(tuple[User, int], id="fixed-tuple"),
+        pytest.param(tuple[int, User] | None, id="optional-fixed-tuple"),
+        pytest.param(_UserPair, id="named-tuple"),
+        pytest.param(_UserRecord, id="typed-dict"),
+        pytest.param(_UserEntry, id="dataclass"),
+        pytest.param(list[_UserRecord], id="list-of-typed-dicts"),
+        pytest.param(_NestedRecord, id="typed-dict-in-typed-dict"),
+    ],
+)
+def test_a_primary_key_cannot_hold_related_objects_in_any_container(
+    key_type: Any,
+) -> None:
+    """Decorating a model whose key holds a model in a container is refused.
+
+    Mappings, fixed-length tuples, ``TypedDict``, ``NamedTuple``, and dataclass
+    keys are refused as a collection is, when the class is decorated, and the
+    error is a plain ``TypeError`` that names the field.
+
+    Args:
+        key_type: Declared type of the primary key.
+    """
+    with pytest.raises(
+        TypeError,
+        match=r"Crate\.id is the primary key.*cannot hold related objects",
+    ) as error:
+        json_object(
+            type(
+                "Crate",
+                (ModelBase,),
+                {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+            )
+        )
+
+    assert not isinstance(error.value, FieldConversionError)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        pytest.param(dict[str, int], id="mapping"),
+        pytest.param(tuple[str, int], id="fixed-tuple"),
+        pytest.param(User, id="relation"),
+    ],
+)
+def test_a_primary_key_that_holds_no_related_object_is_accepted(
+    key_type: Any,
+) -> None:
+    """A key of a container without a model, or a relation, declares.
+
+    Args:
+        key_type: Declared type of the primary key.
+    """
+    json_object(
+        type(
+            "Bin",
+            (ModelBase,),
+            {"__annotations__": {"id": key_type}, "class_url": "/bins/"},
+        )
+    )
+
+
+def test_a_key_in_a_container_that_holds_a_model_is_refused_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key that names a class defined later is refused when it resolves.
+
+    The refusal is a plain ``TypeError``, from ``url`` and from ``==``, for a
+    mapping and for a ``NamedTuple`` whose field names the later class.
+
+    Args:
+        monkeypatch: Defines the classes as globals, after the models that name
+            them are decorated.
+    """
+
+    @json_object
+    class Shelf(ModelBase):
+        class_url = "/shelves/"
+
+        id: dict[str, Item]
+
+    @json_object
+    class Rack(ModelBase):
+        class_url = "/racks/"
+
+        id: Slot
+
+    @json_object
+    class Item(ModelBase):
+        class_url = "/items/"
+
+        id: int
+
+    class Slot(typing.NamedTuple):
+        item: Item
+
+    monkeypatch.setitem(globals(), "Item", Item)
+    monkeypatch.setitem(globals(), "Slot", Slot)
+
+    with pytest.raises(TypeError, match=r"Shelf\.id is the primary key"):
+        Shelf(json={"id": {"a": 1}}).url  # noqa: B018
+    with pytest.raises(TypeError, match=r"Rack\.id is the primary key"):
+        Rack(json={"id": [1]}).url  # noqa: B018
+    with pytest.raises(TypeError, match=r"Rack\.id is the primary key"):
+        Rack(json={"id": [1]}) == Rack(json={"id": [1]})  # noqa: B015
 
 
 def test_a_primary_key_that_holds_related_objects_is_refused_on_first_use(
