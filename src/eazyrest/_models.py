@@ -1698,7 +1698,9 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
     # Decoding a key that is not a relation reads only the model's conversions,
     # so a related model's key is decoded without building an object.
     host = obj if owner is type(obj) else object.__new__(owner)
-    return host._from_json(value, conversion)
+    # A conversion may keep what it decodes from, and the saved key must not
+    # change when the caller changes the decoded key in place.
+    return host._from_json(_copy_json(value), conversion)
 
 
 def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
@@ -1728,7 +1730,10 @@ def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
         return None
     owner, conversion, value = reduced
     host = obj if owner is type(obj) else object.__new__(owner)
-    encoded = owner._to_json(host._from_json(value, conversion), conversion)
+    # A conversion may keep what it decodes from, and the canonical key must
+    # not share containers with the saved key.
+    decoded = host._from_json(_copy_json(value), conversion)
+    encoded = owner._to_json(decoded, conversion)
     if encoded is None:
         return None
     return encoded, json.dumps(encoded, sort_keys=True, separators=(",", ":"))
@@ -4248,7 +4253,9 @@ class JSONProperty:
             # cannot load reads as None, because an object may have no key.
             is_key = self._is_key_of(obj)
             if is_key and obj._saved_key_json is not None:
-                raw = obj._saved_key_json
+                # The field cache keeps what the conversion decodes, which may
+                # share this JSON, so decode a copy of the saved key.
+                raw = _copy_json(obj._saved_key_json)
             else:
                 if is_key and obj._url_override is None:
                     # Loading would need a URL, which needs the key.

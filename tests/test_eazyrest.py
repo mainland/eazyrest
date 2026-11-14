@@ -7987,6 +7987,116 @@ def test_a_key_changed_in_place_after_a_refresh_is_sent_to_the_saved_url(
     assert grid.url == "/grids/9/"
 
 
+class Route:
+    """Key type whose conversion keeps the list that it decodes."""
+
+    def __init__(self, parts: list[str]) -> None:
+        """Keep the list itself, not a copy."""
+        self.parts = parts
+
+
+class RouteBase(JSONObject):
+    """Base whose conversion decodes a ``Route`` without copying."""
+
+    conversions: ClassVar[dict[type, Conversion]] = {
+        Route: Conversion(
+            decode=lambda value, cls: cls(value),
+            encode=lambda route, cls: route.parts,
+        )
+    }
+
+
+@json_object
+class Stop(RouteBase):
+    """Model whose key is a ``Route``, which can change in place."""
+
+    class_url = "/stops/"
+
+    id: Route
+    name: str
+
+
+@json_object(pk="stop")
+class StopNote(RouteBase):
+    """Model keyed by a relation to a model with a ``Route`` key."""
+
+    class_url = "/stop-notes/"
+
+    stop: Stop
+    note: str
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_a_key_that_a_conversion_aliases_is_sent_to_the_saved_url(
+    requests_mock: Any,
+    write_mode: WriteMode,
+) -> None:
+    """Changing the decoded key of an unloaded object leaves its saved key.
+
+    The conversion keeps the list that it decodes, so the change in place must
+    reach a copy. The object loads from the saved key, and sends the new key to
+    that URL.
+
+    Args:
+        requests_mock: Mocks the load and the write.
+        write_mode: Whether the change is sent at once or waits for ``save()``.
+    """
+    get = requests_mock.get(requests_mock_ANY, json={"id": ["a"], "name": "A"})
+    patch = requests_mock.patch(
+        requests_mock_ANY, json={"id": ["a", "b"], "name": "renamed"}
+    )
+    Stop.register_api(test_api)
+    stop = Stop(id=Route(["a"]), write_mode=write_mode)
+    twin = Stop(id=Route(["a"]))
+
+    stop.pk.parts.append("b")
+
+    assert stop.url == "/stops/%5B%27a%27%5D/"
+    assert stop == twin
+    assert hash(stop) == hash(twin)
+    assert stop.pk.parts == ["a", "b"]
+
+    if write_mode == "lazy":
+        stop.name = "renamed"
+        stop.save()
+    else:
+        stop.name = "renamed"
+
+    assert [call.path for call in get.request_history] == [
+        "/v1/stops/%5b%27a%27%5d/"
+    ]
+    assert [call.path for call in patch.request_history] == [
+        "/v1/stops/%5b%27a%27%5d/"
+    ]
+    assert patch.last_request.json() == {"id": ["a", "b"], "name": "renamed"}
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_a_relation_key_that_a_conversion_aliases_keeps_the_saved_key(
+    write_mode: WriteMode,
+) -> None:
+    """Changing the decoded key of an unloaded relation key leaves the URL.
+
+    Args:
+        write_mode: Write mode of the objects.
+    """
+    Stop.register_api(test_api)
+    StopNote.register_api(test_api)
+    note = StopNote(
+        stop=Stop(id=Route(["a"]), write_mode=write_mode),
+        write_mode=write_mode,
+    )
+    twin = StopNote(stop=Stop(id=Route(["a"])))
+    url = note.url
+    before = hash(note)
+
+    note.pk.parts.append("b")
+
+    assert note.url == url == "/stop-notes/%5B%27a%27%5D/"
+    assert hash(note) == before == hash(twin)
+    assert note == twin
+
+
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
     """A payload that names no key cannot name another object."""
     grid = _identity_keyed_objects("lazy")[0]
