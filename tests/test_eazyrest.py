@@ -8444,6 +8444,29 @@ def test_json_schema_describes_what_a_model_writes() -> None:
     assert list(properties)[:3] == ["id", "name", "score"]
 
 
+def test_json_schema_of_a_relation_to_a_model_keyed_by_a_relation() -> None:
+    """A relation to a model whose key is a relation has the end key's schema.
+
+    ``UserProfile`` is keyed by a ``User``, whose key is an integer, so a
+    relation to a profile is written as that integer, and read as that integer
+    or an embedded object.
+    """
+
+    @json_object
+    class Setting(ModelBase):
+        class_url = "/settings/"
+
+        id: int
+        profile: UserProfile
+
+    assert Setting.json_schema("write")["properties"]["profile"] == {
+        "type": "integer"
+    }
+    assert Setting.json_schema()["properties"]["profile"] == {
+        "anyOf": [{"type": "integer"}, {"type": "object"}]
+    }
+
+
 def test_json_schema_follows_declaration_order() -> None:
     """Properties follow declaration order, with or without defaults.
 
