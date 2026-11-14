@@ -1250,7 +1250,11 @@ more than once in a prefetch batch, parent objects share the same related
 instance. A parent finds a returned object by the key that the object holds,
 compared as `==` compares keys, so the dictionary's own keys do not matter. A
 key spelled another way that encodes differently, such as `1.00` for `1.0`, is
-another key, and its object loads on its own unless the method returned it.
+another key, and its object loads on its own unless the method returned it. A
+returned object that has no key is ignored. One that is not an instance of the
+related model, or of a subclass of it, raises `TypeError` that names the hook,
+the model, the field, and the class returned, since a parent would otherwise
+read an object of another resource.
 
 A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
 its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`
@@ -1258,7 +1262,8 @@ instead, which receives the absolute URLs and returns the objects keyed by URL.
 A URL is checked as reading the field checks it, so a URL on an origin that the
 API does not allow is not loaded, and reading the field still raises
 `FieldConversionError`. Two spellings of one URL, such as a relative and an
-absolute one, name the same object.
+absolute one, name the same object. `bulk_get_by_urls()` raises `TypeError` for
+an object of another model in the same way.
 
 Related objects inherit their parent's write mode, including when they are
 prefetched. Enabling prefetch preserves when assignments are saved, even if the

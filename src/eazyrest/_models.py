@@ -1545,6 +1545,37 @@ def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
+def _check_prefetched_class(
+    obj: Any,
+    model_type: type[Any],
+    hook: str,
+    owner: type[Any],
+    field: str,
+) -> None:
+    """Refuse a prefetched object that is not of the relation's model.
+
+    A parent would otherwise read an object of another model and resource as
+    the related object.
+
+    Args:
+        obj: Object that the bulk hook returned.
+        model_type: Model that the relation's field names.
+        hook: Name of the bulk hook, for the message.
+        owner: Class of the parent objects, for the message.
+        field: Name of the relation's field, for the message.
+
+    Raises:
+        TypeError: If ``obj`` is not an instance of ``model_type``, which a
+            subclass of it is.
+    """
+    if not isinstance(obj, model_type):
+        raise TypeError(
+            f"{model_type.__name__}.{hook}() returned an object of "
+            f"{type(obj).__name__} for {owner.__name__}.{field}, which is "
+            f"not a {model_type.__name__}"
+        )
+
+
 def _check_no_models(analyzed: AnalyzedType, container: Any) -> None:
     """Refuse a model inside a ``TypedDict`` or a mapping.
 
@@ -6684,7 +6715,11 @@ class JSONObject:
                 must accept it, and pass it on when it calls another hook.
 
         Returns:
-            Mapping from primary key to loaded object.
+            The loaded objects, in a mapping whose keys are not read. Prefetch
+            matches each object by the key that it holds, as ``==`` compares
+            keys, so the mapping may key them as it likes. An object without a
+            key is ignored. An object of another model, which is not an
+            instance of this class or of a subclass, raises ``TypeError``.
 
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
@@ -6719,9 +6754,11 @@ class JSONObject:
                 ``bulk_get_by_pks()``.
 
         Returns:
-            Mapping from URL to loaded object. URLs are matched after
-            resolving them against the API's base URL and normalizing case
-            and default ports, and URLs that were not requested are ignored.
+            The loaded objects, in a mapping keyed by URL. URLs are matched
+            after resolving them against the API's base URL and normalizing
+            case and default ports, and objects under URLs that were not
+            requested are ignored. An object of another model, which is not an
+            instance of this class or of a subclass, raises ``TypeError``.
 
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
@@ -7151,7 +7188,7 @@ class JSONObject:
             model_type = related_type.model_type
             if related_type.hyperlinked:
                 prefetched_related[field] = cls._prefetch_hyperlinks(
-                    model_type, pks, query
+                    model_type, pks, query, cls, field
                 )
                 continue
             related_objects = model_type.bulk_get_by_pks(
@@ -7159,6 +7196,10 @@ class JSONObject:
             )
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
+            for obj in related_objects.values():
+                _check_prefetched_class(
+                    obj, model_type, "bulk_get_by_pks", cls, field
+                )
             prefetched_related[field] = {
                 canonical[1]: obj
                 for obj in related_objects.values()
@@ -7169,7 +7210,11 @@ class JSONObject:
 
     @staticmethod
     def _prefetch_hyperlinks(
-        model_type: type[JSONObject], values: set[Any], query: _Query
+        model_type: type[JSONObject],
+        values: set[Any],
+        query: _Query,
+        owner: type[JSONObject],
+        field: str,
     ) -> dict[str, JSONObject]:
         """Bulk-load the objects that a hyperlinked field's URLs name.
 
@@ -7182,10 +7227,16 @@ class JSONObject:
             model_type: Class of the related objects.
             values: Hyperlinks that the parent objects hold.
             query: The query that prefetches.
+            owner: Class of the parent objects, for the message.
+            field: Name of the relation's field, for the message.
 
         Returns:
             The loaded objects, keyed by canonical absolute URL. Each has the
             URL that named it, as an object that a hyperlink names does.
+
+        Raises:
+            TypeError: If the hook returns an object that is not a
+                ``model_type``.
         """
         check_api = model_type.api if query.api is None else query.api
         urls: dict[str, str] = {}
@@ -7205,6 +7256,9 @@ class JSONObject:
         )
         prefetched: dict[str, JSONObject] = {}
         for url, obj in loaded.items():
+            _check_prefetched_class(
+                obj, model_type, "bulk_get_by_urls", owner, field
+            )
             key = _canonical_url(urljoin(check_api.base_url, url))
             if key not in urls:
                 continue

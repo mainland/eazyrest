@@ -1968,6 +1968,61 @@ def test_filter_prefetches_related_objects_via_bulk_get(
     assert users.last_request.qs == {"id": ["2", "3"]}
 
 
+def test_prefetch_refuses_an_object_of_another_model_from_bulk_get_by_pks(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that returns an object of another model raises ``TypeError``.
+
+    The message names the hook, the model, the field, and the class returned,
+    and no parent reads the object.
+    """
+
+    def bulk_get_by_pks(
+        cls: type[User], /, pks: set[Any], *, api: Client, **kwargs: Any
+    ) -> dict[int, Any]:
+        return {pk: Team(json={"id": pk}, api=api) for pk in pks}
+
+    monkeypatch.setattr(User, "bulk_get_by_pks", classmethod(bulk_get_by_pks))
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"User\.bulk_get_by_pks\(\) returned an object of Team for "
+            r"Todo\.user, which is not a User"
+        ),
+    ):
+        list(Todo.filter(prefetch="user"))
+
+
+def test_prefetch_accepts_a_subclass_from_bulk_get_by_pks(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An object of a subclass of the related model is a related object."""
+
+    def bulk_get_by_pks(
+        cls: type[User], /, pks: set[Any], *, api: Client, **kwargs: Any
+    ) -> dict[int, User]:
+        return {
+            pk: Admin(json={"id": pk, "name": "root"}, api=api) for pk in pks
+        }
+
+    monkeypatch.setattr(User, "bulk_get_by_pks", classmethod(bulk_get_by_pks))
+    requests_mock.get(
+        "https://example.com/v1/todos/",
+        json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
+    )
+
+    (todo,) = Todo.filter(prefetch="user")
+
+    assert isinstance(todo.user, Admin)
+    assert todo.user.name == "root"
+    assert requests_mock.call_count == 1
+
+
 def test_get_supports_prefetch_for_single_result(
     requests_mock: Any,
 ) -> None:
@@ -9334,6 +9389,57 @@ def test_hyperlinked_prefetch_ignores_urls_it_did_not_request(
 
     assert note.author.name == "user2"
     assert note.author.url == "https://example.com/v1/people/2/"
+    assert requests_mock.call_count == 1
+
+
+def test_hyperlinked_prefetch_refuses_an_object_of_another_model(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that returns an object of another model raises ``TypeError``.
+
+    The message names the hook, the model, the field, and the class returned.
+    """
+
+    def bulk_get_by_urls(
+        cls: type[User], /, urls: set[str], *, api: Client, **kwargs: Any
+    ) -> dict[str, Any]:
+        return {url: Team(json={"id": 2}, api=api) for url in urls}
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"User\.bulk_get_by_urls\(\) returned an object of Team for "
+            r"Note\.author, which is not a User"
+        ),
+    ):
+        list(Note.filter(prefetch="author"))
+
+
+def test_hyperlinked_prefetch_accepts_a_subclass_of_the_model(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An object of a subclass of the related model is a related object."""
+
+    def bulk_get_by_urls(
+        cls: type[User], /, urls: set[str], *, api: Client, **kwargs: Any
+    ) -> dict[str, User]:
+        return {
+            url: Admin(json={"id": 2, "name": "root"}, api=api) for url in urls
+        }
+
+    monkeypatch.setattr(
+        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
+    )
+    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
+
+    (note,) = Note.filter(prefetch="author")
+
+    assert isinstance(note.author, Admin)
     assert requests_mock.call_count == 1
 
 

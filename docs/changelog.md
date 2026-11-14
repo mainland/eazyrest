@@ -278,6 +278,11 @@ describe them further.
   key of the returned dictionary. A key that hashes by identity is found
   without a load, and `Decimal` keys spelled `1.0` and `1.00` get two objects,
   where `v1.0.0a5` gave both the same one.
+- Prefetch raises `TypeError` when `bulk_get_by_pks()` or `bulk_get_by_urls()`
+  returns an object that is not an instance of the related model or of a
+  subclass of it, naming the hook, the model, the field, and the class
+  returned. A parent whose key matched such an object used to read it, an
+  object of another model and resource.
 
 ### Migrating from 0.9.0
 
