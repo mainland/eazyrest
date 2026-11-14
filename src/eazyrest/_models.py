@@ -1752,18 +1752,20 @@ def _key_problem(obj: JSONObject) -> str:
     Returns:
         ``"unloaded"`` if the object has no JSON yet or only a partial payload,
         so loading it, or giving its key, may help. Otherwise the JSON is
-        complete: ``"missing"`` if it lacks the key field, ``"none"`` if it
-        holds ``null`` for the key, and ``"unreadable"`` if it holds a key that
-        the field cannot convert.
+        complete: ``"missing"`` if it lacks the key field and the object has
+        recorded no key, ``"none"`` if the saved key is ``None``, whatever a
+        pending change holds, and ``"unreadable"`` if the object has a saved
+        key that the field cannot convert.
     """
     state = vars(obj)
     json = state.get("_json")
     if json is None or state.get("_json_is_partial"):
         return "unloaded"
     prop = _pk_property_of(type(obj))
-    if prop is None or prop.json_field not in json:
+    saved = state.get("_saved_key_json")
+    if prop is None or (prop.json_field not in json and saved is None):
         return "missing"
-    return "none" if json[prop.json_field] is None else "unreadable"
+    return "none" if saved is None else "unreadable"
 
 
 def _unhashable_key_message(obj: JSONObject) -> str:

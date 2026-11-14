@@ -7045,6 +7045,25 @@ def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
     assert requests_mock.call_count == 0
 
 
+def test_the_hash_message_of_a_null_saved_key_ignores_a_pending_key(
+    requests_mock: Any,
+) -> None:
+    """A pending key does not make a null saved key unreadable.
+
+    The key that waits for ``save()`` reads as 5, and the saved key is
+    ``None``, so the message says that the key is ``None``.
+    """
+    user = User(json={"id": None, "name": "a"}, write_mode="lazy")
+    user.id = 5
+
+    assert user.pk == 5
+    with pytest.raises(
+        TypeError, match=r"key is None, so it cannot be hashed$"
+    ):
+        hash(user)
+    assert requests_mock.call_count == 0
+
+
 @json_object
 class TokenOwner(ModelBase):
     """Model whose key is a ``UUID``, which JSON can spell wrongly."""
