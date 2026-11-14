@@ -7127,6 +7127,39 @@ def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("write_mode", ["eager", "lazy"])
+def test_a_set_refuses_an_object_whose_pending_key_has_no_saved_key(
+    requests_mock: Any,
+    write_mode: WriteMode,
+) -> None:
+    """A set cannot hold an object that has no hash, and the write is refused.
+
+    The object's pending key encodes, but its saved key is ``None``, so it has
+    no hash. Nothing is sent or queued.
+
+    Args:
+        requests_mock: Mocks the write that must not happen.
+        write_mode: Write mode of the object that holds the set.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/set-teams/1/", json={"id": 1}
+    )
+    user = User(json={"id": None, "name": "a"}, write_mode="lazy")
+    user.id = 5
+    team = SetTeam(json={"id": 1, "members": []}, write_mode=write_mode)
+
+    with pytest.raises(
+        FieldConversionError,
+        match=r"SetTeam\.members: cannot use .*as a set element",
+    ):
+        cast(Any, team).members = [user]
+
+    assert user.pk == 5
+    assert patch.call_count == 0
+    assert team._pending_updates == {}
+    assert team.json["members"] == []
+
+
 def test_the_hash_message_of_a_null_saved_key_ignores_a_pending_key(
     requests_mock: Any,
 ) -> None:
