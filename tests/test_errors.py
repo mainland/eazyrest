@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.server
 import pickle
+import socket
 import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -764,6 +765,12 @@ def test_unpreparable_redirect_message_quotes_the_url_that_requests_prepares(
     [
         ("http://[::1/x", "http://[::1/x"),
         ("http://user:hunter2\\@[::1/x", "http://[::1/x"),
+        ("\x01http://user:hunter2@[::1/x", "http://[::1/x"),
+        ("\x0bhttp://user:hunter2@[::1/x", "http://[::1/x"),
+        ("\x1fhttp://user:hunter2\\@[::1/x", "http://[::1/x"),
+        ("\x0c//user:hunter2@[::1/x", "//[::1/x"),
+        (" \t\x01http://us\ter:hunter2@[::1/x", "http://[::1/x"),
+        ("http://[::1/p\u00c3\u00a5th", "http://[::1/p%C3%A5th"),
     ],
 )
 def test_unpreparable_redirect_message_quotes_a_location_that_cannot_be_parsed(
@@ -838,6 +845,14 @@ def test_unpreparable_redirect_message_decodes_a_utf8_location(
             "http://user:hunter2\\@h.test:abc/p\u00e5th",
             "http://h.test:abc/p%C3%A5th",
         ),
+        (
+            "\x01http://user:hunter2@h.test:abc/p\u00e5th",
+            "http://h.test:abc/p%C3%A5th",
+        ),
+        (
+            "\x1f//user:hunter2@h.test:abc/p\u00e5th",
+            "//h.test:abc/p%C3%A5th",
+        ),
     ],
 )
 def test_unpreparable_redirect_message_quotes_a_location_that_is_not_utf8(
@@ -865,6 +880,65 @@ def test_unpreparable_redirect_message_quotes_a_location_that_is_not_utf8(
 
     with pytest.raises(RedirectError, match="cannot prepare") as raised:
         api.get("/a", allow_redirects=False)
+
+    assert f"to {quoted}," in str(raised.value)
+    assert "hunter2" not in str(raised.value)
+    assert "hunter2" not in repr(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("header", "quoted"),
+    [
+        (b"\x01http://user:hunter2@[::1/x", "http://[::1/x"),
+        (b"\x0bhttp://user:hunter2@[::1/x", "http://[::1/x"),
+        (b"\x1fhttp://user:hunter2\\@[::1/x", "http://[::1/x"),
+        (b"\x0c//user:hunter2@[::1/x", "//[::1/x"),
+        (
+            b"\x01http://user:hunter2@h.test:abc/p\xe5th",
+            "http://h.test:abc/p%C3%A5th",
+        ),
+        (b"http://[::1/p\xc3\xa5th", "http://[::1/p%C3%A5th"),
+    ],
+)
+def test_unpreparable_redirect_message_quotes_raw_location_bytes_from_a_server(
+    monkeypatch: pytest.MonkeyPatch, header: bytes, quoted: str
+) -> None:
+    """A server's ``Location`` bytes, read as a socket gives them, are quoted.
+
+    http.client strips only a leading space or tab from a header value, so a
+    leading control character reaches the message from a real server.
+
+    Args:
+        header: The bytes of the ``Location`` header.
+        quoted: The URL that the message quotes.
+    """
+    monkeypatch.setenv("NO_PROXY", "*")
+
+    def serve(listener: socket.socket) -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 302 Found\r\nLocation: "
+                + header
+                + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        # A request that never connects ends the server's wait, not the run.
+        listener.settimeout(10)
+        thread = threading.Thread(target=serve, args=(listener,))
+        thread.start()
+        api = API(f"http://127.0.0.1:{listener.getsockname()[1]}/")
+        try:
+            with pytest.raises(
+                RedirectError, match="cannot prepare"
+            ) as raised:
+                api.get("/a", allow_redirects=False)
+        finally:
+            thread.join()
 
     assert f"to {quoted}," in str(raised.value)
     assert "hunter2" not in str(raised.value)

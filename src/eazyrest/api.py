@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import copy
 import inspect
+import re
 import sys
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -394,14 +395,43 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 _READ_SIZE = 64 * 1024
 
 
+_URL_LEADING_CONTROLS = "".join(map(chr, range(0x21)))
+_URL_LINE_NOISE = str.maketrans("", "", "\t\r\n")
+_AUTHORITY_START = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//")
+
+
+def _requoted_without_userinfo(text: str) -> str:
+    """Requote a redirect target that requests cannot prepare.
+
+    Args:
+        text: The target, as requests reads it, or the header if it is not
+            UTF-8.
+
+    Returns:
+        The target as ``requote_uri()`` quotes it, after the characters that
+        ``urlsplit()`` strips or removes, with everything between the start of
+        its authority and the last ``@`` left out.
+    """
+    stripped = text.translate(_URL_LINE_NOISE).lstrip(_URL_LEADING_CONTROLS)
+    quoted = requote_uri(stripped)
+    # A password can only come before an @, whatever the parser makes of the
+    # text, so the message quotes nothing before the last one.
+    at = quoted.rfind("@")
+    if at < 0:
+        return quoted
+    start = _AUTHORITY_START.match(quoted)
+    return (start.group() if start else "") + quoted[at + 1 :]
+
+
 def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     """Describe an unfollowed redirect that requests cannot prepare.
 
     The message quotes the URL that requests prepares from the ``Location``,
     which it reads as ``get_redirect_target()`` does: the header's characters
     are encoded as Latin-1 and decoded as UTF-8. When that conversion fails or
-    ``urlparse()`` rejects the result, the message quotes the header as
-    requests would requote it.
+    ``urlparse()`` rejects the result, the message quotes the decoded target,
+    or the header if it is not UTF-8, as requests would requote it, without the
+    text before the last ``@``.
 
     Args:
         resp: Final response, a redirect that requests does not follow.
@@ -418,13 +448,17 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
         # http.client decodes a header as Latin-1, and requests decodes the
         # bytes again as UTF-8 before it prepares the target.
         target = location.encode("latin1").decode("utf8")
-        destination = _redirect_destination(resp, target)
-    except ValueError:
-        # UnicodeError is a ValueError. A header that is not UTF-8, or a target
-        # that urlparse() rejects, has no prepared form to quote. Quote what
-        # requests would requote, which reads a backslash in the userinfo as
-        # part of the password, and so lets the redaction remove it.
-        destination = requote_uri(location)
+    except UnicodeError:
+        # A header that is not UTF-8 has no prepared form to quote. Quote what
+        # requests would requote.
+        destination = _requoted_without_userinfo(location)
+    else:
+        try:
+            destination = _redirect_destination(resp, target)
+        except ValueError:
+            # urlparse() rejects the target. Requote the decoded target, as
+            # requests would.
+            destination = _requoted_without_userinfo(target)
     quoted = _printable(_redact_url(destination))
     return RedirectError(
         f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
