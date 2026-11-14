@@ -8669,6 +8669,25 @@ def test_an_object_known_by_its_url_equals_its_key_after_update_from_json(
     assert requests_mock.call_count == 0
 
 
+def test_equal_objects_have_the_same_absolute_url_when_one_has_its_own_url(
+    requests_mock: Any,
+) -> None:
+    """An object read through a hyperlink keeps the URL that named it.
+
+    It equals the object that its key names, and both name one resource, but
+    ``url`` is the hyperlink for one and the key's path for the other.
+    """
+    author = Note(json=NOTE_JSON).author
+    author.update_from_json({"id": 2, "name": "Ada"})
+    twin = User(id=2)
+
+    assert author == twin
+    assert author.url == "https://example.com/v1/users/2/"
+    assert twin.url == "/users/2/"
+    assert author.absolute_url == twin.absolute_url
+    assert requests_mock.call_count == 0
+
+
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
     requests_mock: Any,
 ) -> None:

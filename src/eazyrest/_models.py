@@ -4757,9 +4757,10 @@ class JSONObject:
         ``datetime``, are one key, and so are a bare key and an embedded object
         of a relation. Keys that encode differently are two keys, so
         ``Num(id="1")`` and ``Num(id=1)`` differ, as do ``Decimal`` keys of
-        different precision. Equal objects have the same ``url``. A pending key
-        change, a change made to the key in place, and a refresh leave the
-        saved key as it was.
+        different precision. Equal objects have the same ``url``, unless one
+        has its own URL, as an object read through a ``Hyperlinked()`` relation
+        has, or its class overrides ``url``. A pending key change, a change
+        made to the key in place, and a refresh leave the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself.

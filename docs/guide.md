@@ -140,10 +140,12 @@ The canonical key is the saved key's JSON, decoded and encoded again by the
 key's field type, and written as text. So it is the key as the server names the
 resource, and these laws follow:
 
-- Equal objects have the same `url`. Keys that spell one value alike, such as
-  `2026-01-01T00:00:00Z` and `2026-01-01T00:00:00+00:00` for a `datetime`, are
-  one key. A key type that compares by identity, or that cannot be hashed, such
-  as a `list`, still gives equal objects when the encoded keys are equal.
+- Equal objects have the same `url`, unless one has its own URL, as an object
+  read through a `Hyperlinked()` relation has, or its class overrides `url`.
+  Keys that spell one value alike, such as `2026-01-01T00:00:00Z` and
+  `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key type that
+  compares by identity, or that cannot be hashed, such as a `list`, still gives
+  equal objects when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
   their values. `User(id=1.0)` and `User(id=True)` do not equal `User(id=1)`,
   and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each pair names
