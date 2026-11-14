@@ -341,8 +341,8 @@ def test_unfollowed_redirect_uses_the_no_proxy_list_of_the_request(
     assert "http://localhost:99999/x" in message
 
 
-def test_unfollowed_redirect_error_escapes_the_location() -> None:
-    """The message shows a control character of the ``Location`` escaped."""
+def test_unfollowed_redirect_error_encodes_a_control_character() -> None:
+    """The message quotes a control character of the ``Location`` encoded."""
     api = API("https://example.com/")
     with Mocker() as mock:
         mock.get(
@@ -353,7 +353,8 @@ def test_unfollowed_redirect_error_escapes_the_location() -> None:
         with pytest.raises(RedirectError) as raised:
             api.get("/r", allow_redirects=False)
 
-    assert "\\x85" in str(raised.value)
+    assert "http://[bad/%C2%85," in str(raised.value)
+    assert "\x85" not in str(raised.value)
 
 
 @pytest.mark.parametrize("status", [200, 302])

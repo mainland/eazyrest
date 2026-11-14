@@ -346,9 +346,9 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
         resp: Redirect response.
         target: Redirect target, from ``Session.get_redirect_target()``. A
             message quotes the URL that requests follows, which can differ from
-            the target: requests joins a relative target onto the request's
-            URL, and percent-encodes a backslash, a space, a control character,
-            and a character outside ASCII.
+            the target: it is the target as requests prepares it, joined onto
+            the request's URL when relative, so characters that a URL cannot
+            hold, such as a backslash, are percent-encoded.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -399,8 +399,9 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
 
     The message quotes the URL that requests prepares from the ``Location``,
     which it reads as ``get_redirect_target()`` does: the header's characters
-    are encoded as Latin-1 and decoded as UTF-8. The message quotes the header
-    as it is when that conversion fails or ``urlparse()`` rejects the result.
+    are encoded as Latin-1 and decoded as UTF-8. When that conversion fails or
+    ``urlparse()`` rejects the result, the message quotes the header as
+    requests would requote it.
 
     Args:
         resp: Final response, a redirect that requests does not follow.
@@ -420,8 +421,10 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
         destination = _redirect_destination(resp, target)
     except ValueError:
         # UnicodeError is a ValueError. A header that is not UTF-8, or a target
-        # that urlparse() rejects, has no prepared form to quote.
-        destination = location
+        # that urlparse() rejects, has no prepared form to quote. Quote what
+        # requests would requote, which reads a backslash in the userinfo as
+        # part of the password, and so lets the redaction remove it.
+        destination = requote_uri(location)
     quoted = _printable(_redact_url(destination))
     return RedirectError(
         f"{resp.request.method} {_redact_url(resp.url)} was redirected with "

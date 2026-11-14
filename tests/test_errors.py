@@ -759,21 +759,38 @@ def test_unpreparable_redirect_message_quotes_the_url_that_requests_prepares(
     assert "localhost:abc/x" in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    ("location", "quoted"),
+    [
+        ("http://[::1/x", "http://[::1/x"),
+        ("http://user:hunter2\\@[::1/x", "http://[::1/x"),
+    ],
+)
 def test_unpreparable_redirect_message_quotes_a_location_that_cannot_be_parsed(
-    requests_mock: Any,
+    requests_mock: Any, location: str, quoted: str
 ) -> None:
-    """A ``Location`` that ``urlparse()`` rejects is quoted as it is."""
+    """A ``Location`` that ``urlparse()`` rejects is quoted as requoted.
+
+    requests percent-encodes a backslash, so it reads ``hunter2%5C`` as part of
+    the password, which the message must not quote.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        quoted: The URL that the message quotes.
+    """
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
         status_code=302,
-        headers={"Location": "http://[::1/x"},
+        headers={"Location": location},
     )
 
     with pytest.raises(RedirectError, match="cannot prepare") as raised:
         api.get("/a", allow_redirects=False)
 
-    assert "http://[::1/x" in str(raised.value)
+    assert f"to {quoted}," in str(raised.value)
+    assert "hunter2" not in str(raised.value)
+    assert "hunter2" not in repr(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -813,19 +830,42 @@ def test_unpreparable_redirect_message_decodes_a_utf8_location(
     assert f"to {quoted}," in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    ("location", "quoted"),
+    [
+        ("http://h.test:abc/p\u00e5th", "http://h.test:abc/p%C3%A5th"),
+        (
+            "http://user:hunter2\\@h.test:abc/p\u00e5th",
+            "http://h.test:abc/p%C3%A5th",
+        ),
+    ],
+)
 def test_unpreparable_redirect_message_quotes_a_location_that_is_not_utf8(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    quoted: str,
 ) -> None:
-    """A ``Location`` that is not UTF-8 is quoted as it is."""
+    """A ``Location`` that is not UTF-8 is quoted as requests requotes it.
+
+    requests percent-encodes a backslash, so it reads ``hunter2%5C`` as part of
+    the password, which the message must not quote.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        quoted: The URL that the message quotes.
+    """
     monkeypatch.setenv("NO_PROXY", "example.invalid")
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
         status_code=302,
-        headers={"Location": "http://h.test:abc/p\u00e5th"},
+        headers={"Location": location},
     )
 
     with pytest.raises(RedirectError, match="cannot prepare") as raised:
         api.get("/a", allow_redirects=False)
 
-    assert "to http://h.test:abc/p\u00e5th," in str(raised.value)
+    assert f"to {quoted}," in str(raised.value)
+    assert "hunter2" not in str(raised.value)
+    assert "hunter2" not in repr(raised.value)
