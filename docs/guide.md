@@ -153,7 +153,9 @@ resource, and these laws follow:
   both name `/users/1/`, because a string and a number are different JSON. Give
   the key in its field's type, as the server returns it.
 - A change to a Python value, including the value that `pk` returns, changes
-  nothing until a write sends it and its response is recorded.
+  nothing until a write sends it and its response is recorded. A change made in
+  place to the `pk` of a model keyed by a relation is never sent, as the next
+  section says.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
@@ -193,6 +195,11 @@ and none asks the related object again.
   place in a set, and has the `url` of the saved profile. In eager mode the key
   moves, and the hash with it, when the change is sent. A second change begins
   from the key that the first one set.
+- Reading `profile.pk` decodes the copied key afresh each time, so a change
+  made in place to the value that it returns, as to a key that is a `list` or
+  an object, changes a copy. It is not kept and `save()` does not send it,
+  whether the profile has loaded or not. Change the key by assigning the
+  relation, as above, or by assigning `profile.pk`.
 - Reading `profile.user` does not give the key's owner. After an assignment it
   gives the assigned object. When the profile embeds its user, it gives the
   object built from the embedded JSON, with its other fields. When the profile
@@ -263,14 +270,15 @@ given as a string therefore reads as a `UUID`, before and after the object
 loads, and the constructor raises `ValueError` for a key that is not a UUID.
 The value is decoded from the saved key, as a loaded object's is, so a change
 made to it in place, as to a key that is a `list`, is sent by `save()` as a
-change of the key, to the URL of the saved key. A key that is a relation takes
-an object of the related model or a subclass, and any other model object raises
-`FieldConversionError`, as does a model object given for a key that is not a
-relation. The model holds the related object's key, not the object, so the
-related object must have its key without a request: it holds the key, as
-`User(id=1)` does, or its JSON has the key field. A related object that is
-known only by its URL, as one named by a `Hyperlinked()` relation is until it
-loads, raises `FieldConversionError`, whose message says to load or save it
+change of the key, to the URL of the saved key. That does not hold for a key
+that is a relation, whose `pk` reads a new value each time. A key that is a
+relation takes an object of the related model or a subclass, and any other
+model object raises `FieldConversionError`, as does a model object given for a
+key that is not a relation. The model holds the related object's key, not the
+object, so the related object must have its key without a request: it holds the
+key, as `User(id=1)` does, or its JSON has the key field. A related object that
+is known only by its URL, as one named by a `Hyperlinked()` relation is until
+it loads, raises `FieldConversionError`, whose message says to load or save it
 first. So does one whose own key is a relation that is not known. Once such an
 object has loaded, it is accepted if its JSON has the key. If its JSON lacks
 the key field, loading again cannot help, and the message says that the key is

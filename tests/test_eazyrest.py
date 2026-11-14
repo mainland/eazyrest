@@ -8253,6 +8253,39 @@ def test_a_key_changed_in_place_before_a_load_is_sent_to_the_saved_url(
     assert grid.pk.value == 9
 
 
+@pytest.mark.parametrize("loaded", [False, True])
+def test_a_change_in_place_to_the_pk_of_a_relation_key_is_not_kept_or_sent(
+    requests_mock: Any,
+    loaded: bool,
+) -> None:
+    """The key of a model keyed by a relation decodes afresh on each read.
+
+    Args:
+        requests_mock: Mocks the load and the write that must not happen.
+        loaded: Whether the profile has loaded before the change.
+    """
+    requests_mock.get(
+        "https://example.com/v1/grid-profiles/5/",
+        json={"grid": 5, "bio": "b"},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/grid-profiles/5/",
+        json={"grid": 5, "bio": "b"},
+    )
+    Grid.register_api(test_api)
+    GridProfile.register_api(test_api)
+    profile = GridProfile(grid=Grid(id=Cell(5)))
+    if loaded:
+        assert profile.bio == "b"
+
+    profile.pk.value = 9
+    profile.save()
+
+    assert profile.pk.value == 5
+    assert profile.url == "/grid-profiles/5/"
+    assert patch.call_count == 0
+
+
 def test_a_change_in_place_of_a_key_that_has_not_loaded_survives_the_load(
     requests_mock: Any,
 ) -> None:
