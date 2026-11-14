@@ -8927,13 +8927,14 @@ def test_an_object_known_by_its_url_equals_its_key_after_update_from_json(
     assert requests_mock.call_count == 0
 
 
-def test_equal_objects_have_the_same_absolute_url_when_one_has_its_own_url(
+def test_an_object_read_from_a_hyperlink_equals_its_key_and_keeps_its_url(
     requests_mock: Any,
 ) -> None:
     """An object read through a hyperlink keeps the URL that named it.
 
-    It equals the object that its key names, and both name one resource, but
-    ``url`` is the hyperlink for one and the key's path for the other.
+    It equals the object that its key names. When the hyperlink is the key's
+    own URL, both name one resource, though ``url`` is the hyperlink for one
+    and the key's path for the other.
     """
     author = Note(json=NOTE_JSON).author
     author.update_from_json({"id": 2, "name": "Ada"})
@@ -8943,6 +8944,26 @@ def test_equal_objects_have_the_same_absolute_url_when_one_has_its_own_url(
     assert author.url == "https://example.com/v1/users/2/"
     assert twin.url == "/users/2/"
     assert author.absolute_url == twin.absolute_url
+    assert requests_mock.call_count == 0
+
+
+def test_an_object_with_its_own_url_and_a_null_key_takes_the_payloads_key(
+    requests_mock: Any,
+) -> None:
+    """A saved key of ``None`` is as unknown as none recorded.
+
+    An object that has its own URL takes the payload's key then, where an
+    object without one refuses a payload that names a key.
+    """
+    author = Note(json=NOTE_JSON).author
+    author.update_from_json({"id": None, "name": "Ada"})
+    author.update_from_json({"id": 2, "name": "Ada"})
+    plain = User(json={"id": None, "name": "Ada"})
+
+    assert author.pk == 2
+    assert author == User(id=2)
+    with pytest.raises(ValueError, match="does not match"):
+        plain.update_from_json({"id": 2})
     assert requests_mock.call_count == 0
 
 

@@ -6062,8 +6062,8 @@ class JSONObject:
                 object's saved key, is not known, or the two have different
                 canonical keys, so that the payload does not name this object.
                 A key is not known if it is ``None`` or cannot be converted. An
-                object that has its own URL and has recorded no key, as one
-                read from a hyperlink has not, takes the payload's key.
+                object that has its own URL, as one read from a hyperlink has,
+                takes the payload's key if its saved key is absent or ``None``.
             TypeError: If the model's key declaration is refused when the key
                 is first used.
         """
@@ -6109,12 +6109,13 @@ class JSONObject:
         """Return whether an object with its own URL does not know its key.
 
         An object read from a hyperlink knows its key if it has recorded one,
-        and its URL does not say. Whether the object has loaded is not the
-        question, so a key that a ``refresh()`` kept stays known across
-        another.
+        and its URL does not say. A saved key of ``None`` is the same as none
+        recorded. Whether the object has loaded is not the question, so a key
+        that a ``refresh()`` kept stays known across another.
 
         Returns:
-            Whether the object has its own URL and has recorded no key.
+            Whether the object has its own URL and its saved key is absent or
+            ``None``.
         """
         return self._url_override is not None and self._saved_key_json is None
 

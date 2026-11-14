@@ -218,8 +218,8 @@ happens at two points:
 - at a load or a write's response that names another key. `update_from_json()`
   refuses a payload that names another key, and one that names a key when the
   object's key or the payload's is not known, as when either is `None` or
-  cannot be converted. An object read from a hyperlink, which has recorded no
-  key, takes the payload's key.
+  cannot be converted. An object that has its own URL, as one read from a
+  hyperlink has, takes the payload's key if its saved key is absent or `null`.
 
 A set or dict that holds the object then no longer finds it. Take the object
 out before such a change, and put it back after. A pending change, a change
