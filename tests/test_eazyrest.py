@@ -6934,6 +6934,66 @@ def test_profiles_that_share_a_prefetched_user_follow_its_key_change(
     assert hash(first) == hash(second)
 
 
+def test_a_pending_key_change_of_a_profile_that_shares_a_user_keeps_its_key(
+    requests_mock: Any,
+) -> None:
+    """The profile's saved key is still its user's, which another change moved.
+
+    Two prefetched profiles share one user. Its key change waits, and then one
+    profile's own key change begins. Until that change is saved, the profile
+    keeps the key that its user is saved under, so it still equals its twin and
+    keeps its hash and its place in a set.
+    """
+    requests_mock.get(
+        "https://example.com/v1/profiles/",
+        json=[{"user": 5, "bio": "a"}, {"user": 5, "bio": "b"}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
+    )
+    first, second = UserProfile.filter(prefetch=["user"])
+    assert first.user is second.user
+    first.user.set_write_mode("lazy")
+    first.set_write_mode("lazy")
+    first.user.id = 6
+    hashed = hash(first)
+    members = {first}
+
+    first.user = User(id=7)
+
+    assert first.pk == 7
+    assert hash(first) == hashed
+    assert first in members
+    assert first == second
+    assert second == first
+    assert first == UserProfile(user=User(id=5))
+
+
+def test_a_second_key_change_does_not_compare_by_the_first_ones_user(
+    requests_mock: Any,
+) -> None:
+    """Each key change compares by the user that the profile held at its start.
+
+    The first change is saved, so the second begins from the user that the
+    first one set.
+    """
+    requests_mock.patch(
+        "https://example.com/v1/profiles/2/",
+        json={"user": 3, "bio": "Hi"},
+    )
+    profile = UserProfile(json={"user": 2, "bio": "Hi"}, write_mode="lazy")
+    profile.user = User(id=3)
+    assert profile == UserProfile(user=User(id=2))
+    profile.save()
+    assert profile == UserProfile(user=User(id=3))
+
+    profile.user = User(id=4)
+
+    assert profile == UserProfile(user=User(id=3))
+    assert profile != UserProfile(user=User(id=2))
+    assert hash(profile) == hash(UserProfile(user=User(id=3)))
+
+
 def test_a_relation_key_compares_by_the_related_objects_saved_key(
     requests_mock: Any,
 ) -> None:
@@ -7086,6 +7146,16 @@ class Grid(CellBase):
     id: Cell
 
 
+@json_object(pk="grid")
+class GridProfile(CellBase):
+    """Model keyed by a relation to a model whose key hashes by identity."""
+
+    class_url = "/grid-profiles/"
+
+    grid: Grid
+    bio: str
+
+
 def test_the_hash_of_a_key_that_hashes_by_identity_is_stable() -> None:
     """The key is converted once, so each hash is that of the same key."""
     Grid.register_api(test_api)
@@ -7109,6 +7179,44 @@ def test_comparing_objects_converts_each_key_once() -> None:
     for _ in range(3):
         assert grid != other
         hash(grid)
+        hash(other)
+
+    assert _CELL_DECODES == [1, 1]
+
+
+@pytest.mark.parametrize(
+    "json",
+    [{"grid": 1, "bio": "a"}, {"grid": {"id": 1}, "bio": "a"}],
+    ids=["key", "embedded"],
+)
+def test_a_loaded_object_keyed_by_a_relation_has_one_stable_hash(
+    json: dict[str, Any],
+) -> None:
+    """The related key is converted once, so the hash and lookups are stable.
+
+    Args:
+        json: Payload that spells the related object as a key or embeds it.
+    """
+    GridProfile.register_api(test_api)
+    profile = GridProfile(json=json)
+    members = {profile: "profile"}
+
+    assert len({hash(profile) for _ in range(5)}) == 1
+    assert profile in members
+    assert members[profile] == "profile"
+    assert profile == profile  # noqa: PLR0124
+
+
+def test_comparing_a_loaded_relation_key_converts_it_once() -> None:
+    """Comparing and hashing reuse the related object that the first found."""
+    GridProfile.register_api(test_api)
+    profile = GridProfile(json={"grid": 1, "bio": "a"})
+    other = GridProfile(json={"grid": 1, "bio": "a"})
+    _CELL_DECODES.clear()
+
+    for _ in range(3):
+        assert profile != other
+        hash(profile)
         hash(other)
 
     assert _CELL_DECODES == [1, 1]

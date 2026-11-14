@@ -1630,11 +1630,13 @@ def _saved_key(obj: JSONObject) -> Any:
 
     Nothing here sends a request or reads ``url``. While a lazy key change
     waits for ``save()``, the saved key is the one before the change. A key
-    that is a relation is asked of the related object, so it follows that
-    object's own key, including a change of it, and is not kept here. Any other
-    key is converted once and kept until the object's JSON or held key changes,
-    so that it is the same object on every call, which a hash needs for a type
-    that hashes by identity.
+    that is a relation is asked of the related object that the object holds, so
+    it follows that object's own saved key, including a change of it. While the
+    object's own key change waits, that is the related object it held when the
+    change began. Any key is converted once and kept until the object's JSON or
+    held key changes, so that it is the same object on every call, which a hash
+    needs for a type that hashes by identity. For a relation, what is kept is
+    the related object, not its key.
 
     Args:
         obj: Model object.
@@ -1657,6 +1659,9 @@ def _saved_key(obj: JSONObject) -> Any:
         return _MISSING
     state = vars(obj)
     if cls._pk_json_field in state.get("_pending_updates", ()):
+        source = state.get("_saved_key_source")
+        if isinstance(source, JSONObject):
+            return _saved_key(source)
         value = state.get("_saved_pk")
         return _MISSING if value is None else value
 
@@ -1666,19 +1671,21 @@ def _saved_key(obj: JSONObject) -> Any:
     # which would then be another object.
     cached = state.get("_saved_key_cache")
     if cached is not None:
+        if isinstance(cached[0], JSONObject):
+            return _saved_key(cached[0])
         return cached[0]
     try:
         value = _held_key(obj)
     except (TypeError, ValueError):
         # A key that cannot be converted is not a known key.
         value = _MISSING
-    if isinstance(value, JSONObject):
-        # The related object's key can change without this object knowing, so
-        # leave it to the related object's own cache.
-        return _saved_key(value)
     if value is None or value is _MISSING:
         return _MISSING
     state["_saved_key_cache"] = (value,)
+    if isinstance(value, JSONObject):
+        # The related object's key can change without this object knowing, so
+        # keep the object and ask it each time.
+        return _saved_key(value)
     return value
 
 
@@ -4348,11 +4355,21 @@ class JSONObject:
     Set only while ``_pending_updates`` holds the primary-key JSON field.
     """
 
+    _saved_key_source: JSONObject | None
+    """Related object that the key was held as when its change began.
+
+    Set by ``_queue_update()`` when the object's own key change of a relation
+    key begins, and ``None`` if the key was not a related object or not known.
+    ``_saved_key()`` reads it only while that change waits, and asks the object
+    for its saved key. The places that end the change drop it.
+    """
+
     _saved_key_cache: tuple[Any]
     """The known key that ``_saved_key()`` found, in a tuple.
 
-    A key that is a relation is not kept, because ``_saved_key()`` asks the
-    related object for it. ``_forget_saved_key()`` drops the entry. Loading or
+    For a key that is a relation it holds the related object, not its key,
+    because ``_saved_key()`` asks that object for its saved key each time.
+    ``_forget_saved_key()`` drops the entry. Loading or
     writing the object's JSON must drop it, and the other places that change
     the JSON or the held key drop it as well.
     """
@@ -5349,6 +5366,13 @@ class JSONObject:
             # Until save() sends the new primary key, the object is still saved
             # under the old one.
             self._saved_pk = self.pk
+            try:
+                held = _held_key(self)
+            except (TypeError, ValueError):
+                held = None
+            self._saved_key_source = (
+                held if isinstance(held, JSONObject) else None
+            )
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
@@ -5421,6 +5445,7 @@ class JSONObject:
         else:
             self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
+        vars(self).pop("_saved_key_source", None)
 
     def _replace_json(self, json: dict[str, Any]) -> None:
         """Replace this object's JSON after a write or a load.
@@ -5715,6 +5740,10 @@ class JSONObject:
             self._field_snapshots.pop(field, None)
             self._prefetched_related.pop(field, None)
             self._pending_updates.pop(descriptor.json_field, None)
+            if descriptor.json_field == getattr(
+                type(self), "_pk_json_field", None
+            ):
+                vars(self).pop("_saved_key_source", None)
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates.
@@ -5746,6 +5775,7 @@ class JSONObject:
                 )
         # Discard unsaved local changes
         self._pending_updates.clear()
+        vars(self).pop("_saved_key_source", None)
         self._field_cache.clear()
         self._field_snapshots.clear()
         self._prefetched_related.clear()
