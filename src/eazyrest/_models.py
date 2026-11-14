@@ -1595,15 +1595,19 @@ def _held_key(obj: JSONObject) -> Any:
     """Return the primary key that an object holds, without a request.
 
     The object holds its key if it was constructed with it or has refreshed, or
-    if its loaded JSON has the key field. The JSON takes precedence.
+    if its loaded JSON has the key field. The JSON takes precedence. A key that
+    is a relation is the key that the object copied from the related object
+    when the relation was assigned or loaded, so the related object that the
+    field reads, which may be shared, plays no part.
 
     Args:
         obj: Model object.
 
     Returns:
-        The key as the field reads it, so a related object if the key is a
-        relation. ``None`` if the model has no key field, or the object holds
-        no key, or holds ``None``.
+        The key as ``pk`` returns it, so the related object's own key, and in
+        turn its key if that is a relation, when the key is a relation.
+        ``None`` if the model has no key field, or the object holds no key, or
+        holds ``None``.
 
     Raises:
         ValueError: If the JSON holds a key that the field cannot convert. A
@@ -1619,10 +1623,15 @@ def _held_key(obj: JSONObject) -> Any:
     state = vars(obj)
     json = state.get("_json")
     if json is not None and prop.json_field in json:
-        return obj._from_json(
-            json[prop.json_field], prop.analyzed_type, field=prop.field
-        )
-    return state.get("_pk_value")
+        # Without the field, a prefetched object is not looked up, so the
+        # related object is built from the key alone.
+        value = obj._from_json(json[prop.json_field], prop.analyzed_type)
+    else:
+        value = state.get("_pk_value")
+    # The related object here is the key's own copy, never shared.
+    while isinstance(value, JSONObject):
+        value = _held_key(value)
+    return value
 
 
 def _saved_key(obj: JSONObject) -> Any:
@@ -1630,13 +1639,11 @@ def _saved_key(obj: JSONObject) -> Any:
 
     Nothing here sends a request or reads ``url``. While a lazy key change
     waits for ``save()``, the saved key is the one before the change. A key
-    that is a relation is asked of the related object that the object holds, so
-    it follows that object's own saved key, including a change of it. While the
-    object's own key change waits, that is the related object it held when the
-    change began. Any key is converted once and kept until the object's JSON or
-    held key changes, so that it is the same object on every call, which a hash
-    needs for a type that hashes by identity. For a relation, what is kept is
-    the related object, not its key.
+    that is a relation is the related object's key as the object copied it, so
+    a later change of the related object's key does not change it. The key is
+    converted once and kept until the object's JSON or held key changes, so
+    that it is the same object on every call, which a hash needs for a type
+    that hashes by identity.
 
     Args:
         obj: Model object.
@@ -1659,9 +1666,6 @@ def _saved_key(obj: JSONObject) -> Any:
         return _MISSING
     state = vars(obj)
     if cls._pk_json_field in state.get("_pending_updates", ()):
-        source = state.get("_saved_key_source")
-        if isinstance(source, JSONObject):
-            return _saved_key(source)
         value = state.get("_saved_pk")
         return _MISSING if value is None else value
 
@@ -1671,8 +1675,6 @@ def _saved_key(obj: JSONObject) -> Any:
     # which would then be another object.
     cached = state.get("_saved_key_cache")
     if cached is not None:
-        if isinstance(cached[0], JSONObject):
-            return _saved_key(cached[0])
         return cached[0]
     try:
         value = _held_key(obj)
@@ -1682,10 +1684,6 @@ def _saved_key(obj: JSONObject) -> Any:
     if value is None or value is _MISSING:
         return _MISSING
     state["_saved_key_cache"] = (value,)
-    if isinstance(value, JSONObject):
-        # The related object's key can change without this object knowing, so
-        # keep the object and ask it each time.
-        return _saved_key(value)
     return value
 
 
@@ -1747,7 +1745,7 @@ def _known_key(obj: JSONObject) -> Any:
     """Return a related object's primary key if it is known without a request.
 
     The key is known if the object holds it, or its JSON has it. A key that is
-    itself a related object gives that object's key in turn, so no level loads
+    itself a relation gives the key of the model it ends at, so no level loads
     anything.
 
     Args:
@@ -1765,8 +1763,6 @@ def _known_key(obj: JSONObject) -> Any:
     """
     cls = type(obj)
     value = _held_key(obj)
-    if isinstance(value, JSONObject):
-        return _known_key(value)
     if value is not None:
         return value
     has_own_url = obj._url_override is not None or _url_is_overridden(cls)
@@ -4205,7 +4201,7 @@ class JSONProperty:
             if is_key:
                 held = getattr(obj, "_pk_value", None)
                 if held is not None:
-                    return held
+                    return self._as_held(obj, held)
                 if obj._url_override is None:
                     # Loading would need a URL, which needs the key.
                     return None
@@ -4247,6 +4243,29 @@ class JSONProperty:
 
         return value
 
+    def _as_held(self, obj: JSONObject, held: Any) -> Any:
+        """Return the field's value for a key that the object holds.
+
+        Args:
+            obj: Object that holds the key.
+            held: The held key, which is the related object's key if the key is
+                a relation.
+
+        Returns:
+            ``held``, or for a relation a related object built from it. That
+            object is kept, so that reading again gives the same one, but the
+            held key is not the object's, so a change of the object leaves the
+            key as it was.
+        """
+        if _related_key_type(self.analyzed_type) is None:
+            return held
+        if self.field not in obj._field_cache:
+            with _converting(type(obj), self.field):
+                obj._field_cache[self.field] = obj._from_json(
+                    obj._to_json(held, self.analyzed_type), self.analyzed_type
+                )
+        return obj._field_cache[self.field]
+
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
 
@@ -4285,9 +4304,10 @@ class JSONProperty:
             # type before and after the object loads. A related object passed
             # as the key gives its own key, which it must know without a
             # request, and the object holds that key, not the related object.
-            # Its class is checked as a relation write checks it, so a key that
-            # is not a relation refuses an object, and one that is refuses an
-            # object of another model.
+            # The key is copied here, so a later change of the related object
+            # does not change it. Its class is checked as a relation write
+            # checks it, so a key that is not a relation refuses an object, and
+            # one that is refuses an object of another model.
             conversion = self.analyzed_type
             with _converting(type(obj), self.field):
                 related = _related_key_type(conversion)
@@ -4466,7 +4486,8 @@ class JSONObject:
     _pk_value: Any
     """Value of the primary key.
 
-    If None, look in JSON
+    A key that is a relation is held as the related object's key, not as the
+    related object. If None, look in JSON.
     """
 
     _saved_pk: Any
@@ -4475,23 +4496,12 @@ class JSONObject:
     Set only while ``_pending_updates`` holds the primary-key JSON field.
     """
 
-    _saved_key_source: JSONObject | None
-    """Related object that the key was held as when its change began.
-
-    Set by ``_queue_update()`` when the object's own key change of a relation
-    key begins, and ``None`` if the key was not a related object or not known.
-    ``_saved_key()`` reads it only while that change waits, and asks the object
-    for its saved key. The places that end the change drop it.
-    """
-
     _saved_key_cache: tuple[Any]
     """The known key that ``_saved_key()`` found, in a tuple.
 
-    For a key that is a relation it holds the related object, not its key,
-    because ``_saved_key()`` asks that object for its saved key each time.
-    ``_forget_saved_key()`` drops the entry. Loading or
-    writing the object's JSON must drop it, and the other places that change
-    the JSON or the held key drop it as well.
+    ``_forget_saved_key()`` drops the entry. Loading or writing the object's
+    JSON must drop it, and the other places that change the JSON or the held
+    key drop it as well.
     """
 
     _api_override: API | None
@@ -5491,13 +5501,6 @@ class JSONObject:
             # Until save() sends the new primary key, the object is still saved
             # under the old one.
             self._saved_pk = self.pk
-            try:
-                held = _held_key(self)
-            except (TypeError, ValueError):
-                held = None
-            self._saved_key_source = (
-                held if isinstance(held, JSONObject) else None
-            )
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
@@ -5570,7 +5573,6 @@ class JSONObject:
         else:
             self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
-        vars(self).pop("_saved_key_source", None)
 
     def _replace_json(self, json: dict[str, Any]) -> None:
         """Replace this object's JSON after a write or a load.
@@ -5865,10 +5867,6 @@ class JSONObject:
             self._field_snapshots.pop(field, None)
             self._prefetched_related.pop(field, None)
             self._pending_updates.pop(descriptor.json_field, None)
-            if descriptor.json_field == getattr(
-                type(self), "_pk_json_field", None
-            ):
-                vars(self).pop("_saved_key_source", None)
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates.
@@ -5892,15 +5890,13 @@ class JSONObject:
         if unknown_key:
             self._pk_value = None
         else:
-            # Hold the key as the constructor does, so a key that is a relation
-            # reads as a related object, not as its own key.
+            # Hold the key as the constructor does.
             with _converting(type(self), type(self)._pk.field):
                 self._pk_value = self._key_as_read_from_json(
                     self._persisted_pk()
                 )
         # Discard unsaved local changes
         self._pending_updates.clear()
-        vars(self).pop("_saved_key_source", None)
         self._field_cache.clear()
         self._field_snapshots.clear()
         self._prefetched_related.clear()
@@ -5934,11 +5930,11 @@ class JSONObject:
         if pk_property is None:
             return None
         value = pk_property.__get__(self, type(self))
-        # If the primary key is another JSON object, return its primary key.
         if isinstance(value, JSONObject):
-            return value.pk
-        else:
-            return value
+            # The key is a relation. It is the related object's key as this
+            # object copied it, not the related object's key now.
+            return _held_key(self)
+        return value
 
     @pk.setter
     def pk(self, value: Any) -> None:
@@ -5978,11 +5974,15 @@ class JSONObject:
             key: The key, as ``pk`` returns it.
 
         Returns:
-            The key converted as if it were read from JSON, so a key that is a
-            relation is a related object that holds the key.
+            The key converted as if it were read from JSON. A key that is a
+            relation gives the key of the model that the chain of relations
+            ends at, which is what ``pk`` returns.
         """
         conversion = type(self)._pk.analyzed_type
-        return self._from_json(self._to_json(key, conversion), conversion)
+        value = self._from_json(self._to_json(key, conversion), conversion)
+        while isinstance(value, JSONObject):
+            value = _held_key(value)
+        return value
 
     def _persisted_pk(self) -> Any:
         """Return the primary key under which the object is saved.
@@ -6013,7 +6013,7 @@ class JSONObject:
         conversion = type(self)._pk.analyzed_type
         value = self._from_json(self._to_json(value, conversion), conversion)
         if isinstance(value, JSONObject):
-            return value._normalize_pk(value.pk)
+            return value._normalize_pk(_held_key(value))
 
         return value
 
