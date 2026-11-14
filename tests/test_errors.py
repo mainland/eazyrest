@@ -533,6 +533,34 @@ def test_write_redirect_message_leaves_out_the_location_credentials(
     assert "example.com/x" in str(raised.value)
 
 
+@pytest.mark.parametrize("status", [302, 303])
+def test_write_redirect_message_names_the_host_that_requests_follows(
+    requests_mock: Any, status: int
+) -> None:
+    """A write redirect quotes the host after a backslash, as requests does.
+
+    requests percent-encodes the backslash, which ends the userinfo later, so
+    it connects to the host after ``@``.
+
+    Args:
+        status: The redirect's status.
+    """
+    api = API("https://h.test/v1/")
+    api.redirect_origins = ["https://e.test"]
+    requests_mock.patch(
+        "https://h.test/v1/things/1/",
+        status_code=status,
+        headers={"Location": "https://u:dummy-pass@h.test\\@e.test/x"},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.patch("things/1/", json={"a": 1})
+
+    assert "dummy-pass" not in str(raised.value)
+    assert "https://e.test/x" in str(raised.value)
+    assert "h.test\\" not in str(raised.value)
+
+
 def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
     """A server's names reach the message bounded and escaped.
 

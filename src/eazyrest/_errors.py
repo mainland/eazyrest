@@ -294,9 +294,9 @@ def _redact_url(url: object) -> str:
     such as ``http://user:pass@host/`` would put the credentials into a log.
 
     Args:
-        url: URL, as a string or as ``bytes``, which are decoded as UTF-8 as
-            requests decodes them, or ``None``. It may lack a scheme, as a
-            ``Location`` header that begins with ``//`` does.
+        url: URL that requests prepares, as a string or as ``bytes``, which are
+            decoded as UTF-8 as requests decodes them, or ``None``. It may lack
+            a scheme, as a ``Location`` header that begins with ``//`` does.
 
     Returns:
         The URL as it is, but for the user and password before the host, which
@@ -305,12 +305,13 @@ def _redact_url(url: object) -> str:
         For ``http``, ``https``, and a URL without a scheme, which requests
         joins onto the scheme of its base, the user and password end at a
         backslash, as urllib3 ends the authority there, so that the host named
-        is the one that requests connects to. For other schemes they end at the
-        last ``@`` before a ``/``, ``?``, or ``#``. The match reads the URL as
-        requests and ``urlsplit()`` do, which ignore leading control
-        characters, spaces, and Unicode whitespace such as a no-break space,
-        and remove tabs, carriage returns, and line feeds. A URL that has a
-        user and password is quoted in that form, so
+        is the one that requests connects to once it has prepared the URL. A
+        raw ``Location`` that it has not prepared may name another host. For
+        other schemes they end at the last ``@`` before a ``/``, ``?``, or
+        ``#``. The match reads the URL as requests and ``urlsplit()`` do, which
+        ignore leading control characters, spaces, and Unicode whitespace such
+        as a no-break space, and remove tabs, carriage returns, and line feeds.
+        A URL that has a user and password is quoted in that form, so
         ``http://user:pass@host/x`` with a form feed before it becomes
         ``http://host/x``.
     """

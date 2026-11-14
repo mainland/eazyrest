@@ -344,7 +344,9 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 
     Args:
         resp: Redirect response.
-        target: Redirect target.
+        target: Redirect target, from ``Session.get_redirect_target()``. A
+            message quotes the URL that requests follows, which differs from
+            the target when the target has a backslash.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -361,19 +363,20 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 
     resp.close()
     url = _redact_url(resp.url)
+    destination = _printable(_redact_url(_redirect_destination(resp, target)))
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
         # its result, so retrying the request would repeat it.
         raise RedirectError(
             f"{method} {url} was answered with status 303, which says that "
             "the server performed it and points to its result at "
-            f"{_printable(_redact_url(target))}, which was not read. Do not "
+            f"{destination}, which was not read. Do not "
             f"retry the {method}.",
             response=resp,
         )
     raise RedirectError(
         f"{method} {url} was redirected with status {resp.status_code} "
-        f"to {_printable(_redact_url(target))}, which requests follows "
+        f"to {destination}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
         "and 308 redirects resend a request unchanged. Send the request to "

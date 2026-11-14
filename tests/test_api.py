@@ -1336,7 +1336,10 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
 def test_redirect_error_escapes_control_characters_of_the_location(
     requests_mock: Any, status: int
 ) -> None:
-    """A ``Location`` with control characters is escaped in the message.
+    """A ``Location`` with control characters is quoted as requests sends it.
+
+    requests percent-encodes the control characters and the space, so the
+    message quotes no raw control character.
 
     Args:
         status: Redirect status, whose message differs.
@@ -1353,7 +1356,7 @@ def test_redirect_error_escapes_control_characters_of_the_location(
 
     message = str(info.value)
     assert message.isprintable()
-    assert "/next\\x1b[2J\\x07forged line" in message
+    assert "https://example.com/next%1B[2J%07forged%20line" in message
 
 
 @pytest.mark.parametrize(
