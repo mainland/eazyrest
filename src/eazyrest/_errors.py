@@ -278,7 +278,11 @@ def _is_failure(status_code: int) -> bool:
     return 400 <= status_code < 600
 
 
-_USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/?#]*@")
+_USERINFO = re.compile(
+    r"^(?:((?:https?:)?//)[^/?#\\]*@"
+    r"|(?!https?:)([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@)",
+    re.IGNORECASE,
+)
 _URL_NOISE = str.maketrans("", "", "\t\r\n")
 _URL_LEADING = re.compile(r"^[\s\x00-\x20]+")
 
@@ -298,10 +302,15 @@ def _redact_url(url: object) -> str:
         The URL as it is, but for the user and password before the host, which
         are left out, so ``http://user:pass@host/x?q=1`` becomes
         ``http://host/x?q=1`` and ``//user:pass@host/x`` becomes ``//host/x``.
-        The match reads the URL as requests and ``urlsplit()`` do, which ignore
-        leading control characters, spaces, and Unicode whitespace such as a
-        no-break space, and remove tabs, carriage returns, and line feeds. A
-        URL that has a user and password is quoted in that form, so
+        For ``http``, ``https``, and a URL without a scheme, which requests
+        joins onto the scheme of its base, the user and password end at a
+        backslash, as urllib3 ends the authority there, so that the host named
+        is the one that requests connects to. For other schemes they end at the
+        last ``@`` before a ``/``, ``?``, or ``#``. The match reads the URL as
+        requests and ``urlsplit()`` do, which ignore leading control
+        characters, spaces, and Unicode whitespace such as a no-break space,
+        and remove tabs, carriage returns, and line feeds. A URL that has a
+        user and password is quoted in that form, so
         ``http://user:pass@host/x`` with a form feed before it becomes
         ``http://host/x``.
     """
@@ -310,8 +319,10 @@ def _redact_url(url: object) -> str:
     else:
         text = str(url)
     normal = _URL_LEADING.sub("", text.translate(_URL_NOISE))
-    redacted, count = _USERINFO.subn(r"\1", normal)
-    return redacted if count else text
+    match = _USERINFO.match(normal)
+    if match is None:
+        return text
+    return (match.group(1) or match.group(2)) + normal[match.end() :]
 
 
 def _printable(text: object) -> str:
