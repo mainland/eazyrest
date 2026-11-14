@@ -7646,6 +7646,110 @@ def test_a_key_that_hashes_by_identity_survives_a_load_of_the_same_key(
     assert profile in members
 
 
+def test_a_key_that_hashes_by_identity_survives_a_refresh_of_the_same_key(
+    requests_mock: Any,
+) -> None:
+    """An object stays in its set after a refresh that holds its key."""
+    requests_mock.get(
+        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
+    )
+    Grid.register_api(test_api)
+    from_json = Grid(json={"id": 1, "name": "a"})
+    from_key = Grid(id=Cell(1))
+    members = {from_json, from_key}
+    key = from_key.pk
+
+    from_json.refresh()
+    from_key.refresh()
+
+    assert from_json in members
+    assert from_key in members
+    assert from_key.pk is key
+    assert from_json.name == "b"
+    assert from_key.name == "b"
+    assert from_json in members
+    assert from_key in members
+
+
+def test_a_key_that_hashes_by_identity_survives_a_refresh_and_an_embedded_load(
+    requests_mock: Any,
+) -> None:
+    """A load that changes only a field of the embedded key keeps the key."""
+    requests_mock.get(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": {"id": 1, "name": "b"}, "bio": "a"},
+    )
+    GridProfile.register_api(test_api)
+    Grid.register_api(test_api)
+    profile = GridProfile(json={"grid": {"id": 1, "name": "a"}, "bio": "a"})
+    members = {profile}
+
+    profile.refresh()
+    assert profile in members
+    assert profile.bio == "a"
+
+    assert profile in members
+
+
+def test_a_key_that_hashes_by_identity_survives_an_embedded_change_in_a_write(
+    requests_mock: Any,
+) -> None:
+    """A write whose response changes another field of the embedded key."""
+    requests_mock.patch(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": {"id": 1, "name": "b"}, "bio": "b"},
+    )
+    GridProfile.register_api(test_api)
+    Grid.register_api(test_api)
+    profile = GridProfile(
+        json={"grid": {"id": 1, "name": "a"}, "bio": "a"},
+        write_mode="eager",
+    )
+    members = {profile}
+
+    profile.bio = "b"
+
+    assert profile.bio == "b"
+    assert profile in members
+
+
+def test_a_refresh_that_discards_a_key_change_drops_the_saved_key(
+    requests_mock: Any,
+) -> None:
+    """The object compares by the saved key once the pending key is gone."""
+    requests_mock.get(
+        "https://example.com/v1/grids/1/", json={"id": 1, "name": "a"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 1, "name": "a"})
+    original = grid.pk
+
+    grid.id = Cell(2)
+    grid.refresh()
+
+    assert grid.name == "a"
+    assert grid.pk.value == 1
+    assert original.value == 1
+
+
+def test_a_key_that_hashes_by_identity_moves_when_a_refresh_loads_another(
+    requests_mock: Any,
+) -> None:
+    """A load that returns another key after a refresh moves the key."""
+    requests_mock.get(
+        "https://example.com/v1/grids/1/", json={"id": 2, "name": "a"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 1, "name": "a"})
+    before = hash(grid)
+
+    grid.refresh()
+    assert grid.name == "a"
+
+    assert grid.pk.value == 2
+    assert hash(grid) != before
+
+
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
     """A payload that names no key cannot name another object."""
     grid = _identity_keyed_objects("lazy")[0]

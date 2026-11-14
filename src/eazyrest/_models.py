@@ -1641,9 +1641,10 @@ def _saved_key(obj: JSONObject) -> Any:
     waits for ``save()``, the saved key is the one before the change. A key
     that is a relation is the related object's key as the object copied it, so
     a later change of the related object's key does not change it. The key is
-    converted once and kept until the object's JSON or held key changes, so
-    that it is the same object on every call, which a hash needs for a type
-    that hashes by identity.
+    converted once and kept until the key's JSON changes, so that it is the
+    same object on every call, which a hash needs for a type that hashes by
+    identity. A refresh that holds the same key, and a load that names the same
+    key, keep it.
 
     Args:
         obj: Model object.
@@ -1869,6 +1870,64 @@ items can, as a dataclass can, so neither is listed.
 
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
+
+
+def _named_key_json(conversion: AnalyzedType, value: Any) -> Any:
+    """Return the key that the JSON of a primary key names.
+
+    Args:
+        conversion: Analyzed type of the primary-key field.
+        value: The JSON of the key.
+
+    Returns:
+        For a key that is a relation whose JSON embeds the related object, the
+        JSON of the related object's key, and in turn its key if that is a
+        relation. Otherwise the value.
+    """
+    while (related := _related_key_type(conversion)) is not None:
+        pk = _pk_property_of(related.model_type)
+        if (
+            related.hyperlinked
+            or pk is None
+            or not isinstance(value, dict)
+            or pk.json_field not in value
+        ):
+            break
+        value = value[pk.json_field]
+        conversion = pk.analyzed_type
+    return value
+
+
+def _key_json_equal(conversion: AnalyzedType, left: Any, right: Any) -> bool:
+    """Compare the JSON of two spellings of a primary key.
+
+    A key that is a relation is read from the related object's JSON when the
+    JSON embeds it, as an object. The key that such JSON names is the related
+    object's key, so two embedded objects that differ in another field name the
+    same key. A bare key and an embedded object are different spellings and are
+    not equal, even when they name the same key.
+
+    Args:
+        conversion: Analyzed type of the primary-key field.
+        left: First JSON value.
+        right: Second JSON value.
+
+    Returns:
+        Whether the values spell the same key.
+    """
+    related = _related_key_type(conversion)
+    if (
+        related is not None
+        and not related.hyperlinked
+        and isinstance(left, dict)
+        and isinstance(right, dict)
+    ):
+        pk = _pk_property_of(related.model_type)
+        if pk is not None and pk.json_field in left and pk.json_field in right:
+            return _key_json_equal(
+                pk.analyzed_type, left[pk.json_field], right[pk.json_field]
+            )
+    return _json_equal(left, right)
 
 
 def _query_value(value: Any) -> Any:
@@ -4503,8 +4562,10 @@ class JSONObject:
     ``_forget_saved_key()`` drops the entry. The entry stays while the key is
     the same, so that a key type that hashes by identity keeps one object, and
     it is dropped wherever the key's JSON changes or the key is held in
-    another way. A change to another field, or a load or a write that returns
-    the same key, leaves it.
+    another way. A change to another field, a refresh that holds the same key,
+    and a load or a write that names the same key, leave it. For a key that is
+    a relation, the key that embedded JSON names is the related object's key,
+    so a load that changes another field of the embedded object leaves it.
     """
 
     _api_override: API | None
@@ -5483,9 +5544,9 @@ class JSONObject:
         """Drop the saved key that comparing found, after the key can change.
 
         Call it wherever the key's JSON changes, or the object holds its key in
-        another way. A change of another field does not call it, so the object
-        keeps one key object, which a hash needs for a type that hashes by
-        identity.
+        another way. A change of another field does not call it, and neither
+        does a refresh that holds the same key, so the object keeps one key
+        object, which a hash needs for a type that hashes by identity.
         """
         vars(self).pop("_saved_key_cache", None)
 
@@ -5493,7 +5554,11 @@ class JSONObject:
         """Return whether JSON that replaces the key's JSON changes the key.
 
         The key before is the JSON of the object's key field, or, if that has
-        none, the JSON of the key that the object last compared by.
+        none, the key that the object last compared by, which has no spelling,
+        so it equals any JSON that names it. For a key that is a relation whose
+        JSON embeds the related object, two spellings are compared by the
+        related object's key, so another field of the embedded object does not
+        change the key. A bare key and an embedded object differ.
 
         Args:
             before: The object's JSON before the change.
@@ -5503,15 +5568,39 @@ class JSONObject:
         Returns:
             Whether the key's JSON differs.
         """
-        key: str = type(self)._pk.json_field
-        old = before.get(key, _MISSING)
+        conversion = type(self)._pk.analyzed_type
+        old = before.get(type(self)._pk.json_field, _MISSING)
         cached = vars(self).get("_saved_key_cache")
         if old is _MISSING and cached is not None:
+            # The key was held without a spelling, so only the key that the new
+            # JSON names matters, not whether it embeds the related object.
             try:
-                old = self._to_json(cached[0], type(self)._pk.analyzed_type)
+                old = self._to_json(cached[0], conversion)
             except (TypeError, ValueError):
                 return True
-        return not _json_equal(old, after)
+            return not _json_equal(old, _named_key_json(conversion, after))
+        return not _key_json_equal(type(self)._pk.analyzed_type, old, after)
+
+    def _same_key(self, left: Any, right: Any) -> bool:
+        """Return whether two keys of this model have the same JSON.
+
+        Args:
+            left: A key, as ``pk`` returns it.
+            right: Another key.
+
+        Returns:
+            Whether both convert to the same JSON. A key that cannot convert is
+            not the same.
+        """
+        conversion = type(self)._pk.analyzed_type
+        try:
+            return _key_json_equal(
+                conversion,
+                self._to_json(left, conversion),
+                self._to_json(right, conversion),
+            )
+        except (TypeError, ValueError):
+            return False
 
     def _queue_update(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update locally and queue it for ``save()``.
@@ -5911,6 +6000,11 @@ class JSONObject:
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates.
 
+        The object keeps its saved key when the key that it compares by after
+        the refresh has the same JSON, and holds that same key object. It drops
+        the saved key otherwise, as when a pending change of the key is
+        discarded.
+
         Raises:
             UsageError: If the model has no key field. Such an object has
                 nothing to reload.
@@ -5927,14 +6021,21 @@ class JSONObject:
         # Store value of primary key. An object read from a hyperlink may not
         # know its key, before it loads or from JSON that lacks it.
         unknown_key = self._key_is_unknown()
+        keep_key = False
         if unknown_key:
             self._pk_value = None
         else:
             # Hold the key as the constructor does.
             with _converting(type(self), type(self)._pk.field):
-                self._pk_value = self._key_as_read_from_json(
-                    self._persisted_pk()
-                )
+                key = self._key_as_read_from_json(self._persisted_pk())
+            # The key that the object compares by afterwards is this one. If it
+            # spells the same as the saved key that comparing found, hold that
+            # object, so a key type that hashes by identity keeps one.
+            cached = vars(self).get("_saved_key_cache")
+            if cached is not None and self._same_key(cached[0], key):
+                key = cached[0]
+                keep_key = True
+            self._pk_value = key
         # Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
@@ -5943,7 +6044,8 @@ class JSONObject:
         # Clear JSON
         self._json = None
         self._json_is_partial = False
-        self._forget_saved_key()
+        if not keep_key:
+            self._forget_saved_key()
 
     @classmethod
     def register_api(cls, api: API) -> None:
