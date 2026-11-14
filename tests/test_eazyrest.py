@@ -7769,6 +7769,7 @@ class PriceKeyed(ModelBase):
     class_url = "/price-keyed/"
 
     id: decimal.Decimal
+    name: str
 
 
 def test_a_decimal_key_of_another_precision_is_another_key() -> None:
