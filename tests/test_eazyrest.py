@@ -6286,6 +6286,111 @@ def test_a_key_that_is_not_a_relation_refuses_a_model_object() -> None:
     assert todo.pk is None
 
 
+def test_a_primary_key_cannot_be_a_relation_to_its_own_model() -> None:
+    """Decorating a model keyed by itself is refused, naming the model."""
+    with pytest.raises(
+        TypeError,
+        match=r"Node\.parent is the primary key.*Node -> Node",
+    ):
+
+        @json_object(pk="parent")
+        class Node(ModelBase):
+            class_url = "/nodes/"
+
+            parent: Node
+
+
+def test_a_primary_key_cannot_be_a_relation_that_leads_back_to_its_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decorating the second of two models keyed by each other is refused.
+
+    The first names the second by a forward reference, so it is the second's
+    decoration that finds the cycle, and the message names both models.
+
+    Args:
+        monkeypatch: Makes the first model a global, which annotations of other
+            models name.
+    """
+
+    @json_object(pk="second")
+    class First(ModelBase):
+        class_url = "/firsts/"
+
+        second: Second
+
+    monkeypatch.setitem(globals(), "First", First)
+
+    with pytest.raises(
+        TypeError,
+        match=r"Second\.first is the primary key.*Second -> First -> Second",
+    ):
+
+        @json_object(pk="first")
+        class Second(ModelBase):
+            class_url = "/seconds/"
+
+            first: First
+
+
+def test_a_key_cycle_through_a_class_defined_later_is_refused_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cycle that decoration cannot see is refused when the key resolves.
+
+    Neither model's key names a class that is defined when the model is
+    decorated, so decoration refuses nothing.
+
+    Args:
+        monkeypatch: Defines the classes as globals, after they are decorated.
+    """
+
+    @json_object(pk="later")
+    class Earlier(ModelBase):
+        class_url = "/earlier/"
+
+        later: Later
+
+    @json_object(pk="earlier")
+    class Later(ModelBase):
+        class_url = "/later/"
+
+        earlier: Earlier
+
+    monkeypatch.setitem(globals(), "Earlier", Earlier)
+    monkeypatch.setitem(globals(), "Later", Later)
+
+    with pytest.raises(TypeError, match=r"Earlier -> Later -> Earlier"):
+        Earlier(json={"later": 1}).url  # noqa: B018
+
+
+def test_a_chain_of_key_relations_that_ends_at_a_plain_key_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key that is a relation to a model with a plain key defines fine.
+
+    Args:
+        monkeypatch: Makes the first model a global, which annotations of other
+            models name.
+    """
+
+    @json_object(pk="user")
+    class Account(ModelBase):
+        class_url = "/accounts/"
+
+        user: User
+
+    monkeypatch.setitem(globals(), "Account", Account)
+
+    @json_object(pk="account")
+    class Settings(ModelBase):
+        class_url = "/settings/"
+
+        account: Account
+
+    assert Settings(account=Account(user=User(id=2))).pk == 2
+
+
 def test_a_primary_key_cannot_be_a_hyperlinked_relation() -> None:
     """Decorating a model whose key is a hyperlinked relation is refused.
 
@@ -8127,40 +8232,23 @@ def test_json_schema_follows_declaration_order() -> None:
     ]
 
 
-@json_object(pk="partner")
-class Left(ModelBase):
-    """Model whose primary key is a related object, which names it back."""
-
-    partner: Right
-
-
-@json_object(pk="partner")
-class Right(ModelBase):
-    """Model whose primary key is a ``Left``."""
-
-    partner: Left
-
-
 @json_object
 class Odd(ModelBase):
-    """Model with a relation whose key has no schema, and an unknown type."""
+    """Model with a field of a type that eazyrest does not convert."""
 
     class_url = "/odd/"
 
     id: int
-    left: Left
     address: IPv4Address
 
 
-def test_json_schema_allows_any_key_it_cannot_describe() -> None:
-    """A relation in a cycle of keys accepts any key.
+def test_json_schema_allows_any_value_of_an_unconverted_type() -> None:
+    """A type that eazyrest does not convert accepts any value.
 
-    So does a type that eazyrest does not convert, whose JSON form it does not
-    know.
+    Its JSON form is not known.
     """
     properties = Odd.json_schema("write")["properties"]
 
-    assert properties["left"] == {}
     assert properties["address"] == {}
 
 

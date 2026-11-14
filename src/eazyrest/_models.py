@@ -2783,8 +2783,84 @@ def _check_key_not_hyperlinked(
         raise error
 
 
-def _refuse_hyperlinked_key(cls: type[JSONObject]) -> None:
-    """Refuse a primary key that is a hyperlinked relation, if it resolves.
+def _key_cycle(
+    cls: type[JSONObject],
+    analyzed: AnalyzedType,
+    names: Mapping[str, Any] | None = None,
+) -> list[type[JSONObject]] | None:
+    """Find the cycle that a key relation makes, if it leads back to a model.
+
+    Follows the chain of models whose keys are relations, starting at ``cls``,
+    and stops at a key that is not a relation, a model without a key, or a key
+    whose type does not resolve yet.
+
+    Args:
+        cls: Model class whose key has the type ``analyzed``.
+        analyzed: Analyzed type of ``cls``'s primary key.
+        names: Classes to resolve names to when following the chain.
+
+    Returns:
+        The models of the chain from the first one that repeats, ending with
+        that model again, or ``None`` if the chain does not return to a model.
+    """
+    chain = [cls]
+    related = _related_key_type(analyzed)
+    while related is not None:
+        model = related.model_type
+        if model in chain:
+            return [*chain[chain.index(model) :], model]
+        chain.append(model)
+        prop = _pk_property_of(model)
+        if prop is None:
+            return None
+        try:
+            related = _related_key_type(
+                analyze_type(prop._resolve_type(names))
+            )
+        except Exception:  # noqa: BLE001
+            # A reference to a class that is not defined yet, or a type that is
+            # refused when its field is first used. The chain is checked again
+            # then.
+            return None
+    return None
+
+
+def _check_key_not_cyclic(
+    cls: type[JSONObject],
+    field: str,
+    analyzed: AnalyzedType,
+    names: Mapping[str, Any] | None = None,
+) -> None:
+    """Refuse a primary key that is a relation leading back to a model in it.
+
+    Such a key never gives a key that is not a relation, so the model's objects
+    have no URL and no key to compare by.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+        analyzed: Analyzed type of the field.
+        names: Classes to resolve names to when following the chain.
+
+    Raises:
+        TypeError: If the chain of key relations returns to a model in it.
+    """
+    cycle = _key_cycle(cls, analyzed, names)
+    if cycle is not None:
+        path = " -> ".join(model.__name__ for model in cycle)
+        error = TypeError(
+            f"{cls.__name__}.{field} is the primary key, and a primary key "
+            f"cannot be a relation that leads back to a model in its own "
+            f"chain of keys: {path}. End the chain at a model whose key is "
+            "not a relation."
+        )
+        # Report it as a plain TypeError, as decorating the class does.
+        setattr(error, _DECLARATION_ERROR, True)
+        raise error
+
+
+def _refuse_invalid_key(cls: type[JSONObject]) -> None:
+    """Refuse a hyperlinked or cyclic relation as the key, if it resolves.
 
     A key whose annotation names a class that is not defined yet is checked
     when the key's type is first used, which is the first read or write of the
@@ -2794,7 +2870,9 @@ def _refuse_hyperlinked_key(cls: type[JSONObject]) -> None:
         cls: Decorated model class.
 
     Raises:
-        TypeError: If the model's primary key is a ``Hyperlinked()`` relation.
+        TypeError: If the model's primary key is a ``Hyperlinked()`` relation,
+            or a relation whose chain of key relations returns to a model in
+            it.
     """
     prop = _pk_property_of(cls)
     if prop is None:
@@ -2806,6 +2884,7 @@ def _refuse_hyperlinked_key(cls: type[JSONObject]) -> None:
         # first used, which says why.
         return
     _check_key_not_hyperlinked(cls, prop.field, analyzed)
+    _check_key_not_cyclic(cls, prop.field, analyzed, {cls.__name__: cls})
 
 
 def _check_api_attribute(
@@ -3195,7 +3274,7 @@ def json_object(
         cls._json_fields = frozenset(fields)
         _refuse_keyless_field_types(declared)
         _refuse_hyperlinked_sets(declared)
-        _refuse_hyperlinked_key(cls)
+        _refuse_invalid_key(cls)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
@@ -3990,8 +4069,15 @@ class JSONProperty:
         """
         return self._resolve_type()
 
-    def _resolve_type(self) -> Any:
+    def _resolve_type(
+        self, extra_names: Mapping[str, Any] | None = None
+    ) -> Any:
         """Resolve the field type without caching it.
+
+        Args:
+            extra_names: Classes to resolve names to, besides the owning class
+                and its module's globals. A class that is being decorated is
+                not yet one of those.
 
         Returns:
             Resolved Python type for the owning class attribute.
@@ -4024,6 +4110,7 @@ class JSONProperty:
             for name, value in vars(self.cls).items()
             if not isinstance(value, JSONProperty)
         }
+        localns.update(extra_names or {})
         localns[self.cls.__name__] = self.cls
         # Keep Annotated metadata, which analyze_type() interprets.
         return typing.get_type_hints(
@@ -4042,6 +4129,7 @@ class JSONProperty:
         analyzed = analyze_type(self.ty)
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
+            _check_key_not_cyclic(self.cls, self.field, analyzed)
         _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed
 

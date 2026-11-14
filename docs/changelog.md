@@ -216,6 +216,13 @@ describe them further.
   yet when the class is decorated raises the same `TypeError`, not
   `FieldConversionError`, when the key is first used, also when the model is an
   item of another model's collection field.
+- A model whose primary key is a relation that leads back to a model in its own
+  chain of keys, such as a model keyed by itself or two models keyed by each
+  other, raises `TypeError` when it is decorated, naming the models in the
+  cycle, where `v1.0.0a5` defined it. Such a key never gives a key that is not
+  a relation. A key whose model is not defined yet when the class is decorated
+  raises the same `TypeError` when the key is first used. End the chain at a
+  model whose key is not a relation.
 - A field whose type is a set of `Hyperlinked()` relations, as
   `set[Annotated[User, Hyperlinked()]]`, also as a `frozenset`, `Set`, or
   `MutableSet`, and inside an optional, raises `TypeError` when the class is
