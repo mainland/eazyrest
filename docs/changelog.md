@@ -253,12 +253,13 @@ describe them further.
 - Two objects of one model with the same known primary key are equal, where
   `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. A
   key is known if the object holds it or its loaded JSON has it, and a key that
-  is a relation compares as the related object's key. An object without a known
-  key still equals only itself, and `hash()` of one raises `TypeError`, unless
-  its model has no key field. The message says what is wrong with the key. A
-  key is compared as it is held, so `User(id="1")` does not equal `User(id=1)`,
-  and a load or a write's response that spells the key another way, or names
-  another key, changes the hash. Give the key in its field's type.
+  is a relation compares as the related object's key that the model copied when
+  the relation was assigned or loaded. An object without a known key still
+  equals only itself, and `hash()` of one raises `TypeError`, unless its model
+  has no key field. The message says what is wrong with the key. A key is
+  compared as it is held, so `User(id="1")` does not equal `User(id=1)`, and a
+  load or a write's response that spells the key another way, or names another
+  key, changes the hash. Give the key in its field's type.
 
 ### Migrating from 0.9.0
 
@@ -414,12 +415,18 @@ that can break code written for 0.9.0, followed by what to do about it.
 - Two objects of one model with the same known primary key are equal, where
   0.9.0 compared them by identity, so a set or dict of them keeps one. A key is
   known if the object holds it or its loaded JSON has it, and a key that is a
-  relation compares as the related object's key. An object without a known key
-  still equals only itself, and `hash()` of one raises `TypeError`, unless its
-  model has no key field. The message says what is wrong with the key. A key is
-  compared as it is held, so `User(id="1")` does not equal `User(id=1)`, and a
-  load or a write's response that spells the key another way, or names another
-  key, changes the hash. Give the key in its field's type.
+  relation compares as the related object's key that the model copied when the
+  relation was assigned or loaded. An object without a known key still equals
+  only itself, and `hash()` of one raises `TypeError`, unless its model has no
+  key field. The message says what is wrong with the key. A key is compared as
+  it is held, so `User(id="1")` does not equal `User(id=1)`, and a load or a
+  write's response that spells the key another way, or names another key,
+  changes the hash. Give the key in its field's type.
+- The `pk` and `url` of a model whose primary key is a relation give the key
+  that the model copied from the related object when the relation was assigned
+  or loaded, where 0.9.0 asked the related object each time, so they followed
+  its key as it changed. A later change of the related object's key no longer
+  changes them. Assign the relation again to change the model's key.
 
 #### Declarations
 

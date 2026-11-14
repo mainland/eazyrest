@@ -4426,12 +4426,13 @@ class JSONObject:
     Objects compare by key, as Django models do. Two objects of exactly the
     same model are equal if their primary keys are known without a request, are
     not ``None``, and are equal. The key is the one the object is saved under,
-    and a key that is a relation compares as the related object's key, so
-    ``profile.user == user`` though they are different objects. Any other
-    object, such as one built without a key, equals only itself. Hashing an
-    object whose key is not known raises ``TypeError``, so the hash cannot
-    change when the key becomes known. Saving a change of the key changes the
-    hash, so take the object out of a set or dict before ``save()`` sends one.
+    and a key that is a relation is the related object's key that the object
+    copied when the relation was assigned or loaded, so a later change of the
+    related object's key does not move it. Any other object, such as one built
+    without a key, equals only itself. Hashing an object whose key is not known
+    raises ``TypeError``, so the hash cannot change when the key becomes known.
+    Saving a change of the key changes the hash, so take the object out of a
+    set or dict before ``save()`` sends one.
 
     A key is compared as it is held, without converting it, so ``User(id="1")``
     does not equal ``User(id=1)``. A load, or a write's response, that spells
@@ -4681,10 +4682,9 @@ class JSONObject:
         not equal to its base. The API, the JSON, and the field values are not
         compared. The key is the one that the object is saved under, so while a
         lazy key change waits for ``save()`` it is the key before the change. A
-        key that is a relation compares as the related object's saved key. An
-        object that holds the related object asks it on each comparison, so it
-        follows that object's own saved key. A loaded or embedded object
-        compares by the key in its JSON.
+        key that is a relation is the related object's key that the object
+        copied when the relation was assigned or loaded, so a later change of
+        the related object's key does not change the comparison.
 
         A key is known if the object holds it or its loaded JSON has it, as for
         ``repr()``. An object whose key is not known, or is ``None``, or whose
@@ -4720,11 +4720,10 @@ class JSONObject:
 
         The hash is that of the model and the key that the object is saved
         under, so it does not change while a key change waits for ``save()``.
-        It changes when ``save()`` sends the change, when ``save()`` of a
-        related object that a relation key follows sends that object's change,
-        and when a load or a write response spells the key another way. An
-        object of a model without a key field hashes by identity, because its
-        key can never become known. Hashing sends no request.
+        It changes when ``save()`` sends the change, and when a load or a write
+        response spells the key another way. An object of a model without a key
+        field hashes by identity, because its key can never become known.
+        Hashing sends no request.
 
         Returns:
             The hash.
@@ -5924,7 +5923,10 @@ class JSONObject:
         """Return this object's primary key value.
 
         A model without a key field has the key ``None``, and so has an object
-        built without a key or read from JSON that lacks it.
+        built without a key or read from JSON that lacks it. A key that is a
+        relation is the related object's key as this object copied it when the
+        relation was assigned or loaded, so a later change of the related
+        object's key does not change it.
         """
         pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
         if pk_property is None:

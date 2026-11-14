@@ -151,42 +151,39 @@ differently. Give the key in its field's type, as the server returns it.
 
 ### A key that is a relation
 
-A key that is a relation compares as the saved key of the related object, so
-`UserProfile(user=User(id=2))` equals another `UserProfile(user=User(id=2))`.
-Reading `profile.user` gives a related object that equals the one that was
-given, though it is not the same object. Which related object a profile
-compares by depends on how it got its key.
+A key that is a relation behaves as a key that is not. The model holds the key
+of the related object, copied when the relation is assigned or loaded, so
+`UserProfile(user=User(id=2))` holds 2 and equals another profile that holds 2.
+The copy is what a write of the relation sends, so a related object whose own
+key change is pending gives the key that the change set. The profile's `pk`,
+`url`, `refresh()`, `update_from_json()`, `==`, and `hash()` all use that copy,
+and none asks the related object again.
 
-- A profile that holds its user, because it was constructed with it or shares
-  it by prefetch, asks that user for its saved key on each comparison. The
-  profile follows the user: after `profile.user.id = 6` is saved, the profile
-  equals `UserProfile(user=User(id=6))`, not one with the old key, and its hash
-  is that of the new key. Until `save()` sends the change, the user's saved key
-  is still the old one. Profiles that share one prefetched user follow it
-  together.
-- A profile that was loaded, or that embeds its user in its JSON, compares by
-  the key that its JSON has. It does not follow `profile.user`, which reads
-  another object. After a change of `profile.user`'s key is saved, such a
-  profile still equals one with the old key, while its `pk` and `url` give the
-  new key. It can then differ from a profile constructed with the same user.
-
-A change of the profile's own key, as in `profile.user = User(id=3)` in lazy
-mode, waits for `save()`. Until then the profile compares by the saved key of
-the user that it held when the change began, so it still equals
-`UserProfile(user=User(id=2))`, and it keeps its hash and its place in a set.
-It follows that user's own saved key if it changes meanwhile. After `save()`
-sends the change, the profile holds the new user, and a second change begins
-from that user, not from the first change's.
+- A later change of the user's key, pending or saved, does not move the
+  profile. After `profile.user.id = 6` is saved, `profile.pk` is still 2, its
+  `url` is still `/profiles/2/`, and it still equals
+  `UserProfile(user=User(id=2))` with the same hash. This holds however the
+  profile holds its user: built with it, loaded, embedding it in its JSON, or
+  sharing a prefetched one. Profiles that share a prefetched user keep their
+  own keys.
+- Assigning the relation again changes the key, as any change of a key does. In
+  lazy mode `profile.user = User(id=3)` waits for `save()`, and until then the
+  profile still equals `UserProfile(user=User(id=2))`, keeps its hash and its
+  place in a set, and has the `url` of the saved profile. In eager mode the key
+  moves, and the hash with it, when the change is sent. A second change begins
+  from the key that the first one set.
+- Reading `profile.user` is unchanged. A profile that shares a prefetched user
+  gives that object, and any other profile gives a related object built from
+  its key. That object is not the key's owner, so after its key changes,
+  `profile.user.pk` can differ from `profile.pk`.
 
 ### When the hash changes
 
 The hash is that of the model and its saved key, so it changes only when the
-saved key does. That happens at three points:
+saved key does. That happens at two points:
 
 - at `save()` of the object's own key change, which sends the new key, or at
-  the assignment in eager mode, which sends it at once,
-- at `save()` of the key change of a related object that a model keyed by a
-  relation follows, and
+  the assignment in eager mode, which sends it at once, and
 - at a load, or a write's response, that spells the key another way or names
   another key, which replaces the held key with the JSON's.
 
@@ -204,13 +201,13 @@ used.
 
 ### Differences from Django
 
-Django models also compare and hash by primary key. Django copies a related
-object's key when the relation is assigned. The `pk` of a model keyed by a
-one-to-one relation is the copied column value, such as `user_id`, so it never
-follows the related object. eazyrest's `pk` and `url` give the related object's
-current key, and a model that holds the object compares by its saved key.
-Django also has no pending key change: assigning `pk` changes the hash at once,
-where eazyrest keeps the saved key until `save()` sends the change.
+Django models also compare and hash by primary key. A model keyed by a
+one-to-one relation has the copied column value as its `pk`, such as `user_id`,
+and so does eazyrest's. Django copies the key that a related object has when
+the relation is assigned, or at `save()` if the object had none then. eazyrest
+refuses a related object without a key at assignment, so the copy always
+exists. Django also has no pending key change: assigning `pk` changes the hash
+at once, where eazyrest keeps the saved key until `save()` sends the change.
 
 ## Loading and caching
 
