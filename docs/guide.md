@@ -223,6 +223,12 @@ when the class is decorated, or whose name is bound to another class later, as
 when a module rebinds the name or finishes a circular import, raises the same
 `TypeError` when the key is first used.
 
+A key cannot hold related objects inside a collection, as `list[User]` does,
+since equality and `url` read the key's JSON without building the objects.
+Declaring one raises `TypeError` when the class is decorated, or when the key
+is first used if it names a class that is not defined yet. Key the model by a
+relation to the model instead, or by the type of that model's key.
+
 ### Differences from Django
 
 Django models also compare and hash by primary key. A model keyed by a

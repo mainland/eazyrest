@@ -2831,6 +2831,37 @@ def _check_key_not_hyperlinked(
         raise error
 
 
+def _check_key_holds_no_relation(
+    cls: type[JSONObject], field: str, analyzed: AnalyzedType
+) -> None:
+    """Refuse a primary key whose type holds relations inside a container.
+
+    A key that is a relation reads as the related object's key, which the model
+    copies, and equality and ``url`` read the key's JSON without an object of
+    the model. A key such as ``list[User]`` would need each related object
+    built, with the API and the write mode of the object that holds it.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+        analyzed: Analyzed type of the field.
+
+    Raises:
+        TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
+            other than being the relation itself.
+    """
+    if _related_key_type(analyzed) is None and _holds_model(analyzed):
+        error = TypeError(
+            f"{cls.__name__}.{field} is the primary key, and a primary key "
+            "cannot hold related objects inside a collection. Declare the "
+            "key as the related model, or as the type of its key."
+        )
+        # A conversion reports the error as a plain TypeError, as decorating
+        # the class does, not as the conversion of a value.
+        setattr(error, _DECLARATION_ERROR, True)
+        raise error
+
+
 def _resolve_chain_key(
     cls: type[JSONObject],
     prop: JSONProperty,
@@ -2939,7 +2970,7 @@ def _check_key_not_cyclic(
 
 
 def _refuse_invalid_key(cls: type[JSONObject]) -> None:
-    """Refuse a hyperlinked or cyclic relation as the key, if it resolves.
+    """Refuse a key that is a hyperlinked or cyclic relation, or holds one.
 
     A key whose annotation names a class that is not defined yet is checked
     when the key's type is first used, which is the first read or write of the
@@ -2951,7 +2982,7 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
     Raises:
         TypeError: If the model's primary key is a ``Hyperlinked()`` relation,
             or a relation whose chain of key relations returns to a model in
-            it.
+            it, or holds relations inside a collection, as ``list[User]`` does.
     """
     prop = _pk_property_of(cls)
     if prop is None:
@@ -2963,6 +2994,7 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
         # first used, which says why.
         return
     _check_key_not_hyperlinked(cls, prop.field, analyzed)
+    _check_key_holds_no_relation(cls, prop.field, analyzed)
     _check_key_not_cyclic(cls, prop.field, analyzed, {cls.__name__: cls})
 
 
@@ -4209,6 +4241,7 @@ class JSONProperty:
         analyzed = analyze_type(self.ty)
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
+            _check_key_holds_no_relation(self.cls, self.field, analyzed)
             _check_key_not_cyclic(self.cls, self.field, analyzed)
         _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed

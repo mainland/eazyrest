@@ -6287,6 +6287,67 @@ def test_a_key_that_is_not_a_relation_refuses_a_model_object() -> None:
     assert todo.pk is None
 
 
+def test_a_primary_key_cannot_hold_related_objects_in_a_collection() -> None:
+    """Decorating a model keyed by ``list[User]`` is refused."""
+    with pytest.raises(
+        TypeError,
+        match=r"Team\.id is the primary key.*cannot hold related objects",
+    ):
+
+        @json_object
+        class Team(ModelBase):
+            class_url = "/teams/"
+
+            id: list[User]
+
+    with pytest.raises(TypeError, match=r"Squad\.id is the primary key"):
+
+        @json_object
+        class Squad(ModelBase):
+            class_url = "/squads/"
+
+            id: set[User] | None
+
+
+def test_a_primary_key_that_holds_related_objects_is_refused_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key that names a class defined later is refused when it resolves.
+
+    That holds for the model itself and for a model keyed by it.
+
+    Args:
+        monkeypatch: Defines the classes as globals, after the models that name
+            them are decorated.
+    """
+
+    @json_object
+    class Roster(ModelBase):
+        class_url = "/rosters/"
+
+        id: list[Member]
+
+    @json_object(pk="roster")
+    class RosterNote(ModelBase):
+        class_url = "/roster-notes/"
+
+        roster: Roster
+
+    @json_object
+    class Member(ModelBase):
+        class_url = "/members/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "Member", Member)
+    monkeypatch.setitem(globals(), "Roster", Roster)
+
+    with pytest.raises(TypeError, match=r"Roster\.id is the primary key"):
+        Roster(json={"id": [1]}).url  # noqa: B018
+    with pytest.raises(TypeError, match=r"Roster\.id is the primary key"):
+        RosterNote(json={"roster": [1]}).url  # noqa: B018
+
+
 def test_a_primary_key_cannot_be_a_relation_to_its_own_model() -> None:
     """Decorating a model keyed by itself is refused, naming the model."""
     with pytest.raises(
