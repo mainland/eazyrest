@@ -8,6 +8,7 @@ import decimal
 import email
 import email.message
 import enum
+import importlib
 import inspect
 import pickle
 import re
@@ -6389,6 +6390,73 @@ def test_a_chain_of_key_relations_that_ends_at_a_plain_key_is_accepted(
         account: Account
 
     assert Settings(account=Account(user=User(id=2))).pk == 2
+
+
+def test_a_key_chain_through_a_module_with_a_class_of_the_same_name(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each model's key names a class of its own module, not the decorated one.
+
+    Two modules define ``Account``. The chain from the second goes through a
+    model whose key names the first module's ``Account``, which ends at a plain
+    key, so it is no cycle.
+
+    Args:
+        tmp_path: Directory for the two modules.
+        monkeypatch: Makes the modules importable and removes them after.
+    """
+    (tmp_path / "same_name_accounts.py").write_text(
+        "from __future__ import annotations\n"
+        "from eazyrest import JSONObject, json_object\n"
+        "@json_object\n"
+        "class Account(JSONObject):\n"
+        "    class_url = '/accounts/'\n"
+        "    id: int\n"
+        "@json_object(pk='account')\n"
+        "class Profile(JSONObject):\n"
+        "    class_url = '/profiles/'\n"
+        "    account: 'Account'\n"
+    )
+    (tmp_path / "same_name_billing.py").write_text(
+        "from __future__ import annotations\n"
+        "from eazyrest import JSONObject, json_object\n"
+        "from same_name_accounts import Profile\n"
+        "@json_object(pk='profile')\n"
+        "class Account(JSONObject):\n"
+        "    class_url = '/billing-accounts/'\n"
+        "    profile: Profile\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("same_name_accounts", "same_name_billing"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    try:
+        accounts = importlib.import_module("same_name_accounts")
+        billing = importlib.import_module("same_name_billing")
+        account = billing.Account(
+            profile=accounts.Profile(account=accounts.Account(id=1))
+        )
+
+        assert account.pk == 1
+    finally:
+        for name in ("same_name_accounts", "same_name_billing"):
+            sys.modules.pop(name, None)
+
+
+def test_a_key_chain_through_a_model_named_like_a_local_class() -> None:
+    """A local class named like a module-level model is not that model.
+
+    ``UserProfile`` is keyed by the module's ``User``, which has a plain key.
+    The local ``User`` is keyed by a ``UserProfile``, so a chain that resolved
+    ``UserProfile``'s ``User`` to the local class would be a cycle.
+    """
+
+    @json_object(pk="profile")
+    class User(ModelBase):
+        class_url = "/local-users/"
+
+        profile: UserProfile
+
+    assert User(profile=UserProfile(user=globals()["User"](id=4))).pk == 4
 
 
 def test_a_primary_key_cannot_be_a_hyperlinked_relation() -> None:

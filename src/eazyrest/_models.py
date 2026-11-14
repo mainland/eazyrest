@@ -2783,6 +2783,37 @@ def _check_key_not_hyperlinked(
         raise error
 
 
+def _resolve_chain_key(
+    cls: type[JSONObject],
+    prop: JSONProperty,
+    names: Mapping[str, Any] | None,
+) -> Any:
+    """Resolve the key type of a model in the chain that ``cls`` starts.
+
+    A model resolves its key in its own module's namespace. The class being
+    decorated is not bound there yet, so a reference to it by name can fail,
+    and only for a model in that class's module does the name stand for it.
+
+    Args:
+        cls: Model class whose key is being checked.
+        prop: Primary-key property of a model in the chain.
+        names: Classes to resolve names to if the model's own namespace does
+            not resolve them, or ``None``.
+
+    Returns:
+        The resolved type of the key.
+
+    Raises:
+        Exception: If the annotation names something undefined.
+    """
+    try:
+        return prop._resolve_type()
+    except Exception:
+        if not names or prop.cls.__module__ != cls.__module__:
+            raise
+        return prop._resolve_type(names)
+
+
 def _key_cycle(
     cls: type[JSONObject],
     analyzed: AnalyzedType,
@@ -2815,7 +2846,7 @@ def _key_cycle(
             return None
         try:
             related = _related_key_type(
-                analyze_type(prop._resolve_type(names))
+                analyze_type(_resolve_chain_key(cls, prop, names))
             )
         except Exception:  # noqa: BLE001
             # A reference to a class that is not defined yet, or a type that is
@@ -4075,9 +4106,10 @@ class JSONProperty:
         """Resolve the field type without caching it.
 
         Args:
-            extra_names: Classes to resolve names to, besides the owning class
-                and its module's globals. A class that is being decorated is
-                not yet one of those.
+            extra_names: Classes to resolve names to, which take precedence
+                over the module's globals. A class that is being decorated is
+                not yet one of those, so the caller names it only where the
+                module's own resolution fails.
 
         Returns:
             Resolved Python type for the owning class attribute.
