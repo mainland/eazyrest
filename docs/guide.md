@@ -248,26 +248,29 @@ object's `url`, caches the payload, and caches converted field values as they
 are read. Reading the primary key returns the value given to the constructor
 without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
-loads, and the constructor raises `ValueError` for a key that is not a UUID. A
-key that is a relation takes an object of the related model or a subclass, and
-any other model object raises `FieldConversionError`, as does a model object
-given for a key that is not a relation. The model holds the related object's
-key, not the object, so the related object must have its key without a request:
-it holds the key, as `User(id=1)` does, or its JSON has the key field. A
-related object that is known only by its URL, as one named by a `Hyperlinked()`
-relation is until it loads, raises `FieldConversionError`, whose message says
-to load or save it first. So does one whose own key is a relation that is not
-known. Once such an object has loaded, it is accepted if its JSON has the key.
-If its JSON lacks the key field, loading again cannot help, and the message
-says that the key is missing from its JSON. If it holds the key as `null`, the
-message says that the key is `None`. A related object without a key, such as
-`User()`, raises `FieldConversionError` too, as a relation write does. The
-constructor and the `pk` setter therefore never send a request, and neither do
-`repr()` and `update_from_json()` of such a model. Reading the field returns a
-new related object that holds the key, not the object that was given, though it
-equals that object, also after `refresh()`. An object constructed from `json=`
-starts with that payload already loaded. It keeps a deep copy of the payload,
-as `update_from_json()` does, so changing the payload or its nested values
+loads, and the constructor raises `ValueError` for a key that is not a UUID.
+The value is decoded from the saved key, as a loaded object's is, so a change
+made to it in place, as to a key that is a `list`, is sent by `save()` as a
+change of the key, to the URL of the saved key. A key that is a relation takes
+an object of the related model or a subclass, and any other model object raises
+`FieldConversionError`, as does a model object given for a key that is not a
+relation. The model holds the related object's key, not the object, so the
+related object must have its key without a request: it holds the key, as
+`User(id=1)` does, or its JSON has the key field. A related object that is
+known only by its URL, as one named by a `Hyperlinked()` relation is until it
+loads, raises `FieldConversionError`, whose message says to load or save it
+first. So does one whose own key is a relation that is not known. Once such an
+object has loaded, it is accepted if its JSON has the key. If its JSON lacks
+the key field, loading again cannot help, and the message says that the key is
+missing from its JSON. If it holds the key as `null`, the message says that the
+key is `None`. A related object without a key, such as `User()`, raises
+`FieldConversionError` too, as a relation write does. The constructor and the
+`pk` setter therefore never send a request, and neither do `repr()` and
+`update_from_json()` of such a model. Reading the field returns a new related
+object that holds the key, not the object that was given, though it equals that
+object, also after `refresh()`. An object constructed from `json=` starts with
+that payload already loaded. It keeps a deep copy of the payload, as
+`update_from_json()` does, so changing the payload or its nested values
 afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that

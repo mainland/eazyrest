@@ -7886,6 +7886,106 @@ def test_a_refresh_followed_by_a_load_keeps_the_hash(
     assert grid == Grid(id=Cell(1))
 
 
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_a_key_changed_in_place_before_a_load_is_sent_to_the_saved_url(
+    requests_mock: Any,
+    write_mode: WriteMode,
+) -> None:
+    """An object that has not loaded sends a change of its key as a change.
+
+    The object loads from the saved key first, and then sends the new key to
+    that URL.
+
+    Args:
+        requests_mock: Mocks the load and the write.
+        write_mode: Whether the change is sent at once or waits for ``save()``.
+    """
+    get = requests_mock.get(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/grids/5/", json={"id": 9, "name": "b"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(id=Cell(5), write_mode=write_mode)
+
+    grid.id.value = 9
+    assert grid.url == "/grids/5/"
+    assert get.call_count == 0
+
+    if write_mode == "lazy":
+        grid.save()
+    else:
+        grid.name = "b"
+
+    assert get.call_count == 1
+    assert patch.call_count == 1
+    assert patch.last_request.json()["id"] == 9
+    assert grid.url == "/grids/9/"
+    assert grid.pk.value == 9
+
+
+def test_a_change_in_place_of_a_key_that_has_not_loaded_survives_the_load(
+    requests_mock: Any,
+) -> None:
+    """Reading another field loads the object once, and keeps the change."""
+    get = requests_mock.get(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(id=Cell(5))
+    grid.id.value = 9
+
+    assert grid.name == "a"
+
+    assert get.call_count == 1
+    assert grid.pk.value == 9
+    assert grid.url == "/grids/5/"
+    assert grid._pending_updates == {"id": 9}
+    assert grid == Grid(id=Cell(5))
+
+
+def test_a_key_that_is_read_once_loads_the_object_once(
+    requests_mock: Any,
+) -> None:
+    """Reading the key of an object that has not loaded sends no request."""
+    get = requests_mock.get(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(id=Cell(5))
+
+    assert grid.pk.value == 5
+    assert grid.pk is grid.pk
+    assert get.call_count == 0
+    assert grid.name == "a"
+    assert grid.name == "a"
+
+    assert get.call_count == 1
+
+
+def test_a_key_changed_in_place_after_a_refresh_is_sent_to_the_saved_url(
+    requests_mock: Any,
+) -> None:
+    """A refreshed object reads its key as an object that has not loaded."""
+    requests_mock.get(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/grids/5/", json={"id": 9, "name": "a"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 5, "name": "a"})
+    grid.refresh()
+
+    grid.id.value = 9
+    grid.save()
+
+    assert patch.call_count == 1
+    assert patch.last_request.json()["id"] == 9
+    assert grid.url == "/grids/9/"
+
+
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
     """A payload that names no key cannot name another object."""
     grid = _identity_keyed_objects("lazy")[0]

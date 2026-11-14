@@ -1594,11 +1594,12 @@ def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
 def _held_key(obj: JSONObject) -> Any:
     """Return the primary key that an object holds, without a request.
 
-    The object holds its key if it was constructed with it or has refreshed, or
-    if its loaded JSON has the key field. The JSON takes precedence. A key that
-    is a relation is the key that the object copied from the related object
-    when the relation was assigned or loaded, so the related object that the
-    field reads, which may be shared, plays no part.
+    The object holds its key if its loaded JSON has the key field, or it has
+    recorded a saved key, as when it was constructed with the key or has
+    refreshed. The JSON takes precedence. A key that is a relation is the key
+    that the object copied from the related object when the relation was
+    assigned or loaded, so the related object that the field reads, which may
+    be shared, plays no part.
 
     Args:
         obj: Model object.
@@ -1620,18 +1621,10 @@ def _held_key(obj: JSONObject) -> Any:
     prop = _pk_property_of(type(obj))
     if prop is None:
         return None
-    state = vars(obj)
-    json = state.get("_json")
+    json = obj._json
     if json is not None and prop.json_field in json:
-        # Without the field, a prefetched object is not looked up, so the
-        # related object is built from the key alone.
-        value = obj._from_json(json[prop.json_field], prop.analyzed_type)
-    else:
-        value = state.get("_pk_value")
-    # The related object here is the key's own copy, never shared.
-    while isinstance(value, JSONObject):
-        value = _held_key(value)
-    return value
+        return _decode_key(obj, json[prop.json_field])
+    return _decode_key(obj, obj._saved_key_json)
 
 
 def _reduce_key(
@@ -4245,32 +4238,36 @@ class JSONProperty:
             )
 
         json = obj._json
-        if json is None or self.json_field not in json:
+        if json is not None and self.json_field in json:
+            raw = json[self.json_field]
+        else:
             # The field is not in loaded JSON. The key is read like any other
             # field, which loads the object when it can load, except that an
-            # object that holds its key returns it without a load, and a key
-            # that the object lacks even when it is loaded or cannot load reads
-            # as None, because an object may have no key.
+            # object that has recorded its key reads it from there without a
+            # load, and a key that the object lacks even when it is loaded or
+            # cannot load reads as None, because an object may have no key.
             is_key = self._is_key_of(obj)
-            if is_key:
-                held = getattr(obj, "_pk_value", None)
-                if held is not None:
-                    return self._as_held(obj, held)
-                if obj._url_override is None:
+            if is_key and obj._saved_key_json is not None:
+                raw = obj._saved_key_json
+            else:
+                if is_key and obj._url_override is None:
                     # Loading would need a URL, which needs the key.
                     return None
-            json = obj._json_having(self.json_field)
-            if self.json_field not in json:
-                if is_key:
-                    return None
-                raise _missing_field_error(obj, self.field, self.json_field)
+                json = obj._json_having(self.json_field)
+                if self.json_field not in json:
+                    if is_key:
+                        return None
+                    raise _missing_field_error(
+                        obj, self.field, self.json_field
+                    )
+                raw = json[self.json_field]
 
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
 
         with _converting(type(obj), self.field):
             value = obj._from_json(
-                json[self.json_field],
+                raw,
                 self.analyzed_type,
                 field=self.field,
             )
@@ -4296,29 +4293,6 @@ class JSONProperty:
             obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
-
-    def _as_held(self, obj: JSONObject, held: Any) -> Any:
-        """Return the field's value for a key that the object holds.
-
-        Args:
-            obj: Object that holds the key.
-            held: The held key, which is the related object's key if the key is
-                a relation.
-
-        Returns:
-            ``held``, or for a relation a related object built from it. That
-            object is kept, so that reading again gives the same one, but the
-            held key is not the object's, so a change of the object leaves the
-            key as it was.
-        """
-        if _related_key_type(self.analyzed_type) is None:
-            return held
-        if self.field not in obj._field_cache:
-            with _converting(type(obj), self.field):
-                obj._field_cache[self.field] = obj._from_json(
-                    obj._to_json(held, self.analyzed_type), self.analyzed_type
-                )
-        return obj._field_cache[self.field]
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -4351,7 +4325,7 @@ class JSONProperty:
         if (
             self._is_key_of(obj)
             and obj._json is None
-            and not hasattr(obj, "_pk_value")
+            and obj._saved_key_json is None
             and obj._url_override is None
         ):
             # Convert the key as if it were read from JSON, so it has the same
@@ -4370,9 +4344,11 @@ class JSONProperty:
                     value = _known_key(value)
                 value = obj._key_as_read_from_json(value)
 
-            obj._pk_value = value
             with _converting(type(obj), self.field):
                 obj._record_saved_key(obj._to_json(value, conversion))
+            # The key reads from the saved key, and not as it was cached.
+            obj._field_cache.pop(self.field, None)
+            obj._field_snapshots.pop(self.field, None)
             return
 
         if self.read_only:
@@ -4540,18 +4516,13 @@ class JSONObject:
     class body: the class merges and checks its table when it is defined.
     """
 
-    _pk_value: Any
-    """Value of the primary key.
-
-    A key that is a relation is held as the related object's key, not as the
-    related object. If None, look in JSON.
-    """
-
     _saved_key_json: Any = None
     """The primary-key field's JSON in the object's last recorded server state.
 
-    ``None`` if the object has recorded no key. Only ``_record_saved_key()``
-    sets it, so a pending change of the key leaves it as it was.
+    For an object that was given its key and has not loaded, this is the key's
+    encoding, and ``pk`` decodes it. ``None`` if the object has recorded no
+    key. Only ``_record_saved_key()`` sets it, so a pending change of the key
+    leaves it as it was.
     """
 
     _api_override: API | None
@@ -4828,15 +4799,11 @@ class JSONObject:
         if pk_property is None:
             return f"<{name}>"
 
-        state = vars(self)
-        json = state.get("_json")
+        json = self._json
         if json is not None:
             value = json.get(pk_property.json_field)
         else:
-            value = state.get("_pk_value")
-            # A repr must not fail, so show a key that cannot be encoded as is.
-            with contextlib.suppress(TypeError, ValueError):
-                value = self._to_json(value, pk_property.analyzed_type)
+            value = self._saved_key_json
 
         if value is None and self._url_override is not None:
             return f"<{name} url={_redact_url(self._url_override)!r}>"
@@ -5591,24 +5558,30 @@ class JSONObject:
             value: JSON-serializable field value.
         """
         # A new primary key waits for save(), and until then the object is
-        # still saved under the key that it last recorded.
-        self.json[json_field] = value
+        # still saved under the key that it last recorded. An object that has
+        # not loaded has no JSON to change, and the update that waits here is
+        # laid over the JSON when it loads.
+        if self._json is not None:
+            self._json[json_field] = value
         self._pending_updates[json_field] = value
 
-    def _queue_in_place_changes(self) -> None:
-        """Queue updates for cached values that were changed in place.
+    def _changes_in_place(self) -> list[tuple[str, JSONProperty, Any]]:
+        """Find the cached values that were changed in place.
 
-        Every changed value is encoded before any is queued, so a value that
-        cannot be encoded leaves the pending updates as they were.
+        Every changed value is encoded, so a value that cannot be encoded fails
+        before anything is queued.
 
         An object of a model without a key is a read-only value that can never
-        be written, so nothing is queued for it.
+        be written, so it has no changes.
+
+        Returns:
+            Each changed field, its descriptor, and the value's new encoding.
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
         """
         if _pk_property_of(type(self)) is None:
-            return
+            return []
 
         changed: list[tuple[str, JSONProperty, Any]] = []
         for field, snapshot in self._field_snapshots.items():
@@ -5619,10 +5592,34 @@ class JSONObject:
                 )
             if not _json_equal(encoded, snapshot):
                 changed.append((field, descriptor, encoded))
+        return changed
 
+    def _queue_changes(
+        self, changed: list[tuple[str, JSONProperty, Any]]
+    ) -> None:
+        """Queue the updates for values that were changed in place.
+
+        Args:
+            changed: The changes that ``_changes_in_place()`` found.
+        """
         for field, descriptor, encoded in changed:
             self._queue_update(descriptor.json_field, _copy_json(encoded))
             self._field_snapshots[field] = _copy_json(encoded)
+
+    def _queue_in_place_changes(self) -> None:
+        """Queue updates for cached values that were changed in place.
+
+        An object that has not loaded loads first, so the update is made to the
+        object that the server has. The load queues the changes itself.
+
+        Raises:
+            FieldConversionError: If a changed value cannot be encoded.
+        """
+        changed = self._changes_in_place()
+        if changed and self._json is None:
+            self._load_json()
+        else:
+            self._queue_changes(changed)
 
     def _apply_patch_response(
         self,
@@ -5653,10 +5650,8 @@ class JSONObject:
             json = self._readable_json(self.merge_response(resp, {}, {}))
             if json:
                 key = self._pk_json_field
-                if key not in json and "_pk_value" in vars(self):
-                    json[key] = self._to_json(
-                        self._pk_value, type(self)._pk.analyzed_type
-                    )
+                if key not in json and self._saved_key_json is not None:
+                    json[key] = _copy_json(self._saved_key_json)
                 self._replace_json(json)
                 self._json_is_partial = True
         else:
@@ -5940,20 +5935,15 @@ class JSONObject:
     def _key_is_unknown(self) -> bool:
         """Return whether an object with its own URL does not know its key.
 
-        An object read from a hyperlink knows its key if it holds one or its
-        JSON has the field, and its URL does not say. Whether the object has
-        loaded is not the question, so a key that a ``refresh()`` kept stays
-        known across another.
+        An object read from a hyperlink knows its key if it has recorded one,
+        and its URL does not say. Whether the object has loaded is not the
+        question, so a key that a ``refresh()`` kept stays known across
+        another.
 
         Returns:
-            Whether the object has its own URL and neither its JSON nor a held
-            key gives the key.
+            Whether the object has its own URL and has recorded no key.
         """
-        if self._url_override is None:
-            return False
-        if self._json is None:
-            return getattr(self, "_pk_value", None) is None
-        return self._pk_json_field not in self._json
+        return self._url_override is not None and self._saved_key_json is None
 
     def _merge_json(self, payload: dict[str, Any]) -> None:
         """Merge authoritative JSON members into this object's JSON.
@@ -5995,18 +5985,8 @@ class JSONObject:
         # An object without a URL cannot reload, so refuse before discarding
         # its state.
         _ = self.url
-        # Store value of primary key. An object read from a hyperlink may not
-        # know its key, before it loads or from JSON that lacks it.
-        unknown_key = self._key_is_unknown()
-        if unknown_key:
-            self._pk_value = None
-        else:
-            # Hold the key as the constructor does.
-            with _converting(type(self), type(self)._pk.field):
-                self._pk_value = self._key_as_read_from_json(
-                    _decode_key(self, self._saved_key_json)
-                )
-        # Discard unsaved local changes
+        # The saved key stays, so the object still has its key without its
+        # JSON. Discard unsaved local changes
         self._pending_updates.clear()
         self._field_cache.clear()
         self._field_snapshots.clear()
@@ -6211,10 +6191,6 @@ class JSONObject:
         if self._json is None:
             self._load_json()
 
-            # The JSON now holds the primary key. An object whose subclass
-            # overrides url may have loaded without one.
-            vars(self).pop("_pk_value", None)
-
         return self._json
 
     def _load_json(self) -> None:
@@ -6224,7 +6200,7 @@ class JSONObject:
             ResponseShapeError: If the response does not hold a JSON object.
         """
         # Reloading drops cached values, so queue their in-place changes first.
-        self._queue_in_place_changes()
+        self._queue_changes(self._changes_in_place())
         json = self._object_from_response(
             self.api.json(self._request_api().get(self.url))
         )
@@ -6243,10 +6219,8 @@ class JSONObject:
         if pk_json_field is not None and pk_json_field not in json:
             if self._json is not None and pk_json_field in self._json:
                 json[pk_json_field] = self._json[pk_json_field]
-            elif "_pk_value" in vars(self):
-                json[pk_json_field] = self._to_json(
-                    self._pk_value, type(self)._pk.analyzed_type
-                )
+            elif self._saved_key_json is not None:
+                json[pk_json_field] = _copy_json(self._saved_key_json)
 
         # Unsaved lazy updates still take precedence over server state. The
         # object never keeps a write-only field's value.
