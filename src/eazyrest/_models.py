@@ -1788,9 +1788,7 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
     # Decoding a key that is not a relation reads only the model's conversions,
     # so a related model's key is decoded without building an object.
     host = obj if owner is type(obj) else object.__new__(owner)
-    # A conversion may keep what it decodes from, and the saved key must not
-    # change when the caller changes the decoded key in place.
-    return host._from_json(_copy_json(value), conversion)
+    return host._from_json(value, conversion)
 
 
 def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
@@ -1820,9 +1818,7 @@ def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
         return None
     owner, conversion, value = reduced
     host = obj if owner is type(obj) else object.__new__(owner)
-    # A conversion may keep what it decodes from, and the canonical key must
-    # not share containers with the saved key.
-    decoded = host._from_json(_copy_json(value), conversion)
+    decoded = host._from_json(value, conversion)
     encoded = owner._to_json(decoded, conversion)
     if encoded is None:
         return None
@@ -4402,9 +4398,7 @@ class JSONProperty:
             # cannot load reads as None, because an object may have no key.
             is_key = self._is_key_of(obj)
             if is_key and obj._saved_key_json is not None:
-                # The field cache keeps what the conversion decodes, which may
-                # share this JSON, so decode a copy of the saved key.
-                raw = _copy_json(obj._saved_key_json)
+                raw = obj._saved_key_json
             else:
                 if is_key and obj._url_override is None:
                     # Loading would need a URL, which needs the key.
@@ -5120,7 +5114,9 @@ class JSONObject:
 
         found = _class_entry(conversion, _table_of(type(self)))
         if found is not None:
-            return found.entry.decode(value, found.declared)
+            # A decode may keep the JSON it is given, which may belong to
+            # another object, so give it a copy.
+            return found.entry.decode(_copy_json(value), found.declared)
 
         match conversion:
             case OptionalType(inner_type):
@@ -5132,7 +5128,9 @@ class JSONObject:
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(type(self)))
                 if found is not None:
-                    return found.entry.decode(value, found.declared)
+                    return found.entry.decode(
+                        _copy_json(value), found.declared
+                    )
                 if typing.get_origin(base_type) is Literal:
                     return _literal_member(
                         base_type, value, _table_of(type(self))

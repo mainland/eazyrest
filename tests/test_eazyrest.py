@@ -8611,6 +8611,26 @@ class StopNote(RouteBase):
     note: str
 
 
+@json_object(pk="note")
+class StopTag(RouteBase):
+    """Model keyed by a relation to a model keyed by a ``Route``."""
+
+    class_url = "/stop-tags/"
+
+    note: StopNote
+    label: str
+
+
+@json_object
+class StopHolder(RouteBase):
+    """Model with a plain relation to a model keyed by a ``Route``."""
+
+    class_url = "/stop-holders/"
+
+    id: int
+    stop: Stop
+
+
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
 def test_a_key_that_a_conversion_aliases_is_sent_to_the_saved_url(
     requests_mock: Any,
@@ -8680,6 +8700,71 @@ def test_a_relation_key_that_a_conversion_aliases_keeps_the_saved_key(
     assert note.url == url == "/stop-notes/%5B%27a%27%5D/"
     assert hash(note) == before == hash(twin)
     assert note == twin
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_an_embedded_key_that_a_conversion_aliases_is_not_shared(
+    requests_mock: Any,
+    write_mode: WriteMode,
+) -> None:
+    """A change in place to an embedded related key leaves the saved keys.
+
+    The conversion keeps the list that it decodes. Reading the key of the
+    embedded ``Stop`` through ``note.stop`` must not change the key that the
+    note and the tag are read from, so the tag loads and writes at the URL of
+    the key that it was read with.
+
+    Args:
+        requests_mock: Mocks the load and the write.
+        write_mode: Whether the write is sent at once or waits for ``save()``.
+    """
+    get = requests_mock.get(
+        requests_mock_ANY, json={"note": {"stop": {"id": ["a"]}}, "label": "a"}
+    )
+    patch = requests_mock.patch(
+        requests_mock_ANY, json={"note": {"stop": {"id": ["a"]}}, "label": "b"}
+    )
+    StopTag.register_api(test_api)
+    note = StopNote(
+        json={"stop": {"id": ["a"], "name": "A"}, "note": "n"},
+        write_mode=write_mode,
+    )
+    twin = StopNote(json={"stop": {"id": ["a"], "name": "A"}, "note": "n"})
+    before = hash(note)
+
+    note.stop.pk.parts.append("b")
+
+    assert note.json["stop"]["id"] == ["a"]
+    assert note.url == "/stop-notes/%5B%27a%27%5D/"
+    assert note == twin
+    assert hash(note) == before
+    tag = StopTag(note=note, write_mode=write_mode)
+    assert tag.url == "/stop-tags/%5B%27a%27%5D/"
+    tag.label = "b"
+    if write_mode == "lazy":
+        tag.save()
+
+    assert [call.path for call in get.request_history] == [
+        "/v1/stop-tags/%5b%27a%27%5d/"
+    ]
+    assert [call.path for call in patch.request_history] == [
+        "/v1/stop-tags/%5b%27a%27%5d/"
+    ]
+
+
+def test_a_change_to_the_key_of_a_related_object_leaves_its_parents_json() -> (
+    None
+):
+    """A plain relation's embedded JSON does not change with the object's key.
+
+    The ``Route`` conversion keeps the list that it decodes, so the parent
+    gives the related object a copy.
+    """
+    holder = StopHolder(json={"id": 1, "stop": {"id": ["a"], "name": "A"}})
+
+    holder.stop.pk.parts.append("b")
+
+    assert holder.json["stop"] == {"id": ["a"], "name": "A"}
 
 
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
