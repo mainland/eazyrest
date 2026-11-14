@@ -4722,10 +4722,11 @@ class JSONObject:
 
         The hash is that of the model and the key that the object is saved
         under, so it does not change while a key change waits for ``save()``.
-        It changes when ``save()`` sends the change, and when a load or a write
-        response spells the key another way. An object of a model without a key
-        field hashes by identity, because its key can never become known.
-        Hashing sends no request.
+        It changes when ``save()`` sends the change, when an eager assignment
+        sends it, and when a load or a write response spells the key another
+        way or names another key. An object of a model without a key field
+        hashes by identity, because its key can never become known. Hashing
+        sends no request.
 
         Returns:
             The hash.

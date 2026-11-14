@@ -7153,7 +7153,9 @@ def test_a_relation_key_moves_when_the_relation_is_assigned_again(
     """Assigning the relation again changes the key as any key change does.
 
     A lazy change waits, so the profile compares by the saved key until
-    ``save()`` sends it, and an eager one moves the key when it is sent.
+    ``save()`` sends it, and an eager one moves the key when it is sent. This
+    was so before the model copied the related object's key, so the test pins
+    behavior that the copy keeps.
     """
     requests_mock.patch(
         "https://example.com/v1/profiles/5/", json={"user": 7, "bio": "a"}

@@ -172,9 +172,11 @@ and none asks the related object again.
   place in a set, and has the `url` of the saved profile. In eager mode the key
   moves, and the hash with it, when the change is sent. A second change begins
   from the key that the first one set.
-- Reading `profile.user` is unchanged. A profile that shares a prefetched user
-  gives that object, and any other profile gives a related object built from
-  its key. That object is not the key's owner, so after its key changes,
+- Reading `profile.user` does not give the key's owner. After an assignment it
+  gives the assigned object. When the profile embeds its user, it gives the
+  object built from the embedded JSON, with its other fields. When the profile
+  shares a prefetched user, it gives that object. Otherwise it gives an object
+  built from the key. In each case, after the user's key changes,
   `profile.user.pk` can differ from `profile.pk`.
 
 ### When the hash changes
@@ -196,8 +198,9 @@ change the hash.
 A key that is a relation must lead to a model whose key is not. A model keyed
 by itself, or two models keyed by each other, raises `TypeError` when it is
 decorated, naming the models in the cycle. A key whose model is not defined yet
-when the class is decorated raises the same `TypeError` when the key is first
-used.
+when the class is decorated, or whose name is bound to another class later, as
+when a module rebinds the name or finishes a circular import, raises the same
+`TypeError` when the key is first used.
 
 ### Differences from Django
 

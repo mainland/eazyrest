@@ -424,9 +424,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   changes the hash. Give the key in its field's type.
 - The `pk` and `url` of a model whose primary key is a relation give the key
   that the model copied from the related object when the relation was assigned
-  or loaded, where 0.9.0 asked the related object each time, so they followed
-  its key as it changed. A later change of the related object's key no longer
-  changes them. Assign the relation again to change the model's key.
+  or loaded, where 0.9.0 asked the related object that the constructor or the
+  `pk` setter was given, until the model loaded, so they followed its key as it
+  changed. A loaded model read a new object from its JSON each time, and did
+  not follow. A later change of the related object's key no longer changes
+  them. Assign the relation again to change the model's key.
 
 #### Declarations
 
