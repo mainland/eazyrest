@@ -7155,6 +7155,63 @@ class TokenOwner(ModelBase):
     id: uuid.UUID
 
 
+@pytest.mark.parametrize(
+    ("make", "payload"),
+    [
+        (lambda: User(), {"id": 5, "name": "b"}),
+        (lambda: User(json={"name": "a"}), {"id": 5, "name": "b"}),
+        (lambda: User(json={"id": None, "name": "a"}), {"id": 5}),
+        (lambda: User(json={"id": None, "name": "a"}), {"id": None}),
+        (
+            lambda: TokenOwner(json={"id": "not-a-uuid"}),
+            {"id": "other-garbage"},
+        ),
+        (
+            lambda: TokenOwner(json={"id": "not-a-uuid"}),
+            {"id": "12345678-1234-5678-1234-567812345678"},
+        ),
+        (
+            lambda: TokenOwner(
+                json={"id": "12345678-1234-5678-1234-567812345678"}
+            ),
+            {"id": "not-a-uuid"},
+        ),
+    ],
+    ids=[
+        "no-key",
+        "key-missing",
+        "key-null-payload-names-one",
+        "key-null-payload-null",
+        "unreadable-payload-unreadable",
+        "unreadable-payload-readable",
+        "readable-payload-unreadable",
+    ],
+)
+def test_update_from_json_refuses_a_payload_whose_key_or_saved_key_is_unknown(
+    make: Callable[[], JSONObject],
+    payload: dict[str, Any],
+    requests_mock: Any,
+) -> None:
+    """A payload that names a key needs a key on each side to name this object.
+
+    A key is not known if it is ``None``, or missing, or cannot be converted,
+    and an object with such a key equals only itself. So the payload is
+    refused, and the object keeps its JSON.
+
+    Args:
+        make: Builds the object.
+        payload: The payload, which has the key field.
+    """
+    obj = make()
+    before = copy.deepcopy(obj._json)
+
+    with pytest.raises(ValueError, match="primary key does not match"):
+        obj.update_from_json(payload)
+
+    assert obj._json == before
+    assert requests_mock.call_count == 0
+
+
 def test_a_key_change_sent_eagerly_replaces_the_key_that_a_payload_held(
     requests_mock: Any,
 ) -> None:

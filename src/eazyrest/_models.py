@@ -5947,10 +5947,14 @@ class JSONObject:
                 later does not change the object.
 
         Raises:
-            ValueError: If the payload's key has another canonical key than the
-                object's saved key, so that it refers to a different resource.
-                An object known only by its URL, whose key is not known, takes
-                the payload's key.
+            ValueError: If the payload has the key field and its key, or the
+                object's saved key, is not known, or the two have different
+                canonical keys, so that the payload does not name this object.
+                A key is not known if it is ``None`` or cannot be converted. An
+                object that has its own URL and has recorded no key, as one
+                read from a hyperlink has not, takes the payload's key.
+            TypeError: If the model's key declaration is refused when the key
+                is first used.
         """
         payload = copy.deepcopy(dict(json))
         if _pk_property_of(type(self)) is None:
@@ -5971,9 +5975,9 @@ class JSONObject:
                     raise
                 named = None
             saved = self._canonical_key()
-            if (None if named is None else named[1]) != (
-                None if saved is None else saved[1]
-            ):
+            # Two keys that are not known name no common resource, and an
+            # object whose key is not known equals only itself.
+            if named is None or saved is None or named[1] != saved[1]:
                 raise ValueError(
                     "Incoming JSON primary key does not match this object"
                 )
