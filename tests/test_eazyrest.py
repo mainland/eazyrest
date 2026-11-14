@@ -7660,15 +7660,14 @@ def test_a_key_that_python_cannot_hash_hashes_by_its_json(
     assert requests_mock.call_count == 0
 
 
-def test_a_key_compares_as_it_is_held_not_as_its_field_converts_it(
+def test_a_key_given_as_a_string_for_an_int_field_is_another_key(
     requests_mock: Any,
 ) -> None:
-    """A key of another spelling is another key, and a load can change it.
+    """A key that encodes differently is another key, until a load names it.
 
-    ``User(id="1")`` holds the string it was given, so it does not equal
-    ``User(id=1)``. When it loads and the JSON spells the key as ``1``, the
-    JSON's key takes precedence, so the hash changes. The same happens when a
-    load names another key.
+    ``User(id="1")`` has the saved key ``"1"``, which encodes as a string, so
+    it does not equal ``User(id=1)``. When it loads and the JSON spells the key
+    as ``1``, that becomes the saved key, so equality and the hash change.
     """
     requests_mock.get(
         "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
@@ -7809,7 +7808,7 @@ def test_a_loaded_object_keyed_by_a_relation_has_one_stable_hash(
 
 
 def test_comparing_a_loaded_relation_key_converts_it_once() -> None:
-    """Comparing and hashing reuse the related object that the first found."""
+    """Comparing and hashing compute the canonical key of each object once."""
     GridProfile.register_api(test_api)
     profile = GridProfile(json={"grid": 1, "bio": "a"})
     other = GridProfile(json={"grid": 1, "bio": "a"})
@@ -8339,10 +8338,10 @@ def test_a_change_in_place_of_a_key_that_has_not_loaded_survives_the_load(
     assert grid == Grid(id=Cell(5))
 
 
-def test_a_key_that_is_read_once_loads_the_object_once(
+def test_reading_the_key_of_an_unloaded_object_sends_no_request(
     requests_mock: Any,
 ) -> None:
-    """Reading the key of an object that has not loaded sends no request."""
+    """Reading the key sends no request, and another field loads it once."""
     get = requests_mock.get(
         "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
     )
