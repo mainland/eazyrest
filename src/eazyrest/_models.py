@@ -1634,6 +1634,113 @@ def _held_key(obj: JSONObject) -> Any:
     return value
 
 
+def _reduce_key(
+    cls: type[JSONObject], key: Any
+) -> tuple[type[JSONObject], AnalyzedType, Any] | None:
+    """Reduce a saved key's JSON to the key of the last model of its chain.
+
+    A key that is a relation names the related object's key, which may be a
+    relation in turn. An embedded object gives its key field's value, and a
+    bare key already is the related key's JSON.
+
+    Args:
+        cls: Model whose key field holds ``key``.
+        key: The JSON of the key field.
+
+    Returns:
+        The model at the end of the chain of relations, the analyzed type of
+        its key field, and the key's JSON for that field. ``None`` if the chain
+        does not reach a key: the JSON is ``null``, or it embeds an object
+        without the key field, or the relation is hyperlinked.
+
+    Raises:
+        UsageError: If a related model had ``api`` assigned after the class was
+            defined.
+        NameError: If a key's annotation names a class that is not defined.
+    """
+    prop = _pk_property_of(cls)
+    if prop is None or key is None:
+        return None
+    owner = cls
+    conversion = prop.analyzed_type
+    while (related := _related_key_type(conversion)) is not None:
+        _check_api_attribute(related.model_type, UsageError)
+        inner = _pk_property_of(related.model_type)
+        if related.hyperlinked or inner is None:
+            return None
+        if isinstance(key, dict):
+            if inner.json_field not in key:
+                return None
+            key = key[inner.json_field]
+            if key is None:
+                return None
+        owner = related.model_type
+        conversion = inner.analyzed_type
+    return owner, conversion, key
+
+
+def _decode_key(obj: JSONObject, key: Any) -> Any:
+    """Decode the JSON of an object's key field, as the field reads it.
+
+    Args:
+        obj: Model object, or any object of the model that owns the key field.
+        key: The JSON of the key field.
+
+    Returns:
+        The key as ``pk`` returns it, so the key of the last model of a chain
+        of relations, decoded with that model's conversions. ``None`` if the
+        chain does not reach a key.
+
+    Raises:
+        TypeError: If the key cannot be decoded.
+        ValueError: If the key cannot be decoded.
+        UsageError: If a related model had ``api`` assigned after the class was
+            defined.
+        NameError: If a key's annotation names a class that is not defined.
+    """
+    reduced = _reduce_key(type(obj), key)
+    if reduced is None:
+        return None
+    owner, conversion, value = reduced
+    # Decoding a key that is not a relation reads only the model's conversions,
+    # so a related model's key is decoded without building an object.
+    host = obj if owner is type(obj) else object.__new__(owner)
+    return host._from_json(value, conversion)
+
+
+def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
+    """Return the canonical key that the JSON of a key field names.
+
+    The key is reduced along its chain of relations, decoded and encoded again
+    by the last model's field type, and written as JSON text with sorted keys
+    and fixed separators.
+
+    Args:
+        obj: Model object, or any object of the model that owns the key field.
+        key: The JSON of the key field.
+
+    Returns:
+        The encoded key, and its JSON text, or ``None`` if the JSON names no
+        key.
+
+    Raises:
+        TypeError: If the key cannot be decoded or encoded.
+        ValueError: If the key cannot be decoded or encoded.
+        UsageError: If a related model had ``api`` assigned after the class was
+            defined.
+        NameError: If a key's annotation names a class that is not defined.
+    """
+    reduced = _reduce_key(type(obj), key)
+    if reduced is None:
+        return None
+    owner, conversion, value = reduced
+    host = obj if owner is type(obj) else object.__new__(owner)
+    encoded = owner._to_json(host._from_json(value, conversion), conversion)
+    if encoded is None:
+        return None
+    return encoded, json.dumps(encoded, sort_keys=True, separators=(",", ":"))
+
+
 def _saved_key(obj: JSONObject) -> Any:
     """Return the key that an object is saved under, if it is known.
 
@@ -1666,9 +1773,6 @@ def _saved_key(obj: JSONObject) -> Any:
     if _pk_property_of(cls) is None:
         return _MISSING
     state = vars(obj)
-    if cls._pk_json_field in state.get("_pending_updates", ()):
-        value = state.get("_saved_pk")
-        return _MISSING if value is None else value
 
     # Converting the key makes a new object for some types, so convert it once.
     # Only a known key is kept. An unknown key is found again, which is cheap,
@@ -1678,7 +1782,11 @@ def _saved_key(obj: JSONObject) -> Any:
     if cached is not None:
         return cached[0]
     try:
-        value = _held_key(obj)
+        if cls._pk_json_field in state.get("_pending_updates", ()):
+            # The JSON holds the pending key, so read the saved one.
+            value = _decode_key(obj, obj._saved_key_json)
+        else:
+            value = _held_key(obj)
     except (TypeError, ValueError):
         # A key that cannot be converted is not a known key.
         value = _MISSING
@@ -4377,6 +4485,8 @@ class JSONProperty:
 
             obj._pk_value = value
             obj._forget_saved_key()
+            with _converting(type(obj), self.field):
+                obj._record_saved_key(obj._to_json(value, conversion))
             return
 
         if self.read_only:
@@ -4550,10 +4660,11 @@ class JSONObject:
     related object. If None, look in JSON.
     """
 
-    _saved_pk: Any
-    """Primary key of the saved object while a primary-key change is pending.
+    _saved_key_json: Any = None
+    """The primary-key field's JSON in the object's last recorded server state.
 
-    Set only while ``_pending_updates`` holds the primary-key JSON field.
+    ``None`` if the object has recorded no key. Only ``_record_saved_key()``
+    sets it, so a pending change of the key leaves it as it was.
     """
 
     _saved_key_cache: tuple[Any]
@@ -4733,6 +4844,8 @@ class JSONObject:
         pk_property = _pk_property_of(type(self))
         if pk_property is not None:
             pk_names.add(pk_property.field)
+            if self._json is not None and pk_property.json_field in self._json:
+                self._record_saved_key(self._json[pk_property.json_field])
 
         for name in sorted(kwargs, key=lambda name: name not in pk_names):
             setattr(self, name, kwargs[name])
@@ -5540,6 +5653,52 @@ class JSONObject:
         hidden = cls._write_only_keys()
         return {key: value for key, value in json.items() if key not in hidden}
 
+    def _record_saved_key(self, key: Any) -> None:
+        """Record the key that the object's server state names.
+
+        Call it wherever the object takes server state that has the key field:
+        when it is built from JSON, when its key is first given, when it loads,
+        when a write's response is recorded, and when ``update_from_json()``
+        merges a payload. Nothing else sets the saved key, so a pending change
+        of the key, a change in place, and a refresh leave it.
+
+        Args:
+            key: The JSON of the key field. A container is copied.
+        """
+        self._saved_key_json = _copy_json(key)
+        vars(self).pop("_canonical", None)
+
+    def _canonical_key(self) -> tuple[Any, str] | None:
+        """Return the canonical key of the saved key, computed on first use.
+
+        The canonical key is a pure function of the saved key's JSON, and
+        ``_record_saved_key()`` drops it with the JSON, so it cannot be stale.
+
+        Returns:
+            The key encoded as JSON, and its JSON text, or ``None`` if the
+            saved key is unknown: ``null``, or JSON that the key field cannot
+            decode or encode.
+
+        Raises:
+            UsageError: If the key is a relation whose model's ``api`` was
+                assigned after the class was defined.
+            NameError: If the key's annotation names a class that is not
+                defined. Both refuse the model's declaration, so they
+                propagate, as does any exception other than ``TypeError`` or
+                ``ValueError`` that a custom conversion raises.
+        """
+        state = vars(self)
+        try:
+            return cast("tuple[Any, str] | None", state["_canonical"])
+        except KeyError:
+            pass
+        try:
+            canonical = _canonical_key_of(self, self._saved_key_json)
+        except (TypeError, ValueError):
+            canonical = None
+        state["_canonical"] = canonical
+        return canonical
+
     def _forget_saved_key(self) -> None:
         """Drop the saved key that comparing found, after the key can change.
 
@@ -5609,18 +5768,10 @@ class JSONObject:
             json_field: Name of the backing JSON field.
             value: JSON-serializable field value.
         """
-        if (
-            json_field == getattr(type(self), "_pk_json_field", None)
-            and json_field not in self._pending_updates
-        ):
-            # Until save() sends the new primary key, the object is still saved
-            # under the old one.
-            self._saved_pk = self.pk
-
+        # A new primary key waits for save(), and until then the object is
+        # still saved under the key that it last recorded.
         self.json[json_field] = value
         self._pending_updates[json_field] = value
-        if json_field == getattr(type(self), "_pk_json_field", None):
-            self._forget_saved_key()
 
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.
@@ -5690,8 +5841,15 @@ class JSONObject:
             self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
 
-    def _replace_json(self, json: dict[str, Any]) -> None:
+    def _replace_json(
+        self,
+        json: dict[str, Any],
+        server_json: Mapping[str, Any] | None = None,
+    ) -> None:
         """Replace this object's JSON after a write or a load.
+
+        The object records the key of the server's JSON as its saved key, if
+        that has the key field.
 
         Cached values stay valid for the fields whose JSON is unchanged, so
         only the others are dropped. In particular, a related object assigned
@@ -5700,22 +5858,28 @@ class JSONObject:
 
         Args:
             json: The object's new JSON.
+            server_json: The JSON that the server sent, if that is not
+                ``json``, which then holds the pending updates laid over it.
         """
         before = self._json if self._json is not None else {}
         json = self._readable_json(json)
-        if self._url_override is not None:
+        # The key before is the saved one, which differs from the JSON's while
+        # a change of the key is pending.
+        saved_before = before
+        if _pk_property_of(type(self)) is not None:
             key: str = type(self)._pk.json_field
-            saved = before.get(key, _MISSING)
-            if key in self._pending_updates:
-                saved = self._to_json(
-                    self._saved_pk, type(self)._pk.analyzed_type
-                )
-            if saved is not _MISSING and not _json_equal(
-                saved, json.get(key, _MISSING)
-            ):
-                self._url_override = None
+            if self._saved_key_json is not None:
+                saved_before = {key: self._saved_key_json}
+            server = json if server_json is None else server_json
+            if key in server:
+                # A URL that a hyperlink named is the object's only while the
+                # object keeps its key.
+                known = self._canonical_key() if self._url_override else None
+                self._record_saved_key(server[key])
+                if known is not None and known != self._canonical_key():
+                    self._url_override = None
         if _pk_property_of(type(self)) is not None and self._key_json_changed(
-            before, json.get(type(self)._pk.json_field, _MISSING)
+            saved_before, json.get(type(self)._pk.json_field, _MISSING)
         ):
             self._forget_saved_key()
         self._json = json
@@ -5930,7 +6094,7 @@ class JSONObject:
         existing_pk = (
             payload.get(self._pk_json_field)
             if unknown_key
-            else self._persisted_pk()
+            else _decode_key(self, self._saved_key_json)
         )
         # A payload without the key names no other object. Comparing the
         # existing key with itself would convert it twice, which gives two
@@ -5951,6 +6115,8 @@ class JSONObject:
             self._json_is_partial = True
 
         self._merge_json(payload)
+        if self._pk_json_field in payload:
+            self._record_saved_key(payload[self._pk_json_field])
 
     def _key_is_unknown(self) -> bool:
         """Return whether an object with its own URL does not know its key.
@@ -6027,7 +6193,9 @@ class JSONObject:
         else:
             # Hold the key as the constructor does.
             with _converting(type(self), type(self)._pk.field):
-                key = self._key_as_read_from_json(self._persisted_pk())
+                key = self._key_as_read_from_json(
+                    _decode_key(self, self._saved_key_json)
+                )
             # The key that the object compares by afterwards is this one. If it
             # spells the same as the saved key that comparing found, hold that
             # object, so a key type that hashes by identity keeps one.
@@ -6129,20 +6297,24 @@ class JSONObject:
             value = _held_key(value)
         return value
 
-    def _persisted_pk(self) -> Any:
-        """Return the primary key under which the object is saved.
-
-        This differs from ``pk`` while a lazy primary-key change waits for
-        ``save()``.
+    def _saved_key_value(self) -> Any:
+        """Return the saved key's JSON value, which names the object's URL.
 
         Returns:
-            The saved primary key while a primary-key change is pending, and
-            ``pk`` otherwise.
-        """
-        if self._pk_json_field in self._pending_updates:
-            return self._saved_pk
+            The canonical key's JSON value, or ``None`` if the saved key is
+            unknown.
 
-        return self.pk
+        Raises:
+            FieldConversionError: If the saved key's JSON cannot be converted.
+        """
+        canonical = self._canonical_key()
+        if canonical is not None:
+            return canonical[0]
+        if self._saved_key_json is not None:
+            # Say why the key cannot be read, rather than that it is None.
+            with _converting(type(self), type(self)._pk.field):
+                _canonical_key_of(self, self._saved_key_json)
+        return None
 
     def _normalize_pk(self, value: Any) -> Any:
         """Return a decoded scalar primary key from a Python or JSON value.
@@ -6167,9 +6339,10 @@ class JSONObject:
         """Return the resource URL for this object.
 
         The primary key is converted to its JSON value and percent-encoded, so
-        it always forms a single path segment. While a primary-key change waits
-        for ``save()``, the URL uses the saved primary key, so ``save()`` sends
-        the change to the saved object.
+        it always forms a single path segment. The key is the one that the
+        object last recorded from the server, or that it was given. So while a
+        primary-key change waits for ``save()``, or after one is made in place,
+        the URL names the saved object, and ``save()`` sends the change there.
 
         Returns:
             Relative URL for this object. It ends with ``/`` unless the API's
@@ -6192,7 +6365,7 @@ class JSONObject:
                 f"{type(self).__name__} has no primary-key field, so it has "
                 "no URL."
             )
-        pk = self._to_json(self._persisted_pk(), type(self)._pk.analyzed_type)
+        pk = self._saved_key_value()
         pk_text = str(pk)
         if pk is None or pk_text in ("", ".", ".."):
             raise ValueError(
@@ -6260,6 +6433,13 @@ class JSONObject:
         # URL holds it. Keep the key that the object was loaded by, so that the
         # object keeps its identity and URL.
         pk_json_field = getattr(type(self), "_pk_json_field", None)
+        # The key that the server sent is the saved key, before the pending
+        # updates are laid over it.
+        server_json = (
+            {pk_json_field: json[pk_json_field]}
+            if pk_json_field is not None and pk_json_field in json
+            else {}
+        )
         if pk_json_field is not None and pk_json_field not in json:
             if self._json is not None and pk_json_field in self._json:
                 json[pk_json_field] = self._json[pk_json_field]
@@ -6278,7 +6458,7 @@ class JSONObject:
         )
         # Keep the values of fields that the load left unchanged, such as a
         # related object with unsaved changes of its own.
-        self._replace_json(json)
+        self._replace_json(json, server_json)
         self._json_is_partial = False
 
     def _json_having(self, json_field: str) -> Any:

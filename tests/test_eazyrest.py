@@ -7857,6 +7857,125 @@ def test_the_saved_key_follows_a_save_of_a_key_change(
     assert hash(user) == hash(User(id=3))
 
 
+@json_object
+class NamedListKeyed(ModelBase):
+    """Model whose key is a list, which can change in place."""
+
+    class_url = "/named-list-keyed/"
+
+    id: list[int]
+    name: str
+
+
+@json_object
+class TimeKeyed(ModelBase):
+    """Model whose key is a ``datetime``, which JSON can spell two ways."""
+
+    class_url = "/time-keyed/"
+
+    id: datetime.datetime
+    name: str
+
+
+def _changed_in_place_key(kind: str, write_mode: WriteMode) -> Any:
+    """Build an object whose key is a mutable value, and change it in place.
+
+    Args:
+        kind: ``"cell"`` for a key that is an object, or ``"list"``.
+        write_mode: Write mode of the object.
+
+    Returns:
+        The object, whose key has changed, and whose other field is unsent.
+    """
+    if kind == "cell":
+        grid = Grid(json={"id": 5, "name": "a"}, write_mode=write_mode)
+        grid.id.value = 9
+        return grid
+    keyed = NamedListKeyed(
+        json={"id": [1, 2], "name": "a"}, write_mode=write_mode
+    )
+    keyed.id.append(3)
+    return keyed
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+@pytest.mark.parametrize(
+    ("kind", "saved_url", "sent_key"),
+    [
+        ("cell", "/grids/5/", 9),
+        ("list", "/named-list-keyed/%5B1%2C%202%5D/", [1, 2, 3]),
+    ],
+)
+def test_a_key_changed_in_place_is_sent_to_the_url_of_the_saved_key(
+    requests_mock: Any,
+    kind: str,
+    saved_url: str,
+    sent_key: Any,
+    write_mode: WriteMode,
+) -> None:
+    """The write goes to the saved key, and its response moves the URL.
+
+    Args:
+        requests_mock: Mocks the write.
+        kind: The kind of key that changes in place.
+        saved_url: The URL of the object before the change is sent.
+        sent_key: The key's JSON that the write sends.
+        write_mode: Whether the change is sent at once or waits for ``save()``.
+    """
+    Grid.register_api(test_api)
+    keyed = _changed_in_place_key(kind, write_mode)
+    urls_at_the_write = []
+
+    def respond(request: Any, context: Any) -> dict[str, Any]:
+        urls_at_the_write.append(keyed.url)
+        return {"id": sent_key, "name": "b"}
+
+    patch = requests_mock.patch(requests_mock_ANY, json=respond)
+    assert keyed.url == saved_url
+
+    if write_mode == "lazy":
+        keyed.save()
+    else:
+        keyed.name = "b"
+
+    assert [call.path for call in patch.request_history] == [
+        "/v1" + saved_url.lower()
+    ]
+    assert patch.last_request.json()["id"] == sent_key
+    assert urls_at_the_write == [saved_url]
+    assert keyed.url != saved_url
+
+
+def test_the_url_of_an_object_that_has_not_loaded_ignores_a_key_change() -> (
+    None
+):
+    """Changing the key in place does not move an unloaded object's URL."""
+    Grid.register_api(test_api)
+    grid = Grid(id=Cell(5))
+
+    grid.id.value = 9
+
+    assert grid.url == "/grids/5/"
+
+
+def test_a_load_that_spells_a_datetime_key_another_way_keeps_the_url(
+    requests_mock: Any,
+) -> None:
+    """The URL names the key, whichever way a response spells it."""
+    requests_mock.get(
+        "https://example.com/v1/time-keyed/2026-01-01T00%3A00%3A00%2B00%3A00/",
+        json={"id": "2026-01-01T00:00:00+00:00", "name": "a"},
+    )
+    stamp = TimeKeyed(json={"id": "2026-01-01T00:00:00Z"})
+    url = stamp.url
+    stamp.refresh()
+
+    assert stamp.name == "a"
+
+    assert stamp.url == url
+    assert url.endswith("%2B00%3A00/")
+
+
 def test_an_object_known_by_its_url_equals_its_key_after_update_from_json(
     requests_mock: Any,
 ) -> None:
