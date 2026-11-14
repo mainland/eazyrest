@@ -251,15 +251,21 @@ describe them further.
   update pending. An update is unsent when it was made in lazy mode, or when a
   change made in place was found as the object loaded missing fields.
 - Two objects of one model with the same known primary key are equal, where
-  `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. A
-  key is known if the object holds it or its loaded JSON has it, and a key that
-  is a relation compares as the related object's key that the model copied when
-  the relation was assigned or loaded. An object without a known key still
-  equals only itself, and `hash()` of one raises `TypeError`, unless its model
-  has no key field. The message says what is wrong with the key. A key is
-  compared as it is held, so `User(id="1")` does not equal `User(id=1)`, and a
-  load or a write's response that spells the key another way, or names another
-  key, changes the hash. Give the key in its field's type.
+  `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. The
+  key is the one that the object last took from the server or was given, and a
+  key that is a relation compares as the related object's key that the model
+  copied when the relation was assigned or loaded. Keys compare by their
+  encoding as JSON, so a key of any type, including one that compares by
+  identity or cannot be hashed, such as a `list`, gives equal objects with
+  equal hashes, and spellings that decode to one value and encode alike, such
+  as `Z` and `+00:00`, are one key. A key that encodes differently is another
+  key, so `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
+  `User(id=1)`. Give the key in its field's type. A pending change of the key,
+  a change made to it in place, and `refresh()` leave the key, the hash, and
+  the `url` as they were until `save()` sends the change. An object without a
+  known key still equals only itself, and `hash()` of one raises `TypeError`,
+  unless its model has no key field. The message says what is wrong with the
+  key.
 
 ### Migrating from 0.9.0
 
@@ -413,15 +419,21 @@ that can break code written for 0.9.0, followed by what to do about it.
   with 0.9.0's `ty` parameter, as `from_json(self, value, ty)`, raises
   `TypeError` when it is defined, since the override would never be called.
 - Two objects of one model with the same known primary key are equal, where
-  0.9.0 compared them by identity, so a set or dict of them keeps one. A key is
-  known if the object holds it or its loaded JSON has it, and a key that is a
-  relation compares as the related object's key that the model copied when the
-  relation was assigned or loaded. An object without a known key still equals
-  only itself, and `hash()` of one raises `TypeError`, unless its model has no
-  key field. The message says what is wrong with the key. A key is compared as
-  it is held, so `User(id="1")` does not equal `User(id=1)`, and a load or a
-  write's response that spells the key another way, or names another key,
-  changes the hash. Give the key in its field's type.
+  0.9.0 compared them by identity, so a set or dict of them keeps one. The key
+  is the one that the object last took from the server or was given, and a key
+  that is a relation compares as the related object's key that the model copied
+  when the relation was assigned or loaded. Keys compare by their encoding as
+  JSON, so a key of any type, including one that compares by identity or cannot
+  be hashed, such as a `list`, gives equal objects with equal hashes, and
+  spellings that decode to one value and encode alike, such as `Z` and
+  `+00:00`, are one key. A key that encodes differently is another key, so
+  `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
+  `User(id=1)`. Give the key in its field's type. A pending change of the key,
+  a change made to it in place, and `refresh()` leave the key, the hash, and
+  the `url` as they were until `save()` sends the change. An object without a
+  known key still equals only itself, and `hash()` of one raises `TypeError`,
+  unless its model has no key field. The message says what is wrong with the
+  key.
 - The `pk` and `url` of a model whose primary key is a relation give the key
   that the model copied from the related object when the relation was assigned
   or loaded, where 0.9.0 asked the related object that the constructor or the

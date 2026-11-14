@@ -123,31 +123,49 @@ separate from the returned value and may name a read-only file field.
 ## Equality by key
 
 Objects compare by key. Two objects are equal if they are of exactly the same
-model, so a subclass does not equal its base, and their primary keys are known
-without a request, are not `None`, and are equal. The API and the fields are
-not compared. A key is known as `repr()` knows it: the object holds it, as
-`User(id=1)` does, or its loaded JSON has it. The key is the one the object is
-saved under, so while a lazy change of the key waits for `save()`, it is the
-key before the change. Any other object equals only itself. That includes an
-object of a model without a key field, one built without a key, such as
-`User()`, one known only by its URL that has not loaded, and one whose loaded
-JSON lacks the key, holds `null`, or holds a key that the field cannot convert,
-such as `"not-a-uuid"` for a `UUID` key, which `repr()` still shows. Comparing
-never sends a request. Comparing with a value that is not a model object is
-`False`.
+model, so a subclass does not equal its base, and they have the same canonical
+key. The API and the fields are not compared. Comparing never sends a request,
+and comparing with a value that is not a model object is `False`.
 
-An object hashes by its model and key, so objects that are equal are one member
-of a set or one key of a dict. An object of a model without a key field hashes
-by identity. For any other object whose key is not known, `hash()` raises
-`TypeError`, because a hash that changed when the key became known would lose
-the object in a set or dict that held it. The message advises loading or saving
-the object, or giving its key, only for an object that has no JSON yet or only
-part of it. Otherwise it says that the key is missing from the JSON, is `None`,
-or cannot be read, because none of those would help. A key whose type cannot be
-hashed, such as a `list`, still makes equal objects, and `hash()` raises
-Python's own `TypeError` for it. A key is compared as it is held, without
-converting it, so `User(id="1")` does not equal `User(id=1)` and hashes
-differently. Give the key in its field's type, as the server returns it.
+The canonical key comes from the key that the object last took from the server,
+or was given: the saved key. An object takes the key when it is built from
+`json=`, when its key is first given, as `User(id=1)` does, when it loads, when
+a write's response is recorded, and when `update_from_json()` merges a payload
+that names the key. Nothing else changes it. In particular, a lazy change of
+the key, a change made to the key in place, and `refresh()` leave it, so the
+object keeps comparing, hashing, and forming its `url` by the key that the
+server has until `save()` sends the change and the response is recorded.
+
+The canonical key is the saved key's JSON, decoded and encoded again by the
+key's field type, and written as text. So it is the key as the server names the
+resource, and these laws follow:
+
+- Equal objects have the same `url`. Keys that spell one value alike, such as
+  `2026-01-01T00:00:00Z` and `2026-01-01T00:00:00+00:00` for a `datetime`, are
+  one key. A key type that compares by identity, or that cannot be hashed, such
+  as a `list`, still gives equal objects when the encoded keys are equal.
+- Keys that encode differently are different keys, even when Python equates
+  their values. `User(id=1.0)` and `User(id=True)` do not equal `User(id=1)`,
+  `User(id="1")` does not equal `User(id=1)`, and `Decimal` keys of `"1.0"` and
+  `"1.00"` differ, because each pair names different URLs. Give the key in its
+  field's type, as the server returns it.
+- A change to a Python value, including the value that `pk` returns, changes
+  nothing until a write sends it and its response is recorded.
+
+Any other object equals only itself. That includes an object of a model without
+a key field, one built without a key, such as `User()`, one known only by its
+URL that has not loaded, and one whose loaded JSON lacks the key, holds `null`,
+or holds a key that the field cannot convert, such as `"not-a-uuid"` for a
+`UUID` key, which `repr()` still shows.
+
+An object hashes by its model and canonical key, so objects that are equal are
+one member of a set or one key of a dict. An object of a model without a key
+field hashes by identity. For any other object whose key is not known, `hash()`
+raises `TypeError`, because a hash that changed when the key became known would
+lose the object in a set or dict that held it. The message advises loading or
+saving the object, or giving its key, only for an object that has no JSON yet
+or only part of it. Otherwise it says that the key is missing from the JSON, is
+`None`, or cannot be read, because none of those would help.
 
 ### A key that is a relation
 
@@ -181,17 +199,19 @@ and none asks the related object again.
 
 ### When the hash changes
 
-The hash is that of the model and its saved key, so it changes only when the
-saved key does. That happens at two points:
+The hash is that of the model and its canonical key, so it changes only when
+the object takes from the server a key that has another canonical key. That
+happens at two points:
 
 - at `save()` of the object's own key change, which sends the new key, or at
   the assignment in eager mode, which sends it at once, and
-- at a load, or a write's response, that spells the key another way or names
-  another key, which replaces the held key with the JSON's.
+- at a load, a write's response, or `update_from_json()` that names another
+  key.
 
 A set or dict that holds the object then no longer finds it. Take the object
-out before such a change, and put it back after. A pending change does not
-change the hash.
+out before such a change, and put it back after. A pending change, a change
+made to the key in place, a refresh, and a load or a write that spells the same
+key another way do not change the hash.
 
 ### Key cycles
 

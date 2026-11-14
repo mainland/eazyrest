@@ -6588,33 +6588,31 @@ class SetOfListKeyed(ModelBase):
     items: set[ListKeyed]
 
 
-def test_a_failed_set_assignment_sends_no_patch(requests_mock: Any) -> None:
-    """An assignment that the field cannot keep writes nothing, in eager mode.
-
-    The value encodes, because the object holds its key, but a set cannot hold
-    an object whose key cannot be hashed.
-    """
+def test_a_set_of_objects_with_a_list_key_keeps_one_for_each_key(
+    requests_mock: Any,
+) -> None:
+    """A list key hashes by its JSON, so a set holds and writes one object."""
     patch = requests_mock.patch(
         "https://example.com/v1/set-of-list-keyed/1/", json={"id": 1}
     )
     team = SetOfListKeyed(json={"id": 1, "items": []}, write_mode="eager")
 
-    with pytest.raises(FieldConversionError, match=r"SetOfListKeyed\.items"):
-        cast(Any, team).items = [ListKeyed(id=[1])]
+    team.items = {ListKeyed(id=[1]), ListKeyed(id=[1]), ListKeyed(id=[2])}
 
-    assert patch.call_count == 0
-    assert team._pending_updates == {}
+    assert len(team.items) == 2
+    assert ListKeyed(id=[2]) in team.items
+    assert sorted(patch.last_request.json()["items"]) == [[1], [2]]
 
 
-def test_a_failed_set_assignment_queues_nothing(requests_mock: Any) -> None:
-    """An assignment that the field cannot keep queues no update, when lazy."""
+def test_a_lazy_set_of_objects_with_a_list_key_queues_one_for_each_key(
+    requests_mock: Any,
+) -> None:
+    """A set assignment of equal list keys queues each key once."""
     team = SetOfListKeyed(json={"id": 1, "items": []}, write_mode="lazy")
 
-    with pytest.raises(FieldConversionError, match=r"SetOfListKeyed\.items"):
-        cast(Any, team).items = [ListKeyed(id=[1])]
+    cast(Any, team).items = [ListKeyed(id=[1]), ListKeyed(id=[1])]
 
-    assert team._pending_updates == {}
-    assert team.json["items"] == []
+    assert team._pending_updates == {"items": [[1]]}
     assert requests_mock.call_count == 0
 
 
@@ -7397,16 +7395,16 @@ def test_a_key_that_cannot_be_converted_equals_only_itself(
     assert requests_mock.call_count == 0
 
 
-def test_a_key_that_cannot_be_hashed_makes_equal_objects_that_cannot_hash(
+def test_a_key_that_python_cannot_hash_hashes_by_its_json(
     requests_mock: Any,
 ) -> None:
-    """Objects with equal keys are equal, and Python will not hash the key."""
+    """Objects with equal list keys are equal, hash alike, and are one key."""
     first = ListKeyed(json={"id": [1]})
     second = ListKeyed(json={"id": [1]})
 
     assert first == second
-    with pytest.raises(TypeError, match="unhashable type: 'list'"):
-        hash(first)
+    assert hash(first) == hash(second)
+    assert len({first, second, ListKeyed(id=[2])}) == 2
     assert requests_mock.call_count == 0
 
 
@@ -7516,7 +7514,8 @@ def test_the_hash_of_a_key_that_hashes_by_identity_is_stable() -> None:
     assert grid in members
     assert members[grid] == "grid"
     assert grid == grid  # noqa: PLR0124
-    assert grid != Grid(json={"id": 1})
+    assert grid == Grid(json={"id": 1})
+    assert Grid(json={"id": 1}) in members
 
 
 def test_comparing_objects_converts_each_key_once() -> None:
@@ -7527,7 +7526,7 @@ def test_comparing_objects_converts_each_key_once() -> None:
     _CELL_DECODES.clear()
 
     for _ in range(3):
-        assert grid != other
+        assert grid == other
         hash(grid)
         hash(other)
 
@@ -7565,7 +7564,7 @@ def test_comparing_a_loaded_relation_key_converts_it_once() -> None:
     _CELL_DECODES.clear()
 
     for _ in range(3):
-        assert profile != other
+        assert profile == other
         hash(profile)
         hash(other)
 
@@ -7664,7 +7663,7 @@ def test_a_key_that_hashes_by_identity_survives_a_refresh_of_the_same_key(
 
     assert from_json in members
     assert from_key in members
-    assert from_key.pk is key
+    assert from_key.pk.value == key.value
     assert from_json.name == "b"
     assert from_key.name == "b"
     assert from_json in members
@@ -7748,6 +7747,143 @@ def test_a_key_that_hashes_by_identity_moves_when_a_refresh_loads_another(
 
     assert grid.pk.value == 2
     assert hash(grid) != before
+
+
+def test_two_loads_of_a_key_that_hashes_by_identity_are_equal() -> None:
+    """Objects that load one resource are equal and hash alike."""
+    Grid.register_api(test_api)
+    first = Grid(json={"id": 1, "name": "a"})
+    second = Grid(json={"id": 1, "name": "b"})
+    built = Grid(id=Cell(1))
+
+    assert first == second == built
+    assert hash(first) == hash(second) == hash(built)
+    assert first != Grid(json={"id": 2, "name": "a"})
+    assert len({first, second, built}) == 1
+
+
+@json_object
+class PriceKeyed(ModelBase):
+    """Model whose key is a ``Decimal``, which JSON spells by precision."""
+
+    class_url = "/price-keyed/"
+
+    id: decimal.Decimal
+
+
+def test_a_decimal_key_of_another_precision_is_another_key() -> None:
+    """Keys that name different URLs are different keys."""
+    one = PriceKeyed(json={"id": "1.0"})
+    other = PriceKeyed(json={"id": "1.00"})
+
+    assert one != other
+    assert one.url != other.url
+    assert PriceKeyed(json={"id": "1.0"}) == one
+    assert hash(PriceKeyed(json={"id": "1.0"})) == hash(one)
+
+
+@pytest.mark.parametrize("given", [1.0, True, "1"])
+def test_a_key_given_in_another_type_than_its_field_is_another_key(
+    given: Any,
+) -> None:
+    """The key's encoding is compared, so ``1.0`` and ``True`` are not ``1``.
+
+    Args:
+        given: A key that equals ``1`` in Python or reads as it, but not in
+            JSON.
+    """
+    other = User(id=cast(Any, given))
+
+    assert other != User(id=1)
+    assert User(id=1) != other
+    assert other == User(id=cast(Any, given))
+    assert hash(other) == hash(User(id=cast(Any, given)))
+
+
+def test_a_datetime_key_spelled_two_ways_is_one_key() -> None:
+    """A spelling that decodes and encodes alike is the same key."""
+    first = TimeKeyed(json={"id": "2026-01-01T00:00:00Z"})
+    second = TimeKeyed(json={"id": "2026-01-01T00:00:00+00:00"})
+    built = TimeKeyed(
+        id=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    )
+
+    assert first == second == built
+    assert hash(first) == hash(second) == hash(built)
+    assert first.url == second.url == built.url
+
+
+def test_a_bare_and_an_embedded_relation_key_are_one_key(
+    requests_mock: Any,
+) -> None:
+    """A key spelled as the related key or as an embedded object is one key.
+
+    That holds when the object is built, when it loads, and when a write's
+    response spells the key the other way.
+    """
+    Grid.register_api(test_api)
+    GridProfile.register_api(test_api)
+    requests_mock.get(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": {"id": 1, "name": "a"}, "bio": "a"},
+    )
+    requests_mock.patch(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": {"id": 1, "name": "a"}, "bio": "b"},
+    )
+    bare = GridProfile(json={"grid": 1, "bio": "a"}, write_mode="eager")
+    embedded = GridProfile(json={"grid": {"id": 1, "name": "x"}, "bio": "a"})
+    members = {bare}
+    assert bare == embedded
+    assert hash(bare) == hash(embedded)
+
+    bare.refresh()
+    assert bare.bio == "a"
+    assert bare in members
+
+    bare.bio = "b"
+
+    assert bare.bio == "b"
+    assert bare in members
+    assert bare == embedded
+
+
+def test_update_from_json_accepts_a_payload_that_names_the_key_it_has() -> (
+    None
+):
+    """A payload that names the object's own key, of any type, is accepted."""
+    grid = _identity_keyed_objects("lazy")[0]
+    profile = _identity_keyed_objects("lazy")[1]
+    members = {grid, profile}
+
+    grid.update_from_json({"id": 1, "name": "z"})
+    profile.update_from_json({"grid": {"id": 1, "name": "y"}, "bio": "z"})
+
+    assert grid.name == "z"
+    assert profile.bio == "z"
+    assert grid in members
+    assert profile in members
+    with pytest.raises(ValueError, match="does not match"):
+        grid.update_from_json({"id": 2, "name": "z"})
+
+
+def test_a_refresh_followed_by_a_load_keeps_the_hash(
+    requests_mock: Any,
+) -> None:
+    """Refreshing and loading the same key leaves the object where it was."""
+    requests_mock.get(
+        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
+    )
+    Grid.register_api(test_api)
+    grid = Grid(json={"id": 1, "name": "a"})
+    before = hash(grid)
+
+    grid.refresh()
+    between = hash(grid)
+    assert grid.name == "b"
+
+    assert before == between == hash(grid)
+    assert grid == Grid(id=Cell(1))
 
 
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
