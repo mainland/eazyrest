@@ -4500,9 +4500,11 @@ class JSONObject:
     _saved_key_cache: tuple[Any]
     """The known key that ``_saved_key()`` found, in a tuple.
 
-    ``_forget_saved_key()`` drops the entry. Loading or writing the object's
-    JSON must drop it, and the other places that change the JSON or the held
-    key drop it as well.
+    ``_forget_saved_key()`` drops the entry. The entry stays while the key is
+    the same, so that a key type that hashes by identity keeps one object, and
+    it is dropped wherever the key's JSON changes or the key is held in
+    another way. A change to another field, or a load or a write that returns
+    the same key, leaves it.
     """
 
     _api_override: API | None
@@ -5479,12 +5481,36 @@ class JSONObject:
     def _forget_saved_key(self) -> None:
         """Drop the saved key that comparing found, after the key can change.
 
-        Call it wherever the object's JSON is replaced or changed, or its held
-        key or pending updates change. The call in ``_replace_json()`` is the
-        one that a load or a write needs. The others are kept so that a later
-        change to how the key is held cannot leave the cache stale.
+        Call it wherever the key's JSON changes, or the object holds its key in
+        another way. A change of another field does not call it, so the object
+        keeps one key object, which a hash needs for a type that hashes by
+        identity.
         """
         vars(self).pop("_saved_key_cache", None)
+
+    def _key_json_changed(self, before: dict[str, Any], after: Any) -> bool:
+        """Return whether JSON that replaces the key's JSON changes the key.
+
+        The key before is the JSON of the object's key field, or, if that has
+        none, the JSON of the key that the object last compared by.
+
+        Args:
+            before: The object's JSON before the change.
+            after: The key's new JSON, or ``_MISSING`` if the change leaves the
+                key field out.
+
+        Returns:
+            Whether the key's JSON differs.
+        """
+        key: str = type(self)._pk.json_field
+        old = before.get(key, _MISSING)
+        cached = vars(self).get("_saved_key_cache")
+        if old is _MISSING and cached is not None:
+            try:
+                old = self._to_json(cached[0], type(self)._pk.analyzed_type)
+            except (TypeError, ValueError):
+                return True
+        return not _json_equal(old, after)
 
     def _queue_update(self, json_field: str, value: Any) -> None:
         """Apply a JSON field update locally and queue it for ``save()``.
@@ -5503,7 +5529,8 @@ class JSONObject:
 
         self.json[json_field] = value
         self._pending_updates[json_field] = value
-        self._forget_saved_key()
+        if json_field == getattr(type(self), "_pk_json_field", None):
+            self._forget_saved_key()
 
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.
@@ -5597,8 +5624,11 @@ class JSONObject:
                 saved, json.get(key, _MISSING)
             ):
                 self._url_override = None
+        if _pk_property_of(type(self)) is not None and self._key_json_changed(
+            before, json.get(type(self)._pk.json_field, _MISSING)
+        ):
+            self._forget_saved_key()
         self._json = json
-        self._forget_saved_key()
 
         for field in getattr(self, "_json_fields", ()):
             json_field = getattr(type(self), field).json_field
@@ -5812,8 +5842,12 @@ class JSONObject:
             if unknown_key
             else self._persisted_pk()
         )
-        incoming_pk = payload.get(self._pk_json_field, existing_pk)
-        if self._normalize_pk(incoming_pk) != self._normalize_pk(existing_pk):
+        # A payload without the key names no other object. Comparing the
+        # existing key with itself would convert it twice, which gives two
+        # objects for a key type that has no equality of its own.
+        if self._pk_json_field in payload and self._normalize_pk(
+            payload[self._pk_json_field]
+        ) != self._normalize_pk(existing_pk):
             raise ValueError(
                 "Incoming JSON primary key does not match this object"
             )
@@ -5854,8 +5888,14 @@ class JSONObject:
                 discard their cached values and pending updates.
         """
         assert self._json is not None
+        key = getattr(type(self), "_pk_json_field", None)
+        if (
+            key is not None
+            and key in payload
+            and self._key_json_changed(self._json, payload[key])
+        ):
+            self._forget_saved_key()
         self._json.update(self._readable_json(payload))
-        self._forget_saved_key()
 
         for field in self._json_fields:
             descriptor: JSONProperty = getattr(type(self), field)
@@ -6098,7 +6138,6 @@ class JSONObject:
             # The JSON now holds the primary key. An object whose subclass
             # overrides url may have loaded without one.
             vars(self).pop("_pk_value", None)
-            self._forget_saved_key()
 
         return self._json
 

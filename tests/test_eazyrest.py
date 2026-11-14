@@ -7491,6 +7491,7 @@ class Grid(CellBase):
     class_url = "/grids/"
 
     id: Cell
+    name: str
 
 
 @json_object(pk="grid")
@@ -7567,6 +7568,91 @@ def test_comparing_a_loaded_relation_key_converts_it_once() -> None:
         hash(other)
 
     assert _CELL_DECODES == [1, 1]
+
+
+def _identity_keyed_objects(write_mode: WriteMode) -> list[Any]:
+    """Build a ``Grid`` and a ``GridProfile`` that hold their keys in JSON.
+
+    Args:
+        write_mode: Write mode of both objects.
+
+    Returns:
+        The two objects, each with a field other than its key.
+    """
+    Grid.register_api(test_api)
+    GridProfile.register_api(test_api)
+    return [
+        Grid(json={"id": 1, "name": "a"}, write_mode=write_mode),
+        GridProfile(json={"grid": 1, "bio": "a"}, write_mode=write_mode),
+    ]
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_a_key_that_hashes_by_identity_survives_a_change_of_another_field(
+    requests_mock: Any,
+    write_mode: WriteMode,
+) -> None:
+    """Changing a field that is not the key leaves the object in its set.
+
+    Args:
+        requests_mock: Mocks the eager write.
+        write_mode: Whether the change is sent at once or waits for ``save()``.
+    """
+    requests_mock.patch(
+        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
+    )
+    requests_mock.patch(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": 1, "bio": "b"},
+    )
+    grid, profile = _identity_keyed_objects(write_mode)
+    members = {grid, profile}
+
+    grid.name = "b"
+    profile.bio = "b"
+
+    assert grid in members
+    assert profile in members
+    if write_mode == "lazy":
+        grid.save()
+        profile.save()
+        assert grid in members
+        assert profile in members
+
+
+def test_a_key_that_hashes_by_identity_survives_a_load_of_the_same_key(
+    requests_mock: Any,
+) -> None:
+    """A load that returns the key the object holds leaves it in its set."""
+    requests_mock.get(
+        "https://example.com/v1/grids/1/", json={"id": 1, "name": "a"}
+    )
+    requests_mock.get(
+        "https://example.com/v1/grid-profiles/1/",
+        json={"grid": 1, "bio": "a"},
+    )
+    Grid.register_api(test_api)
+    GridProfile.register_api(test_api)
+    grid = Grid(id=Cell(1))
+    profile = GridProfile(grid=Grid(id=Cell(1)))
+    members = {grid, profile}
+
+    assert grid.name == "a"
+    assert profile.bio == "a"
+
+    assert grid in members
+    assert profile in members
+
+
+def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
+    """A payload that names no key cannot name another object."""
+    grid = _identity_keyed_objects("lazy")[0]
+    members = {grid}
+
+    grid.update_from_json({"name": "z"})
+
+    assert grid.name == "z"
+    assert grid in members
 
 
 def test_the_saved_key_follows_a_load_that_spells_the_key_differently(
