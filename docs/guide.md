@@ -245,6 +245,11 @@ the conversion replaces its structure. A key whose type Pydantic converts is
 checked when the key is first used, not when the class is decorated. Key the
 model by a relation to the model instead, or by the type of that model's key.
 
+While a key's form names a class that is not defined yet, the key cannot be
+read. An object of that model raises from `url` and `hash()`, and `==` is
+`False`. None of that is kept, so once the class is defined the object has the
+`url`, the hash, and the equalities of a new object with the same key.
+
 ### Differences from Django
 
 Django models also compare and hash by primary key. A model keyed by a

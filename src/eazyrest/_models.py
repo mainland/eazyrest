@@ -5733,7 +5733,9 @@ class JSONObject:
         Returns:
             The key encoded as JSON, and its JSON text, or ``None`` if the
             saved key is unknown: ``null``, or JSON that the key field cannot
-            decode or encode.
+            decode or encode. An unknown key is kept, except while the key's
+            form names a class that is not defined yet. Then the key is unknown
+            only until the class is defined, and the next call tries again.
 
         Raises:
             TypeError: If the model's key declaration is refused, as for a
@@ -5752,6 +5754,12 @@ class JSONObject:
             pass
         try:
             canonical = _canonical_key_of(self, self._saved_key_json)
+        except _UnresolvedAnnotationsError:
+            # The key's form names a class that is not defined yet, so the key
+            # is unknown for now. Do not keep that, or it would outlast the
+            # definition. No hash can have been taken meanwhile, since hashing
+            # raises while the key is unknown.
+            return None
         except (TypeError, ValueError) as err:
             if getattr(err, _DECLARATION_ERROR, False):
                 raise

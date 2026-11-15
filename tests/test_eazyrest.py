@@ -6806,6 +6806,99 @@ def test_a_key_form_that_resolves_after_its_first_use_is_refused_then(
             hash(box(json={"id": value}))
 
 
+def test_an_object_used_before_its_key_form_resolves_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An object used while its key's form is unresolved reads the key after.
+
+    While the form's annotations cannot be resolved, ``url`` and ``hash()``
+    raise and ``==`` is ``False``, and none of that is kept. Once the form is
+    defined, the object has the ``url`` and the hash of a new object with the
+    same key, and equals it.
+
+    Args:
+        monkeypatch: Defines the form as a global, after the objects are used.
+    """
+
+    class Rec(TypedDict):
+        n: LaterPlain
+
+    Crate: Any = json_object(
+        type(
+            "Crate",
+            (ModelBase,),
+            {"__annotations__": {"id": Rec}, "class_url": "/crates/"},
+        )
+    )
+
+    payload = {"id": {"n": {"x": 1}}}
+    used = Crate(json=payload)
+    twin = Crate(json=payload)
+    with pytest.raises(TypeError, match="cannot be resolved"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(TypeError, match="cannot be hashed"):
+        hash(used)
+
+    class LaterPlain(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterPlain", LaterPlain)
+
+    fresh = Crate(json=payload)
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1
+
+
+def test_an_object_used_before_its_key_form_resolves_is_refused_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An object used before its key's form holds a model is refused after.
+
+    The failure of the first use is not kept, so once the model is defined the
+    object is refused as a new object is, from ``url``, ``==``, and ``hash()``.
+
+    Args:
+        monkeypatch: Defines the model as a global, after the object is used.
+    """
+
+    class Rec(TypedDict):
+        n: AfterModel
+
+    Case: Any = json_object(
+        type(
+            "Case",
+            (ModelBase,),
+            {"__annotations__": {"id": Rec}, "class_url": "/cases/"},
+        )
+    )
+
+    used = Case(json={"id": {"n": 1}})
+    twin = Case(json={"id": {"n": 1}})
+    with pytest.raises(TypeError, match="cannot be resolved"):
+        used.url  # noqa: B018
+    assert used != twin
+
+    @json_object
+    class AfterModel(ModelBase):
+        class_url = "/after/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "AfterModel", AfterModel)
+
+    match = r"Case\.id is the primary key"
+    with pytest.raises(TypeError, match=match):
+        used.url  # noqa: B018
+    with pytest.raises(TypeError, match=match):
+        used == twin  # noqa: B015
+    with pytest.raises(TypeError, match=match):
+        hash(used)
+
+
 @pytest.mark.parametrize(
     "shape",
     [
