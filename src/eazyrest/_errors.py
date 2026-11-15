@@ -324,67 +324,54 @@ def _redact_url(url: object) -> str:
     return (match.group(1) or match.group(2)) + normal[match.end() :]
 
 
-_REDIRECTED = "_eazyrest_reached_by_redirect"
-"""Attribute of a response that a followed redirect reached."""
-
 _UNSHOWN_URL = "<URL not shown>"
 
 
-def _mark_redirected(resp: Response) -> None:
-    """Record that a followed redirect reached a response.
-
-    A response hook sees a response before requests sets its ``history``, so
-    the client marks the responses that it knows a redirect reached.
+def _first_url(resp: Response) -> str:
+    """Return the URL that was sent first for the request of a response.
 
     Args:
-        resp: Response that requests received for a request that it sent
-            because a redirect led to it.
-    """
-    setattr(resp, _REDIRECTED, True)
-
-
-def _reached_by_redirect(resp: Response) -> bool:
-    """Return whether a followed redirect reached a response.
-
-    Args:
-        resp: Response, from a hook or after the request.
+        resp: Response, after requests has set its ``history``.
 
     Returns:
-        Whether the client marked the response, or its ``history`` holds a 3xx
-        response. A challenge that an authentication handler answered by
-        resending the request is in the history too, but the resent request has
-        the URL that was given, so it does not count.
+        The URL of the first response of the chain that led to ``resp``, which
+        is the URL of ``resp`` itself if no redirect led to it. A challenge
+        that an authentication handler answered by resending the request is in
+        the history too, with the URL that was given.
     """
-    return getattr(resp, _REDIRECTED, False) or any(
-        300 <= hop.status_code < 400 for hop in resp.history
-    )
+    return resp.history[0].url if resp.history else resp.url
 
 
-def _response_url(resp: Response) -> str:
+def _response_url(resp: Response, sent: str | None = None) -> str:
     """Return the URL of a response, to quote in a message.
 
     A redirect's ``Location`` is the server's choice, and a signed download URL
-    carries its credential in the query. So the URL of a response that a
-    followed redirect reached is quoted by its origin and path, built from the
-    parts of the URL that requests sent, as for a redirect that is refused. A
-    URL that the caller gave, or a page link, is quoted by ``_redact_url()``.
+    carries its credential in the query. So the URL that the client sent first
+    for a request, which the caller gave or a page linked, is quoted by
+    ``_redact_url()``, and any other URL of a response is quoted by its origin
+    and path, built from the parts of the URL that requests sent, as for a
+    redirect that is refused.
 
     Args:
         resp: Response whose URL the message names.
+        sent: The URL that was sent first for the request, as requests prepared
+            it, which a response hook knows from the request's budget because
+            requests has not set the history yet. By default, the URL that the
+            history of ``resp`` starts with.
 
     Returns:
-        The URL without its user and password, and, for a response that a
-        followed redirect reached, with its origin and path alone. If requests
-        could not have sent the URL, which cannot be read as an HTTP or HTTPS
-        URL, a text that names none of it.
+        The URL without its user and password if it is the URL that was sent
+        first. Otherwise its origin and path alone, or, if requests could not
+        have sent the URL, which cannot be read as an HTTP or HTTPS URL, a text
+        that names none of it.
     """
-    if not _reached_by_redirect(resp):
+    if resp.url == (_first_url(resp) if sent is None else sent):
         return _redact_url(resp.url)
     return _redirected_url(resp.url)
 
 
 def _redirected_url(url: str) -> str:
-    """Return the URL that a followed redirect reached, to quote in a message.
+    """Return a URL that the server chose, to quote in a message.
 
     Args:
         url: The URL, as requests sent it.

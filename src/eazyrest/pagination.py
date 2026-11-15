@@ -14,7 +14,7 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
-    _reached_by_redirect,
+    _first_url,
     _redact_url,
     _redirected_url,
     _response_url,
@@ -29,6 +29,7 @@ from .api import (
     _prepare_redirect,
     _prepare_server_url,
     _refused_reading,
+    _request_budget,
     _response_hooks,
 )
 
@@ -293,10 +294,14 @@ def _request_page(
             return
         refused = _refused_reading(prepared, {api_origin})
         if refused is not None:
+            # The API's hook has noted the URL of the first response by now.
+            budget = _request_budget.get()
+            assert budget is not None
             resp.close()
             quoted = refused.scheme_name or repr(refused.origin_text)
+            url = _response_url(resp, budget.first_url)
             raise PaginationError(
-                f"Page request {_response_url(resp)!r} was redirected to "
+                f"Page request {url!r} was redirected to "
                 f"{quoted}, which has a different origin "
                 f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
                 "allow_other_origins=True to follow it."
@@ -705,7 +710,8 @@ class Page(Generic[T]):
         self.next_url = next_url
         self.previous_url = previous_url
         self._source: _PageSource[T] | None = None
-        self._redirected = False
+        self._sent_url: str | None = None
+        """URL that was sent first to read the page, if it was read."""
         self._allow_other_origins = False
         self._forward = _Trail(frozenset({url}), 1)
         self._backward = _Trail(frozenset({url}), 1)
@@ -730,16 +736,18 @@ class Page(Generic[T]):
         """Return the page's URL and size.
 
         The URL leaves out any user and password, as an error message does,
-        since a representation reaches logs in the same way. A page that a
-        followed redirect reached shows only its origin and path.
+        since a representation reaches logs in the same way. A page that was
+        read shows its URL's query only if it is the URL that was sent first,
+        which is the page link or the URL that the caller gave. Another URL,
+        which a redirect chose, shows only its origin and path.
 
         Returns:
             Representation of the page.
         """
         url = (
-            _redirected_url(self.url)
-            if self._redirected
-            else _redact_url(self.url)
+            _redact_url(self.url)
+            if self._sent_url in (None, self.url)
+            else _redirected_url(self.url)
         )
         return f"<Page url={url!r} items={len(self.items)}>"
 
@@ -886,7 +894,7 @@ class _JSONPageSource(_PageSource[Any]):
         page = self._parse(resp)
         _check_page_size(self.api, page.items)
         page._source = self
-        page._redirected = _reached_by_redirect(resp)
+        page._sent_url = _first_url(resp)
         page._allow_other_origins = self._allow_other_origins
         return page
 

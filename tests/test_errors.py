@@ -6,6 +6,7 @@ import http.server
 import pickle
 import socket
 import threading
+import time
 import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -31,7 +32,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
-from eazyrest._errors import _mark_redirected, _redact_url, _response_url
+from eazyrest._errors import _redact_url, _response_url
 from eazyrest.api import _prepare_redirect, _refused_reading
 
 
@@ -1795,6 +1796,7 @@ def test_a_resent_challenge_does_not_make_a_url_a_redirect_target() -> None:
     """A 401 in the history does not change how the URL is quoted."""
     challenge = requests.Response()
     challenge.status_code = 401
+    challenge.url = "https://api.test/a?key=GIVEN"
     final = requests.Response()
     final.status_code = 500
     final.url = "https://api.test/a?key=GIVEN"
@@ -1815,9 +1817,8 @@ def test_a_redirected_response_that_requests_could_not_have_sent_shows_no_url(
     """
     resp = requests.Response()
     resp.url = url
-    _mark_redirected(resp)
 
-    assert _response_url(resp) == "<URL not shown>"
+    assert _response_url(resp, "https://api.test/p") == "<URL not shown>"
 
 
 @pytest.mark.parametrize(
@@ -1880,4 +1881,250 @@ def test_page_redirect_names_the_origin_that_a_reading_of_it_refuses(
         "'https://evil.test', which has a different origin from the API's "
         "base URL 'https://api.test/'. Pass allow_other_origins=True to "
         "follow it."
+    )
+
+
+@pytest.fixture
+def redirecting_server() -> Iterator[Callable[[Callable[[Any], None]], str]]:
+    """Serve a signed redirect and its target on a local port.
+
+    A request for ``/dl`` is answered with a redirect to ``/o`` with a signed
+    query on the same origin, and any other request is answered by the handler
+    that the test installs.
+
+    Yields:
+        Function that installs the handler of the target, which receives the
+        request handler object, and returns the server's base URL.
+    """
+    servers: list[http.server.ThreadingHTTPServer] = []
+
+    def start(handle: Callable[[Any], None]) -> str:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path.startswith("/dl"):
+                    self.send_response(302)
+                    self.send_header("Location", f"/o{_SIGNED[:-12]}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    handle(self)
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        servers.append(server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_address[1]}/"
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def test_size_limit_of_a_response_that_a_redirect_reached_names_no_query(
+    redirecting_server: Callable[[Callable[[Any], None]], str],
+) -> None:
+    """The adapter names the redirect's target without its signed query."""
+
+    def large(handler: Any) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        handler.wfile.write(b"x" * 100)
+
+    base = redirecting_server(large)
+    api = API(base)
+    api.max_response_bytes = 10
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes") as raised:
+        api.get("dl")
+
+    assert str(raised.value).startswith(
+        f"The response to GET {base}o is larger than 10 bytes"
+    )
+    _assert_unsigned(raised.value)
+
+
+def test_total_timeout_of_a_response_that_a_redirect_reached_names_no_query(
+    redirecting_server: Callable[[Callable[[Any], None]], str],
+) -> None:
+    """The adapter names a stalled redirect target without its query."""
+
+    def stalled(handler: Any) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "10")
+        handler.end_headers()
+        handler.wfile.write(b"01")
+        handler.wfile.flush()
+        time.sleep(0.6)
+
+    base = redirecting_server(stalled)
+    api = API(base)
+    api.timeout = None
+    api.total_timeout = 0.2
+
+    with pytest.raises(LimitExceeded, match="total_timeout") as raised:
+        api.get("dl")
+
+    assert str(raised.value).startswith(
+        f"GET {base}o took at least 0.2 seconds"
+    )
+    _assert_unsigned(raised.value)
+
+
+def test_size_limit_of_the_url_that_the_caller_gave_keeps_its_query(
+    redirecting_server: Callable[[Callable[[Any], None]], str],
+) -> None:
+    """The adapter quotes the URL that the caller gave with its query."""
+
+    def large(handler: Any) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        handler.wfile.write(b"x" * 100)
+
+    base = redirecting_server(large)
+    api = API(base)
+    api.max_response_bytes = 10
+
+    with pytest.raises(LimitExceeded, match="max_response_bytes") as raised:
+        api.get("o?CALLERQ=1")
+
+    assert str(raised.value).startswith(
+        f"The response to GET {base}o?CALLERQ=1 is larger than 10 bytes"
+    )
+
+
+def _resend_with_a_new_token(
+    resp: requests.Response, **kwargs: Any
+) -> requests.Response:
+    """Answer a 401 by sending the request again, as a session hook may.
+
+    Args:
+        resp: Response, which is replaced if it is a 401.
+        kwargs: Arguments that requests passes to response hooks.
+
+    Returns:
+        The response to the resent request, or ``resp``.
+    """
+    if resp.status_code != 401:
+        return resp
+    prepared = resp.request.copy()
+    prepared.headers["Authorization"] = "Bearer new"
+    resent = resp.connection.send(prepared, **kwargs)
+    resent.history.append(resp)
+    resent.request = prepared
+    return resent
+
+
+def test_redirect_refused_after_a_hook_resent_a_request_leaves_out_the_query(
+    requests_mock: Any,
+) -> None:
+    """A hook's new response is named by the URL that a redirect reached."""
+    api = _download_api(requests_mock)
+    api.session.hooks["response"] = [_resend_with_a_new_token]
+    requests_mock.get(
+        "https://files.test/o",
+        [
+            {"status_code": 401},
+            {
+                "status_code": 302,
+                "headers": {"Location": "https://evil.test/z"},
+            },
+        ],
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("dl/")
+
+    assert str(raised.value).startswith(
+        "GET https://files.test/o was redirected with status 302 to "
+        "https://evil.test, whose origin differs"
+    )
+    _assert_unsigned(raised.value)
+
+
+def test_redirect_refused_after_a_hook_resent_the_given_url_keeps_its_query(
+    requests_mock: Any,
+) -> None:
+    """The URL that the caller gave is named with its query after a resend."""
+    api = API("https://api.test/")
+    api.session.hooks["response"] = [_resend_with_a_new_token]
+    requests_mock.get(
+        "https://api.test/x",
+        [
+            {"status_code": 401},
+            {
+                "status_code": 302,
+                "headers": {"Location": "https://evil.test/z"},
+            },
+        ],
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("x?CALLERQ=1")
+
+    assert str(raised.value).startswith(
+        "GET https://api.test/x?CALLERQ=1 was redirected with status 302 to "
+        "https://evil.test, whose origin differs"
+    )
+
+
+def test_page_link_refused_after_a_hook_resent_it_keeps_its_query(
+    requests_mock: Any,
+) -> None:
+    """A page link is named with its query after a resend, as it was sent."""
+    api = API("https://api.test/")
+    api.session.hooks["response"] = [_resend_with_a_new_token]
+    requests_mock.get(
+        "https://api.test/p",
+        [
+            {"status_code": 401},
+            {
+                "status_code": 302,
+                "headers": {"Location": "https://evil.test/z"},
+            },
+        ],
+    )
+
+    with pytest.raises(PaginationError) as raised:
+        list(
+            follow_next_links(
+                api, {"next": "https://api.test/p?cursor=KEPT", "results": []}
+            )
+        )
+
+    assert str(raised.value).startswith(
+        "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
+        "'https://evil.test'"
+    )
+
+
+def test_http_error_of_a_url_that_redirected_to_itself_leaves_out_its_query(
+    requests_mock: Any,
+) -> None:
+    """A URL is the first one only if it began the request.
+
+    The server's redirect from ``/o`` to ``/o`` leads to the URL that the last
+    redirect had, but not to the one that the caller gave.
+    """
+    api = _download_api(requests_mock)
+    requests_mock.get(
+        "https://files.test/o",
+        [
+            {
+                "status_code": 302,
+                "headers": {"Location": f"https://files.test/o{_SIGNED}"},
+            },
+            {"status_code": 403},
+        ],
+    )
+
+    with pytest.raises(APIError) as raised:
+        api.get("dl/")
+
+    assert str(raised.value) == (
+        "403 Client Error: None for GET https://files.test/o"
     )

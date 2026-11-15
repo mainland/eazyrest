@@ -2497,3 +2497,99 @@ def test_page_repr_keeps_the_query_of_a_url_that_was_not_redirected(
     assert repr(Page([1], url="https://api.test/a?k=1")) == (
         "<Page url='https://api.test/a?k=1' items=1>"
     )
+
+
+def test_model_page_repr_after_a_redirect_leaves_out_the_query(
+    requests_mock: Any,
+) -> None:
+    """A model's page that a redirect reached shows its origin and path."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/users/",
+        status_code=302,
+        headers={"Location": "/u2/?sig=SECRETSIG"},
+    )
+    requests_mock.get(
+        "https://api.test/u2/",
+        json={"results": [{"id": 1}], "next": "https://api.test/u2/?page=2"},
+    )
+    requests_mock.get(
+        "https://api.test/u2/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    @json_object
+    class User(JSONObject):
+        class_url = "/users/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            return next_links_page(api, resp)
+
+    first = User.get_page(api=api)
+    second = first.next_page()
+
+    assert repr(first) == "<Page url='https://api.test/u2/' items=1>"
+    assert second is not None
+    assert repr(second) == "<Page url='https://api.test/u2/?page=2' items=1>"
+
+
+def test_model_page_built_by_a_hook_after_a_redirect_leaves_out_the_query(
+    requests_mock: Any,
+) -> None:
+    """A page that a model's hook builds from a redirected response is quoted.
+
+    The hook builds a new page, so the page keeps what it reads from the
+    response that it was built from.
+    """
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/built/",
+        status_code=302,
+        headers={"Location": "/b2/?sig=SECRETSIG"},
+    )
+    requests_mock.get("https://api.test/b2/", json=[{"id": 1}])
+
+    @json_object
+    class Built(JSONObject):
+        class_url = "/built/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            return Page(api.json(resp), url=resp.url)
+
+    page = Built.get_page(api=api)
+
+    assert repr(page) == "<Page url='https://api.test/b2/' items=1>"
+
+
+def test_model_page_repr_keeps_the_url_that_the_caller_gave(
+    requests_mock: Any,
+) -> None:
+    """A model's page that no redirect reached shows its query."""
+    api = API("https://api.test/")
+    requests_mock.get("https://api.test/users/", json=[{"id": 1}])
+
+    @json_object
+    class User(JSONObject):
+        class_url = "/users/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            return Page(api.json(resp), url=resp.url)
+
+    page = User.get_page(api=api, url="/users/?q=KEPT")
+
+    assert repr(page) == "<Page url='https://api.test/users/?q=KEPT' items=1>"
