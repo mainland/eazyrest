@@ -21,7 +21,11 @@ from requests_mock import ANY as requests_mock_ANY
 from requests_mock import Mocker, create_response
 
 from eazyrest import API, LimitExceeded, RedirectError, Response
-from eazyrest.api import _canonical_url, _redirect_destination
+from eazyrest.api import (
+    _canonical_url,
+    _prepare_server_url,
+    _redirect_destination,
+)
 
 
 def test_api_preserves_base_path_prefix_in_relative_requests(
@@ -1430,3 +1434,121 @@ def test_requests_accept_json(requests_mock: Any) -> None:
         request.headers["Accept"] for request in requests_mock.request_history
     ]
     assert accepts == ["application/json", "application/json", "text/csv"]
+
+
+@pytest.mark.parametrize(
+    ("url", "prepared", "origin"),
+    [
+        ("https://h.test/p", "https://h.test/p", ("https", "h.test", 443)),
+        (
+            "HTTP://H.test:8080",
+            "http://h.test:8080/",
+            ("http", "h.test", 8080),
+        ),
+        (
+            "https://alice:hunter2@h.test/p?q=1",
+            "https://alice:hunter2@h.test/p?q=1",
+            ("https", "h.test", 443),
+        ),
+        (
+            "https://h.test/a b\\c",
+            "https://h.test/a%20b%5Cc",
+            ("https", "h.test", 443),
+        ),
+        (
+            "https://a.test\\@b.test/",
+            "https://a.test/%5C@b.test/",
+            ("https", "a.test", 443),
+        ),
+    ],
+)
+def test_server_url_is_read_as_requests_prepares_it(
+    url: str, prepared: str, origin: tuple[str, str, int]
+) -> None:
+    """The scheme, host, and port come from the URL that requests sends.
+
+    Args:
+        url: URL that the server supplied.
+        prepared: The URL after requests prepares it.
+        origin: Scheme, host, and port of the prepared URL.
+    """
+    result = _prepare_server_url(requests.Session(), url)
+
+    assert result is not None
+    assert result.url == prepared
+    assert result.origin == origin
+    assert result.is_http
+    assert result.sendable
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://alice:hunter2@h.test/p2",
+        "mailto:alice:hunter2@h.test",
+        "FTP:///alice:hunter2@h",
+        "ftp://alice:hunter2#@h.test/",
+        "alice:hunter2@h.test",
+        "x:",
+    ],
+)
+def test_server_url_with_another_scheme_has_no_host(url: str) -> None:
+    """A URL that is not HTTP or HTTPS names no host or port.
+
+    Args:
+        url: URL that the server supplied.
+    """
+    result = _prepare_server_url(requests.Session(), url)
+
+    assert result is not None
+    assert result.scheme == urlsplit(url).scheme.lower()
+    assert result.origin == (result.scheme, None, None)
+    assert not result.is_http
+    assert not result.sendable
+
+
+def test_server_url_is_sendable_when_the_session_has_an_adapter() -> None:
+    """A URL of another scheme is sendable if an adapter is mounted for it."""
+    session = requests.Session()
+    session.mount("ftp://", requests.adapters.HTTPAdapter())
+
+    result = _prepare_server_url(session, "ftp://h.test/x")
+
+    assert result is not None
+    assert not result.is_http
+    assert result.sendable
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Requests leaves a URL that does not begin with http unprepared, so it
+        # has no adapter, but urlsplit() ignores the control character and
+        # reads an HTTP URL.
+        "\x01http://alice:hunter2#@h.test/",
+        "\x01http://alice:hunter2\\@h.test/",
+        "\x08http://alice:hunter2@h.test/",
+        "https://h.test:hunter2/",
+        "https://alice:hunter2#@h.test:hunter2/",
+        "https://alice:hunter2\u2215@api.test/p2",
+        "https://[bad/",
+        "http://alice:hunter2@/x",
+        "ftp://[bad/",
+        ":alice:hunter2@h.test",
+    ],
+)
+def test_server_url_that_requests_cannot_prepare_is_refused(url: str) -> None:
+    """A URL that requests cannot prepare or send has no reading.
+
+    Args:
+        url: URL that the server supplied.
+    """
+    assert _prepare_server_url(requests.Session(), url) is None
+
+
+def test_server_url_needs_an_adapter_for_an_http_url() -> None:
+    """A session with no adapter for HTTP cannot send an HTTP URL."""
+    session = requests.Session()
+    session.adapters.clear()
+
+    assert _prepare_server_url(session, "https://h.test/") is None

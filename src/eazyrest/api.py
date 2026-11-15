@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
@@ -110,6 +110,84 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     parts = urlsplit(request.url)
     scheme = parts.scheme.lower()
     return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+
+
+class _ServerURL(NamedTuple):
+    """A URL that the server supplied, as requests prepares it."""
+
+    url: str
+    """The prepared URL, with its user and password."""
+    scheme: str
+    """Lowercased scheme."""
+    host: str | None
+    """Host of an HTTP or HTTPS URL, or ``None`` for another scheme."""
+    port: int | None
+    """Port of an HTTP or HTTPS URL, or its scheme's default, else ``None``."""
+    sendable: bool
+    """Whether the session has an adapter for the URL."""
+
+    @property
+    def is_http(self) -> bool:
+        """Whether the URL is an HTTP or HTTPS URL that names a host."""
+        return self.host is not None
+
+    @property
+    def origin(self) -> tuple[str, str | None, int | None]:
+        """The scheme, host, and port that requests reads from the URL."""
+        return self.scheme, self.host, self.port
+
+
+def _prepare_server_url(
+    session: requests.Session, url: str
+) -> _ServerURL | None:
+    """Prepare a URL that the server supplied, as requests will send it.
+
+    A server chooses such a URL, a redirect's ``Location`` or a link to another
+    page, so no rule says which of its text is a host and which is a password.
+    The only reading to trust is requests', so this takes the steps that
+    requests takes before it sends a request to the URL: ``prepare_url()``, the
+    Basic authentication that it takes from the URL's user and password, and
+    the session's choice of adapter. A check of the URL's origin, and any
+    message that names it, must use the result and not the text.
+
+    Args:
+        session: Session that would send a request to the URL.
+        url: Absolute URL, such as a redirect's destination or a link joined
+            onto the URL of its page.
+
+    Returns:
+        The prepared URL with its scheme, host, and port, or ``None`` if any
+        step fails, or if the scheme is HTTP or HTTPS and the session has no
+        adapter for the URL, as for a URL that begins with a control character,
+        which ``urlsplit()`` reads as HTTP and requests does not, or if the URL
+        has no scheme. A URL whose scheme is not HTTP or HTTPS has no host and
+        port in the result. Its ``sendable`` says whether the session has an
+        adapter for it.
+    """
+    request = requests.PreparedRequest()
+    try:
+        request.prepare_url(url, None)
+        request.prepare_headers(None)
+        request.prepare_auth(None)
+        assert request.url is not None
+        parts = urlsplit(request.url)
+        scheme = parts.scheme.lower()
+        if not scheme:
+            return None
+        http = scheme in _DEFAULT_PORTS
+        host = parts.hostname if http else None
+        port = parts.port or _DEFAULT_PORTS[scheme] if http else None
+        try:
+            session.get_adapter(request.url)
+        except requests.exceptions.InvalidSchema:
+            if http:
+                return None
+            sendable = False
+        else:
+            sendable = True
+    except (ValueError, requests.RequestException):
+        return None
+    return _ServerURL(request.url, scheme, host, port, sendable)
 
 
 def _canonical_url(url: str) -> str:
