@@ -823,6 +823,19 @@ def test_strict_metadata_on_eazyrest_types_is_rejected(
         _ = strict.value
 
 
+def test_type_that_names_something_undefined_is_refused_when_adapted() -> None:
+    """Pydantic's deferred schema is built where the adapter is made.
+
+    Pydantic returns an adapter whose schema it builds at first use when a name
+    in the type cannot be resolved, and that use raises where the type is no
+    longer being checked. The adapter's maker refuses it instead.
+    """
+    with pytest.raises(TypeError, match="UndefinedElement"):
+        eazyrest.pydantic._type_adapter(
+            Annotated[list["UndefinedElement"], Field()]  # type: ignore[name-defined]  # noqa: F821
+        )
+
+
 def test_pydantic_errors_do_not_quote_the_value() -> None:
     """A Pydantic error says where and why, without the input.
 

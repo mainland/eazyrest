@@ -39,6 +39,7 @@ from pydantic import (
     GetJsonSchemaHandler,
     PlainSerializer,
     PlainValidator,
+    PydanticUndefinedAnnotation,
     PydanticUserError,
     TypeAdapter,
     ValidationError,
@@ -943,13 +944,23 @@ def _type_adapter(annotation: Any) -> TypeAdapter[Any]:
 
     Raises:
         TypeError: If Pydantic cannot convert the type, cannot apply its
-            metadata, such as ``strict``, to a type that eazyrest converts,
-            or the type names a ``TypedDict`` or dataclass that would drop the
-            keys it does not declare.
+            metadata, such as ``strict``, to a type that eazyrest converts, if
+            the type names a ``TypedDict`` or dataclass that would drop the
+            keys it does not declare, or if it names something that Pydantic
+            cannot resolve.
     """
     _check_undeclared_keys(annotation)
     try:
-        return TypeAdapter(_eazyrest_types(annotation))
+        adapter = TypeAdapter(_eazyrest_types(annotation))
+        # Pydantic leaves the schema of a type that names something it cannot
+        # resolve unbuilt, and the first use of the adapter raises. Build it
+        # now, so that a type that cannot convert is refused here.
+        adapter.rebuild(raise_errors=True)
+        return adapter
+    except PydanticUndefinedAnnotation as err:
+        raise TypeError(
+            f"Pydantic cannot resolve a name in {annotation!r}: {err}"
+        ) from err
     except PydanticUserError as err:
         # A PydanticUserError is a TypeError in some Pydantic releases and a
         # RuntimeError in others.
