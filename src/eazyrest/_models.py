@@ -7283,6 +7283,9 @@ class JSONObject:
 
         Raises:
             ValueError: If any field is not a JSON-backed related-object field.
+            Exception: If the key type of a related model cannot be resolved
+                yet, whatever resolving it raises, as ``url`` of the related
+                model's objects raises it. The request is not sent.
         """
         prefetched_related: PrefetchMap = {}
 
@@ -7343,6 +7346,10 @@ class JSONObject:
                     model_type, pks, query, cls, field
                 )
                 continue
+            # The objects that the bulk request returns match their parents by
+            # key. A key that cannot be read yet matches none, so raise before
+            # the request rather than keep an empty prefetch.
+            _resolve_key(model_type)
             related_objects = model_type.bulk_get_by_pks(
                 pks, api=query.related_client(model_type)
             )

@@ -1998,6 +1998,86 @@ def test_prefetch_refuses_an_object_of_another_model_from_bulk_get_by_pks(
         list(Todo.filter(prefetch="user"))
 
 
+@pytest.mark.parametrize("annotation", ["name", "alias"])
+def test_prefetch_of_a_model_keyed_by_a_later_class_raises_and_keeps_nothing(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, annotation: str
+) -> None:
+    """A prefetch cannot match objects by a key that cannot be read yet.
+
+    The related model's key names a class that is defined later, directly or by
+    a ``type`` alias. The prefetch raises the undefined name before it sends
+    the bulk request, since the request cannot be matched to its parents, and
+    keeps nothing. Once the class is defined, a new prefetch loads the related
+    objects with the one bulk request and the parents read them without more.
+
+    Args:
+        requests_mock: Serves the parents.
+        monkeypatch: Defines the class as a global, after the prefetch fails.
+        annotation: Whether the key names the class, or an alias of it.
+    """
+    key: Any = "LaterRelKey"
+    if annotation == "alias":
+        if sys.version_info < (3, 12):
+            pytest.skip("The type statement is new in 3.12.")
+        namespace: dict[str, Any] = {}
+        exec("type PendingRelKey = LaterRelKey", namespace)  # noqa: S102
+        key = namespace["PendingRelKey"]
+        later = namespace
+    else:
+        later = globals()
+    slot: Any = json_object(
+        type(
+            "PrefetchSlot",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": key, "name": str},
+                "class_url": "/slots/",
+            },
+        )
+    )
+    calls: list[set[Any]] = []
+
+    def bulk_get_by_pks(
+        cls: type[Any], /, pks: set[Any], *, api: Client, **kwargs: Any
+    ) -> dict[int, Any]:
+        calls.append(set(pks))
+        return {
+            pk: cls(json={"id": pk, "name": f"bulk{pk}"}, api=api)
+            for pk in pks
+        }
+
+    monkeypatch.setattr(slot, "bulk_get_by_pks", classmethod(bulk_get_by_pks))
+    parent: Any = json_object(
+        type(
+            "PrefetchParent",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "m": slot},
+                "class_url": "/parents/",
+            },
+        )
+    )
+    requests_mock.get(
+        "https://example.com/v1/parents/", json=[{"id": 1, "m": 1}]
+    )
+
+    with pytest.raises(NameError, match="LaterRelKey"):
+        list(parent.filter(prefetch="m"))
+    assert calls == []
+    assert "analyzed_type" not in vars(slot._pk)
+
+    if annotation == "alias":
+        later["LaterRelKey"] = int
+    else:
+        monkeypatch.setitem(later, "LaterRelKey", int)
+
+    (found,) = parent.filter(prefetch="m")
+    requests = requests_mock.call_count
+    assert found.m.name == "bulk1"
+    assert calls == [{1}]
+    assert requests_mock.call_count == requests
+
+
 def test_prefetch_accepts_a_subclass_from_bulk_get_by_pks(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
