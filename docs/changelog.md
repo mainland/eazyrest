@@ -145,7 +145,10 @@ describe them further.
   `Page`, and of an object known only by its URL, leaves them out too. A
   message quotes the URL that a followed redirect reached by its origin and
   path, as `https://files.example.com/o`, and not with its query or fragment,
-  so code that looked in it for a query parameter must read `response.url`.
+  so code that looked in it for a query parameter must read `response.url`. The
+  path can hold a session ID, which the message then quotes, and an exception
+  that requests itself raises, such as `requests.ConnectionError`, quotes the
+  URL of that host with its path and query.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
   arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
   authentication handler that reads the body, such as
@@ -678,7 +681,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   its origin and path alone, as `https://files.example.com/o`, built from the
   parts that requests reads, so it holds no user, password, query, or fragment,
   such as the signature of a download URL. The URL that the caller gave keeps
-  its query. The error's `response` holds the whole URL.
+  its query. The path can hold a session ID, which the message then quotes. An
+  exception that requests itself raises, such as `requests.ConnectionError`,
+  quotes the URL of that host as requests does, with its path and query. The
+  error's `response` holds the whole URL.
 - A `RedirectError` that refuses a redirect to another origin quotes the origin
   of a reading of the target that is not allowed, as
   `https://files.example.com` or `http://host:8080`, and nothing else. It never
