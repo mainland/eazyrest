@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextvars
 import copy
 import inspect
-import re
 import sys
 import time
 from collections.abc import Callable, Collection, Mapping
@@ -395,43 +394,39 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 _READ_SIZE = 64 * 1024
 
 
-_URL_LEADING_CONTROLS = "".join(map(chr, range(0x21)))
-_URL_LINE_NOISE = str.maketrans("", "", "\t\r\n")
-_AUTHORITY_START = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//")
+def _unquotable_redirect(
+    resp: requests.Response, problem: str
+) -> RedirectError:
+    """Describe a redirect whose ``Location`` the message cannot quote.
 
-
-def _requoted_without_userinfo(text: str) -> str:
-    """Requote a redirect target that requests cannot prepare.
+    The message quotes no part of the header. Where a parser rejects the
+    header, no rule says which of its text is the host and which is a password,
+    so any part of it might be either. The header stays on ``resp``.
 
     Args:
-        text: The target, as requests reads it, or the header if it is not
-            UTF-8.
+        resp: Response that holds the ``Location``.
+        problem: What is wrong with the location, completing "to a location
+            that".
 
     Returns:
-        The target as ``requote_uri()`` quotes it, after the characters that
-        ``urlsplit()`` strips or removes, with everything between the start of
-        its authority and the last ``@`` left out.
+        The error to raise. ``resp`` is closed first.
     """
-    stripped = text.translate(_URL_LINE_NOISE).lstrip(_URL_LEADING_CONTROLS)
-    quoted = requote_uri(stripped)
-    # A password can only come before an @, whatever the parser makes of the
-    # text, so the message quotes nothing before the last one.
-    at = quoted.rfind("@")
-    if at < 0:
-        return quoted
-    start = _AUTHORITY_START.match(quoted)
-    return (start.group() if start else "") + quoted[at + 1 :]
+    resp.close()
+    return RedirectError(
+        f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
+        f"status {resp.status_code} to a location that {problem}, so it was "
+        "not followed. The response of this error holds the Location header.",
+        response=resp,
+    )
 
 
 def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
     """Describe an unfollowed redirect that requests cannot prepare.
 
-    The message quotes the URL that requests prepares from the ``Location``,
-    which it reads as ``get_redirect_target()`` does: the header's characters
-    are encoded as Latin-1 and decoded as UTF-8. When that conversion fails or
-    ``urlparse()`` rejects the result, the message quotes the decoded target,
-    or the header if it is not UTF-8, as requests would requote it, without the
-    text before the last ``@``.
+    The message quotes no part of the ``Location``. A target that requests
+    cannot prepare has no URL that the message could quote without naming a
+    password or a host that a reader would take for the destination, whatever a
+    parser makes of its text.
 
     Args:
         resp: Final response, a redirect that requests does not follow.
@@ -441,32 +436,8 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
         prepared ``Response.next``. ``resp`` is closed first, and its requests
         lose their response hooks, so that the error pickles.
     """
-    resp.close()
     _drop_response_hooks(resp)
-    location = resp.headers.get("Location", "")
-    try:
-        # http.client decodes a header as Latin-1, and requests decodes the
-        # bytes again as UTF-8 before it prepares the target.
-        target = location.encode("latin1").decode("utf8")
-    except UnicodeError:
-        # A header that is not UTF-8 has no prepared form to quote. Quote what
-        # requests would requote.
-        destination = _requoted_without_userinfo(location)
-    else:
-        try:
-            destination = _redirect_destination(resp, target)
-        except ValueError:
-            # urlparse() rejects the target. Requote the decoded target, as
-            # requests would.
-            destination = _requoted_without_userinfo(target)
-    quoted = _printable(_redact_url(destination))
-    return RedirectError(
-        f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
-        f"status {resp.status_code} to {quoted}, "
-        "for which requests cannot prepare the next request, so it was not "
-        "followed",
-        response=resp,
-    )
+    return _unquotable_redirect(resp, "requests cannot prepare")
 
 
 class _Budget:
@@ -1434,13 +1405,7 @@ class API:
                 destination = _redirect_destination(resp, target)
                 origins = _redirect_origins(resp, target)
             except ValueError as err:
-                resp.close()
-                raise RedirectError(
-                    f"{resp.request.method} {_redact_url(resp.url)} was "
-                    f"redirected with status {resp.status_code} to a "
-                    "location that cannot be parsed, so it was not followed",
-                    response=resp,
-                ) from err
+                raise _unquotable_redirect(resp, "cannot be parsed") from err
             if origins <= allowed:
                 _check_write_redirect(resp, target)
                 if budget is not None:

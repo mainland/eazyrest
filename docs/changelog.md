@@ -667,8 +667,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   a redirect that a `RedirectError` quotes, also when it has no scheme, as
   `//host/` for `//user:pass@host/`, and when it begins with a control
   character or has a tab, carriage return, or line feed inside, which requests
-  ignores. The URL's query is still quoted. The error's `request` and
-  `response` keep the real URL.
+  ignores. A `Location` that requests cannot parse is not quoted, and the
+  error's `response` holds it. The URL's query is still quoted. The error's
+  `request` and `response` keep the real URL.
 - A `RedirectError` escapes the control characters of the `Location` that it
   quotes, as an HTTP error does for the reason phrase, so a server cannot write
   escape sequences or forged lines into a log.

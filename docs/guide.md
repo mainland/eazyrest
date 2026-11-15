@@ -1735,8 +1735,11 @@ redirect keeps the host, or when a no-proxy list applies, from `NO_PROXY` or
 from a `no_proxy` entry in `proxies`, and the redirect names a host that is not
 an IPv4 address. It consults neither `NO_PROXY` nor a `no_proxy` entry in
 `proxies` when `session.trust_env` is false. When it does not read the port,
-the response is returned. A model write, a query, and a next-page request
-expect a final response, so they raise `RedirectError` for any unfollowed 3xx.
+the response is returned. The message of the `RedirectError` quotes no part of
+a `Location` that requests cannot parse, since no rule says which of its text
+is a host and which a password. The error's `response` holds the header. A
+model write, a query, and a next-page request expect a final response, so they
+raise `RedirectError` for any unfollowed 3xx.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
