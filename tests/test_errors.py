@@ -2102,6 +2102,111 @@ def test_page_link_refused_after_a_hook_resent_it_keeps_its_query(
     )
 
 
+def _assert_no_signature(error: BaseException) -> None:
+    """Check that nothing printed from an error holds the signed query.
+
+    Args:
+        error: The error.
+    """
+    for text in _printed(error):
+        assert "SECRETSIG" not in text
+        assert "SECRETFRAG" not in text
+
+
+def _answer_with_another_url(
+    resp: requests.Response, **kwargs: Any
+) -> requests.Response:
+    """Answer a response with one for a signed URL that a hook chose.
+
+    Args:
+        resp: Response, which is replaced unless it is the hook's own.
+        kwargs: Arguments that requests passes to response hooks.
+
+    Returns:
+        The response to the signed URL, which has no history.
+    """
+    if resp.url.startswith("https://files.test/"):
+        return resp
+    return resp.connection.send(
+        requests.Request(
+            "GET", f"https://files.test/hooked{_SIGNED}"
+        ).prepare()
+    )
+
+
+def test_error_of_a_response_that_a_hook_substituted_leaves_out_its_query(
+    requests_mock: Any,
+) -> None:
+    """A response for a URL that a hook chose is quoted as a redirect is."""
+    api = API("https://api.test/")
+    api.session.hooks["response"] = [_answer_with_another_url]
+    requests_mock.get("https://api.test/h", status_code=200)
+    requests_mock.get("https://files.test/hooked", status_code=403)
+
+    with pytest.raises(APIError) as raised:
+        api.get("h?CALLERQ=1")
+
+    assert str(raised.value) == (
+        "403 Client Error: None for GET https://files.test/hooked"
+    )
+    _assert_no_signature(raised.value)
+
+
+def test_messages_of_one_request_agree_on_a_url_that_a_hook_chose(
+    requests_mock: Any,
+) -> None:
+    """A size error and an HTTP error quote the same URL for one request."""
+    api = API("https://api.test/")
+    api.max_response_bytes = 10
+    api.session.hooks["response"] = [_answer_with_another_url]
+    requests_mock.get("https://api.test/h", status_code=200)
+    requests_mock.get("https://files.test/hooked", content=b"x" * 100)
+
+    with pytest.raises(LimitExceeded) as raised:
+        api.get("h?CALLERQ=1")
+
+    assert str(raised.value).startswith(
+        "The response to GET https://files.test/hooked is larger"
+    )
+    _assert_no_signature(raised.value)
+
+
+def test_error_of_a_response_whose_url_a_hook_rewrote_leaves_out_its_query(
+    requests_mock: Any,
+) -> None:
+    """A hook that changes a response's URL does not make it the first one."""
+
+    def rewrite(resp: requests.Response, **kwargs: Any) -> requests.Response:
+        resp.url = f"https://files.test/rw{_SIGNED}"
+        return resp
+
+    api = API("https://api.test/")
+    api.session.hooks["response"] = [rewrite]
+    requests_mock.get("https://api.test/rw", status_code=403)
+
+    with pytest.raises(APIError) as raised:
+        api.get("rw?CALLERQ=1")
+
+    assert str(raised.value) == (
+        "403 Client Error: None for GET https://files.test/rw"
+    )
+    _assert_no_signature(raised.value)
+
+
+def test_response_named_outside_a_request_compares_with_the_history() -> None:
+    """With no request active, the first URL is the history's first URL."""
+    challenge = requests.Response()
+    challenge.status_code = 401
+    challenge.url = "https://api.test/a?key=GIVEN"
+    final = requests.Response()
+    final.status_code = 500
+    final.url = "https://api.test/b?key=OTHER"
+    final.request = requests.Request("GET", final.url).prepare()
+    final.history = [challenge]
+
+    assert _response_url(final) == "https://api.test/b"
+
+
 def test_http_error_of_a_url_that_redirected_to_itself_leaves_out_its_query(
     requests_mock: Any,
 ) -> None:

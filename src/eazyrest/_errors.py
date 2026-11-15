@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import contextvars
 import math
 import re
-from typing import Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import requests
 
 from ._protocols import Response
 from ._urls import _ServerURL
+
+if TYPE_CHECKING:
+    from .api import _Budget
 
 
 class EazyrestError(Exception):
@@ -326,6 +330,11 @@ def _redact_url(url: object) -> str:
 
 _UNSHOWN_URL = "<URL not shown>"
 
+_request_budget: contextvars.ContextVar[_Budget | None] = (
+    contextvars.ContextVar("_request_budget", default=None)
+)
+"""Budget active while Requests and its adapter handle one API request."""
+
 
 def _first_url(resp: Response) -> str:
     """Return the URL that was sent first for the request of a response.
@@ -356,8 +365,11 @@ def _response_url(resp: Response, sent: str | None = None) -> str:
         resp: Response whose URL the message names.
         sent: The URL that was sent first for the request, as requests prepared
             it, which a response hook knows from the request's budget because
-            requests has not set the history yet. By default, the URL that the
-            history of ``resp`` starts with.
+            requests has not set the history yet. By default, the first URL of
+            the active request's budget, so that every message of one request
+            agrees even if a hook replaced the response or changed its URL, or,
+            with no request active, the URL that the history of ``resp`` starts
+            with.
 
     Returns:
         The URL without its user and password if it is the URL that was sent
@@ -365,7 +377,13 @@ def _response_url(resp: Response, sent: str | None = None) -> str:
         have sent the URL, which cannot be read as an HTTP or HTTPS URL, a text
         that names none of it.
     """
-    if resp.url == (_first_url(resp) if sent is None else sent):
+    if sent is None:
+        budget = _request_budget.get()
+        if budget is not None and budget.first_url is not None:
+            sent = budget.first_url
+        else:
+            sent = _first_url(resp)
+    if resp.url == sent:
         return _redact_url(resp.url)
     return _redirected_url(resp.url)
 

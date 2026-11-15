@@ -17,6 +17,7 @@ from ._errors import (
     _first_url,
     _redact_url,
     _redirected_url,
+    _request_budget,
     _response_url,
 )
 from ._protocols import Client, Response
@@ -29,7 +30,6 @@ from .api import (
     _prepare_redirect,
     _prepare_server_url,
     _refused_reading,
-    _request_budget,
     _response_hooks,
 )
 

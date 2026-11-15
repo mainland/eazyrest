@@ -684,7 +684,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   its query. The path can hold a session ID, which the message then quotes. An
   exception that requests itself raises, such as `requests.ConnectionError`,
   quotes the URL of that host as requests does, with its path and query. The
-  error's `response` holds the whole URL.
+  error's `response` holds the whole URL. A response that a response hook
+  returned for another URL, or whose `url` it changed, is quoted in the same
+  way, so that every message of one request agrees.
 - A `RedirectError` that refuses a redirect to another origin quotes the origin
   of a reading of the target that is not allowed, as
   `https://files.example.com` or `http://host:8080`, and nothing else. It never

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextvars
 import copy
 import inspect
 import sys
@@ -34,6 +33,7 @@ from ._errors import (
     _api_error,
     _is_failure,
     _redact_url,
+    _request_budget,
     _response_json,
     _response_url,
 )
@@ -759,12 +759,6 @@ class _Budget:
             "max_response_bytes",
             f"The response to {where} is larger than {self.max_bytes} bytes",
         )
-
-
-_request_budget: contextvars.ContextVar[_Budget | None] = (
-    contextvars.ContextVar("_request_budget", default=None)
-)
-"""Budget active while Requests and its adapter handle one API request."""
 
 
 class _BudgetRetry(Retry):
