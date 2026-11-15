@@ -18,6 +18,7 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results
+from ._urls import _ServerURL
 from .api import (
     _as_api,
     _check_final_response,
@@ -25,7 +26,6 @@ from .api import (
     _prepare_redirect,
     _prepare_server_url,
     _response_hooks,
-    _ServerURL,
 )
 
 __all__ = [
