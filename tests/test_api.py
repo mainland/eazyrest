@@ -569,6 +569,10 @@ def test_api_follows_redirect_within_absolute_request_origin(
         "https://example.com\\@evil.example.net/steal",
         "https://example.com:443\\@evil.example.net/steal",
         "//example.com\\@evil.example.net/steal",
+        # A browser reads the host before the backslash, and requests the one
+        # after it, so the target must differ from the request's origin under
+        # the reading that is not requests'.
+        "https://evil.example.net\\@example.com/steal",
     ],
 )
 def test_api_refuses_backslash_authority_redirect(
@@ -1349,8 +1353,8 @@ def test_redirect_error_escapes_control_characters_of_the_location(
 ) -> None:
     """A ``Location`` with control characters is quoted as requests sends it.
 
-    requests percent-encodes the control characters and the space, so the
-    message quotes no raw control character.
+    requests percent-encodes the control characters, the space, and the
+    brackets of a query, so the message quotes no raw control character.
 
     Args:
         status: Redirect status, whose message differs.
@@ -1367,7 +1371,7 @@ def test_redirect_error_escapes_control_characters_of_the_location(
 
     message = str(info.value)
     assert message.isprintable()
-    assert "https://example.com/next%1B[2J%07forged%20line" in message
+    assert "https://example.com/next%1B%5B2J%07forged%20line" in message
 
 
 @pytest.mark.parametrize(

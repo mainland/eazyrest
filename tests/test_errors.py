@@ -824,6 +824,38 @@ def test_followed_redirect_that_requests_cannot_prepare_quotes_no_part(
 
 
 @pytest.mark.parametrize(
+    "location",
+    [
+        # Requests prepares the percent-encoded destination, but not the target
+        # joined onto the request's URL as it was given.
+        "https://%evil.test",
+        # Requests prepares the joined target, but not the destination, whose
+        # leading tab urlparse() removes.
+        "\t//evil.test",
+    ],
+)
+def test_followed_redirect_is_refused_if_either_reading_cannot_be_prepared(
+    requests_mock: Any, location: str
+) -> None:
+    """A followed redirect needs both readings of its target to be prepared.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="requests cannot prepare") as err:
+        api.get("/a")
+
+    assert "evil.test" not in str(err.value)
+
+
+@pytest.mark.parametrize(
     ("location", "scheme"),
     [
         ("mailto:alice:hunter2@h.test/x", "mailto"),
@@ -862,8 +894,9 @@ def test_followed_redirect_to_a_target_without_an_authority_quotes_its_scheme(
 
     for text in (str(raised.value), repr(raised.value)):
         assert (
-            f"was redirected with status 302 to a {scheme}: location, whose "
-            "origin differs from the request's, so it was not followed."
+            "was redirected with status 302 to a location whose scheme is "
+            f"{scheme}:, whose origin differs from the request's, so it was "
+            "not followed."
         ) in text
         assert "alice" not in text
         assert "hunter2" not in text
@@ -905,10 +938,10 @@ def test_authority_less_location_reads_the_url_as_the_redaction_does(
     assert _authority_less_location(url) == described
 
 
-def test_followed_redirect_to_a_target_with_an_authority_is_still_quoted(
+def test_followed_redirect_to_another_scheme_is_named_by_its_scheme(
     requests_mock: Any,
 ) -> None:
-    """A target with an authority is quoted, without its user and password."""
+    """A target that is not HTTP is named by its scheme, authority or not."""
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
@@ -919,9 +952,32 @@ def test_followed_redirect_to_a_target_with_an_authority_is_still_quoted(
     with pytest.raises(RedirectError, match="origin differs") as raised:
         api.get("/a")
 
-    assert "redirected with status 302 to ftp://h.test/x, whose" in str(
-        raised.value
+    message = str(raised.value)
+    assert (
+        "redirected with status 302 to a location whose scheme is ftp:, whose"
+    ) in message
+    assert "h.test" not in message
+    assert "hunter2" not in message
+
+
+def test_followed_redirect_quotes_the_target_as_requests_prepares_it(
+    requests_mock: Any,
+) -> None:
+    """The quoted target is the prepared URL, not the header's text."""
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "http://Alice:hunter2@H.TEST:8080/x[1]"},
     )
+
+    with pytest.raises(RedirectError, match="origin differs") as raised:
+        api.get("/a")
+
+    message = str(raised.value)
+    assert "to http://h.test:8080/x%5B1%5D, whose origin differs" in message
+    assert "alice" not in message.lower()
+    assert "hunter2" not in message
 
 
 def test_followed_redirect_to_a_readable_origin_leaves_out_its_credentials(

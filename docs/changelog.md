@@ -670,11 +670,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   ignores. A `Location` that requests cannot prepare is not quoted, and the
   error's `response` holds it. The URL's query is still quoted. The error's
   `request` and `response` keep the real URL.
-- A `RedirectError` or `PaginationError` that refuses a redirect to another
-  origin quotes a target with no host, such as `mailto:user:pass@host/x` or
-  `file:///user:pass@host/x`, by its scheme alone, as `a mailto: location`,
-  since the target has no user and password to leave out and its text can read
-  as one. The `RedirectError`'s `response` holds the header.
+- A `RedirectError` that refuses a redirect to another origin reads the target
+  as requests prepares it and quotes that URL without its user and password. It
+  names a target that is not an HTTP or HTTPS URL, such as
+  `mailto:user:pass@host/x` or `ftp://user:pass@host/x`, by its scheme alone,
+  as `a location whose scheme is mailto:`, since the target has no user and
+  password to leave out and its text can read as one. The error's `response`
+  holds the header.
+- A `PaginationError` that refuses a redirect to another origin quotes a target
+  with no host, such as `mailto:user:pass@host/x` or
+  `file:///user:pass@host/x`, by its scheme alone, as `a mailto: location`.
 - A `PaginationError` for a next-page link or a `Link` header link that cannot
   be parsed or requested quotes none of the link, and has no `__cause__` or
   `__context__`, since the error that rejected the link, such as one for a port

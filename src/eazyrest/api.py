@@ -32,7 +32,6 @@ from ._errors import (
     LimitExceeded,
     RedirectError,
     _api_error,
-    _authority_less_location,
     _is_failure,
     _printable,
     _redact_url,
@@ -130,6 +129,17 @@ class _ServerURL(NamedTuple):
     def is_http(self) -> bool:
         """Whether the URL is an HTTP or HTTPS URL that names a host."""
         return self.host is not None
+
+    @property
+    def scheme_name(self) -> str | None:
+        """What a message calls a URL that is not HTTP or HTTPS, else ``None``.
+
+        Such a URL has no user and password to leave out of a message, and its
+        text can read as one, so a message names its scheme alone.
+        """
+        if self.is_http:
+            return None
+        return f"a location whose scheme is {self.scheme}:"
 
     @property
     def origin(self) -> tuple[str, str | None, int | None]:
@@ -247,6 +257,39 @@ def _redirect_destination(resp: requests.Response, target: str) -> str:
     if not parsed.netloc:
         return urljoin(resp.url, requote_uri(url))
     return requote_uri(url)
+
+
+def _prepare_redirect(
+    session: requests.Session, resp: requests.Response, target: str
+) -> tuple[_ServerURL, frozenset[tuple[str, str | None, int | None]]] | None:
+    r"""Read the destination of a redirect as requests sends the request.
+
+    A redirect is safe only if every reading of its target names an allowed
+    origin. The destination is read as requests reads it. The target joined
+    onto the request's URL without percent-encoding is read too, since a proxy,
+    or a client that treats a backslash as a slash, as browsers do, may read it
+    differently: ``https://a.test\@b.test/`` names ``a.test`` to a browser but
+    ``b.test`` to ``urlsplit()``.
+
+    Args:
+        session: Session that follows the redirect.
+        resp: Redirect response.
+        target: Redirect target, from ``Session.get_redirect_target()``.
+
+    Returns:
+        The destination and the origins of both readings, or ``None`` if
+        requests cannot prepare either.
+
+    Raises:
+        ValueError: If the target cannot be joined onto the request's URL.
+    """
+    destination = _prepare_server_url(
+        session, _redirect_destination(resp, target)
+    )
+    joined = _prepare_server_url(session, urljoin(resp.url, target))
+    if destination is None or joined is None:
+        return None
+    return destination, frozenset({destination.origin, joined.origin})
 
 
 def _redirect_origins(
@@ -412,7 +455,7 @@ def _redirected_method(method: str, status: int) -> str:
     return method
 
 
-def _check_write_redirect(resp: requests.Response, target: str) -> None:
+def _check_write_redirect(resp: requests.Response, destination: str) -> None:
     """Refuse a redirect that would not resend the request it answers.
 
     requests follows a 301, 302, or 303 without the request body. It changes a
@@ -423,11 +466,10 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 
     Args:
         resp: Redirect response.
-        target: Redirect target, from ``Session.get_redirect_target()``. A
-            message quotes the URL that requests follows, which can differ from
-            the target: it is the target as requests prepares it, joined onto
-            the request's URL when relative, so characters that a URL cannot
-            hold, such as a backslash, are percent-encoded.
+        destination: The URL that requests follows, as it prepares it: the
+            redirect target joined onto the request's URL when relative, so
+            characters that a URL cannot hold, such as a backslash, are
+            percent-encoded. A message quotes it.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -444,20 +486,20 @@ def _check_write_redirect(resp: requests.Response, target: str) -> None:
 
     resp.close()
     url = _redact_url(resp.url)
-    destination = _printable(_redact_url(_redirect_destination(resp, target)))
+    quoted = _printable(_redact_url(destination))
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
         # its result, so retrying the request would repeat it.
         raise RedirectError(
             f"{method} {url} was answered with status 303, which says that "
             "the server performed it and points to its result at "
-            f"{destination}, which was not read. Do not "
+            f"{quoted}, which was not read. Do not "
             f"retry the {method}.",
             response=resp,
         )
     raise RedirectError(
         f"{method} {url} was redirected with status {resp.status_code} "
-        f"to {destination}, which requests follows "
+        f"to {quoted}, which requests follows "
         + ("as a GET" if changed else "without the request body")
         + f", so the {method} request would not be performed. Only 307 "
         "and 308 redirects resend a request unchanged. Send the request to "
@@ -1487,29 +1529,26 @@ class API:
                 # requests follows no redirect to an empty target.
                 if not target:
                     return
-                destination = _redirect_destination(resp, target)
-                origins = _redirect_origins(resp, target)
+                prepared = _prepare_redirect(self.session, resp, target)
             except ValueError:
                 pass
             else:
+                if prepared is None:
+                    # requests cannot prepare the target, as for a port that is
+                    # not a number.
+                    raise _unquotable_redirect(resp, "requests cannot prepare")
+                destination, origins = prepared
                 if origins <= allowed:
-                    _check_write_redirect(resp, target)
+                    _check_write_redirect(resp, destination.url)
                     if budget is not None:
                         # requests reads a redirect's body before following it.
                         budget.check_time(resp)
                         budget.read_body(resp)
                     return
 
-                if ("", None, None) in origins:
-                    # No origin can be read for some reading of the target, as
-                    # for a port that is not a number, so requests cannot
-                    # prepare it.
-                    raise _unquotable_redirect(resp, "requests cannot prepare")
                 resp.close()
-                # A target with no authority has no user and password to leave
-                # out, so quote its scheme alone.
-                quoted = _authority_less_location(destination) or _printable(
-                    _redact_url(destination)
+                quoted = destination.scheme_name or _printable(
+                    _redact_url(destination.url)
                 )
                 raise RedirectError(
                     f"{resp.request.method} {_redact_url(resp.url)} was "
