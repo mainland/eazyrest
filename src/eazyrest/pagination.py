@@ -71,6 +71,9 @@ def _link(resp: Response, rels: frozenset[str]) -> str | None:
     return None
 
 
+_UNPARSABLE_PAGE_URL = "A page URL cannot be parsed, so nothing was sent."
+
+
 def _page_link(page: Mapping[str, Any], key: str, base: str) -> str | None:
     """Return the absolute URL of a page's link to another page.
 
@@ -109,14 +112,16 @@ def _resolve(base: str, link: str) -> str:
         The absolute URL.
 
     Raises:
-        PaginationError: If the link cannot be parsed.
+        PaginationError: If the link cannot be parsed. The message quotes none
+            of it, since the server chose it and no rule says which of its text
+            is a host and which a password, and no error is attached, since the
+            one that rejected the link can quote it.
     """
     try:
         return urljoin(base, link)
-    except ValueError as err:
-        raise PaginationError(
-            f"Page URL {_redact_url(link)!r} cannot be parsed"
-        ) from err
+    except ValueError:
+        pass
+    raise PaginationError(_UNPARSABLE_PAGE_URL) from None
 
 
 def _page_results(page: Any, results_key: str) -> list[Any] | None:
@@ -163,20 +168,31 @@ def _check_page_origin(api: Client, url: str) -> None:
         url: Absolute URL of the page.
 
     Raises:
-        PaginationError: If ``url`` has another origin.
+        PaginationError: If ``url`` has another origin, or cannot be parsed.
+            The message of the second quotes none of it, and attaches no error,
+            as for ``_resolve()``.
     """
     try:
         origin = _origin(url)
-    except ValueError as err:
-        raise PaginationError(
-            f"Page URL {_redact_url(url)!r} cannot be parsed"
-        ) from err
-    if origin != _origin(api.base_url):
-        raise PaginationError(
-            f"Page URL {_redact_url(url)!r} has a different origin from the "
-            f"API's base URL {_redact_url(api.base_url)!r}. Pass "
-            "allow_other_origins=True to follow it."
-        )
+    except ValueError:
+        pass
+    else:
+        if origin != _origin(api.base_url):
+            # A URL with no host has no user and password to leave out, so name
+            # its scheme alone.
+            subject = _authority_less_location(url)
+            subject = (
+                f"Page URL, {subject},"
+                if subject
+                else f"Page URL {_redact_url(url)!r}"
+            )
+            raise PaginationError(
+                f"{subject} has a different origin from the "
+                f"API's base URL {_redact_url(api.base_url)!r}. Pass "
+                "allow_other_origins=True to follow it."
+            )
+        return
+    raise PaginationError(_UNPARSABLE_PAGE_URL) from None
 
 
 def _request_page(
@@ -273,10 +289,13 @@ def _request_page(
     except (
         requests.exceptions.InvalidURL,
         requests.exceptions.MissingSchema,
-    ) as err:
+    ):
+        resp = None
+    if resp is None:
+        # Requests quotes the URL in the error that it raised, so attach none.
         raise PaginationError(
-            f"Page URL {_redact_url(url)!r} cannot be requested"
-        ) from err
+            "A page URL cannot be requested, so nothing was sent."
+        ) from None
     return _check_final_response(resp, "the page has no response to read")
 
 

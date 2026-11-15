@@ -675,6 +675,12 @@ that can break code written for 0.9.0, followed by what to do about it.
   `file:///user:pass@host/x`, by its scheme alone, as `a mailto: location`,
   since the target has no user and password to leave out and its text can read
   as one. The `RedirectError`'s `response` holds the header.
+- A `PaginationError` for a next-page link or a `Link` header link that cannot
+  be parsed or requested quotes none of the link, and has no `__cause__` or
+  `__context__`, since the error that rejected the link, such as one for a port
+  that is not a number, can quote it. A link with no host is named by its
+  scheme alone, as for a redirect. Before, the message quoted the link without
+  its user and password, and the chained error could quote all of it.
 - A `RedirectError` escapes the control characters of the `Location` that it
   quotes, as an HTTP error does for the reason phrase, so a server cannot write
   escape sequences or forged lines into a log.

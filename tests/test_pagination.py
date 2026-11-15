@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import socket
+import threading
+import traceback
 from typing import Any
 
 import pytest
@@ -206,7 +209,7 @@ def test_unparsable_next_link_raises_pagination_error(
     api = API("https://example.com/v1/")
     first_page = {"next": "http://[::1/items/", "results": [{"id": 1}]}
 
-    with pytest.raises(PaginationError, match="Page URL"):
+    with pytest.raises(PaginationError, match="cannot be parsed"):
         list(
             follow_next_links(
                 api, first_page, allow_other_origins=allow_other_origins
@@ -231,15 +234,223 @@ def test_unrequestable_next_link_raises_pagination_error(
     api = API("https://example.com/v1/")
     first_page = {"next": "https://example.com:99999/x", "results": []}
 
-    with pytest.raises(PaginationError, match="Page URL") as raised:
+    with pytest.raises(PaginationError, match="cannot be") as raised:
         list(
             follow_next_links(
                 api, first_page, allow_other_origins=allow_other_origins
             )
         )
 
-    assert isinstance(raised.value.__cause__, requests.exceptions.InvalidURL)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
     assert requests_mock.call_count == 0
+
+
+PARSED = "A page URL cannot be parsed, so nothing was sent."
+REQUESTED = "A page URL cannot be requested, so nothing was sent."
+
+# Links that a server can send, with the text of each after its scheme that no
+# message may quote, and the message that a client gives for it when it refuses
+# links to other origins and when it allows them.
+UNUSABLE_LINKS = [
+    ("http://alice:hunter2#@api.test/x", PARSED, REQUESTED),
+    ("http://alice:hunter2@api.test:bad/x", PARSED, REQUESTED),
+    ("http://alice:hunter2@h\u2100/x", PARSED, PARSED),
+    ("http://[alice:hunter2@api.test/x", PARSED, PARSED),
+]
+SECRETS = ("alice", "hunter2", "h\u2100", "[alice", "bad/x")
+
+
+def _assert_error_quotes_no_link(error: PaginationError, message: str) -> None:
+    """Check that nothing a log prints for a page error quotes a link.
+
+    Args:
+        error: The error that refused the link.
+        message: The message that the error must have.
+    """
+    assert str(error) == message
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    for text in (
+        str(error),
+        repr(error),
+        "".join(traceback.format_exception(error)),
+    ):
+        for secret in SECRETS:
+            assert secret not in text
+
+
+@pytest.mark.parametrize("allow_other_origins", [False, True])
+@pytest.mark.parametrize(("link", "parsed", "requested"), UNUSABLE_LINKS)
+def test_next_link_that_cannot_be_used_is_not_quoted_or_chained(
+    requests_mock: Any,
+    link: str,
+    parsed: str,
+    requested: str,
+    allow_other_origins: bool,
+) -> None:
+    """The error for a next link quotes nothing of it and has no cause.
+
+    The rejecting error can quote the link, as the one for a port that is not a
+    number does, and a traceback prints it.
+
+    Args:
+        link: The next link in the page's JSON.
+        parsed: The message when links to other origins are refused.
+        requested: The message when links to other origins are allowed.
+        allow_other_origins: Whether links to other origins are followed.
+    """
+    api = API("http://api.test/")
+    first_page = {"next": link, "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(
+            follow_next_links(
+                api,
+                first_page,
+                url="http://api.test/p",
+                allow_other_origins=allow_other_origins,
+            )
+        )
+
+    _assert_error_quotes_no_link(
+        raised.value, requested if allow_other_origins else parsed
+    )
+    assert requests_mock.call_count == 0
+
+
+def test_next_link_without_a_host_is_named_by_its_scheme(
+    requests_mock: Any,
+) -> None:
+    """A link with no host is refused as another origin, by scheme alone."""
+    api = API("http://api.test/")
+    first_page = {
+        "next": "mailto:alice:hunter2@h.test/x",
+        "results": [],
+    }
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page, url="http://api.test/p"))
+
+    assert str(raised.value) == (
+        "Page URL, a mailto: location, has a different origin from the "
+        "API's base URL 'http://api.test/'. Pass allow_other_origins=True to "
+        "follow it."
+    )
+    assert "alice" not in repr(raised.value)
+    assert requests_mock.call_count == 0
+
+
+def test_next_link_with_a_host_is_quoted_without_its_user_and_password(
+    requests_mock: Any,
+) -> None:
+    """A link with a host to another origin is still quoted, redacted."""
+    api = API("http://api.test/")
+    first_page = {"next": "ftp://alice:hunter2@h.test/x", "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page, url="http://api.test/p"))
+
+    assert str(raised.value).startswith("Page URL 'ftp://h.test/x' has a")
+    assert "hunter2" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("allow_other_origins", [False, True])
+@pytest.mark.parametrize(("link", "parsed", "requested"), UNUSABLE_LINKS)
+def test_page_object_link_that_cannot_be_used_is_not_quoted_or_chained(
+    requests_mock: Any,
+    link: str,
+    parsed: str,
+    requested: str,
+    allow_other_origins: bool,
+) -> None:
+    """A page's link, read by ``Page.next_page()``, is refused the same way.
+
+    Args:
+        link: The next link in the page's JSON.
+        parsed: The message when links to other origins are refused.
+        requested: The message when links to other origins are allowed.
+        allow_other_origins: Whether links to other origins are followed.
+    """
+    api = API("http://api.test/")
+    requests_mock.get(
+        "http://api.test/p", json={"next": link, "results": [{"id": 1}]}
+    )
+
+    def read_next_page() -> None:
+        # A link that urljoin() rejects fails when the page is built, and any
+        # other when the page reads it.
+        page = next_links_page(
+            api, api.get("/p"), allow_other_origins=allow_other_origins
+        )
+        page.next_page()
+
+    with pytest.raises(PaginationError) as raised:
+        read_next_page()
+
+    _assert_error_quotes_no_link(
+        raised.value, requested if allow_other_origins else parsed
+    )
+
+
+def _serve_link_header(link: bytes) -> tuple[socket.socket, threading.Thread]:
+    """Serve one JSON page whose ``Link`` header holds raw bytes.
+
+    Args:
+        link: Bytes of the ``Link`` header's value.
+
+    Returns:
+        The listening socket, and the thread that serves one request.
+    """
+
+    def serve(listener: socket.socket) -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Link: " + link + b"\r\nContent-Length: 2\r\n"
+                b"Connection: close\r\n\r\n[]"
+            )
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    # A request that never connects ends the server's wait, not the run.
+    listener.settimeout(10)
+    thread = threading.Thread(target=serve, args=(listener,))
+    thread.start()
+    return listener, thread
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "http://alice:hunter2@h\u2100/x".encode(),
+        b"http://[alice:hunter2@h\xe5/x",
+        b"http://[alice:hunter2@api.test/x",
+    ],
+)
+def test_link_header_that_cannot_be_parsed_is_not_quoted_or_chained(
+    link: bytes,
+) -> None:
+    """A ``Link`` header's bytes appear in no part of the page error.
+
+    Args:
+        link: The bytes of the link in the header, which may not be UTF-8.
+    """
+    listener, thread = _serve_link_header(b"<" + link + b'>; rel="next"')
+    with listener:
+        api = API(f"http://127.0.0.1:{listener.getsockname()[1]}/")
+        try:
+            resp = api.get("/p")
+        finally:
+            thread.join()
+
+    with pytest.raises(PaginationError) as raised:
+        link_headers_page(api, resp).next_page()
+
+    _assert_error_quotes_no_link(raised.value, PARSED)
 
 
 @pytest.mark.parametrize("allow_other_origins", [False, True])
