@@ -1322,6 +1322,7 @@ class API:
             follow=bool(kwargs.get("allow_redirects", True)),
         )
         token = _request_budget.set(budget)
+        rejected: requests.Response | None = None
         try:
             try:
                 resp = send(url, *args, **kwargs)
@@ -1334,10 +1335,15 @@ class API:
                     isinstance(err, ValueError)
                     and (unfollowed := budget.unfollowed) is not None
                 ):
-                    raise _unpreparable_redirect(unfollowed) from err
-                if isinstance(err, requests.RequestException):
-                    _drop_response_hooks(err.response, err.request)
-                raise
+                    rejected = unfollowed
+                else:
+                    if isinstance(err, requests.RequestException):
+                        _drop_response_hooks(err.response, err.request)
+                    raise
+            if rejected is not None:
+                # The error that rejected the header can quote it, so none is
+                # attached.
+                raise _unpreparable_redirect(rejected) from None
             _drop_response_hooks(resp)
             self._check_redirects(resp)
             budget.check_time(resp)
@@ -1404,25 +1410,29 @@ class API:
                     return
                 destination = _redirect_destination(resp, target)
                 origins = _redirect_origins(resp, target)
-            except ValueError as err:
-                raise _unquotable_redirect(resp, "cannot be parsed") from err
-            if origins <= allowed:
-                _check_write_redirect(resp, target)
-                if budget is not None:
-                    # requests reads a redirect's body before following it.
-                    budget.check_time(resp)
-                    budget.read_body(resp)
-                return
+            except ValueError:
+                pass
+            else:
+                if origins <= allowed:
+                    _check_write_redirect(resp, target)
+                    if budget is not None:
+                        # requests reads a redirect's body before following it.
+                        budget.check_time(resp)
+                        budget.read_body(resp)
+                    return
 
-            resp.close()
-            raise RedirectError(
-                f"{resp.request.method} {_redact_url(resp.url)} was "
-                f"redirected with status {resp.status_code} to "
-                f"{_printable(_redact_url(destination))}, whose origin "
-                "differs from the request's, so it was not followed. Add the "
-                "origin to API.redirect_origins to follow it.",
-                response=resp,
-            )
+                resp.close()
+                raise RedirectError(
+                    f"{resp.request.method} {_redact_url(resp.url)} was "
+                    f"redirected with status {resp.status_code} to "
+                    f"{_printable(_redact_url(destination))}, whose origin "
+                    "differs from the request's, so it was not followed. Add "
+                    "the origin to API.redirect_origins to follow it.",
+                    response=resp,
+                )
+            # The error that rejected the header can quote it, so none is
+            # attached.
+            raise _unquotable_redirect(resp, "cannot be parsed") from None
 
         # requests uses a request's response hooks instead of the session's, so
         # keep the session's when the request has none. Run the guard last,

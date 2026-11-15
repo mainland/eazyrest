@@ -6,6 +6,7 @@ import http.server
 import pickle
 import socket
 import threading
+import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -856,3 +857,116 @@ def test_unpreparable_redirect_message_quotes_no_raw_location_bytes(
     assert raised.value.response.headers["Location"] == header.decode(
         "latin1"
     ).lstrip(" \t")
+
+
+def _assert_error_holds_no_header(
+    error: RedirectError, header: bytes, parts: list[str]
+) -> None:
+    """Check that nothing a log prints for a redirect error quotes a header.
+
+    Args:
+        error: The error that refused the redirect.
+        header: The bytes of the ``Location`` header.
+        parts: Text of the header that no printed text may hold.
+    """
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert error.__suppress_context__
+    texts = [
+        "".join(traceback.format_exception(error)),
+        str(error),
+        repr(error),
+    ]
+    for text in texts:
+        assert "location that" in text
+        for part in parts:
+            assert part not in text
+    assert error.response is not None
+    assert error.response.headers["Location"] == header.decode("latin1")
+
+
+CHAINED_HEADERS = [
+    (
+        "http://alice:hunter2@h℀/x".encode(),
+        ["alice", "hunter2", "h℀"],
+    ),
+    (b"http://alice:hunter2@h\xe5/x", ["alice", "hunter2", "xe5"]),
+]
+
+
+@pytest.mark.parametrize("follow", [False, True])
+@pytest.mark.parametrize(("header", "parts"), CHAINED_HEADERS)
+def test_redirect_error_does_not_chain_the_error_that_rejected_the_header(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    header: bytes,
+    parts: list[str],
+    follow: bool,
+) -> None:
+    """A redirect error has no cause that quotes the ``Location``.
+
+    The error that rejected the header can quote its host and its password, and
+    a traceback prints it. The redirect error keeps no cause or context, and
+    its traceback quotes nothing, on a followed and an unfollowed redirect.
+
+    Args:
+        header: The bytes of the ``Location`` header.
+        parts: Text of the header that no printed text may hold.
+        follow: Whether the request allows redirects.
+    """
+    monkeypatch.setenv("NO_PROXY", "*")
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": header.decode("latin1")},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("/a", allow_redirects=follow)
+
+    _assert_error_holds_no_header(raised.value, header, parts)
+
+
+@pytest.mark.parametrize("follow", [False, True])
+@pytest.mark.parametrize(("header", "parts"), CHAINED_HEADERS)
+def test_redirect_error_of_raw_header_bytes_does_not_chain_a_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    header: bytes,
+    parts: list[str],
+    follow: bool,
+) -> None:
+    """A header's bytes from a socket appear in no traceback of its error.
+
+    Args:
+        header: The bytes of the ``Location`` header.
+        parts: Text of the header that no printed text may hold.
+        follow: Whether the request allows redirects.
+    """
+    monkeypatch.setenv("NO_PROXY", "*")
+
+    def serve(listener: socket.socket) -> None:
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            conn.sendall(
+                b"HTTP/1.1 302 Found\r\nLocation: "
+                + header
+                + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        # A request that never connects ends the server's wait, not the run.
+        listener.settimeout(10)
+        thread = threading.Thread(target=serve, args=(listener,))
+        thread.start()
+        api = API(f"http://127.0.0.1:{listener.getsockname()[1]}/")
+        try:
+            with pytest.raises(RedirectError) as raised:
+                api.get("/a", allow_redirects=follow)
+        finally:
+            thread.join()
+
+    _assert_error_holds_no_header(raised.value, header, parts)
