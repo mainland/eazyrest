@@ -3551,3 +3551,82 @@ def test_a_pydantic_key_with_an_alias_of_a_later_class_has_its_key_after(
     assert used == fresh
     assert used == twin
     assert hash(used) == hash(fresh)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["typed-dict", "named-tuple", "dataclass", "list", "mapping", "tuple"],
+)
+def test_an_object_used_before_a_model_in_its_key_resolves_has_its_key(
+    monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """A model that Pydantic cannot check yet, inside a key, is unresolved.
+
+    The key holds a Pydantic model whose field names a class that is defined
+    later, inside a ``TypedDict``, a ``NamedTuple``, a dataclass, a list, a
+    mapping, or a fixed-length tuple. Until the class is defined, ``url`` and
+    ``hash()`` raise and ``==`` is ``False``, and nothing is kept on the object
+    or on the class. Once it is, the object has the ``url`` and the hash of a
+    new object with the same key, and equals it.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the objects are used.
+        shape: The structure that holds the model.
+    """
+
+    class NestedKeyModel(BaseModel):
+        model_config = ConfigDict(frozen=True, extra="allow")
+
+        n: LaterNested
+
+    held = {"n": {"x": 1}}
+    keys: dict[str, tuple[Any, Any]] = {
+        "typed-dict": (
+            TypedDict("NestedKeyRecord", {"p": NestedKeyModel}),  # type: ignore[operator]
+            {"p": held},
+        ),
+        "named-tuple": (
+            NamedTuple("NestedKeyPair", [("p", NestedKeyModel)]),
+            [held],
+        ),
+        "dataclass": (
+            dataclasses.make_dataclass(
+                "NestedKeyEntry", [("p", NestedKeyModel)]
+            ),
+            {"p": held},
+        ),
+        "list": (list[NestedKeyModel], [held]),
+        "mapping": (dict[str, NestedKeyModel], {"a": held}),
+        "tuple": (tuple[NestedKeyModel, int], [held, 1]),
+    }
+    key_type, value = keys[shape]
+    crate: Any = json_object(
+        type(
+            "NestedCrate",
+            (PydanticBase,),
+            {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+        )
+    )
+    used = crate(json={"id": value})
+    twin = crate(json={"id": value})
+
+    with pytest.raises(FieldConversionError, match="annotations cannot be"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(TypeError, match="cannot be hashed"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+    assert "analyzed_type" not in vars(crate._pk)
+
+    @with_config(ConfigDict(extra="allow"))
+    class LaterNested(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterNested", LaterNested)
+
+    fresh = crate(json={"id": value})
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1

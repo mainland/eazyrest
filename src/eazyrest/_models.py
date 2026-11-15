@@ -1511,22 +1511,31 @@ def _holds_model_anywhere(
     and its fields are never analyzed. It looks through a ``NewType`` to the
     type that the ``NewType`` names.
 
+    A strict walk resolves the whole type, as converting a value of it would.
+    It builds the adapter of each type that Pydantic converts, and resolves the
+    annotations of each form, so that whatever a conversion would resolve, it
+    resolves first. It stops at the first model that it finds, since a key that
+    holds one is refused whatever else it holds.
+
     Args:
         analyzed: Analyzed type.
         table: Conversion table of the model whose field it is.
         seen: Forms already visited, which keeps a self-referential one from
             looping.
-        strict: Whether a form whose annotations cannot be resolved raises, as
-            when the key is first used, so that the check runs again once they
-            can be. Otherwise it holds no model that this reports.
+        strict: Whether anything that cannot be resolved raises, as when the
+            key is first used, so that the check runs again once it can be.
+            Otherwise a form that cannot be analyzed holds no model that this
+            reports.
 
     Returns:
         Whether ``analyzed`` is a related model or holds one. A form whose
-        fields cannot be analyzed for another reason holds none that this
-        reports, since that reason is refused when it is first used.
+        fields cannot be analyzed holds none that this reports unless
+        ``strict``, since that reason is refused when it is first used.
 
     Raises:
-        TypeError: If ``strict`` and a form's annotations cannot be resolved.
+        Exception: If ``strict`` and a form's annotations cannot be resolved, a
+            name in a type alias names nothing yet, or an adapter cannot be
+            built, whatever resolving the name raised.
     """
     seen = set() if seen is None else seen
     if _class_entry(analyzed, table) is not None:
@@ -1534,6 +1543,10 @@ def _holds_model_anywhere(
     match analyzed:
         case RelatedType():
             return True
+        case PydanticType():
+            if strict:
+                _ = analyzed.adapter
+            return False
         case (
             OptionalType(inner) | CollectionType(_, inner) | MappingType(inner)
         ):
@@ -1559,11 +1572,9 @@ def _holds_model_anywhere(
                     members = [member for _, member, _ in analyzed.fields]
             except _ModelInContainerError:
                 return True
-            except _UnresolvedAnnotationsError:
+            except Exception:
                 if strict:
                     raise
-                return False
-            except Exception:  # noqa: BLE001
                 return False
             return any(
                 _holds_model_anywhere(item, table, seen, strict=strict)
@@ -1809,6 +1820,47 @@ def _reduce_key(
         owner = related.model_type
         conversion = inner.analyzed_type
     return owner, conversion, key
+
+
+def _resolve_key_chain(analyzed: AnalyzedType) -> None:
+    """Resolve the key type of each model that a key relation leads to.
+
+    The related model's key resolves in turn, so the whole chain does. A key
+    that is a hyperlinked relation is refused before this is reached.
+
+    Args:
+        analyzed: Analyzed type of a primary key field.
+
+    Raises:
+        Exception: Whatever resolving the key type of a related model raises.
+    """
+    related = _related_key_type(analyzed)
+    if related is not None:
+        _ = related.model_type._pk.analyzed_type
+
+
+def _resolve_key(cls: type[JSONObject]) -> None:
+    """Resolve a model's whole key type, before any use of the key.
+
+    Every use of a key resolves its type through this, before it converts
+    anything. Resolving the type is everything that converting a key would
+    resolve: the key's annotation, the value of each type alias in it, the
+    annotations of each ``TypedDict``, ``NamedTuple``, and dataclass in it, the
+    adapter of each type that Pydantic converts, and the key type of each model
+    that a key relation leads to. Converting a key then resolves no name. The
+    result is cached on the key's property, and only once it is complete.
+
+    Args:
+        cls: Model class that has a primary key.
+
+    Raises:
+        TypeError: If the model's key declaration is refused, which carries a
+            mark that tells it from a name that is not defined yet.
+        Exception: Whatever resolving a name in the key's type raises, such as
+            a ``NameError``, an ``AttributeError``, or a ``TypeError`` that
+            says that a form's annotations cannot be resolved.
+    """
+    _ = cls._pk.analyzed_type
 
 
 def _decode_key(obj: JSONObject, key: Any) -> Any:
@@ -3020,14 +3072,15 @@ def _check_key_holds_no_relation(
         cls: Model class that declares the key.
         field: Name of the primary-key field.
         analyzed: Analyzed type of the field.
-        strict: Whether a form whose annotations cannot be resolved raises, as
-            it does when the key is first used. At decoration it is ignored,
-            since the class may be defined later.
+        strict: Whether to resolve the whole type, so that anything in it that
+            cannot be resolved raises, as it does when the key is first used.
+            At decoration it is ignored, since the class may be defined later.
 
     Raises:
         TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
-            other than being the relation itself, or if ``strict`` and a form
-            in it has annotations that cannot be resolved.
+            other than being the relation itself.
+        Exception: If ``strict`` and anything in the type cannot be resolved,
+            whatever resolving it raises.
     """
     if _related_key_type(analyzed) is None and _holds_model_anywhere(
         analyzed, _table_of(cls), strict=strict
@@ -4418,6 +4471,10 @@ class JSONProperty:
                 defined. For a primary key it is also an
                 ``_UnresolvedAnnotationsError``, which equality and hashing
                 read as a key that is not known yet.
+            Exception: If a primary key's type holds anything that cannot be
+                resolved yet, whatever resolving it raises. The type is
+                resolved whole, as ``_resolve_key()`` says, and cached only
+                then.
         """
         try:
             ty = self.ty
@@ -4437,6 +4494,7 @@ class JSONProperty:
                 self.cls, self.field, analyzed, strict=True
             )
             _check_key_not_cyclic(self.cls, self.field, analyzed)
+            _resolve_key_chain(analyzed)
         _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed
 
@@ -5772,10 +5830,11 @@ class JSONObject:
         Returns:
             The key encoded as JSON, and its JSON text, or ``None`` if the
             saved key is unknown: ``null``, or JSON that the key field cannot
-            decode or encode. An unknown key is kept, except while a name in
-            the key's type, in its annotation, a form, a type alias, or a field
-            that Pydantic converts, is not defined yet. Then the key is unknown
-            only until the class is defined, and the next call tries again.
+            decode or encode. An unknown key is kept, except while something in
+            the key's type cannot be resolved yet, as a name in its annotation,
+            a form, a type alias, or a field that Pydantic converts is not
+            defined. Then the key is unknown only until it can be, and the next
+            call tries again.
 
         Raises:
             TypeError: If the model's key declaration is refused, as for a
@@ -5790,14 +5849,19 @@ class JSONObject:
             return cast("tuple[Any, str] | None", state["_canonical"])
         except KeyError:
             pass
+        if self._saved_key_json is not None:
+            try:
+                _resolve_key(type(self))
+            except Exception as err:
+                if getattr(err, _DECLARATION_ERROR, False):
+                    raise
+                # Something in the key's type is not defined yet, so the key is
+                # unknown for now. Do not keep that, or it would outlast the
+                # definition. No hash can have been taken meanwhile, since
+                # hashing raises while the key is unknown.
+                return None
         try:
             canonical = _canonical_key_of(self, self._saved_key_json)
-        except _UnresolvedAnnotationsError:
-            # A name in the key's type is not defined yet, so the key is
-            # unknown for now. Do not keep that, or it would outlast the
-            # definition. No hash can have been taken meanwhile, since hashing
-            # raises while the key is unknown.
-            return None
         except (TypeError, ValueError) as err:
             if getattr(err, _DECLARATION_ERROR, False):
                 raise

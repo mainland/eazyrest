@@ -6969,6 +6969,89 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
         assert len({obj, twins[model], fresh}) == 1
 
 
+def test_a_payload_for_an_object_keyed_by_a_later_class_names_the_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A payload cannot be matched while the key's class is not defined.
+
+    The object is keyed by a relation to a model whose key names a class that
+    is defined later. Merging a payload with the object's own key raises the
+    undefined name, as ``url`` does, rather than saying that the key does not
+    match, and merges nothing. Once the class is defined, the same call works.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the object is used.
+    """
+
+    @json_object
+    class Seat(ModelBase):
+        class_url = "/seats/"
+
+        id: LaterSeatKey
+
+    @json_object(pk="seat")
+    class Ticket(ModelBase):
+        class_url = "/tickets/"
+
+        seat: Seat
+        note: str
+
+    monkeypatch.setitem(globals(), "Seat", Seat)
+    ticket = Ticket(json={"seat": {"id": {"x": 4}}, "note": "a"})
+    seat = Seat(json={"id": {"x": 4}})
+    payload = {"seat": {"id": {"x": 4}}, "note": "b"}
+
+    with pytest.raises(NameError, match="LaterSeatKey"):
+        ticket.update_from_json(payload)
+    with pytest.raises(NameError, match="LaterSeatKey"):
+        seat.update_from_json({"id": {"x": 4}})
+    assert ticket.json == {"seat": {"id": {"x": 4}}, "note": "a"}
+    assert "analyzed_type" not in vars(Seat._pk)
+
+    class LaterSeatKey(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterSeatKey", LaterSeatKey)
+
+    ticket.update_from_json(payload)
+    assert ticket.note == "b"
+    seat.update_from_json({"id": {"x": 4}})
+
+
+def test_an_object_without_a_key_is_not_refused_for_its_models_key_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key that is ``None`` is compared without reading its type.
+
+    The model's key type is refused when a key is first read, but an object
+    whose key is ``None`` has no key to read. It equals only itself, and
+    ``hash()`` says that the key is ``None``.
+
+    Args:
+        monkeypatch: Defines the model that the key names as a global.
+    """
+
+    @json_object
+    class Item(ModelBase):
+        class_url = "/items/"
+
+        id: int
+
+    @json_object
+    class Shelf(ModelBase):
+        class_url = "/shelves/"
+
+        id: list[Item]
+
+    monkeypatch.setitem(globals(), "Item", Item)
+    empty = Shelf(json={"id": None})
+    assert empty != Shelf(json={"id": None})
+    with pytest.raises(TypeError, match="is None"):
+        hash(empty)
+    with pytest.raises(TypeError, match=r"Shelf\.id is the primary key"):
+        Shelf(json={"id": [1]}) == Shelf(json={"id": [1]})  # noqa: B015
+
+
 def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
     """Return a key form with one member, and the JSON of a value of it.
 
@@ -7130,6 +7213,48 @@ def test_an_object_keyed_by_a_string_alias_of_a_later_class_has_its_key_after(
     assert used.url == fresh.url
     assert used == fresh
     assert hash(used) == hash(fresh)
+
+
+def test_an_object_keyed_by_a_module_attribute_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key named as an attribute of a module is unknown until it is set.
+
+    Reading an attribute that the module does not have yet raises an
+    ``AttributeError``. Until the attribute is set, ``url`` and ``hash()``
+    raise it, ``==`` is ``False``, and nothing is kept, as for a class that is
+    not defined yet, so afterwards the object has the key of a new object.
+
+    Args:
+        monkeypatch: Defines the module as a global, and sets the attribute
+            after the objects are used.
+    """
+    later = types.ModuleType("later_attribute_module")
+    monkeypatch.setitem(globals(), "later_attribute_module", later)
+    box = _box_keyed_by("later_attribute_module.LaterAttributeKey")
+    payload = {"id": {"x": 1}}
+    used = box(json=payload)
+    twin = box(json=payload)
+
+    with pytest.raises(AttributeError, match="LaterAttributeKey"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(AttributeError, match="LaterAttributeKey"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+    assert "analyzed_type" not in vars(box._pk)
+
+    class LaterAttributeKey(TypedDict):
+        x: int
+
+    later.LaterAttributeKey = LaterAttributeKey  # type: ignore[attr-defined]
+
+    fresh = box(json=payload)
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1
 
 
 def test_a_key_that_holds_a_later_model_by_a_string_alias_is_refused_after(
