@@ -303,6 +303,28 @@ def test_unparsable_page_redirect_raises_redirect_error(
         )
 
 
+def test_page_redirected_to_a_target_without_an_authority_quotes_its_scheme(
+    requests_mock: Any,
+) -> None:
+    """A page redirected to ``mailto:`` text names the scheme alone."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/2",
+        status_code=302,
+        headers={"Location": "mailto:alice:hunter2@h.test/x"},
+    )
+    first_page = {"next": "https://example.com/v1/items/2", "results": []}
+
+    with pytest.raises(PaginationError, match="different origin") as raised:
+        list(follow_next_links(api, first_page))
+
+    assert "was redirected to a mailto: location, which has" in str(
+        raised.value
+    )
+    assert "alice" not in str(raised.value)
+    assert "hunter2" not in str(raised.value)
+
+
 def test_session_parameters_are_not_repeated_on_links(
     requests_mock: Any,
 ) -> None:

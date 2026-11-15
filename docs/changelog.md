@@ -670,6 +670,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   ignores. A `Location` that requests cannot prepare is not quoted, and the
   error's `response` holds it. The URL's query is still quoted. The error's
   `request` and `response` keep the real URL.
+- A `RedirectError` or `PaginationError` that refuses a redirect to another
+  origin quotes a target with no host, such as `mailto:user:pass@host/x` or
+  `file:///user:pass@host/x`, by its scheme alone, as `a mailto: location`,
+  since the target has no user and password to leave out and its text can read
+  as one. The `RedirectError`'s `response` holds the header.
 - A `RedirectError` escapes the control characters of the `Location` that it
   quotes, as an HTTP error does for the reason phrase, so a server cannot write
   escape sequences or forged lines into a log.

@@ -32,6 +32,7 @@ from ._errors import (
     LimitExceeded,
     RedirectError,
     _api_error,
+    _authority_less_location,
     _is_failure,
     _printable,
     _redact_url,
@@ -1427,12 +1428,17 @@ class API:
                     # prepare it.
                     raise _unquotable_redirect(resp, "requests cannot prepare")
                 resp.close()
+                # A target with no authority has no user and password to leave
+                # out, so quote its scheme alone.
+                quoted = _authority_less_location(destination) or _printable(
+                    _redact_url(destination)
+                )
                 raise RedirectError(
                     f"{resp.request.method} {_redact_url(resp.url)} was "
-                    f"redirected with status {resp.status_code} to "
-                    f"{_printable(_redact_url(destination))}, whose origin "
-                    "differs from the request's, so it was not followed. Add "
-                    "the origin to API.redirect_origins to follow it.",
+                    f"redirected with status {resp.status_code} to {quoted}, "
+                    "whose origin differs from the request's, so it was not "
+                    "followed. Add the origin to API.redirect_origins to "
+                    "follow it.",
                     response=resp,
                 )
             # The error that rejected the header can quote it, so none is

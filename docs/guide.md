@@ -1706,11 +1706,13 @@ its scheme, host, and port. Requests drops the `Authorization` header when a
 redirect leaves the host, but it sends every other header, such as an API key
 or a CSRF token, and a 307 or 308 resends the request body. A redirect to
 another origin, including one from `http://` to `https://`, raises
-`RedirectError` before anything is sent there. The check examines the URL
-exactly as requests will send it, and it refuses a target that another client
-could read as a different host, such as one with a backslash before an `@`. For
-an API that redirects to another server on purpose, such as a download host,
-list that origin in `redirect_origins`:
+`RedirectError` before anything is sent there. The error quotes a target that
+has no host, such as `mailto:user:pass@host` or `file:///user:pass@host`, by
+its scheme alone, as `a mailto: location`. The check examines the URL exactly
+as requests will send it, and it refuses a target that another client could
+read as a different host, such as one with a backslash before an `@`. For an
+API that redirects to another server on purpose, such as a download host, list
+that origin in `redirect_origins`:
 
 ```python
 api = API("https://api.example.com/")

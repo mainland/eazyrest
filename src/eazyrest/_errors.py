@@ -283,6 +283,9 @@ _USERINFO = re.compile(
     r"|(?!https?:)([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@)",
     re.IGNORECASE,
 )
+_SCHEME_WITHOUT_AUTHORITY = re.compile(
+    r"^([A-Za-z][A-Za-z0-9+.-]*):(?!//[^/?#])"
+)
 _URL_NOISE = str.maketrans("", "", "\t\r\n")
 _URL_LEADING = re.compile(r"^[\s\x00-\x20]+")
 
@@ -315,15 +318,52 @@ def _redact_url(url: object) -> str:
         ``http://user:pass@host/x`` with a form feed before it becomes
         ``http://host/x``.
     """
-    if isinstance(url, bytes):
-        text = url.decode("utf-8", "replace")
-    else:
-        text = str(url)
-    normal = _URL_LEADING.sub("", text.translate(_URL_NOISE))
+    text, normal = _normalized_url(url)
     match = _USERINFO.match(normal)
     if match is None:
         return text
     return (match.group(1) or match.group(2)) + normal[match.end() :]
+
+
+def _normalized_url(url: object) -> tuple[str, str]:
+    """Return a URL as text, and as requests and ``urlsplit()`` read it.
+
+    Args:
+        url: URL, as for ``_redact_url()``.
+
+    Returns:
+        The URL as text, and that text without leading control characters,
+        spaces, and Unicode whitespace, and without tabs, carriage returns, and
+        line feeds.
+    """
+    if isinstance(url, bytes):
+        text = url.decode("utf-8", "replace")
+    else:
+        text = str(url)
+    return text, _URL_LEADING.sub("", text.translate(_URL_NOISE))
+
+
+def _authority_less_location(url: object) -> str | None:
+    """Describe a URL that has a scheme and no authority, without quoting it.
+
+    Such a URL, as ``mailto:alice:hunter2@h.test``, has no user and password
+    that ``_redact_url()`` could leave out, yet its text can read as one, so a
+    message quotes nothing of it after its scheme. An empty authority, as in
+    ``file:///alice:hunter2@h``, counts as none, and Python before 3.13 adds
+    one to ``file:alice:hunter2@h``.
+
+    Args:
+        url: URL, as for ``_redact_url()``.
+
+    Returns:
+        ``a mailto: location`` for ``mailto:alice:hunter2@h.test``, which names
+        the scheme as the URL gives it, or ``None`` if the URL has no scheme or
+        has ``//`` and a host after it.
+    """
+    match = _SCHEME_WITHOUT_AUTHORITY.match(_normalized_url(url)[1])
+    if match is None:
+        return None
+    return f"a {match.group(1)}: location"
 
 
 def _printable(text: object) -> str:

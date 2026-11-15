@@ -14,6 +14,7 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
+    _authority_less_location,
     _redact_url,
 )
 from ._protocols import Client, Response
@@ -237,9 +238,12 @@ def _request_page(
             return
         if origins != {api_origin}:
             resp.close()
+            quoted = _authority_less_location(destination) or repr(
+                _redact_url(destination)
+            )
             raise PaginationError(
                 f"Page request {_redact_url(resp.url)!r} was redirected to "
-                f"{_redact_url(destination)!r}, which has a different origin "
+                f"{quoted}, which has a different origin "
                 f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
                 "allow_other_origins=True to follow it."
             )

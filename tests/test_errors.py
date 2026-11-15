@@ -31,7 +31,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
-from eazyrest._errors import _redact_url
+from eazyrest._errors import _authority_less_location, _redact_url
 
 
 @pytest.mark.parametrize(
@@ -821,6 +821,107 @@ def test_followed_redirect_that_requests_cannot_prepare_quotes_no_part(
             assert part not in text
     assert raised.value.response is not None
     assert raised.value.response.headers["Location"] == location
+
+
+@pytest.mark.parametrize(
+    ("location", "scheme"),
+    [
+        ("mailto:alice:hunter2@h.test/x", "mailto"),
+        ("data:alice:hunter2@x", "data"),
+        ("javascript:alice:hunter2@h", "javascript"),
+        ("file:alice:hunter2@h/x", "file"),
+        ("ftp:///alice:hunter2?@[v1.x/a b", "ftp"),
+        ("ftp://?@alice:hunter2/x", "ftp"),
+        ("\x01mailto:alice:hunter2@h.test/x@y", "mailto"),
+        (" \t\x01mai\tlto:alice:hunter2@[::1]/x", "mailto"),
+        ("MailTo:alice:hunter2@h.test:abc/x", "mailto"),
+    ],
+)
+def test_followed_redirect_to_a_target_without_an_authority_quotes_its_scheme(
+    requests_mock: Any, location: str, scheme: str
+) -> None:
+    """A target with no ``//`` after its scheme is quoted by its scheme alone.
+
+    Such a target has no user and password to leave out, yet its text can read
+    as one. The error's response holds the header.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        scheme: The scheme that the message names, in lower case as requests
+            follows it.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="origin differs") as raised:
+        api.get("/a")
+
+    for text in (str(raised.value), repr(raised.value)):
+        assert (
+            f"was redirected with status 302 to a {scheme}: location, whose "
+            "origin differs from the request's, so it was not followed."
+        ) in text
+        assert "alice" not in text
+        assert "hunter2" not in text
+    assert raised.value.response is not None
+    assert raised.value.response.headers["Location"] == location
+
+
+@pytest.mark.parametrize(
+    ("url", "described"),
+    [
+        ("mailto:alice:hunter2@h.test", "a mailto: location"),
+        (b"mailto:alice:hunter2@h.test", "a mailto: location"),
+        ("\x01\x0c \u00a0mailto:a:b@h", "a mailto: location"),
+        (" \t\x01mai\tlto:\r\na:b@h", "a mailto: location"),
+        ("x+y.z:a:b@h", "a x+y.z: location"),
+        ("ftp://alice:hunter2@h.test/x", None),
+        ("ftp:///alice:hunter2@h", "a ftp: location"),
+        ("ftp://?@alice:hunter2/x", "a ftp: location"),
+        ("ftp://", "a ftp: location"),
+        ("ftp://#alice:hunter2@h", "a ftp: location"),
+        ("x-y:alice:hunter2@h", "a x-y: location"),
+        ("ftp://h", None),
+        ("\x01ftp:/\t/alice:hunter2@h.test/x", None),
+        ("//alice:hunter2@h.test/x", None),
+        ("/a:b@h", None),
+        ("a:b@h", "a a: location"),
+        ("", None),
+    ],
+)
+def test_authority_less_location_reads_the_url_as_the_redaction_does(
+    url: str | bytes, described: str | None
+) -> None:
+    """Only a URL with a scheme and no ``//`` after it is described.
+
+    Args:
+        url: The URL, which may begin with characters that requests ignores.
+        described: The description, or ``None`` for a URL that has none.
+    """
+    assert _authority_less_location(url) == described
+
+
+def test_followed_redirect_to_a_target_with_an_authority_is_still_quoted(
+    requests_mock: Any,
+) -> None:
+    """A target with an authority is quoted, without its user and password."""
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "ftp://alice:hunter2@h.test/x"},
+    )
+
+    with pytest.raises(RedirectError, match="origin differs") as raised:
+        api.get("/a")
+
+    assert "redirected with status 302 to ftp://h.test/x, whose" in str(
+        raised.value
+    )
 
 
 def test_followed_redirect_to_a_readable_origin_leaves_out_its_credentials(
