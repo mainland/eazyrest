@@ -1432,11 +1432,16 @@ proxy can send such links, for example `http://` links from a server that does
 not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an
 API that serves pages from another host.
 
-A link from a `Link` header is checked the same way. A link that cannot be
-parsed or requested raises `PaginationError`, whose message quotes none of the
-link, since the server chose it, and which has no `__cause__` or `__context__`,
-since the error that rejected the link can quote it. A link with no host, such
-as `mailto:user:pass@host`, is quoted as `a mailto: location`.
+A link from a `Link` header is checked the same way. Each link is read once, as
+requests prepares it, and the check and the message use that reading. A link
+that requests cannot prepare or send raises `PaginationError`, whose message
+quotes none of the link, since the server chose it, and which has no
+`__cause__` or `__context__`, since the error that rejected the link can quote
+it. This holds also with `allow_other_origins=True`, and for the link to a
+previous page. A link to another origin is quoted as requests prepares it,
+without its user and password. A link that is not an HTTP or HTTPS URL, such as
+`mailto:user:pass@host`, is named by its scheme alone, as
+`a location whose scheme is mailto:`.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed. Existing session response hooks still run.

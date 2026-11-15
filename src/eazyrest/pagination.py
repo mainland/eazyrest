@@ -23,6 +23,7 @@ from .api import (
     _as_api,
     _check_final_response,
     _origin,
+    _prepare_server_url,
     _redirect_destination,
     _redirect_origins,
     _response_hooks,
@@ -163,36 +164,37 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
 def _check_page_origin(api: Client, url: str) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
+    The URL is read once, as requests prepares it, and the origin and the
+    message both come from that reading.
+
     Args:
         api: Client that would request the page.
         url: Absolute URL of the page.
 
     Raises:
-        PaginationError: If ``url`` has another origin, or cannot be parsed.
-            The message of the second quotes none of it, and attaches no error,
-            as for ``_resolve()``.
+        PaginationError: If ``url`` has another origin, or requests cannot
+            prepare it. The message of the second quotes none of it, and
+            attaches no error, as for ``_resolve()``. The message of the first
+            quotes the URL without its user and password, or names the scheme
+            alone if it is not HTTP or HTTPS.
     """
-    try:
-        origin = _origin(url)
-    except ValueError:
-        pass
-    else:
-        if origin != _origin(api.base_url):
-            # A URL with no host has no user and password to leave out, so name
-            # its scheme alone.
-            subject = _authority_less_location(url)
-            subject = (
-                f"Page URL, {subject},"
-                if subject
-                else f"Page URL {_redact_url(url)!r}"
-            )
-            raise PaginationError(
-                f"{subject} has a different origin from the "
-                f"API's base URL {_redact_url(api.base_url)!r}. Pass "
-                "allow_other_origins=True to follow it."
-            )
-        return
-    raise PaginationError(_UNPARSABLE_PAGE_URL) from None
+    prepared = _prepare_server_url(_as_api(api).session, url)
+    if prepared is None:
+        raise PaginationError(_UNPARSABLE_PAGE_URL)
+    if prepared.origin != _origin(api.base_url):
+        # A URL that is not HTTP has no user and password to leave out, so name
+        # its scheme alone.
+        subject = prepared.scheme_name
+        subject = (
+            f"Page URL, {subject},"
+            if subject
+            else f"Page URL {_redact_url(prepared.url)!r}"
+        )
+        raise PaginationError(
+            f"{subject} has a different origin from the "
+            f"API's base URL {_redact_url(api.base_url)!r}. Pass "
+            "allow_other_origins=True to follow it."
+        )
 
 
 def _request_page(
@@ -212,14 +214,26 @@ def _request_page(
 
     Raises:
         PaginationError: If ``url`` or a redirect has another origin and other
-            origins are not allowed.
+            origins are not allowed, or if requests cannot prepare ``url`` or
+            has no adapter to send it, so that nothing was sent. The message of
+            the second quotes none of the link, and no error is attached.
         RedirectError: If a redirect is refused, as for any request, or the
             response is a redirect that was not followed.
+        requests.RequestException: If the request fails, as for any request.
     """
     api = _as_api(api)
     api_origin = _origin(api.base_url)
     if not allow_other_origins:
         _check_page_origin(api, url)
+    # Prepare the link as requests will, before anything is sent, so that an
+    # error that requests raises for the link, which can quote it, is not the
+    # request's. An error from the request itself, or from a session hook,
+    # keeps its own type.
+    prepared = _prepare_server_url(api.session, url)
+    if prepared is None or not prepared.sendable:
+        raise PaginationError(
+            "A page URL cannot be requested, so nothing was sent."
+        )
     follow = bool(api._request_options.get("allow_redirects", True))
 
     def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
@@ -284,18 +298,7 @@ def _request_page(
         if isinstance(session_params, Mapping)
         else {}
     )
-    try:
-        resp = api.get(url, params=params, hooks={"response": hooks})
-    except (
-        requests.exceptions.InvalidURL,
-        requests.exceptions.MissingSchema,
-    ):
-        resp = None
-    if resp is None:
-        # Requests quotes the URL in the error that it raised, so attach none.
-        raise PaginationError(
-            "A page URL cannot be requested, so nothing was sent."
-        ) from None
+    resp = api.get(url, params=params, hooks={"response": hooks})
     return _check_final_response(resp, "the page has no response to read")
 
 

@@ -269,6 +269,7 @@ def _assert_error_quotes_no_link(error: PaginationError, message: str) -> None:
         message: The message that the error must have.
     """
     assert str(error) == message
+    assert error.args == (message,)
     assert error.__cause__ is None
     assert error.__context__ is None
     for text in (
@@ -333,9 +334,9 @@ def test_next_link_without_a_host_is_named_by_its_scheme(
         list(follow_next_links(api, first_page, url="http://api.test/p"))
 
     assert str(raised.value) == (
-        "Page URL, a mailto: location, has a different origin from the "
-        "API's base URL 'http://api.test/'. Pass allow_other_origins=True to "
-        "follow it."
+        "Page URL, a location whose scheme is mailto:, has a different origin "
+        "from the API's base URL 'http://api.test/'. Pass "
+        "allow_other_origins=True to follow it."
     )
     assert "alice" not in repr(raised.value)
     assert requests_mock.call_count == 0
@@ -344,14 +345,19 @@ def test_next_link_without_a_host_is_named_by_its_scheme(
 def test_next_link_with_a_host_is_quoted_without_its_user_and_password(
     requests_mock: Any,
 ) -> None:
-    """A link with a host to another origin is still quoted, redacted."""
+    """A link with a host to another origin is quoted as requests reads it."""
     api = API("http://api.test/")
-    first_page = {"next": "ftp://alice:hunter2@h.test/x", "results": []}
+    first_page = {
+        "next": "https://alice:hunter2@H.test:8443/x[1]",
+        "results": [],
+    }
 
     with pytest.raises(PaginationError) as raised:
         list(follow_next_links(api, first_page, url="http://api.test/p"))
 
-    assert str(raised.value).startswith("Page URL 'ftp://h.test/x' has a")
+    assert str(raised.value).startswith(
+        "Page URL 'https://h.test:8443/x%5B1%5D' has a"
+    )
     assert "hunter2" not in repr(raised.value)
 
 
@@ -391,6 +397,162 @@ def test_page_object_link_that_cannot_be_used_is_not_quoted_or_chained(
     _assert_error_quotes_no_link(
         raised.value, requested if allow_other_origins else parsed
     )
+
+
+READ_LINKS = [
+    "next links",
+    "next page",
+    "previous page",
+    "link headers",
+    "link header page",
+    "link header previous page",
+]
+
+
+def _read_link(
+    requests_mock: Any, how: str, link: str, allow_other_origins: bool
+) -> object:
+    """Follow a link that a server sends, from a page at ``/p``.
+
+    Args:
+        requests_mock: The mock that serves the page.
+        how: How the link is read, as an item of ``READ_LINKS``.
+        link: The link.
+        allow_other_origins: Whether links to other origins are followed.
+
+    Returns:
+        What reading the link gives.
+    """
+    api = API("http://api.test/")
+    if how == "next links":
+        return list(
+            follow_next_links(
+                api,
+                {"next": link, "results": []},
+                url="http://api.test/p",
+                allow_other_origins=allow_other_origins,
+            )
+        )
+    if "header" in how:
+        rel = "prev" if "previous" in how else "next"
+        requests_mock.get(
+            "http://api.test/p",
+            json=[],
+            headers={"Link": f'<{link}>; rel="{rel}"'},
+        )
+        resp = api.get("/p")
+        if how == "link headers":
+            return list(
+                follow_link_headers(
+                    api, resp, allow_other_origins=allow_other_origins
+                )
+            )
+        page = link_headers_page(
+            api, resp, allow_other_origins=allow_other_origins
+        )
+    else:
+        key = "previous" if "previous" in how else "next"
+        requests_mock.get("http://api.test/p", json={key: link, "results": []})
+        page = next_links_page(
+            api, api.get("/p"), allow_other_origins=allow_other_origins
+        )
+    return page.previous_page() if "previous" in how else page.next_page()
+
+
+@pytest.mark.parametrize("allow_other_origins", [False, True])
+@pytest.mark.parametrize("how", READ_LINKS)
+@pytest.mark.parametrize(
+    "link",
+    [
+        "\x01https://alice:hunter2#@h.test/",
+        "\x01https://alice:hunter2\\@h.test/",
+        "\x01https://alice:hunter2\\@",
+        "\x08https://alice:hunter2@h.test/",
+        "http://alice:hunter2\u2215@api.test/p2",
+        "http://alice:hunter2@api.test:bad/x",
+    ],
+)
+def test_link_that_requests_cannot_prepare_is_not_quoted_or_chained(
+    requests_mock: Any, how: str, link: str, allow_other_origins: bool
+) -> None:
+    """A link that requests rejects raises ``PaginationError``, quoting none.
+
+    The errors that requests raises for such a link quote it, or its password,
+    so none is raised or chained, whichever origins are allowed.
+
+    Args:
+        how: How the link is read, as an item of ``READ_LINKS``.
+        link: The link, which requests cannot prepare as an HTTP URL.
+        allow_other_origins: Whether links to other origins are followed.
+    """
+    with pytest.raises(PaginationError) as raised:
+        _read_link(requests_mock, how, link, allow_other_origins)
+
+    _assert_error_quotes_no_link(
+        raised.value, REQUESTED if allow_other_origins else PARSED
+    )
+    assert all(
+        request.url == "http://api.test/p"
+        for request in requests_mock.request_history
+    )
+
+
+@pytest.mark.parametrize("how", READ_LINKS)
+@pytest.mark.parametrize(
+    ("link", "scheme"),
+    [
+        ("ftp://alice:hunter2@h.test/p2", "ftp"),
+        ("FTP://alice:hunter2@/x", "ftp"),
+        ("mailto:alice:hunter2@h.test", "mailto"),
+    ],
+)
+def test_link_to_another_scheme_is_named_by_its_scheme(
+    requests_mock: Any, how: str, link: str, scheme: str
+) -> None:
+    """A link that is not HTTP is refused as another origin, by scheme alone.
+
+    Args:
+        how: How the link is read, as an item of ``READ_LINKS``.
+        link: The link.
+        scheme: The scheme of the link, which the message names.
+    """
+    with pytest.raises(PaginationError) as raised:
+        _read_link(requests_mock, how, link, False)
+
+    _assert_error_quotes_no_link(
+        raised.value,
+        f"Page URL, a location whose scheme is {scheme}:, has a different "
+        "origin from the API's base URL 'http://api.test/'. Pass "
+        "allow_other_origins=True to follow it.",
+    )
+
+
+@pytest.mark.parametrize("how", READ_LINKS)
+@pytest.mark.parametrize(
+    "link",
+    [
+        "ftp://alice:hunter2@h.test/p2",
+        "FTP://alice:hunter2@/x",
+        "mailto:alice:hunter2@h.test",
+        "alice:hunter2@h.test",
+    ],
+)
+def test_link_that_requests_cannot_send_is_not_quoted_if_origins_are_allowed(
+    requests_mock: Any, how: str, link: str
+) -> None:
+    """A link with no adapter to send it is refused before it is requested.
+
+    requests has no adapter for a scheme other than HTTP and HTTPS, and its
+    error for that quotes the link.
+
+    Args:
+        how: How the link is read, as an item of ``READ_LINKS``.
+        link: The link.
+    """
+    with pytest.raises(PaginationError) as raised:
+        _read_link(requests_mock, how, link, True)
+
+    _assert_error_quotes_no_link(raised.value, REQUESTED)
 
 
 def _serve_link_header(link: bytes) -> tuple[socket.socket, threading.Thread]:
