@@ -6741,6 +6741,136 @@ def test_a_key_in_a_container_that_holds_a_model_is_refused_on_first_use(
         Rack(json={"id": [1]}) == Rack(json={"id": [1]})  # noqa: B015
 
 
+def test_a_key_form_that_resolves_after_its_first_use_is_refused_then(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A form whose model is defined after the key is used is refused then.
+
+    Using the key first fails because the form's annotations cannot be
+    resolved, and that failure is not kept. Once the model is defined, the key
+    is refused as at decoration, from ``url``, ``==``, and ``hash()``, for a
+    ``TypedDict``, a ``NamedTuple``, and a dataclass.
+
+    Args:
+        monkeypatch: Defines the model as a global, after the key is used.
+    """
+
+    class LaterRecord(TypedDict):
+        item: LaterModel
+
+    class LaterPair(typing.NamedTuple):
+        item: LaterModel
+
+    @dataclasses.dataclass
+    class LaterEntry:
+        item: LaterModel
+
+    forms: dict[str, tuple[Any, Any]] = {
+        "Record": (LaterRecord, {"item": 1}),
+        "Pair": (LaterPair, [1]),
+        "Entry": (LaterEntry, {"item": 1}),
+    }
+    boxes: dict[str, tuple[Any, Any]] = {
+        name: (
+            json_object(
+                type(
+                    f"Box{name}",
+                    (ModelBase,),
+                    {"__annotations__": {"id": form}, "class_url": "/boxes/"},
+                )
+            ),
+            value,
+        )
+        for name, (form, value) in forms.items()
+    }
+    for box, value in boxes.values():
+        with pytest.raises(TypeError, match="cannot be resolved"):
+            box(json={"id": value}).url  # noqa: B018
+
+    @json_object
+    class LaterModel(ModelBase):
+        class_url = "/later/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "LaterModel", LaterModel)
+
+    for name, (box, value) in boxes.items():
+        match = rf"Box{name}\.id is the primary key"
+        with pytest.raises(TypeError, match=match) as error:
+            box(json={"id": value}).url  # noqa: B018
+        assert not isinstance(error.value, FieldConversionError)
+        with pytest.raises(TypeError, match=match):
+            box(json={"id": value}) == box(json={"id": value})  # noqa: B015
+        with pytest.raises(TypeError, match=match):
+            hash(box(json={"id": value}))
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "optional",
+        "mapping",
+        "list",
+        "fixed-tuple",
+        "new-type",
+        "field-of-a-form",
+    ],
+)
+def test_a_key_that_holds_a_form_that_resolves_later_is_refused_then(
+    monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """A form nested in the key is refused once its model is defined.
+
+    Using the key first fails because the form's annotations cannot be
+    resolved, and that failure is not kept.
+
+    Args:
+        monkeypatch: Defines the form as a global at once, and the model after
+            the key is used.
+        shape: How the key holds the form.
+    """
+
+    class Record(TypedDict):
+        item: PendingModel
+
+    class Outer(TypedDict):
+        record: Record
+
+    monkeypatch.setitem(globals(), "Record", Record)
+    item = {"item": 1}
+    keys: dict[str, tuple[Any, Any]] = {
+        "optional": (Optional[Record], item),  # noqa: UP045
+        "mapping": (dict[str, Record], {"a": item}),
+        "list": (list[Record], [item]),
+        "fixed-tuple": (tuple[Record, int], [item, 1]),
+        "new-type": (NewType("RecordKey", Record), item),
+        "field-of-a-form": (Outer, {"record": item}),
+    }
+    key_type, value = keys[shape]
+    box_type: Any = json_object(
+        type(
+            "Box",
+            (ModelBase,),
+            {"__annotations__": {"id": key_type}, "class_url": "/boxes/"},
+        )
+    )
+
+    with pytest.raises(TypeError, match="cannot be resolved"):
+        box_type(json={"id": value}).url  # noqa: B018
+
+    @json_object
+    class PendingModel(ModelBase):
+        class_url = "/pending/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "PendingModel", PendingModel)
+
+    with pytest.raises(TypeError, match=r"Box\.id is the primary key"):
+        box_type(json={"id": value}).url  # noqa: B018
+
+
 def test_a_primary_key_that_holds_related_objects_is_refused_on_first_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

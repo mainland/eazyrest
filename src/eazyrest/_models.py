@@ -1293,6 +1293,10 @@ def _check_optional_union(
         _check_union(analyzed, table)
 
 
+class _UnresolvedAnnotationsError(TypeError):
+    """A form's annotations name something that is not defined."""
+
+
 def _hints_of(cls: type[Any]) -> dict[str, Any]:
     """Resolve the annotations of a class whose fields eazyrest converts.
 
@@ -1303,7 +1307,8 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
         Each annotation, resolved, with its ``Annotated`` metadata.
 
     Raises:
-        TypeError: If an annotation cannot be resolved.
+        _UnresolvedAnnotationsError: If an annotation cannot be resolved, which
+            is a ``TypeError``.
     """
     get_type_hints = (
         typing.get_type_hints
@@ -1313,7 +1318,7 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
     try:
         return dict(get_type_hints(cls, include_extras=True))
     except Exception as err:
-        raise TypeError(
+        raise _UnresolvedAnnotationsError(
             f"The annotations of {cls.__name__} cannot be resolved: {err}"
         ) from err
 
@@ -1476,6 +1481,8 @@ def _holds_model_anywhere(
     analyzed: AnalyzedType,
     table: Mapping[Any, Conversion],
     seen: set[type[Any]] | None = None,
+    *,
+    strict: bool = False,
 ) -> bool:
     """Return whether a type holds a related model in any form.
 
@@ -1491,11 +1498,17 @@ def _holds_model_anywhere(
         table: Conversion table of the model whose field it is.
         seen: Forms already visited, which keeps a self-referential one from
             looping.
+        strict: Whether a form whose annotations cannot be resolved raises, as
+            when the key is first used, so that the check runs again once they
+            can be. Otherwise it holds no model that this reports.
 
     Returns:
         Whether ``analyzed`` is a related model or holds one. A form whose
         fields cannot be analyzed for another reason holds none that this
         reports, since that reason is refused when it is first used.
+
+    Raises:
+        TypeError: If ``strict`` and a form's annotations cannot be resolved.
     """
     seen = set() if seen is None else seen
     if _class_entry(analyzed, table) is not None:
@@ -1506,12 +1519,13 @@ def _holds_model_anywhere(
         case (
             OptionalType(inner) | CollectionType(_, inner) | MappingType(inner)
         ):
-            return _holds_model_anywhere(inner, table, seen)
+            return _holds_model_anywhere(inner, table, seen, strict=strict)
         case NewTypeType(_, inner):
-            return _holds_model_anywhere(inner, table, seen)
+            return _holds_model_anywhere(inner, table, seen, strict=strict)
         case FixedTupleType(item_types):
             return any(
-                _holds_model_anywhere(item, table, seen) for item in item_types
+                _holds_model_anywhere(item, table, seen, strict=strict)
+                for item in item_types
             )
         case TypedDictType(form) | NamedTupleType(form) | DataclassType(form):
             if form in seen:
@@ -1527,10 +1541,15 @@ def _holds_model_anywhere(
                     members = [member for _, member, _ in analyzed.fields]
             except _ModelInContainerError:
                 return True
+            except _UnresolvedAnnotationsError:
+                if strict:
+                    raise
+                return False
             except Exception:  # noqa: BLE001
                 return False
             return any(
-                _holds_model_anywhere(item, table, seen) for item in members
+                _holds_model_anywhere(item, table, seen, strict=strict)
+                for item in members
             )
     return False
 
@@ -2953,7 +2972,11 @@ def _key_holds_relation_error(cls: type[JSONObject], field: str) -> TypeError:
 
 
 def _check_key_holds_no_relation(
-    cls: type[JSONObject], field: str, analyzed: AnalyzedType
+    cls: type[JSONObject],
+    field: str,
+    analyzed: AnalyzedType,
+    *,
+    strict: bool = False,
 ) -> None:
     """Refuse a primary key whose type holds relations inside a container.
 
@@ -2969,13 +2992,17 @@ def _check_key_holds_no_relation(
         cls: Model class that declares the key.
         field: Name of the primary-key field.
         analyzed: Analyzed type of the field.
+        strict: Whether a form whose annotations cannot be resolved raises, as
+            it does when the key is first used. At decoration it is ignored,
+            since the class may be defined later.
 
     Raises:
         TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
-            other than being the relation itself.
+            other than being the relation itself, or if ``strict`` and a form
+            in it has annotations that cannot be resolved.
     """
     if _related_key_type(analyzed) is None and _holds_model_anywhere(
-        analyzed, _table_of(cls)
+        analyzed, _table_of(cls), strict=strict
     ):
         raise _key_holds_relation_error(cls, field)
 
@@ -4368,7 +4395,9 @@ class JSONProperty:
             raise
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
-            _check_key_holds_no_relation(self.cls, self.field, analyzed)
+            _check_key_holds_no_relation(
+                self.cls, self.field, analyzed, strict=True
+            )
             _check_key_not_cyclic(self.cls, self.field, analyzed)
         _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed
