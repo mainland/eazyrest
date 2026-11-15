@@ -73,6 +73,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _redact_url,
+    _UnresolvedAnnotationsError,
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
@@ -1291,10 +1292,6 @@ def _check_optional_union(
     analyzed = _unwrap_optional_type(analyzed)
     if isinstance(analyzed, UnionType):
         _check_union(analyzed, table)
-
-
-class _UnresolvedAnnotationsError(TypeError):
-    """A form's annotations name something that is not defined."""
 
 
 def _hints_of(cls: type[Any]) -> dict[str, Any]:

@@ -3429,3 +3429,62 @@ def test_a_container_of_a_generic_argument_is_checked() -> None:
 
     with pytest.raises(FieldConversionError, match="EdgeDropper would drop"):
         _ = held.value
+
+
+@pytest.mark.parametrize("kind", ["model", "typed-dict"])
+def test_an_object_used_before_its_pydantic_key_resolves_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """An object used while Pydantic cannot check its key reads it after.
+
+    The key is a Pydantic model, or a ``TypedDict`` configured for Pydantic,
+    whose field names a class that is defined later. Until then ``url`` and
+    ``hash()`` raise and ``==`` is ``False``, and none of that is kept. Once
+    the class is defined, the object has the ``url`` and the hash of a new
+    object with the same key, and equals it.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the objects are used.
+        kind: Whether the key is a Pydantic model or a ``TypedDict``.
+    """
+
+    class PartKeyModel(BaseModel):
+        model_config = ConfigDict(frozen=True)
+
+        n: LaterPart
+
+    @with_config(ConfigDict(extra="allow"))
+    class PartKeyRecord(TypedDict):
+        n: LaterPart
+
+    key_type = PartKeyModel if kind == "model" else PartKeyRecord
+    crate: Any = json_object(
+        type(
+            "PartCrate",
+            (PydanticBase,),
+            {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+        )
+    )
+    payload = {"id": {"n": {"x": 1}}}
+    used = crate(json=payload)
+    twin = crate(json=payload)
+
+    with pytest.raises(FieldConversionError, match="annotations cannot be"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(TypeError, match="cannot be hashed"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+
+    @with_config(ConfigDict(extra="allow"))
+    class LaterPart(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterPart", LaterPart)
+
+    fresh = crate(json=payload)
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1
