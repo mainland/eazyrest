@@ -1395,9 +1395,9 @@ class API:
 
             Raises:
                 RedirectError: If requests follows the redirect, and its
-                    ``Location`` cannot be parsed, or it leads to an origin
-                    that is not allowed, or requests would follow it without
-                    the request's body. The response is closed first.
+                    ``Location`` cannot be parsed or prepared, or it leads to
+                    an origin that is not allowed, or requests would follow it
+                    without the request's body. The response is closed first.
             """
             if not follow:
                 if resp.is_redirect and budget is not None:
@@ -1421,6 +1421,11 @@ class API:
                         budget.read_body(resp)
                     return
 
+                if ("", None, None) in origins:
+                    # No origin can be read for some reading of the target, as
+                    # for a port that is not a number, so requests cannot
+                    # prepare it.
+                    raise _unquotable_redirect(resp, "requests cannot prepare")
                 resp.close()
                 raise RedirectError(
                     f"{resp.request.method} {_redact_url(resp.url)} was "

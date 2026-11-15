@@ -1177,7 +1177,7 @@ def test_raise_for_response_override_may_accept_a_failure(
 
 
 def test_redirect_with_unreadable_port_is_refused(requests_mock: Any) -> None:
-    """A redirect whose authority cannot be parsed is not followed."""
+    """A redirect whose authority cannot be read is not followed."""
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
@@ -1185,8 +1185,10 @@ def test_redirect_with_unreadable_port_is_refused(requests_mock: Any) -> None:
         headers={"Location": "https://example.com:99999/b"},
     )
 
-    with pytest.raises(requests.HTTPError, match="redirect_origins"):
+    with pytest.raises(RedirectError, match="cannot prepare") as raised:
         api.get("/a")
+
+    assert "99999" not in str(raised.value)
 
 
 @pytest.mark.parametrize(

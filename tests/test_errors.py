@@ -10,6 +10,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -763,6 +764,83 @@ def test_unpreparable_redirect_message_quotes_no_part_of_the_location(
             assert part not in text
     assert raised.value.response is not None
     assert raised.value.response.headers["Location"] == location
+
+
+def _followed_problem(location: str) -> str:
+    """Return how a followed redirect's error says that it cannot be followed.
+
+    Args:
+        location: The redirect's ``Location`` header.
+
+    Returns:
+        ``cannot be parsed`` for a target that requests cannot decode or
+        ``urlparse()`` rejects, and ``requests cannot prepare`` for one that it
+        accepts but whose origin cannot be read.
+    """
+    try:
+        # Requests decodes the header's Latin-1 text as UTF-8.
+        urlparse(location.encode("latin1").decode("utf-8"))
+    except ValueError:
+        return "cannot be parsed"
+    return "requests cannot prepare"
+
+
+@pytest.mark.parametrize(("location", "parts"), UNPREPARABLE_LOCATIONS)
+def test_followed_redirect_that_requests_cannot_prepare_quotes_no_part(
+    requests_mock: Any, location: str, parts: list[str]
+) -> None:
+    """A followed redirect leaves out a ``Location`` that requests rejects.
+
+    The target may parse, as one with a port that is not a number does, and
+    still have no origin to read. The message is then the one of an unfollowed
+    redirect, and quotes none of the header.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        parts: Text of the header after its scheme, which the message must not
+            quote.
+    """
+    problem = _followed_problem(location)
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError, match="location that") as raised:
+        api.get("/a")
+
+    for text in (str(raised.value), repr(raised.value)):
+        assert (
+            "GET https://example.com/a was redirected with status 302 to a "
+            f"location that {problem}, so it was not followed."
+        ) in text
+        assert "origin differs" not in text
+        for part in parts:
+            assert part not in text
+    assert raised.value.response is not None
+    assert raised.value.response.headers["Location"] == location
+
+
+def test_followed_redirect_to_a_readable_origin_leaves_out_its_credentials(
+    requests_mock: Any,
+) -> None:
+    """A target with a readable origin that differs is quoted without them."""
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": "http://alice:hunter2@other.test:8080/x"},
+    )
+
+    with pytest.raises(RedirectError, match="origin differs") as raised:
+        api.get("/a")
+
+    message = str(raised.value)
+    assert "http://other.test:8080/x, whose origin differs" in message
+    assert "alice" not in message
+    assert "hunter2" not in message
 
 
 def test_redirect_that_cannot_be_parsed_closes_the_response(
