@@ -61,7 +61,6 @@ from ._conversion import (
     _schema_of_entry,
     _supertype,
 )
-from ._errors import _UnresolvedAnnotationsError
 from ._models import (
     JSONObject,
     _annotations,
@@ -711,7 +710,7 @@ def _field_hint(cls: Any, name: str) -> Any:
         raise _unresolved(cls, err) from err
 
 
-def _unresolved(cls: Any, err: Exception) -> _UnresolvedAnnotationsError:
+def _unresolved(cls: Any, err: Exception) -> TypeError:
     """Return the error for a class whose field types cannot be resolved.
 
     Args:
@@ -721,7 +720,7 @@ def _unresolved(cls: Any, err: Exception) -> _UnresolvedAnnotationsError:
     Returns:
         The error to raise.
     """
-    return _UnresolvedAnnotationsError(
+    return TypeError(
         f"The fields of {cls.__name__} cannot be checked for the keys that it "
         f"would drop, because their annotations cannot be resolved: {err}"
     )
@@ -787,8 +786,8 @@ def _alias_value(
         A list of the alias's value.
 
     Raises:
-        _UnresolvedAnnotationsError: If a string in the value names nothing, so
-            that the types it stands for cannot be checked.
+        TypeError: If a string in the value names nothing, so that the types it
+            stands for cannot be checked.
     """
     value = _resolve_alias_value(alias)
     return [_substitute(value, dict(zip(params, args, strict=False)))]

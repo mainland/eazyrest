@@ -7132,6 +7132,76 @@ def test_an_object_without_a_key_is_not_refused_for_its_models_key_type(
         Shelf(json={"id": [1]}) == Shelf(json={"id": [1]})  # noqa: B015
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["url", "hash", "key", "relation", "refresh", "update_from_json"],
+)
+def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    """The error of an undefined key class is a ``NameError`` and nothing else.
+
+    A ``TypeError`` or a ``ValueError`` would be taken for bad data or a failed
+    conversion by the code that handles those. So ``url``, ``hash()``, reading
+    the key, reading a relation to the model, ``refresh()``, and
+    ``update_from_json()`` raise the ``NameError`` of the undefined name, for a
+    model keyed by the class and for one keyed by a relation to it. They send
+    nothing, and once the class is defined each works.
+
+    Args:
+        requests_mock: Fails the test if a request is sent.
+        monkeypatch: Defines the class as a global, after the operation fails.
+        operation: What is done with the object.
+    """
+
+    @json_object
+    class Stall(ModelBase):
+        class_url = "/stalls/"
+
+        id: LaterStallKey
+
+    @json_object(pk="stall")
+    class Lease(ModelBase):
+        class_url = "/leases/"
+
+        stall: Stall
+        note: str
+
+    monkeypatch.setitem(globals(), "Stall", Stall)
+    stall = Stall(json={"id": {"x": 1}})
+    lease = Lease(json={"stall": {"id": {"x": 1}}, "note": "a"})
+    operations: dict[str, Callable[[Any], Any]] = {
+        "url": lambda obj: obj.url,
+        "hash": hash,
+        "key": lambda obj: obj.pk,
+        "relation": lambda obj: obj.stall,
+        "refresh": lambda obj: obj.refresh(),
+        "update_from_json": lambda obj: obj.update_from_json(
+            {obj._pk_json_field: obj._saved_key_json}
+        ),
+    }
+    objects = [lease] if operation == "relation" else [stall, lease]
+
+    for obj in objects:
+        with pytest.raises(NameError, match="LaterStallKey") as undefined:
+            operations[operation](obj)
+        assert not isinstance(undefined.value, (TypeError, ValueError))
+        assert "_canonical" not in vars(obj)
+    assert requests_mock.call_count == 0
+    assert "analyzed_type" not in vars(Stall._pk)
+
+    class LaterStallKey(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterStallKey", LaterStallKey)
+
+    for obj in objects:
+        if operation != "refresh":
+            operations[operation](obj)
+    assert stall == Stall(json={"id": {"x": 1}})
+    assert lease == Lease(json={"stall": {"id": {"x": 1}}, "note": "a"})
+
+
 def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
     """Return a key form with one member, and the JSON of a value of it.
 

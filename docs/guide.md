@@ -245,15 +245,23 @@ the conversion replaces its structure. A key whose type Pydantic converts is
 checked when the key is first used, not when the class is decorated. Key the
 model by a relation to the model instead, or by the type of that model's key.
 
-While a key's type names a class that is not defined yet, the key cannot be
-read. That holds wherever the name appears: in the key's own annotation, in a
-`TypedDict`, `NamedTuple`, or dataclass that it names, in a type alias, or in a
-field of a model that Pydantic converts. An object of that model raises from
-`url` and `hash()`, and `==` is `False`. The error is a `NameError` when the
-key's annotation, or the value of a `type` statement's alias, names the class,
-and a `TypeError` otherwise. None of that is kept, so once the class is defined
-the object has the `url`, the hash, and the equalities of a new object with the
-same key.
+While a name in a key's type is not defined yet, the key cannot be read, and
+`==` is `False` for an object of the model. That holds wherever the name
+appears: in the key's own annotation, in the value of a type alias, in a
+`TypedDict`, `NamedTuple`, or dataclass that the key names, in a field of a
+model that Pydantic converts, or in the key of a model that a key relation
+leads to. A name is not defined yet when a class is not, or when a module does
+not have the attribute yet, as in a circular import. Every other use of the key
+raises the error that resolving the name raised. That is `url`, `hash()`,
+`update_from_json()`, reading a relation to the model, and a prefetch of one,
+which raises before it sends its bulk request. The error is a `NameError` for a
+class that is not defined, an `AttributeError` for an attribute of a module,
+and, for a form or a model that Pydantic converts whose annotations cannot be
+resolved, a `TypeError` that says so, which `url` raises as a
+`FieldConversionError`. None of that is kept on the object or the class, so
+once the class is defined the object has the `url`, the hash, and the
+equalities of a new object with the same key. A field that is not the key
+raises its own `NameError` from the same names.
 
 ### Differences from Django
 

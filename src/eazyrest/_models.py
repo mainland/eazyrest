@@ -73,8 +73,6 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _redact_url,
-    _UndefinedNameError,
-    _UnresolvedAnnotationsError,
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
@@ -167,16 +165,11 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         FieldConversionError: If the conversion raises a ``TypeError`` or a
             ``ValueError``. A ``FieldConversionError`` that the conversion
             raises propagates unchanged, and so does a refusal of the model's
-            declaration, which is no conversion of a value. A ``NameError``
-            propagates too, including the one for a class that is not defined
-            yet, which is also a ``TypeError``.
+            declaration, which is no conversion of a value.
     """
     try:
         yield
     except FieldConversionError:
-        raise
-    except NameError:
-        # An undefined name is not a conversion of a value either.
         raise
     except (TypeError, ValueError) as err:
         if getattr(err, _DECLARATION_ERROR, False):
@@ -952,8 +945,7 @@ def _resolve_alias_value(alias: Any) -> Any:
         names.
 
     Raises:
-        _UnresolvedAnnotationsError: If a string reference names nothing in the
-            alias's module, which is a ``TypeError``.
+        TypeError: If a string reference names nothing in the alias's module.
         Exception: If evaluating the alias's value raises, as for a name that
             is not defined yet, whatever that raises.
     """
@@ -972,7 +964,7 @@ def _resolve_alias_value(alias: Any) -> Any:
     try:
         return typing.get_type_hints(holder, include_extras=True)["value"]
     except Exception as error:
-        raise _UnresolvedAnnotationsError(
+        raise TypeError(
             f"Type alias {alias.__name__} names a type by a string that "
             f"cannot be resolved in module {alias.__module__}"
         ) from error
@@ -1324,8 +1316,7 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
         Each annotation, resolved, with its ``Annotated`` metadata.
 
     Raises:
-        _UnresolvedAnnotationsError: If an annotation cannot be resolved, which
-            is a ``TypeError``.
+        TypeError: If an annotation cannot be resolved.
     """
     get_type_hints = (
         typing.get_type_hints
@@ -1335,7 +1326,7 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
     try:
         return dict(get_type_hints(cls, include_extras=True))
     except Exception as err:
-        raise _UnresolvedAnnotationsError(
+        raise TypeError(
             f"The annotations of {cls.__name__} cannot be resolved: {err}"
         ) from err
 
@@ -1765,7 +1756,8 @@ def _held_key(obj: JSONObject) -> Any:
             other exception that a custom conversion raises.
         UsageError: If the key is a relation whose model's ``api`` was assigned
             after the class was defined.
-        NameError: If the key's annotation names a class that is not defined.
+        Exception: If the key's type cannot be resolved yet, whatever resolving
+            it raises, as a ``NameError`` does for a class that is not defined.
     """
     prop = _pk_property_of(type(obj))
     if prop is None:
@@ -1798,7 +1790,8 @@ def _reduce_key(
     Raises:
         UsageError: If a related model had ``api`` assigned after the class was
             defined.
-        NameError: If a key's annotation names a class that is not defined.
+        Exception: If a key's type cannot be resolved yet, whatever resolving
+            it raises, as a ``NameError`` does for a class that is not defined.
     """
     prop = _pk_property_of(cls)
     if prop is None or key is None:
@@ -1879,7 +1872,8 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
         ValueError: If the key cannot be decoded.
         UsageError: If a related model had ``api`` assigned after the class was
             defined.
-        NameError: If a key's annotation names a class that is not defined.
+        Exception: If a key's type cannot be resolved yet, whatever resolving
+            it raises, as a ``NameError`` does for a class that is not defined.
     """
     reduced = _reduce_key(type(obj), key)
     if reduced is None:
@@ -1911,7 +1905,8 @@ def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
         ValueError: If the key cannot be decoded or encoded.
         UsageError: If a related model had ``api`` assigned after the class was
             defined.
-        NameError: If a key's annotation names a class that is not defined.
+        Exception: If a key's type cannot be resolved yet, whatever resolving
+            it raises, as a ``NameError`` does for a class that is not defined.
     """
     reduced = _reduce_key(type(obj), key)
     if reduced is None:
@@ -1961,19 +1956,16 @@ def _unhashable_key_message(obj: JSONObject) -> str:
         loading, saving, or giving the key only if that can help.
 
     Raises:
-        NameError: If the key's form names a class that is not defined yet,
-            which ``hash()`` raises as it does for any object of the model
-            until then.
+        Exception: If the key's type cannot be resolved yet, whatever resolving
+            it raises, other than a ``TypeError`` or a ``ValueError``, which
+            the message reports. ``hash()`` raises it as it does for any object
+            of the model until then.
     """
     name = type(obj).__name__
     detail = ""
     if obj._saved_key_json is not None:
         try:
             _canonical_key_of(obj, obj._saved_key_json)
-        except NameError:
-            # A class that the key's form names is not defined yet, which is
-            # what the hash of any object of the model raises until then.
-            raise
         except (TypeError, ValueError) as err:
             detail = f" ({err})"
     match _key_problem(obj):
@@ -4467,22 +4459,14 @@ class JSONProperty:
                 ``Hyperlinked()`` relation, or a set of them. A type that names
                 a class defined later is refused here, when it is first used.
             NameError: If a field's annotation names a class that is not
-                defined. For a primary key it is also an
-                ``_UnresolvedAnnotationsError``, which equality and hashing
-                read as a key that is not known yet.
+                defined. It is raised as it is, for a primary key too.
             Exception: If a primary key's type holds anything that cannot be
                 resolved yet, whatever resolving it raises. The type is
                 resolved whole, as ``_resolve_key()`` says, and cached only
                 then.
         """
         try:
-            ty = self.ty
-        except NameError as err:
-            if not self.is_primary_key:
-                raise
-            raise _UndefinedNameError(str(err)) from err
-        try:
-            analyzed = analyze_type(ty)
+            analyzed = analyze_type(self.ty)
         except _ModelInContainerError as err:
             if self.is_primary_key:
                 raise _key_holds_relation_error(self.cls, self.field) from err
@@ -5007,10 +4991,9 @@ class JSONObject:
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself. So does
-        one whose key's type names a class that is not defined yet, wherever
-        the name appears in it, until the class is defined. Comparing sends no
-        request, never reads ``url``, and does not depend on the identity of a
-        decoded key.
+        one whose key's type cannot be resolved yet, wherever the unresolved
+        name appears in it, until it can be. Comparing sends no request, never
+        reads ``url``, and does not depend on the identity of a decoded key.
 
         Args:
             other: Object to compare with.
@@ -5064,9 +5047,11 @@ class JSONObject:
                 model's key declaration is refused when the key is first used.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
-            NameError: If the key's annotation, or a type alias in its form,
-                names a class that is not defined yet, as ``url`` raises it.
-                Until the class is defined, ``==`` is ``False`` for the object.
+            NameError: If the key's annotation, or a type alias in its type,
+                names a class that is not defined yet, as ``url`` raises it. An
+                ``AttributeError`` for an attribute of a module that is not set
+                yet is raised the same way. Until the class is defined, ``==``
+                is ``False`` for the object.
             Exception: Any other exception that a custom conversion raises,
                 other than ``TypeError`` or ``ValueError``.
         """
@@ -6217,6 +6202,8 @@ class JSONObject:
                 takes the payload's key if its saved key is absent or ``None``.
             TypeError: If the model's key declaration is refused when the key
                 is first used.
+            Exception: If the key's type cannot be resolved yet, whatever
+                resolving it raises, as ``url`` raises it. Nothing is merged.
         """
         payload = copy.deepcopy(dict(json))
         if _pk_property_of(type(self)) is None:
@@ -6444,6 +6431,11 @@ class JSONObject:
                 name another resource, such as the collection. The key is
                 ``None`` for an object built without it or read from JSON that
                 lacks it.
+            Exception: If the key's type cannot be resolved yet, whatever
+                resolving it raises: a ``NameError`` for a class that is not
+                defined, an ``AttributeError`` for a module's attribute that is
+                not set, and a ``FieldConversionError`` for a form or a model
+                that Pydantic converts whose annotations cannot be resolved.
         """
         if self._url_override is not None:
             return self._url_override

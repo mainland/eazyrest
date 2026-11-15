@@ -147,23 +147,6 @@ class UsageError(EazyrestError, RuntimeError):
     """
 
 
-class _UnresolvedAnnotationsError(TypeError):
-    """A key's form names something that is not defined yet.
-
-    Resolving a name in a key's type raises it wherever the name is resolved,
-    so that one handler leaves the key unknown until the name is defined and
-    keeps nothing that would outlast the definition.
-    """
-
-
-class _UndefinedNameError(_UnresolvedAnnotationsError, NameError):
-    """A name in a key's annotation, or in a type alias's value, is undefined.
-
-    It is also a ``NameError``, which is what the undefined name raised before,
-    so code that catches that still does.
-    """
-
-
 def _json_depth(value: object) -> int:
     """Return the nesting depth of a JSON value.
 
