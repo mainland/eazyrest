@@ -6899,6 +6899,202 @@ def test_an_object_used_before_its_key_form_resolves_is_refused_after(
         hash(used)
 
 
+def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
+    """Return a key form with one member, and the JSON of a value of it.
+
+    Args:
+        shape: ``"typed-dict"``, ``"named-tuple"``, or ``"dataclass"``.
+        member: The annotation of the form's one field.
+
+    Returns:
+        The form, and the JSON of a value whose field holds ``1``.
+    """
+    match shape:
+        case "typed-dict":
+            return TypedDict("Rec", {"n": member}), {"n": 1}  # type: ignore[operator]
+        case "named-tuple":
+            return typing.NamedTuple("Pair", [("n", member)]), [1]
+    return dataclasses.make_dataclass("Entry", [("n", member)]), {"n": 1}
+
+
+def _box_keyed_by(form: Any) -> Any:
+    """Return a model whose key has a form.
+
+    Args:
+        form: The type of the model's key field.
+
+    Returns:
+        The model class.
+    """
+    return json_object(
+        type(
+            "Box",
+            (ModelBase,),
+            {"__annotations__": {"id": form}, "class_url": "/boxes/"},
+        )
+    )
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+@pytest.mark.parametrize("shape", ["typed-dict", "named-tuple", "dataclass"])
+def test_an_object_whose_key_names_a_later_class_by_an_alias_has_its_key_after(
+    shape: str,
+) -> None:
+    """An alias that names a class defined later is unresolved until then.
+
+    The alias is a ``type`` statement's, which evaluates its value on first
+    use. Until the class is defined, ``url`` and ``hash()`` raise the
+    ``NameError`` of the undefined name, ``==`` is ``False``, and nothing is
+    kept, so afterwards the object has the key of a new object.
+
+    Args:
+        shape: The kind of form that holds the alias.
+    """
+    namespace: dict[str, Any] = {}
+    exec("type PendingKey = LaterKey", namespace)  # noqa: S102
+    form, value = _form_keyed_by(shape, namespace["PendingKey"])
+    box = _box_keyed_by(form)
+    used = box(json={"id": value})
+    twin = box(json={"id": value})
+
+    with pytest.raises(NameError, match="LaterKey"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(NameError, match="LaterKey"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+    assert "analyzed_type" not in vars(box._pk)
+
+    namespace["LaterKey"] = int
+
+    fresh = box(json={"id": value})
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+@pytest.mark.parametrize("shape", ["typed-dict", "named-tuple", "dataclass"])
+def test_a_key_that_holds_a_later_model_by_an_alias_is_refused_after(
+    shape: str,
+) -> None:
+    """An alias in a key's form that names a later model is refused then.
+
+    Until the model is defined, ``==`` is ``False`` and nothing is kept, so
+    once it is, the declaration's ``TypeError`` reaches ``url``, ``==``, and
+    ``hash()`` of every object of the class, as it does for a form that names
+    the model directly.
+
+    Args:
+        shape: The kind of form that holds the alias.
+    """
+    namespace: dict[str, Any] = {}
+    exec("type PendingModelKey = LaterModelKey", namespace)  # noqa: S102
+    form, value = _form_keyed_by(shape, namespace["PendingModelKey"])
+    box = _box_keyed_by(form)
+    used = box(json={"id": value})
+    twin = box(json={"id": value})
+
+    with pytest.raises(NameError, match="LaterModelKey"):
+        used.url  # noqa: B018
+    assert used != twin
+    assert "analyzed_type" not in vars(box._pk)
+
+    @json_object
+    class LaterModelKey(ModelBase):
+        class_url = "/later/"
+
+        id: int
+
+    namespace["LaterModelKey"] = LaterModelKey
+
+    match = r"Box\.id is the primary key"
+    for obj in (used, twin, box(json={"id": value})):
+        with pytest.raises(TypeError, match=match):
+            obj.url  # noqa: B018
+        with pytest.raises(TypeError, match=match):
+            obj == box(json={"id": value})  # noqa: B015
+        with pytest.raises(TypeError, match=match):
+            hash(obj)
+
+
+@pytest.mark.parametrize("shape", ["typed-dict", "named-tuple", "dataclass"])
+def test_an_object_keyed_by_a_string_alias_of_a_later_class_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """An alias whose value is a string for a later class is unresolved.
+
+    The backport's alias holds the string, and resolves it in its module when
+    the key is first used. Until the class is defined, ``url`` and ``hash()``
+    raise a ``TypeError``, ``==`` is ``False``, and nothing is kept.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the objects are used.
+        shape: The kind of form that holds the alias.
+    """
+    form, value = _form_keyed_by(
+        shape,
+        TypeAliasType("PendingStringKey", "LaterStringKey"),  # noqa: F821
+    )
+    box = _box_keyed_by(form)
+    used = box(json={"id": value})
+    twin = box(json={"id": value})
+
+    with pytest.raises(TypeError, match="by a string that cannot be resolved"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(TypeError, match=r"cannot be read.*by a string"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+    assert "analyzed_type" not in vars(box._pk)
+
+    monkeypatch.setitem(globals(), "LaterStringKey", int)
+
+    fresh = box(json={"id": value})
+    assert used.url == fresh.url
+    assert used == fresh
+    assert hash(used) == hash(fresh)
+
+
+def test_a_key_that_holds_a_later_model_by_a_string_alias_is_refused_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A string alias in a key's form that names a later model is refused.
+
+    Args:
+        monkeypatch: Defines the model as a global, after the object is used.
+    """
+    form, value = _form_keyed_by(
+        "typed-dict",
+        TypeAliasType("PendingModelString", "LaterModelString"),
+    )
+    box = _box_keyed_by(form)
+    used = box(json={"id": value})
+    assert used != box(json={"id": value})
+
+    @json_object
+    class LaterModelString(ModelBase):
+        class_url = "/later/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "LaterModelString", LaterModelString)
+
+    match = r"Box\.id is the primary key"
+    with pytest.raises(TypeError, match=match):
+        used.url  # noqa: B018
+    with pytest.raises(TypeError, match=match):
+        used == box(json={"id": value})  # noqa: B015
+    with pytest.raises(TypeError, match=match):
+        hash(used)
+
+
 @pytest.mark.parametrize(
     "shape",
     [

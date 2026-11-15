@@ -156,6 +156,14 @@ class _UnresolvedAnnotationsError(TypeError):
     """
 
 
+class _UndefinedNameError(_UnresolvedAnnotationsError, NameError):
+    """A name in a key's annotation, or in a type alias's value, is undefined.
+
+    It is also a ``NameError``, which is what the undefined name raised before,
+    so code that catches that still does.
+    """
+
+
 def _json_depth(value: object) -> int:
     """Return the nesting depth of a JSON value.
 

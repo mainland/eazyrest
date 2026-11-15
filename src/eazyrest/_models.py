@@ -73,6 +73,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _redact_url,
+    _UndefinedNameError,
     _UnresolvedAnnotationsError,
 )
 from ._protocols import Client, Response
@@ -166,11 +167,16 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         FieldConversionError: If the conversion raises a ``TypeError`` or a
             ``ValueError``. A ``FieldConversionError`` that the conversion
             raises propagates unchanged, and so does a refusal of the model's
-            declaration, which is no conversion of a value.
+            declaration, which is no conversion of a value. A ``NameError``
+            propagates too, including the one for a class that is not defined
+            yet, which is also a ``TypeError``.
     """
     try:
         yield
     except FieldConversionError:
+        raise
+    except NameError:
+        # An undefined name is not a conversion of a value either.
         raise
     except (TypeError, ValueError) as err:
         if getattr(err, _DECLARATION_ERROR, False):
@@ -830,8 +836,18 @@ def _is_type_alias(ty: Any) -> bool:
 
     Returns:
         Whether ``ty`` is a named type alias.
+
+    Raises:
+        _UndefinedNameError: If ``ty`` is an alias whose value names a class
+            that is not defined yet, since reading the value to see that it has
+            one evaluates it. It is also a ``NameError``.
     """
-    return type(ty).__name__ == "TypeAliasType" and hasattr(ty, "__value__")
+    if type(ty).__name__ != "TypeAliasType":
+        return False
+    try:
+        return hasattr(ty, "__value__")
+    except NameError as err:
+        raise _UndefinedNameError(str(err)) from err
 
 
 def _expand_alias(
@@ -941,7 +957,8 @@ def _resolve_alias_value(alias: Any) -> Any:
         names.
 
     Raises:
-        TypeError: If a string reference names nothing in the alias's module.
+        _UnresolvedAnnotationsError: If a string reference names nothing in the
+            alias's module, which is a ``TypeError``.
     """
     value = alias.__value__
     if not _has_forward_refs(value):
@@ -958,7 +975,7 @@ def _resolve_alias_value(alias: Any) -> Any:
     try:
         return typing.get_type_hints(holder, include_extras=True)["value"]
     except Exception as error:
-        raise TypeError(
+        raise _UnresolvedAnnotationsError(
             f"Type alias {alias.__name__} names a type by a string that "
             f"cannot be resolved in module {alias.__module__}"
         ) from error
@@ -1069,7 +1086,11 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             mapping, for a union that holds a ``TypedDict``, and for a
             ``TypedDict`` that is parameterized or has a Pydantic config that
             eazyrest would not apply. A closed ``TypedDict`` raises when its
-            keys are first analyzed, since a conversion may replace it.
+            keys are first analyzed, since a conversion may replace it. A
+            string in a named type alias that names nothing in the alias's
+            module raises one that says the annotations cannot be resolved.
+        NameError: If ``ty`` holds a named type alias whose value names a class
+            that is not defined yet.
     """
     ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
@@ -1887,19 +1908,29 @@ def _unhashable_key_message(obj: JSONObject) -> str:
     Returns:
         The message of the ``TypeError`` that ``hash()`` raises. It advises
         loading, saving, or giving the key only if that can help.
+
+    Raises:
+        NameError: If the key's form names a class that is not defined yet,
+            which ``hash()`` raises as it does for any object of the model
+            until then.
     """
     name = type(obj).__name__
+    detail = ""
+    if obj._saved_key_json is not None:
+        try:
+            _canonical_key_of(obj, obj._saved_key_json)
+        except NameError:
+            # A class that the key's form names is not defined yet, which is
+            # what the hash of any object of the model raises until then.
+            raise
+        except (TypeError, ValueError) as err:
+            detail = f" ({err})"
     match _key_problem(obj):
         case "missing":
             reason = "is missing from its JSON"
         case "none":
             reason = "is None"
         case "unreadable":
-            detail = ""
-            try:
-                _canonical_key_of(obj, obj._saved_key_json)
-            except (TypeError, ValueError) as err:
-                detail = f" ({err})"
             reason = f"cannot be read from its JSON{detail}"
         case _:
             return (

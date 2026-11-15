@@ -3488,3 +3488,66 @@ def test_an_object_used_before_its_pydantic_key_resolves_has_its_key_after(
     assert used == twin
     assert hash(used) == hash(fresh)
     assert len({used, twin, fresh}) == 1
+
+
+@pytest.mark.parametrize("alias", ["statement", "string"])
+def test_a_pydantic_key_with_an_alias_of_a_later_class_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch, alias: str
+) -> None:
+    """A named alias in a Pydantic key is unresolved until its class exists.
+
+    The key is a ``TypedDict`` configured for Pydantic, whose field has a named
+    alias for a class that is defined later. A ``type`` statement's alias
+    raises the ``NameError`` of the undefined name, and the backport's alias
+    holds a string that names nothing yet, which raises a ``TypeError``. In
+    both, ``==`` is ``False`` and nothing is kept, so afterwards the object has
+    the key of a new object.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the objects are used.
+        alias: Whether the alias is a ``type`` statement's or the backport's.
+    """
+    namespace: dict[str, Any] = {}
+    if alias == "statement":
+        if sys.version_info < (3, 12):
+            pytest.skip("The type statement is new in 3.12.")
+        exec("type PendingPydKey = LaterPydKey", namespace)  # noqa: S102
+        pending = namespace["PendingPydKey"]
+        problem: type[Exception] = NameError
+    else:
+        later_name: Any = "LaterPydKey"
+        PendingPydKey = TypeAliasType("PendingPydKey", later_name)
+        pending = PendingPydKey
+        problem = TypeError
+    record = with_config(ConfigDict(extra="allow"))(
+        TypedDict("PydKey", {"n": pending})  # type: ignore[operator]
+    )
+    crate: Any = json_object(
+        type(
+            "AliasCrate",
+            (PydanticBase,),
+            {"__annotations__": {"id": record}, "class_url": "/crates/"},
+        )
+    )
+    payload = {"id": {"n": {"x": 1}}}
+    used = crate(json=payload)
+    twin = crate(json=payload)
+
+    with pytest.raises(problem):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(problem):
+        hash(used)
+    assert "_canonical" not in vars(used)
+
+    later = with_config(ConfigDict(extra="allow"))(
+        TypedDict("LaterPydKey", {"x": int})  # type: ignore[operator]
+    )
+    namespace["LaterPydKey"] = later
+    monkeypatch.setitem(globals(), "LaterPydKey", later)
+
+    fresh = crate(json=payload)
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)

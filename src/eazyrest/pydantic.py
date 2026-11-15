@@ -784,13 +784,13 @@ def _alias_value(
         args: Type arguments for ``params``.
 
     Returns:
-        A list of the alias's value, or no types if a string in the value
-        names nothing, which Pydantic reports.
+        A list of the alias's value.
+
+    Raises:
+        _UnresolvedAnnotationsError: If a string in the value names nothing, so
+            that the types it stands for cannot be checked.
     """
-    try:
-        value = _resolve_alias_value(alias)
-    except TypeError:
-        return []
+    value = _resolve_alias_value(alias)
     return [_substitute(value, dict(zip(params, args, strict=False)))]
 
 
