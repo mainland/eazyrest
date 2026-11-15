@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 import pytest
 import requests
+from requests.auth import AuthBase
 
 from eazyrest import (
     API,
@@ -1921,6 +1922,71 @@ def redirecting_server() -> Iterator[Callable[[Callable[[Any], None]], str]]:
     for server in servers:
         server.shutdown()
         server.server_close()
+
+
+class _LoginHandler(AuthBase):
+    """Authentication handler whose hook sends to the login URL a 401 names."""
+
+    def __call__(
+        self, r: requests.PreparedRequest
+    ) -> requests.PreparedRequest:
+        """Register the hook, as an authentication handler does.
+
+        Args:
+            r: Request that requests is preparing.
+
+        Returns:
+            The request.
+        """
+        # requests does not annotate register_hook().
+        r.register_hook("response", self._login)  # type: ignore[no-untyped-call]
+        return r
+
+    @staticmethod
+    def _login(resp: requests.Response, **kwargs: Any) -> requests.Response:
+        """Answer a 401 with the response for the URL that it names.
+
+        Args:
+            resp: Response, which is replaced if it is a 401.
+            kwargs: Arguments that requests passes to response hooks.
+
+        Returns:
+            The response for the login URL, or ``resp``.
+        """
+        if resp.status_code != 401:
+            return resp
+        login = requests.Request("GET", resp.headers["X-Login"]).prepare()
+        return resp.connection.send(login)
+
+
+def test_error_after_an_authentication_hook_chose_a_url_leaves_out_its_query(
+    redirecting_server: Callable[[Callable[[Any], None]], str],
+) -> None:
+    """An authentication hook runs first, and its URL is not the first one."""
+
+    def login(handler: Any) -> None:
+        if handler.path.startswith("/a"):
+            handler.send_response(401)
+            handler.send_header(
+                "X-Login",
+                f"http://{handler.headers['Host']}/login{_SIGNED[:-12]}",
+            )
+        else:
+            handler.send_response(403)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+
+    base = redirecting_server(login)
+    api = API(base)
+    api.session.auth = _LoginHandler()
+
+    with pytest.raises(APIError) as raised:
+        api.get("a?CALLERQ=1")
+
+    assert (
+        str(raised.value) == f"403 Client Error: Forbidden for GET {base}login"
+    )
+    _assert_no_signature(raised.value)
 
 
 def test_size_limit_of_a_response_that_a_redirect_reached_names_no_query(

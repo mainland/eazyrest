@@ -553,18 +553,20 @@ class _Budget:
             None if total_timeout is None else time.monotonic() + total_timeout
         )
 
-    def see(self, resp: requests.Response) -> None:
-        """Note the URL of a response, if it is the first of the request.
+    def see(self, url: str) -> None:
+        """Note a URL that requests sent, if it is the first of the request.
 
-        The first response hook calls this. The adapter checks the first
-        response before any hook, but no other URL precedes it, so its own URL
-        is the one that was sent first.
+        The adapter calls this with the URL of each request that it sends, and
+        the first response hook calls it for a session whose adapter is not the
+        API's own. An authentication handler's response hook runs before the
+        request's other hooks, so the hook cannot be the only source, and the
+        first request that reaches the adapter is the one that was sent first.
 
         Args:
-            resp: Response that requests received.
+            url: URL of the request, as requests prepared it.
         """
         if self.first_url is None:
-            self.first_url = resp.url
+            self.first_url = url
 
     def timeout(self, timeout: Any) -> Any:
         """Return a request timeout that ends no later than the deadline.
@@ -901,6 +903,10 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
     ) -> requests.Response:
         """Send a request, and bound the response before any hook sees it.
 
+        The request's budget notes the URL of the first request that arrives
+        here, before any response hook runs, since an authentication handler's
+        hook can send a request for a URL that a server chose.
+
         Requests runs its response hooks on the response that this returns, and
         an authentication handler such as ``HTTPDigestAuth`` reads the body of
         a 401 challenge there. Reading it here first, within the active budget,
@@ -926,8 +932,10 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
             LimitExceeded: If the response body is larger than the limit, or
                 the request has run out of time.
         """
-        resp = super().send(request, stream, timeout, verify, cert, proxies)
         budget = _request_budget.get()
+        if budget is not None and request.url is not None:
+            budget.see(request.url)
+        resp = super().send(request, stream, timeout, verify, cert, proxies)
         if budget is not None:
             budget.check_time(resp)
             if (
@@ -1476,11 +1484,15 @@ class API:
         def note_url(resp: requests.Response, **kwargs: Any) -> None:
             """Note the URL of the first response of the request.
 
+            The API's own adapter has noted it by now, so this serves a session
+            with another adapter. An authentication handler's hook runs before
+            this one, since requests prepares the handler first.
+
             Args:
                 resp: Response, which requests has not yet given a history.
                 kwargs: Arguments that requests passes to response hooks.
             """
-            seen.see(resp)
+            seen.see(resp.url)
 
         def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
             """Refuse a redirect that is not safe to follow.
@@ -1545,9 +1557,8 @@ class API:
             ) from None
 
         # requests uses a request's response hooks instead of the session's, so
-        # keep the session's when the request has none. Note the first URL
-        # before any hook runs, and run the guard last, after any hook that
-        # might change the response.
+        # keep the session's when the request has none. Run the guard last,
+        # after any hook that might change the response.
         merged = dict(hooks or {})
         response = merged.get("response") or self.session.hooks.get("response")
         merged["response"] = [
