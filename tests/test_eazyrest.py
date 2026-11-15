@@ -7712,7 +7712,10 @@ def test_a_set_refuses_an_object_whose_pending_key_has_no_saved_key(
 
     with pytest.raises(
         FieldConversionError,
-        match=r"SetTeam\.members: cannot use .*as a set element",
+        match=(
+            r"SetTeam\.members: .*The User object's primary key is None, "
+            r"so it cannot be hashed"
+        ),
     ):
         cast(Any, team).members = [user]
 
