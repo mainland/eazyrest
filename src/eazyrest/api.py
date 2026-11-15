@@ -238,9 +238,10 @@ def _redirect_destination(resp: requests.Response, target: str) -> str:
 
     This repeats the steps of ``requests.Session.resolve_redirects()``.
     requests sends the resulting string without preparing it again, so an
-    origin check must examine exactly this string. In particular, requests
-    percent-encodes a backslash in an absolute target, which moves the end of
-    its userinfo, so ``urljoin()`` of the raw target can name a different host.
+    origin check must examine exactly this string, as ``_prepare_redirect()``
+    does. In particular, requests percent-encodes a backslash in an absolute
+    target, which moves the end of its userinfo, so ``urljoin()`` of the raw
+    target can name a different host.
 
     Args:
         resp: Redirect response.
@@ -290,44 +291,6 @@ def _prepare_redirect(
     if destination is None or joined is None:
         return None
     return destination, frozenset({destination.origin, joined.origin})
-
-
-def _redirect_origins(
-    resp: requests.Response, target: str
-) -> set[tuple[str, str | None, int | None]]:
-    r"""Return the origins that a redirect can be taken to name.
-
-    The connection that requests opens for a redirect uses ``urlparse()`` of
-    the URL that ``_redirect_destination()`` returns. A proxy, or a client that
-    treats a backslash as a slash, as browsers do, may read the target
-    differently, so ``https://a.test\@b.test/`` names ``b.test`` to requests
-    but ``a.test`` to a browser. A redirect is safe only if every reading names
-    an allowed origin.
-
-    Args:
-        resp: Redirect response.
-        target: Redirect target, from ``Session.get_redirect_target()``.
-
-    Returns:
-        The origins of the redirect under each reading. A reading that fails
-        gives an origin with no host, which no allowed origin matches.
-    """
-    destination = _redirect_destination(resp, target)
-    origins: set[tuple[str, str | None, int | None]] = set()
-    try:
-        parts = urlsplit(destination)
-        scheme = parts.scheme.lower()
-        origins.add(
-            (scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme))
-        )
-    except ValueError:
-        origins.add(("", None, None))
-    for url in (destination, urljoin(resp.url, target)):
-        try:
-            origins.add(_origin(url))
-        except (ValueError, requests.RequestException):
-            origins.add(("", None, None))
-    return origins
 
 
 def _drop_response_hooks(resp: Any, request: Any = None) -> None:

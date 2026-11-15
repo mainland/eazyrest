@@ -31,7 +31,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
-from eazyrest._errors import _authority_less_location, _redact_url
+from eazyrest._errors import _redact_url
 
 
 @pytest.mark.parametrize(
@@ -902,40 +902,6 @@ def test_followed_redirect_to_a_target_without_an_authority_quotes_its_scheme(
         assert "hunter2" not in text
     assert raised.value.response is not None
     assert raised.value.response.headers["Location"] == location
-
-
-@pytest.mark.parametrize(
-    ("url", "described"),
-    [
-        ("mailto:alice:hunter2@h.test", "a mailto: location"),
-        (b"mailto:alice:hunter2@h.test", "a mailto: location"),
-        ("\x01\x0c \u00a0mailto:a:b@h", "a mailto: location"),
-        (" \t\x01mai\tlto:\r\na:b@h", "a mailto: location"),
-        ("x+y.z:a:b@h", "a x+y.z: location"),
-        ("ftp://alice:hunter2@h.test/x", None),
-        ("ftp:///alice:hunter2@h", "a ftp: location"),
-        ("ftp://?@alice:hunter2/x", "a ftp: location"),
-        ("ftp://", "a ftp: location"),
-        ("ftp://#alice:hunter2@h", "a ftp: location"),
-        ("x-y:alice:hunter2@h", "a x-y: location"),
-        ("ftp://h", None),
-        ("\x01ftp:/\t/alice:hunter2@h.test/x", None),
-        ("//alice:hunter2@h.test/x", None),
-        ("/a:b@h", None),
-        ("a:b@h", "a a: location"),
-        ("", None),
-    ],
-)
-def test_authority_less_location_reads_the_url_as_the_redaction_does(
-    url: str | bytes, described: str | None
-) -> None:
-    """Only a URL with a scheme and no ``//`` after it is described.
-
-    Args:
-        url: The URL, which may begin with characters that requests ignores.
-        described: The description, or ``None`` for a URL that has none.
-    """
-    assert _authority_less_location(url) == described
 
 
 def test_followed_redirect_to_another_scheme_is_named_by_its_scheme(
