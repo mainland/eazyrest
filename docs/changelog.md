@@ -663,38 +663,30 @@ that can break code written for 0.9.0, followed by what to do about it.
 - An error that quotes a URL, `APIError`, `NotFound`, `RedirectError`,
   `PaginationError`, `ResponseShapeError`, and `LimitExceeded`, leaves out the
   user and password of the URL in its message, `args`, and `repr()`, as
-  `http://host/` for `http://user:pass@host/`. This holds for the `Location` of
-  a redirect that a `RedirectError` quotes, also when it has no scheme, as
-  `//host/` for `//user:pass@host/`, and when it begins with a control
-  character or has a tab, carriage return, or line feed inside, which requests
-  ignores. A `Location` that requests cannot prepare is not quoted, and the
-  error's `response` holds it. The URL's query is still quoted. The error's
-  `request` and `response` keep the real URL.
-- A `RedirectError` that refuses a redirect to another origin reads the target
-  as requests prepares it and quotes that URL without its user and password. It
+  `http://host/` for `http://user:pass@host/`. The URL's query is still quoted,
+  except in a URL that the server supplied, which the next entries describe.
+  The error's `request` and `response` keep the real URL.
+- A `RedirectError` that refuses a redirect to another origin quotes the origin
+  that requests reads from the target, as `https://files.example.com` or
+  `http://host:8080`, and nothing else, so it holds no user, password, path,
+  query, or fragment of the target, such as the signature of a download URL. It
   names a target that is not an HTTP or HTTPS URL, such as
   `mailto:user:pass@host/x` or `ftp://user:pass@host/x`, by its scheme alone,
-  as `a location whose scheme is mailto:`, since the target has no user and
-  password to leave out and its text can read as one. The error's `response`
-  holds the header.
+  as `a location whose scheme is mailto:`. The error's `response` holds the
+  header.
 - A `PaginationError` that refuses a redirect from a next-page request to
-  another origin reads the target as a `RedirectError` does, and quotes it in
-  the same way. A target that requests cannot prepare raises the API's
-  `RedirectError`, which quotes none of it, and not a `PaginationError` that
-  quoted it.
+  another origin quotes the target in the same way. A target that requests
+  cannot prepare raises the API's `RedirectError`, which quotes none of it, and
+  not a `PaginationError` that quoted it.
 - A `PaginationError` for a next-page link or a `Link` header link that
   requests cannot prepare or send quotes none of the link, and has no
   `__cause__` or `__context__`, since the error that rejected the link, such as
   one for a port that is not a number, can quote it. This holds also with
-  `allow_other_origins=True`. A link to another origin is quoted as requests
-  prepares it, without its user and password, and a link that is not an HTTP or
-  HTTPS URL is named by its scheme alone, as
-  `a location whose scheme is mailto:`, as for a redirect. Before, the message
-  quoted the link without its user and password, and the chained error could
-  quote all of it.
-- A `RedirectError` escapes the control characters of the `Location` that it
-  quotes, as an HTTP error does for the reason phrase, so a server cannot write
-  escape sequences or forged lines into a log.
+  `allow_other_origins=True`. A link to another origin, or to a page already
+  read, is quoted by its origin alone, as for a redirect, and never by its
+  user, password, path, query, or fragment. `Page.next_url` and
+  `Page.previous_url` hold the whole link. A link that is not an HTTP or HTTPS
+  URL is named by its scheme alone, as `a location whose scheme is mailto:`.
 - Response limits also cover intermediate retry bodies and retry delays with
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and

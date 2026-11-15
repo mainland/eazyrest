@@ -25,6 +25,7 @@ from .api import (
     _prepare_redirect,
     _prepare_server_url,
     _response_hooks,
+    _ServerURL,
 )
 
 __all__ = [
@@ -159,6 +160,29 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
     return results
 
 
+def _page_url_subject(prepared: _ServerURL | None, label: str) -> str:
+    """Name a page URL in a message, quoting only its origin.
+
+    Args:
+        prepared: The URL as requests prepares it, or ``None`` if requests
+            cannot.
+        label: What the message calls the URL, such as ``"Page URL"``.
+
+    Returns:
+        ``label`` with the URL's origin, built from the parts of its reading
+        and not its text, so that it holds no user, password, query, or
+        fragment. For a URL that is not HTTP or HTTPS, ``label`` with the
+        scheme's name, and for a URL that requests cannot prepare, ``label``
+        alone.
+    """
+    if prepared is None:
+        return label
+    named = prepared.scheme_name
+    if named:
+        return f"{label}, {named},"
+    return f"{label} {prepared.origin_text!r}"
+
+
 def _check_page_origin(api: Client, url: str) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
@@ -173,25 +197,17 @@ def _check_page_origin(api: Client, url: str) -> None:
         PaginationError: If ``url`` has another origin, or requests cannot
             prepare it. The message of the second quotes none of it, and
             attaches no error, as for ``_resolve()``. The message of the first
-            quotes the URL without its user and password, or names the scheme
-            alone if it is not HTTP or HTTPS.
+            quotes the URL's origin alone, or names its scheme if it is not
+            HTTP or HTTPS. The page's link is on ``Page.next_url``.
     """
     prepared = _prepare_server_url(_as_api(api).session, url)
     if prepared is None:
         raise PaginationError(_UNPARSABLE_PAGE_URL)
     if prepared.origin != _origin(api.base_url):
-        # A URL that is not HTTP has no user and password to leave out, so name
-        # its scheme alone.
-        subject = prepared.scheme_name
-        subject = (
-            f"Page URL, {subject},"
-            if subject
-            else f"Page URL {_redact_url(prepared.url)!r}"
-        )
         raise PaginationError(
-            f"{subject} has a different origin from the "
-            f"API's base URL {_redact_url(api.base_url)!r}. Pass "
-            "allow_other_origins=True to follow it."
+            f"{_page_url_subject(prepared, 'Page URL')} has a different "
+            f"origin from the API's base URL {_redact_url(api.base_url)!r}. "
+            "Pass allow_other_origins=True to follow it."
         )
 
 
@@ -248,13 +264,13 @@ def _request_page(
         Raises:
             PaginationError: If ``resp`` redirects to an origin other than the
                 API's base URL and other origins are not allowed. The message
-                quotes the target as requests prepares it, or names its scheme
-                alone if it is not HTTP or HTTPS. The response is closed first.
-                A target that cannot be prepared is left to the API's guard. A
-                client that does not follow redirects never raises it, because
-                its page requests would not follow the redirect even with
-                ``allow_other_origins=True``, and the unfollowed redirect
-                raises ``RedirectError`` instead.
+                quotes the target's origin as requests prepares it, or names
+                its scheme alone if it is not HTTP or HTTPS. The response is
+                closed first. A target that cannot be prepared is left to the
+                API's guard. A client that does not follow redirects never
+                raises it, because its page requests would not follow the
+                redirect even with ``allow_other_origins=True``, and the
+                unfollowed redirect raises ``RedirectError`` instead.
         """
         if not follow:
             return
@@ -273,9 +289,7 @@ def _request_page(
         destination, origins = prepared
         if origins != {api_origin}:
             resp.close()
-            quoted = destination.scheme_name or repr(
-                _redact_url(destination.url)
-            )
+            quoted = destination.scheme_name or repr(destination.origin_text)
             raise PaginationError(
                 f"Page request {_redact_url(resp.url)!r} was redirected to "
                 f"{quoted}, which has a different origin "
@@ -367,10 +381,13 @@ class _PageReader:
                 ``max_pages``.
         """
         if url in self.read_urls:
+            subject = _page_url_subject(
+                _prepare_server_url(_as_api(self.api).session, url),
+                "Next-page URL",
+            )
             raise PaginationError(
-                f"Next-page URL {_redact_url(url)!r} names a page that was "
-                "already read, "
-                "so following it would never end"
+                f"{subject} names a page that was already read, so "
+                "following it would never end"
             )
         if not self.allow_other_origins:
             _check_page_origin(self.api, url)
@@ -769,9 +786,12 @@ class Page(Generic[T]):
             )
         trail = self._forward if forward else self._backward
         if url in trail.urls:
+            subject = _page_url_subject(
+                _prepare_server_url(_as_api(self._source.api).session, url),
+                "Page URL",
+            )
             raise PaginationError(
-                f"Page URL {_redact_url(url)!r} names a page that was already "
-                "read, so "
+                f"{subject} names a page that was already read, so "
                 "following it would never end"
             )
         limit = self._source.api.max_pages

@@ -32,6 +32,7 @@ from eazyrest import (
     json_object,
 )
 from eazyrest._errors import _redact_url
+from eazyrest.api import _prepare_redirect
 
 
 @pytest.mark.parametrize(
@@ -926,10 +927,10 @@ def test_followed_redirect_to_another_scheme_is_named_by_its_scheme(
     assert "hunter2" not in message
 
 
-def test_followed_redirect_quotes_the_target_as_requests_prepares_it(
+def test_followed_redirect_quotes_the_origin_as_requests_prepares_it(
     requests_mock: Any,
 ) -> None:
-    """The quoted target is the prepared URL, not the header's text."""
+    """The quoted origin is the prepared URL's, not the header's text."""
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
@@ -941,15 +942,16 @@ def test_followed_redirect_quotes_the_target_as_requests_prepares_it(
         api.get("/a")
 
     message = str(raised.value)
-    assert "to http://h.test:8080/x%5B1%5D, whose origin differs" in message
+    assert "to http://h.test:8080, whose origin differs" in message
+    assert "x%5B1%5D" not in message
     assert "alice" not in message.lower()
     assert "hunter2" not in message
 
 
-def test_followed_redirect_to_a_readable_origin_leaves_out_its_credentials(
+def test_followed_redirect_to_a_readable_origin_quotes_only_the_origin(
     requests_mock: Any,
 ) -> None:
-    """A target with a readable origin that differs is quoted without them."""
+    """A target with a readable origin that differs is quoted by its origin."""
     api = API("https://example.com/")
     requests_mock.get(
         "https://example.com/a",
@@ -961,9 +963,152 @@ def test_followed_redirect_to_a_readable_origin_leaves_out_its_credentials(
         api.get("/a")
 
     message = str(raised.value)
-    assert "http://other.test:8080/x, whose origin differs" in message
+    assert "to http://other.test:8080, whose origin differs" in message
     assert "alice" not in message
     assert "hunter2" not in message
+
+
+def test_followed_redirect_to_a_signed_url_quotes_only_its_origin(
+    requests_mock: Any,
+) -> None:
+    """A refused redirect's message leaves out the target's query.
+
+    A signed download URL carries its credential in the query. The error's
+    response holds the header.
+    """
+    location = (
+        "https://files.test/obj?X-Amz-Signature=SECRETSIG"
+        "&X-Amz-Credential=AKIDEXAMPLE#SECRETFRAG"
+    )
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("/a")
+
+    assert str(raised.value) == (
+        "GET https://example.com/a was redirected with status 302 to "
+        "https://files.test, whose origin differs from the request's, so it "
+        "was not followed. Add the origin to API.redirect_origins to follow "
+        "it."
+    )
+    for text in (
+        str(raised.value),
+        repr(raised.value),
+        repr(raised.value.args),
+        "".join(traceback.format_exception(raised.value)),
+    ):
+        for secret in ("SECRETSIG", "AKIDEXAMPLE", "SECRETFRAG", "/obj"):
+            assert secret not in text
+    assert raised.value.response is not None
+    assert raised.value.response.headers["Location"] == location
+
+
+@pytest.mark.parametrize(
+    ("location", "origin"),
+    [
+        (
+            "https://[2001:DB8::1]:8443/p?q=SECRET",
+            "https://[2001:db8::1]:8443",
+        ),
+        ("https://[::1]/p#SECRET", "https://[::1]"),
+        ("http://Other.TEST:8080/p", "http://other.test:8080"),
+        ("http://other.test:80/p?q=SECRET", "http://other.test"),
+        ("https://Other.TEST:443/p", "https://other.test"),
+        ("https://other.test:80/p", "https://other.test:80"),
+        # requests percent-encodes a redirect's target and sends it unprepared.
+        ("https://b\u00fccher.test/p?q=SECRET", "https://b%C3%BCcher.test"),
+    ],
+)
+def test_followed_redirect_quotes_the_origin_that_requests_reads(
+    requests_mock: Any, location: str, origin: str
+) -> None:
+    """The quoted origin has the host and port that requests prepares.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        origin: The origin that the message quotes.
+    """
+    api = API("http://example.com/")
+    requests_mock.get(
+        "http://example.com/a",
+        status_code=302,
+        # requests decodes a header's bytes as Latin-1, then as UTF-8.
+        headers={"Location": location.encode("utf-8").decode("latin-1")},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("/a")
+
+    assert f"to {origin}, whose origin differs" in str(raised.value)
+    assert "SECRET" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://alice:hunter2@evil.test/p?q=SECRET#SECRET",
+        "https://alice:hunter2\\@evil.test/p?q=SECRET",
+        "https://evil.test\\@example.com/p?q=SECRET",
+        "https://example.com\\@evil.test/p?q=SECRET",
+        "https://alice:hunter2#@evil.test/p?q=SECRET",
+        "https://evil.test?@example.com/p#SECRET",
+        "https://evil.test/p?@example.com#SECRET",
+        "\x01https://alice:hunter2@evil.test/p?q=SECRET",
+        "https://alice:hunter2%40evil.test/p?q=SECRET",
+        "https://evil.test/p\x7f\n?q=SECRET",
+        "//alice:hunter2@evil.test/p?q=SECRET",
+        "mailto:alice:hunter2@evil.test?subject=SECRET",
+    ],
+)
+def test_followed_redirect_message_is_built_from_the_prepared_parts(
+    requests_mock: Any, location: str
+) -> None:
+    """A target that requests prepares is quoted as its parts render.
+
+    The message holds the scheme, host, and port that requests reads, for any
+    spelling of the target. Whatever else its text holds is not quoted, so it
+    cannot differ from the rendering of the parts.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://example.com/")
+    requests_mock.get(
+        "https://example.com/a",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("/a")
+
+    response = raised.value.response
+    assert response is not None
+    target = api.session.get_redirect_target(response)
+    assert target is not None
+    prepared = _prepare_redirect(api.session, response, target)
+    if prepared is None:
+        quoted = "a location that requests cannot prepare"
+        rest = ", so it was not followed. The response of this error holds"
+    else:
+        destination, _ = prepared
+        quoted = destination.origin_text
+        rest = ", whose origin differs from the request's, so it was not"
+    assert f"status 302 to {quoted}{rest}" in str(raised.value)
+    for text in (
+        str(raised.value),
+        repr(raised.value),
+        repr(raised.value.args),
+    ):
+        assert "SECRET" not in text
+        assert "hunter2" not in text
+        assert "alice" not in text
+        assert text.isprintable()
 
 
 def test_redirect_that_cannot_be_parsed_closes_the_response(

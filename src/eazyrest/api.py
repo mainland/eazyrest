@@ -146,6 +146,29 @@ class _ServerURL(NamedTuple):
         """The scheme, host, and port that requests reads from the URL."""
         return self.scheme, self.host, self.port
 
+    @property
+    def origin_text(self) -> str:
+        """What a message quotes of a URL that it refuses: its origin.
+
+        A message builds its text from the parts of the reading, never from the
+        URL's text, so it can hold no user, password, query, or fragment, and
+        no text that a parser might read as one. The URL itself stays on the
+        error's response, or, for a page link, on the page.
+
+        The origin is ``scheme://host``, with ``:port`` unless the port is the
+        scheme's default and the host in brackets if it is an IPv6 address. The
+        host is the one that requests connects to. It holds no character that
+        is not printable, since requests rejects or encodes such a character in
+        a host. A URL that is not HTTP or HTTPS has no origin, so this is
+        ``scheme_name``.
+        """
+        if self.host is None:
+            return str(self.scheme_name)
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        if self.port != _DEFAULT_PORTS.get(self.scheme):
+            host = f"{host}:{self.port}"
+        return f"{self.scheme}://{host}"
+
 
 def _prepare_server_url(
     session: requests.Session, url: str
@@ -1481,7 +1504,9 @@ class API:
                 RedirectError: If requests follows the redirect, and its
                     ``Location`` cannot be parsed or prepared, or it leads to
                     an origin that is not allowed, or requests would follow it
-                    without the request's body. The response is closed first.
+                    without the request's body. The message of the origin case
+                    quotes the target's origin alone, or names its scheme if it
+                    is not HTTP or HTTPS. The response is closed first.
             """
             if not follow:
                 if resp.is_redirect and budget is not None:
@@ -1510,12 +1535,10 @@ class API:
                     return
 
                 resp.close()
-                quoted = destination.scheme_name or _printable(
-                    _redact_url(destination.url)
-                )
                 raise RedirectError(
                     f"{resp.request.method} {_redact_url(resp.url)} was "
-                    f"redirected with status {resp.status_code} to {quoted}, "
+                    f"redirected with status {resp.status_code} to "
+                    f"{destination.origin_text}, "
                     "whose origin differs from the request's, so it was not "
                     "followed. Add the origin to API.redirect_origins to "
                     "follow it.",

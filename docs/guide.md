@@ -508,12 +508,14 @@ the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
 `LimitExceeded` for a size or time limit name the URLs involved, with their
 query strings, so a query parameter's value can appear. Send a secret in a
 header or the body, not in the query. They leave out a user and password in a
-URL, including the `Location` of a redirect, so `http://user:pass@host/x?a=b`
-appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
-error's `request` and `response` keep the real URL. The `repr()` of a `Page`,
-and of an object known only by its URL, leaves them out too. An exception that
-requests itself raises, such as `requests.ConnectionError`, quotes the URL as
-requests does. A Pydantic error says where and why a value is invalid, as in
+URL, so `http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the
+message, `args`, and `repr()`, but the error's `request` and `response` keep
+the real URL. A URL that the server supplied, such as the `Location` of a
+redirect that is refused or a next-page link, is quoted by its origin alone, as
+`http://host`, whatever it holds. The `repr()` of a `Page`, and of an object
+known only by its URL, leaves them out too. An exception that requests itself
+raises, such as `requests.ConnectionError`, quotes the URL as requests does. A
+Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1438,21 +1440,25 @@ that requests cannot prepare or send raises `PaginationError`, whose message
 quotes none of the link, since the server chose it, and which has no
 `__cause__` or `__context__`, since the error that rejected the link can quote
 it. This holds also with `allow_other_origins=True`, and for the link to a
-previous page. A link to another origin is quoted as requests prepares it,
-without its user and password. A link that is not an HTTP or HTTPS URL, such as
-`mailto:user:pass@host`, is named by its scheme alone, as
-`a location whose scheme is mailto:`.
+previous page. The error for a link to another origin quotes the origin that
+requests reads from it and nothing else, as `https://other.example` or
+`http://host:8080`, never its user, password, path, query, or fragment, since a
+link can carry a credential in its query. The same holds for a link to a page
+already read. The whole link is on `Page.next_url` or `Page.previous_url`. A
+link that is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is
+named by its scheme alone, as `a location whose scheme is mailto:`.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed, and reads the target as the check of any other
-redirect does, so the error quotes it in the same way. A target that requests
-cannot prepare raises `RedirectError`, which quotes none of it. Existing
-session response hooks still run. With `allow_other_origins=True`, a redirect
-is checked as for every other request: it must lead to the origin of the page
-request or to one of the API's `redirect_origins`. A query's client that does
-not follow redirects, because of `request_options={"allow_redirects": False}`,
-skips the check, since nothing is followed, and raises `RedirectError` for a
-redirect from a next-page request, whichever origin it names.
+redirect does, so the error quotes its origin in the same way. A target that
+requests cannot prepare raises `RedirectError`, which quotes none of it.
+Existing session response hooks still run. With `allow_other_origins=True`, a
+redirect is checked as for every other request: it must lead to the origin of
+the page request or to one of the API's `redirect_origins`. A query's client
+that does not follow redirects, because of
+`request_options={"allow_redirects": False}`, skips the check, since nothing is
+followed, and raises `RedirectError` for a redirect from a next-page request,
+whichever origin it names.
 
 Some APIs, such as GitHub's, return each page as a JSON list and name the next
 page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from
@@ -1719,15 +1725,21 @@ its scheme, host, and port. Requests drops the `Authorization` header when a
 redirect leaves the host, but it sends every other header, such as an API key
 or a CSRF token, and a 307 or 308 resends the request body. A redirect to
 another origin, including one from `http://` to `https://`, raises
-`RedirectError` before anything is sent there. The check reads the target once,
-as requests prepares it, and the error quotes the prepared URL without its user
-and password. A target that is not an HTTP or HTTPS URL, such as
-`ftp://user:pass@host/x` or `mailto:user:pass@host`, has no user and password
-to leave out and its text can read as one, so the error names its scheme alone,
-as `a location whose scheme is mailto:`. The check refuses a target that
-another client could read as a different host, such as one with a backslash
-before an `@`. For an API that redirects to another server on purpose, such as
-a download host, list that origin in `redirect_origins`:
+`RedirectError` before anything is sent there. The check reads the target
+twice. One reading is the destination that requests would send, with the target
+joined onto the request's URL and percent-encoded as requests does. The other
+is the raw target joined by `urljoin()`, which another client could read as a
+different host, as it can for a backslash before an `@`. The redirect is
+refused unless both readings name an allowed origin. The error quotes the
+origin of the destination alone, as `https://files.example.com`, and never its
+user, password, path, query, or fragment, since a signed download URL carries
+its credential in the query. The error's `response` holds the whole header. A
+target that is not an HTTP or HTTPS URL, such as `ftp://user:pass@host/x` or
+`mailto:user:pass@host`, has no origin, and its text can read as a user and
+password, so the error names its scheme alone, as
+`a location whose scheme is mailto:`. For an API that redirects to another
+server on purpose, such as a download host, list that origin in
+`redirect_origins`:
 
 ```python
 api = API("https://api.example.com/")

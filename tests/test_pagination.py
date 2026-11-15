@@ -342,10 +342,10 @@ def test_next_link_without_a_host_is_named_by_its_scheme(
     assert requests_mock.call_count == 0
 
 
-def test_next_link_with_a_host_is_quoted_without_its_user_and_password(
+def test_next_link_with_a_host_is_quoted_by_its_origin(
     requests_mock: Any,
 ) -> None:
-    """A link with a host to another origin is quoted as requests reads it."""
+    """A link with a host to another origin is quoted by its origin alone."""
     api = API("http://api.test/")
     first_page = {
         "next": "https://alice:hunter2@H.test:8443/x[1]",
@@ -355,9 +355,7 @@ def test_next_link_with_a_host_is_quoted_without_its_user_and_password(
     with pytest.raises(PaginationError) as raised:
         list(follow_next_links(api, first_page, url="http://api.test/p"))
 
-    assert str(raised.value).startswith(
-        "Page URL 'https://h.test:8443/x%5B1%5D' has a"
-    )
+    assert str(raised.value).startswith("Page URL 'https://h.test:8443' has a")
     assert "hunter2" not in repr(raised.value)
 
 
@@ -555,6 +553,173 @@ def test_link_that_requests_cannot_send_is_not_quoted_if_origins_are_allowed(
     _assert_error_quotes_no_link(raised.value, REQUESTED)
 
 
+SIGNED_LINK = "https://other.test/p?token=SECRETTOKEN&sig=SECRETSIG#SECRETFRAG"
+SIGNED_SECRETS = ("SECRETTOKEN", "SECRETSIG", "SECRETFRAG", "token=")
+
+
+def _printed_by(error: BaseException) -> list[str]:
+    """Return every text that logging an error prints from it.
+
+    Args:
+        error: The error.
+
+    Returns:
+        Its message, representation, arguments, and formatted traceback.
+    """
+    return [
+        str(error),
+        repr(error),
+        repr(error.args),
+        "".join(traceback.format_exception(error)),
+    ]
+
+
+@pytest.mark.parametrize("how", READ_LINKS)
+def test_link_to_another_origin_is_quoted_by_its_origin_alone(
+    requests_mock: Any, how: str
+) -> None:
+    """A link with a signed query is refused without its path or query.
+
+    Args:
+        how: How the link is read, as an item of ``READ_LINKS``.
+    """
+    with pytest.raises(PaginationError) as raised:
+        _read_link(requests_mock, how, SIGNED_LINK, False)
+
+    assert str(raised.value) == (
+        "Page URL 'https://other.test' has a different origin from the API's "
+        "base URL 'http://api.test/'. Pass allow_other_origins=True to "
+        "follow it."
+    )
+    for text in _printed_by(raised.value):
+        for secret in SIGNED_SECRETS:
+            assert secret not in text
+
+
+@pytest.mark.parametrize(
+    ("link", "origin"),
+    [
+        (
+            "https://[2001:DB8::1]:8443/p?q=SECRET",
+            "https://[2001:db8::1]:8443",
+        ),
+        ("https://[::1]/p#SECRET", "https://[::1]"),
+        ("http://Other.TEST:8080/p", "http://other.test:8080"),
+        ("http://other.test:80/p?q=SECRET", "http://other.test"),
+        ("https://Other.TEST:443/p", "https://other.test"),
+        ("https://other.test:80/p", "https://other.test:80"),
+        ("https://b\u00fccher.test/p?q=SECRET", "https://xn--bcher-kva.test"),
+        ("https://alice:hunter2@other.test/p", "https://other.test"),
+    ],
+)
+def test_link_to_another_origin_is_quoted_as_requests_reads_its_origin(
+    requests_mock: Any, link: str, origin: str
+) -> None:
+    """The quoted origin has the host and port that requests prepares.
+
+    The host is lower case, an international name is its ASCII form, an IPv6
+    address is in brackets, and a port is shown unless it is the scheme's
+    default.
+
+    Args:
+        link: The link.
+        origin: The origin that the message quotes.
+    """
+    with pytest.raises(PaginationError) as raised:
+        _read_link(requests_mock, "next links", link, False)
+
+    assert str(raised.value).startswith(f"Page URL {origin!r} has a")
+    for text in _printed_by(raised.value):
+        assert "SECRET" not in text
+        assert "hunter2" not in text
+
+
+def test_next_link_to_a_page_already_read_is_quoted_by_its_origin(
+    requests_mock: Any,
+) -> None:
+    """A cycle's message leaves out the query of the link that closes it."""
+    api = API("http://api.test/")
+    link = "http://api.test/p?cursor=SECRETCURSOR#SECRETFRAG"
+    first_page = {"next": link, "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page, url=link))
+
+    assert str(raised.value) == (
+        "Next-page URL 'http://api.test' names a page that was already "
+        "read, so following it would never end"
+    )
+    for text in _printed_by(raised.value):
+        assert "SECRET" not in text
+
+
+def test_next_link_to_an_unpreparable_page_already_read_is_not_quoted(
+    requests_mock: Any,
+) -> None:
+    """A cycle through a URL that requests cannot prepare quotes none of it."""
+    api = API("http://api.test/")
+    link = "http://alice:hunter2@api.test:bad/p?cursor=SECRETCURSOR"
+    first_page = {"next": link, "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page, url=link))
+
+    assert str(raised.value) == (
+        "Next-page URL names a page that was already read, so following it "
+        "would never end"
+    )
+    for text in _printed_by(raised.value):
+        for secret in ("alice", "hunter2", "SECRET"):
+            assert secret not in text
+
+
+def test_page_link_to_a_page_already_read_is_quoted_by_its_origin(
+    requests_mock: Any,
+) -> None:
+    """``Page.next_page()`` reports a cycle without the link's query."""
+    api = API("http://api.test/")
+    link = "http://api.test/p?cursor=SECRETCURSOR"
+    requests_mock.get(link, json={"next": link, "results": [{"id": 1}]})
+    page = next_links_page(api, api.get(link))
+
+    with pytest.raises(PaginationError) as raised:
+        page.next_page()
+
+    assert str(raised.value) == (
+        "Page URL 'http://api.test' names a page that was already read, so "
+        "following it would never end"
+    )
+    for text in _printed_by(raised.value):
+        assert "SECRET" not in text
+
+
+def test_page_redirected_to_a_signed_url_quotes_only_its_origin(
+    requests_mock: Any,
+) -> None:
+    """A page request's redirect to another origin leaves out its query."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={
+            "Location": "https://files.test/obj?sig=SECRETSIG#SECRETFRAG"
+        },
+    )
+    first_page = {"next": "https://api.test/p", "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page))
+
+    assert str(raised.value) == (
+        "Page request 'https://api.test/p' was redirected to "
+        "'https://files.test', which has a different origin from the API's "
+        "base URL 'https://api.test/'. Pass allow_other_origins=True to "
+        "follow it."
+    )
+    for text in _printed_by(raised.value):
+        assert "SECRET" not in text
+
+
 def _serve_link_header(link: bytes) -> tuple[socket.socket, threading.Thread]:
     """Serve one JSON page whose ``Link`` header holds raw bytes.
 
@@ -737,10 +902,10 @@ def test_page_redirected_to_a_target_that_requests_cannot_prepare_quotes_none(
     assert raised.value.response.headers["Location"] == location
 
 
-def test_page_redirected_to_another_origin_quotes_the_prepared_target(
+def test_page_redirected_to_another_origin_quotes_the_prepared_origin(
     requests_mock: Any,
 ) -> None:
-    """A page redirected to another HTTP origin quotes it as prepared."""
+    """A page redirected to another origin quotes its origin as prepared."""
     api = API("https://api.test/")
     requests_mock.get(
         "https://api.test/p",
@@ -752,9 +917,9 @@ def test_page_redirected_to_another_origin_quotes_the_prepared_target(
     with pytest.raises(PaginationError, match="different origin") as raised:
         list(follow_next_links(api, first_page))
 
-    assert (
-        "was redirected to 'http://h.test:8080/x%5B1%5D', which has a"
-    ) in str(raised.value)
+    assert ("was redirected to 'http://h.test:8080', which has a") in str(
+        raised.value
+    )
     assert "hunter2" not in repr(raised.value)
 
 
