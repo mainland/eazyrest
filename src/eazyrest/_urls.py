@@ -22,6 +22,28 @@ class _ServerURL(NamedTuple):
     sendable: bool
     """Whether the session has an adapter for the URL."""
 
+    @classmethod
+    def from_prepared(cls, url: str, sendable: bool = True) -> _ServerURL:
+        """Read a URL that requests has prepared.
+
+        Args:
+            url: The prepared URL.
+            sendable: Whether the session has an adapter for the URL.
+
+        Returns:
+            The URL with its scheme, host, and port, read as
+            ``_prepare_server_url()`` reads them.
+
+        Raises:
+            ValueError: If the URL's port is not a number or is out of range.
+        """
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        http = scheme in _DEFAULT_PORTS
+        host = parts.hostname if http else None
+        port = parts.port or _DEFAULT_PORTS[scheme] if http else None
+        return cls(url, scheme, host, port, sendable)
+
     @property
     def is_http(self) -> bool:
         """Whether the URL is an HTTP or HTTPS URL that names a host."""

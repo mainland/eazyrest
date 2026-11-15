@@ -142,24 +142,18 @@ def _prepare_server_url(
         request.prepare_headers(None)
         request.prepare_auth(None)
         assert request.url is not None
-        parts = urlsplit(request.url)
-        scheme = parts.scheme.lower()
-        if not scheme:
+        prepared = _ServerURL.from_prepared(request.url)
+        if not prepared.scheme:
             return None
-        http = scheme in _DEFAULT_PORTS
-        host = parts.hostname if http else None
-        port = parts.port or _DEFAULT_PORTS[scheme] if http else None
         try:
             session.get_adapter(request.url)
         except requests.exceptions.InvalidSchema:
-            if http:
+            if prepared.scheme in _DEFAULT_PORTS:
                 return None
-            sendable = False
-        else:
-            sendable = True
+            return prepared._replace(sendable=False)
+        return prepared
     except (ValueError, requests.RequestException):
         return None
-    return _ServerURL(request.url, scheme, host, port, sendable)
 
 
 def _canonical_url(url: str) -> str:
