@@ -14,7 +14,6 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
-    _authority_less_location,
     _redact_url,
 )
 from ._protocols import Client, Response
@@ -23,9 +22,8 @@ from .api import (
     _as_api,
     _check_final_response,
     _origin,
+    _prepare_redirect,
     _prepare_server_url,
-    _redirect_destination,
-    _redirect_origins,
     _response_hooks,
 )
 
@@ -249,11 +247,14 @@ def _request_page(
 
         Raises:
             PaginationError: If ``resp`` redirects to an origin other than the
-                API's base URL and other origins are not allowed. The response
-                is closed first. A client that does not follow redirects never
-                raises it, because its page requests would not follow the
-                redirect even with ``allow_other_origins=True``, and the
-                unfollowed redirect raises ``RedirectError`` instead.
+                API's base URL and other origins are not allowed. The message
+                quotes the target as requests prepares it, or names its scheme
+                alone if it is not HTTP or HTTPS. The response is closed first.
+                A target that cannot be prepared is left to the API's guard. A
+                client that does not follow redirects never raises it, because
+                its page requests would not follow the redirect even with
+                ``allow_other_origins=True``, and the unfollowed redirect
+                raises ``RedirectError`` instead.
         """
         if not follow:
             return
@@ -261,15 +262,19 @@ def _request_page(
             target = api.session.get_redirect_target(resp)
             if not target or allow_other_origins:
                 return
-            destination = _redirect_destination(resp, target)
-            origins = _redirect_origins(resp, target)
+            prepared = _prepare_redirect(api.session, resp, target)
         except ValueError:
-            # The API's own guard refuses a location that cannot be parsed.
+            prepared = None
+        if prepared is None:
+            # The API's own guard runs after this hook. It refuses a target
+            # that cannot be parsed or prepared, with a message that quotes
+            # none of it, so this hook leaves it to the guard.
             return
+        destination, origins = prepared
         if origins != {api_origin}:
             resp.close()
-            quoted = _authority_less_location(destination) or repr(
-                _redact_url(destination)
+            quoted = destination.scheme_name or repr(
+                _redact_url(destination.url)
             )
             raise PaginationError(
                 f"Page request {_redact_url(resp.url)!r} was redirected to "

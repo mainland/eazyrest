@@ -677,9 +677,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   as `a location whose scheme is mailto:`, since the target has no user and
   password to leave out and its text can read as one. The error's `response`
   holds the header.
-- A `PaginationError` that refuses a redirect to another origin quotes a target
-  with no host, such as `mailto:user:pass@host/x` or
-  `file:///user:pass@host/x`, by its scheme alone, as `a mailto: location`.
+- A `PaginationError` that refuses a redirect from a next-page request to
+  another origin reads the target as a `RedirectError` does, and quotes it in
+  the same way. A target that requests cannot prepare raises the API's
+  `RedirectError`, which quotes none of it, and not a `PaginationError` that
+  quoted it.
 - A `PaginationError` for a next-page link or a `Link` header link that
   requests cannot prepare or send quotes none of the link, and has no
   `__cause__` or `__context__`, since the error that rejected the link, such as

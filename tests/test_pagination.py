@@ -691,11 +691,71 @@ def test_page_redirected_to_a_target_without_an_authority_quotes_its_scheme(
     with pytest.raises(PaginationError, match="different origin") as raised:
         list(follow_next_links(api, first_page))
 
-    assert "was redirected to a mailto: location, which has" in str(
-        raised.value
-    )
+    assert (
+        "was redirected to a location whose scheme is mailto:, which has"
+    ) in str(raised.value)
     assert "alice" not in str(raised.value)
     assert "hunter2" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://alice:hunter2#@h.test/",
+        "https://h.test:hunter2/",
+        "http://alice:hunter2#@h.test:abc/x",
+        "https://alice:hunter2\u2215@h.test/",
+    ],
+)
+def test_page_redirected_to_a_target_that_requests_cannot_prepare_quotes_none(
+    requests_mock: Any, location: str
+) -> None:
+    """The API's guard refuses such a target, and its message quotes none.
+
+    The page's own check leaves the target to the guard, whose error holds the
+    header on its response.
+
+    Args:
+        location: The redirect's ``Location`` header.
+    """
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": location},
+    )
+    first_page = {"next": "https://api.test/p", "results": []}
+
+    with pytest.raises(RedirectError, match="cannot") as raised:
+        list(follow_next_links(api, first_page))
+
+    for text in (str(raised.value), repr(raised.value)):
+        assert "alice" not in text
+        assert "hunter2" not in text
+        assert "h.test" not in text
+    assert raised.value.response is not None
+    assert raised.value.response.headers["Location"] == location
+
+
+def test_page_redirected_to_another_origin_quotes_the_prepared_target(
+    requests_mock: Any,
+) -> None:
+    """A page redirected to another HTTP origin quotes it as prepared."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "http://Alice:hunter2@H.TEST:8080/x[1]"},
+    )
+    first_page = {"next": "https://api.test/p", "results": []}
+
+    with pytest.raises(PaginationError, match="different origin") as raised:
+        list(follow_next_links(api, first_page))
+
+    assert (
+        "was redirected to 'http://h.test:8080/x%5B1%5D', which has a"
+    ) in str(raised.value)
+    assert "hunter2" not in repr(raised.value)
 
 
 def test_session_parameters_are_not_repeated_on_links(
