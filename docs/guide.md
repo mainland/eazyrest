@@ -241,8 +241,9 @@ dataclass, since equality and `url` read the key's JSON without building the
 objects. Declaring one raises `TypeError` when the class is decorated, or when
 the key is first used if it names a class that is not defined yet. A `NewType`
 is looked through. A class that a conversion converts is not looked into, since
-the conversion replaces its structure. Key the model by a relation to the model
-instead, or by the type of that model's key.
+the conversion replaces its structure. A key whose type Pydantic converts is
+checked when the key is first used, not when the class is decorated. Key the
+model by a relation to the model instead, or by the type of that model's key.
 
 ### Differences from Django
 
@@ -1264,8 +1265,8 @@ instead, which receives the absolute URLs and returns the objects keyed by URL.
 A URL is checked as reading the field checks it, so a URL on an origin that the
 API does not allow is not loaded, and reading the field still raises
 `FieldConversionError`. Two spellings of one URL, such as a relative and an
-absolute one, name the same object. `bulk_get_by_urls()` raises `TypeError` for
-an object of another model in the same way.
+absolute one, name the same object. Prefetch raises `TypeError` for an object
+of another model that `bulk_get_by_urls()` returns, in the same way.
 
 Related objects inherit their parent's write mode, including when they are
 prefetched. Enabling prefetch preserves when assignments are saved, even if the
