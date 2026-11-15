@@ -257,11 +257,17 @@ raises the error that resolving the name raised. That is `url`, `hash()`,
 which raises before it sends its bulk request. The error is a `NameError` for a
 class that is not defined, an `AttributeError` for an attribute of a module,
 and, for a form or a model that Pydantic converts whose annotations cannot be
-resolved, a `TypeError` that says so, which `url` raises as a
-`FieldConversionError`. None of that is kept on the object or the class, so
-once the class is defined the object has the `url`, the hash, and the
-equalities of a new object with the same key. A field that is not the key
-raises its own `NameError` from the same names.
+resolved, or a string in a type alias's value that cannot be resolved, a
+`TypeError` that says so, which `url` raises as a `FieldConversionError`. None
+of that is kept on the object or the class, so once the class is defined the
+object has the `url`, the hash, and the equalities of a new object with the
+same key.
+
+A field that is not the key raises a `NameError` when its annotation, or a type
+alias in it, names the class that is not defined yet. It raises a
+`FieldConversionError` when the name is in a `TypedDict`, `NamedTuple`,
+dataclass, or Pydantic model that the field names, or in a string in a type
+alias's value, as for the key.
 
 ### Differences from Django
 
