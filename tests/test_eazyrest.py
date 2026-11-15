@@ -9006,6 +9006,76 @@ def test_a_change_to_the_key_of_a_related_object_leaves_its_parents_json() -> (
     assert holder.json["stop"] == {"id": ["a"], "name": "A"}
 
 
+@dataclasses.dataclass
+class Trail:
+    """Dataclass key type that a conversion builds around a decoded list."""
+
+    parts: list[str]
+
+
+class TrailBase(JSONObject):
+    """Base whose conversion for ``Trail`` keeps the list that it decodes."""
+
+    conversions: ClassVar[dict[type, Conversion]] = {
+        Trail: Conversion(
+            decode=lambda value, cls: Trail(value),
+            encode=lambda trail, cls: trail.parts,
+        )
+    }
+
+
+@json_object
+class TrailStop(TrailBase):
+    """Model whose key is a ``Trail``, which can change in place."""
+
+    class_url = "/trail-stops/"
+
+    id: Trail
+    name: str
+
+
+@json_object
+class TrailHolder(TrailBase):
+    """Model with a plain relation to a model keyed by a ``Trail``."""
+
+    class_url = "/trail-holders/"
+
+    id: int
+    stop: TrailStop
+
+
+@json_object(pk="stop")
+class TrailNote(TrailBase):
+    """Model keyed by a relation to a model keyed by a ``Trail``."""
+
+    class_url = "/trail-notes/"
+
+    stop: TrailStop
+    note: str
+
+
+def test_a_change_to_a_key_that_a_class_entry_decodes_leaves_the_parents() -> (
+    None
+):
+    """A class entry that keeps its input does not share it with the JSON.
+
+    The ``Trail`` conversion is keyed by a dataclass, which a class entry
+    converts, and keeps the list that it decodes. A change in place to the
+    related object's key leaves the JSON of a parent that embeds the object,
+    and the key that a model keyed by the parent copies.
+    """
+    holder = TrailHolder(json={"id": 1, "stop": {"id": ["a"], "name": "A"}})
+    note = TrailNote(json={"stop": {"id": ["a"], "name": "A"}, "note": "n"})
+
+    holder.stop.pk.parts.append("b")
+    note.stop.pk.parts.append("b")
+
+    assert holder.json["stop"] == {"id": ["a"], "name": "A"}
+    assert note.json["stop"] == {"id": ["a"], "name": "A"}
+    assert note.pk == Trail(["a"])
+    assert note.url == "/trail-notes/%5B%27a%27%5D/"
+
+
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
     """A payload that names no key cannot name another object."""
     grid = _identity_keyed_objects("lazy")[0]
