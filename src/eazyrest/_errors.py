@@ -380,8 +380,22 @@ def _response_url(resp: Response) -> str:
     """
     if not _reached_by_redirect(resp):
         return _redact_url(resp.url)
+    return _redirected_url(resp.url)
+
+
+def _redirected_url(url: str) -> str:
+    """Return the URL that a followed redirect reached, to quote in a message.
+
+    Args:
+        url: The URL, as requests sent it.
+
+    Returns:
+        Its origin and path, built from the parts that requests reads, or a
+        text that names none of it if it cannot be read as an HTTP or HTTPS
+        URL.
+    """
     try:
-        prepared = _ServerURL.from_prepared(str(resp.url))
+        prepared = _ServerURL.from_prepared(str(url))
     except ValueError:
         return _UNSHOWN_URL
     if not prepared.is_http:

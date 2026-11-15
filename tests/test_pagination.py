@@ -2361,3 +2361,139 @@ def test_a_model_without_a_key_is_read_from_the_items_of_an_endpoint(
     assert team.last_request.url == "https://example.com/v1/teams/7/"
     with pytest.raises(ValueError, match="has no primary-key field"):
         _ = entries[0].url
+
+
+def test_page_request_redirected_twice_quotes_the_hop_by_origin_and_path(
+    requests_mock: Any,
+) -> None:
+    """A redirect from a redirect names the URL that the first one reached.
+
+    The page link itself is quoted with its query, since it holds the state
+    that a caller needs, but the URL that a redirect chose is not.
+    """
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://api.test/q?sig=SECRETSIG#SECRETFRAG"},
+    )
+    requests_mock.get(
+        "https://api.test/q",
+        status_code=302,
+        headers={"Location": "https://files.test/z?sig=SECRETSIG"},
+    )
+    first_page = {"next": "https://api.test/p?cursor=KEPT", "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page))
+
+    assert str(raised.value) == (
+        "Page request 'https://api.test/q' was redirected to "
+        "'https://files.test', which has a different origin from the API's "
+        "base URL 'https://api.test/'. Pass allow_other_origins=True to "
+        "follow it."
+    )
+
+
+def test_page_link_that_is_redirected_away_keeps_its_query(
+    requests_mock: Any,
+) -> None:
+    """A page link that no redirect reached is quoted with its query."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://files.test/z?sig=SECRETSIG"},
+    )
+    first_page = {"next": "https://api.test/p?cursor=KEPT", "results": []}
+
+    with pytest.raises(PaginationError) as raised:
+        list(follow_next_links(api, first_page))
+
+    assert str(raised.value).startswith(
+        "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
+        "'https://files.test', "
+    )
+    assert "SECRETSIG" not in str(raised.value)
+
+
+def test_page_link_that_fails_keeps_its_query(requests_mock: Any) -> None:
+    """The error for a page link that no redirect reached names its query."""
+    api = API("https://api.test/")
+    requests_mock.get("https://api.test/p", status_code=500)
+    first_page = {"next": "https://api.test/p?cursor=KEPT", "results": []}
+
+    with pytest.raises(requests.HTTPError) as raised:
+        list(follow_next_links(api, first_page))
+
+    assert str(raised.value) == (
+        "500 Server Error: None for GET https://api.test/p?cursor=KEPT"
+    )
+
+
+def test_page_link_that_a_redirect_reached_and_failed_leaves_out_its_query(
+    requests_mock: Any,
+) -> None:
+    """The failure of the URL that a redirect chose names its path alone."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://api.test/q?sig=SECRETSIG"},
+    )
+    requests_mock.get("https://api.test/q", status_code=500)
+    first_page = {"next": "https://api.test/p?cursor=KEPT", "results": []}
+
+    with pytest.raises(requests.HTTPError) as raised:
+        list(follow_next_links(api, first_page))
+
+    assert str(raised.value) == (
+        "500 Server Error: None for GET https://api.test/q"
+    )
+
+
+def test_page_repr_after_a_redirect_leaves_out_the_query(
+    requests_mock: Any,
+) -> None:
+    """A page that a redirect reached shows its origin and path alone."""
+    api = API("https://api.test/")
+    api.redirect_origins = ["https://files.test"]
+    requests_mock.get(
+        "https://api.test/items/",
+        status_code=302,
+        headers={"Location": "https://files.test/o?sig=SECRETSIG"},
+    )
+    requests_mock.get(
+        "https://files.test/o",
+        json={"results": [1], "next": "https://files.test/o?cursor=2"},
+    )
+
+    page = next_links_page(api, api.get("items/"), allow_other_origins=True)
+
+    assert page.url == "https://files.test/o?sig=SECRETSIG"
+    assert repr(page) == "<Page url='https://files.test/o' items=1>"
+
+
+def test_page_repr_keeps_the_query_of_a_url_that_was_not_redirected(
+    requests_mock: Any,
+) -> None:
+    """A page that was read from a link, or built by hand, shows its query."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/items/",
+        json={"results": [1], "next": "https://api.test/items/?page=2"},
+    )
+    requests_mock.get(
+        "https://api.test/items/?page=2", json={"results": [2], "next": None}
+    )
+
+    first = next_links_page(api, api.get("items/"))
+    second = first.next_page()
+
+    assert second is not None
+    assert (
+        repr(second) == "<Page url='https://api.test/items/?page=2' items=1>"
+    )
+    assert repr(Page([1], url="https://api.test/a?k=1")) == (
+        "<Page url='https://api.test/a?k=1' items=1>"
+    )

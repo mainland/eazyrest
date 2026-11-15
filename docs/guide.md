@@ -520,9 +520,10 @@ as a signed download URL, is quoted by its origin and path, as
 `https://files.example.com/o`, and so is a redirect that would not resend a
 write, as `http://host/items/`. These quote no user, password, query, or
 fragment. The `repr()` of a `Page`, and of an object known only by its URL,
-leaves out a user and password too. An exception that requests itself raises,
-such as `requests.ConnectionError`, quotes the URL as requests does. A Pydantic
-error says where and why a value is invalid, as in
+leaves out a user and password too, and that of a page that a followed redirect
+reached shows its origin and path alone. An exception that requests itself
+raises, such as `requests.ConnectionError`, quotes the URL as requests does. A
+Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1457,7 +1458,9 @@ named by its scheme alone, as `a location whose scheme is mailto:`.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed, and reads the target as the check of any other
-redirect does, so the error quotes its origin in the same way. A target that
+redirect does, so the error quotes its origin in the same way. It names the
+request by its URL as the link gave it, with its query, unless a redirect from
+the link reached the request, which it names by origin and path. A target that
 requests cannot prepare raises `RedirectError`, which quotes none of it.
 Existing session response hooks still run. With `allow_other_origins=True`, a
 redirect is checked as for every other request: it must lead to the origin of

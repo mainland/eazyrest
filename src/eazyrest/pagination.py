@@ -14,7 +14,10 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
+    _reached_by_redirect,
     _redact_url,
+    _redirected_url,
+    _response_url,
 )
 from ._protocols import Client, Response
 from ._results import Results
@@ -291,7 +294,7 @@ def _request_page(
             resp.close()
             quoted = destination.scheme_name or repr(destination.origin_text)
             raise PaginationError(
-                f"Page request {_redact_url(resp.url)!r} was redirected to "
+                f"Page request {_response_url(resp)!r} was redirected to "
                 f"{quoted}, which has a different origin "
                 f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
                 "allow_other_origins=True to follow it."
@@ -700,6 +703,7 @@ class Page(Generic[T]):
         self.next_url = next_url
         self.previous_url = previous_url
         self._source: _PageSource[T] | None = None
+        self._redirected = False
         self._allow_other_origins = False
         self._forward = _Trail(frozenset({url}), 1)
         self._backward = _Trail(frozenset({url}), 1)
@@ -724,12 +728,18 @@ class Page(Generic[T]):
         """Return the page's URL and size.
 
         The URL leaves out any user and password, as an error message does,
-        since a representation reaches logs in the same way.
+        since a representation reaches logs in the same way. A page that a
+        followed redirect reached shows only its origin and path.
 
         Returns:
             Representation of the page.
         """
-        return f"<Page url={_redact_url(self.url)!r} items={len(self.items)}>"
+        url = (
+            _redirected_url(self.url)
+            if self._redirected
+            else _redact_url(self.url)
+        )
+        return f"<Page url={url!r} items={len(self.items)}>"
 
     def next_page(self) -> Page[T] | None:
         """Request the next page.
@@ -874,6 +884,7 @@ class _JSONPageSource(_PageSource[Any]):
         page = self._parse(resp)
         _check_page_size(self.api, page.items)
         page._source = self
+        page._redirected = _reached_by_redirect(resp)
         page._allow_other_origins = self._allow_other_origins
         return page
 

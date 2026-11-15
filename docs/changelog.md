@@ -690,7 +690,10 @@ that can break code written for 0.9.0, followed by what to do about it.
 - A `PaginationError` that refuses a redirect from a next-page request to
   another origin quotes the target in the same way. A target that requests
   cannot prepare raises the API's `RedirectError`, which quotes none of it, and
-  not a `PaginationError` that quoted it.
+  not a `PaginationError` that quoted it. The error names the request that was
+  redirected by its URL as the link gave it, with its query, but by its origin
+  and path if an earlier redirect reached it. The `repr()` of a `Page` that a
+  followed redirect reached shows its origin and path alone.
 - A `PaginationError` for a next-page link or a `Link` header link that
   requests cannot prepare or send quotes none of the link, and has no
   `__cause__` or `__context__`, since the error that rejected the link, such as
