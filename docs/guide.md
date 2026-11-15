@@ -505,17 +505,22 @@ The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
 the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
 `NotFound`), `RedirectError`, `PaginationError`, `ResponseShapeError`, and
-`LimitExceeded` for a size or time limit name the URLs involved, with their
-query strings, so a query parameter's value can appear. Send a secret in a
-header or the body, not in the query. They leave out a user and password in a
-URL, so `http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the
-message, `args`, and `repr()`, but the error's `request` and `response` keep
-the real URL. A URL that the server supplied, such as the `Location` of a
-redirect that is refused or a next-page link, is quoted by its origin alone, as
-`http://host`, whatever it holds. A redirect that would not resend a write is
-quoted by its origin and path, as `http://host/items/`. Neither quotes a user,
-password, query, or fragment. The `repr()` of a `Page`, and of an object known
-only by its URL, leaves them out too. An exception that requests itself raises,
+`LimitExceeded` for a size or time limit name the URLs involved. A URL that you
+gave, such as the one that you pass to `get()`, appears with its query string,
+so a query parameter's value can appear. Send a secret in a header or the body,
+not in the query. A message leaves out a user and password in such a URL, so
+`http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the message,
+`args`, and `repr()`, but the error's `request` and `response` keep the real
+URL. A request for a next-page link names the link in the same way, since its
+query holds the position of the page. Any other URL that the server chose is
+quoted from the parts that requests reads from it, and not from its text. A
+redirect or a next-page link that is refused is quoted by its origin alone, as
+`http://host`, whatever it holds. A URL that a followed redirect reached, such
+as a signed download URL, is quoted by its origin and path, as
+`https://files.example.com/o`, and so is a redirect that would not resend a
+write, as `http://host/items/`. These quote no user, password, query, or
+fragment. The `repr()` of a `Page`, and of an object known only by its URL,
+leaves out a user and password too. An exception that requests itself raises,
 such as `requests.ConnectionError`, quotes the URL as requests does. A Pydantic
 error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping

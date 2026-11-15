@@ -142,7 +142,10 @@ describe them further.
   `ResponseShapeError`, and `LimitExceeded` leave out a user and password in
   the URL that they quote, so code that compared a message with a base URL such
   as `http://user:pass@host/` must compare it without them. The `repr()` of a
-  `Page`, and of an object known only by its URL, leaves them out too.
+  `Page`, and of an object known only by its URL, leaves them out too. A
+  message quotes the URL that a followed redirect reached by its origin and
+  path, as `https://files.example.com/o`, and not with its query or fragment,
+  so code that looked in it for a query parameter must read `response.url`.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
   arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
   authentication handler that reads the body, such as
@@ -666,8 +669,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   `PaginationError`, `ResponseShapeError`, and `LimitExceeded`, leaves out the
   user and password of the URL in its message, `args`, and `repr()`, as
   `http://host/` for `http://user:pass@host/`. The URL's query is still quoted,
-  except in a URL that the server supplied, which the next entries describe.
-  The error's `request` and `response` keep the real URL.
+  except in a URL that the server supplied or that a followed redirect reached,
+  which the next entries describe. The error's `request` and `response` keep
+  the real URL.
+- An error that names the URL of a response that a followed redirect reached,
+  such as an `APIError` for a failed download, a `LimitExceeded`, a
+  `ResponseShapeError`, or the `RedirectError` of a redirect from it, quotes
+  its origin and path alone, as `https://files.example.com/o`, built from the
+  parts that requests reads, so it holds no user, password, query, or fragment,
+  such as the signature of a download URL. The URL that the caller gave keeps
+  its query. The error's `response` holds the whole URL.
 - A `RedirectError` that refuses a redirect to another origin quotes the origin
   that requests reads from the target, as `https://files.example.com` or
   `http://host:8080`, and nothing else, so it holds no user, password, path,

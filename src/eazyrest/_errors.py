@@ -9,6 +9,7 @@ from typing import Any, NoReturn, cast
 import requests
 
 from ._protocols import Response
+from ._urls import _ServerURL
 
 
 class EazyrestError(Exception):
@@ -190,7 +191,7 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             too deeply for Python's decoder.
     """
     where = (
-        f"The response to {resp.request.method} {_redact_url(resp.url)}, with "
+        f"The response to {resp.request.method} {_response_url(resp)}, with "
         f"status {resp.status_code},"
     )
     try:
@@ -290,8 +291,9 @@ _URL_LEADING = re.compile(r"^[\s\x00-\x20]+")
 def _redact_url(url: object) -> str:
     """Return a URL, without any user and password, to quote in a message.
 
-    An error message quotes the URL of a request, with its query, and a URL
-    such as ``http://user:pass@host/`` would put the credentials into a log.
+    An error message quotes the URL that the caller gave for a request, with
+    its query, and a URL such as ``http://user:pass@host/`` would put the
+    credentials into a log.
 
     Args:
         url: URL that requests prepares, as a string or as ``bytes``, which are
@@ -320,6 +322,71 @@ def _redact_url(url: object) -> str:
     if match is None:
         return text
     return (match.group(1) or match.group(2)) + normal[match.end() :]
+
+
+_REDIRECTED = "_eazyrest_reached_by_redirect"
+"""Attribute of a response that a followed redirect reached."""
+
+_UNSHOWN_URL = "<URL not shown>"
+
+
+def _mark_redirected(resp: Response) -> None:
+    """Record that a followed redirect reached a response.
+
+    A response hook sees a response before requests sets its ``history``, so
+    the client marks the responses that it knows a redirect reached.
+
+    Args:
+        resp: Response that requests received for a request that it sent
+            because a redirect led to it.
+    """
+    setattr(resp, _REDIRECTED, True)
+
+
+def _reached_by_redirect(resp: Response) -> bool:
+    """Return whether a followed redirect reached a response.
+
+    Args:
+        resp: Response, from a hook or after the request.
+
+    Returns:
+        Whether the client marked the response, or its ``history`` holds a 3xx
+        response. A challenge that an authentication handler answered by
+        resending the request is in the history too, but the resent request has
+        the URL that was given, so it does not count.
+    """
+    return getattr(resp, _REDIRECTED, False) or any(
+        300 <= hop.status_code < 400 for hop in resp.history
+    )
+
+
+def _response_url(resp: Response) -> str:
+    """Return the URL of a response, to quote in a message.
+
+    A redirect's ``Location`` is the server's choice, and a signed download URL
+    carries its credential in the query. So the URL of a response that a
+    followed redirect reached is quoted by its origin and path, built from the
+    parts of the URL that requests sent, as for a redirect that is refused. A
+    URL that the caller gave, or a page link, is quoted by ``_redact_url()``.
+
+    Args:
+        resp: Response whose URL the message names.
+
+    Returns:
+        The URL without its user and password, and, for a response that a
+        followed redirect reached, with its origin and path alone. If requests
+        could not have sent the URL, which cannot be read as an HTTP or HTTPS
+        URL, a text that names none of it.
+    """
+    if not _reached_by_redirect(resp):
+        return _redact_url(resp.url)
+    try:
+        prepared = _ServerURL.from_prepared(str(resp.url))
+    except ValueError:
+        return _UNSHOWN_URL
+    if not prepared.is_http:
+        return _UNSHOWN_URL
+    return prepared.origin_and_path
 
 
 def _normalized_url(url: object) -> tuple[str, str]:
@@ -377,7 +444,7 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     kind = "Client" if 400 <= resp.status_code < 500 else "Server"
     message = (
         f"{resp.status_code} {kind} Error: {_printable(resp.reason)} for "
-        f"{resp.request.method} {_redact_url(resp.url)}"
+        f"{resp.request.method} {_response_url(resp)}"
     )
     if isinstance(data, dict):
         # A server chooses the names, so bound them, and quote them, so that

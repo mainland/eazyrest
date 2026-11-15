@@ -33,8 +33,10 @@ from ._errors import (
     RedirectError,
     _api_error,
     _is_failure,
+    _mark_redirected,
     _redact_url,
     _response_json,
+    _response_url,
 )
 from ._protocols import Client, Response
 from ._urls import _DEFAULT_PORTS, _ServerURL
@@ -346,7 +348,7 @@ def _check_final_response(
     if 300 <= resp.status_code < 400:
         resp.close()
         raise RedirectError(
-            f"{resp.request.method} {_redact_url(resp.url)} returned status "
+            f"{resp.request.method} {_response_url(resp)} returned status "
             f"{resp.status_code}, so {consequence}",
             response=resp,
         )
@@ -407,7 +409,7 @@ def _check_write_redirect(
         return
 
     resp.close()
-    url = _redact_url(resp.url)
+    url = _response_url(resp)
     quoted = destination.origin_and_path
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
@@ -456,7 +458,7 @@ def _unquotable_redirect(
     """
     resp.close()
     return RedirectError(
-        f"{resp.request.method} {_redact_url(resp.url)} was redirected with "
+        f"{resp.request.method} {_response_url(resp)} was redirected with "
         f"status {resp.status_code} to a location that {problem}, so it was "
         "not followed. The response of this error holds the Location header.",
         response=resp,
@@ -569,11 +571,13 @@ class _Budget:
                 path of the request, so it is named by the budget's request.
 
         Returns:
-            Method and URL, with the URL's user and password left out.
+            Method and URL, with the URL's user and password left out, and, for
+            a response that a followed redirect reached, its query and fragment
+            too.
         """
         if not resp.url and self.request is not None:
             return self.request
-        return f"{resp.request.method} {_redact_url(resp.url)}"
+        return f"{resp.request.method} {_response_url(resp)}"
 
     def check_time(self, resp: requests.Response | None = None) -> None:
         """Raise if the request has run out of time.
@@ -1428,6 +1432,17 @@ class API:
             requests follows it.
         """
         allowed = {_origin(url), *map(_origin, self.redirect_origins)}
+        followed = False
+
+        def mark_redirected(resp: requests.Response, **kwargs: Any) -> None:
+            """Mark the response to a request that a redirect led to.
+
+            Args:
+                resp: Response, which requests has not yet given a history.
+                kwargs: Arguments that requests passes to response hooks.
+            """
+            if followed:
+                _mark_redirected(resp)
 
         def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
             """Refuse a redirect that is not safe to follow.
@@ -1464,6 +1479,8 @@ class API:
                 destination, origins = prepared
                 if origins <= allowed:
                     _check_write_redirect(resp, destination)
+                    nonlocal followed
+                    followed = True
                     if budget is not None:
                         # requests reads a redirect's body before following it.
                         budget.check_time(resp)
@@ -1472,7 +1489,7 @@ class API:
 
                 resp.close()
                 raise RedirectError(
-                    f"{resp.request.method} {_redact_url(resp.url)} was "
+                    f"{resp.request.method} {_response_url(resp)} was "
                     f"redirected with status {resp.status_code} to "
                     f"{destination.origin_text}, "
                     "whose origin differs from the request's, so it was not "
@@ -1485,11 +1502,13 @@ class API:
             raise _unquotable_redirect(resp, "cannot be parsed") from None
 
         # requests uses a request's response hooks instead of the session's, so
-        # keep the session's when the request has none. Run the guard last,
-        # after any hook that might change the response.
+        # keep the session's when the request has none. Mark a response first,
+        # so that any hook that names it can tell a redirect reached it, and
+        # run the guard last, after any hook that might change the response.
         merged = dict(hooks or {})
         response = merged.get("response") or self.session.hooks.get("response")
         merged["response"] = [
+            mark_redirected,
             *_response_hooks(response),
             check_redirect,
         ]
@@ -1525,7 +1544,7 @@ class API:
             raise RedirectError(
                 f"{sent} {_redact_url(redirect.url)} was redirected with "
                 f"status {redirect.status_code}, and requests resent it to "
-                f"{_redact_url(resp.url)} as {resp.request.method}, so the "
+                f"{_response_url(resp)} as {resp.request.method}, so the "
                 f"{sent} request was not performed",
                 response=redirect,
             )
