@@ -17,7 +17,6 @@ from ._errors import (
     _first_url,
     _redact_url,
     _redirected_url,
-    _request_budget,
     _response_url,
 )
 from ._protocols import Client, Response
@@ -294,12 +293,12 @@ def _request_page(
             return
         refused = _refused_reading(prepared, {api_origin})
         if refused is not None:
-            # The API's hook has noted the URL of the first response by now.
-            budget = _request_budget.get()
-            assert budget is not None
             resp.close()
             quoted = refused.scheme_name or repr(refused.origin_text)
-            url = _response_url(resp, budget.first_url)
+            # The active request's budget knows the URL that was sent first. A
+            # client whose get() does not go through the API's own request
+            # method has none, and the history of the response gives it.
+            url = _response_url(resp)
             raise PaginationError(
                 f"Page request {url!r} was redirected to "
                 f"{quoted}, which has a different origin "

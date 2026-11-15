@@ -2273,6 +2273,35 @@ def test_response_named_outside_a_request_compares_with_the_history() -> None:
     assert _response_url(final) == "https://api.test/b"
 
 
+def test_page_link_refused_with_no_request_active_keeps_its_query(
+    requests_mock: Any,
+) -> None:
+    """A client whose get() skips the API's request method names the link."""
+
+    class Direct(API):
+        def get(self, uri: str, *args: Any, **kwargs: Any) -> Any:
+            return self.session.get(self.resolve_url(uri), *args, **kwargs)
+
+    api = Direct("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://evil.test/z"},
+    )
+
+    with pytest.raises(PaginationError) as raised:
+        list(
+            follow_next_links(
+                api, {"next": "https://api.test/p?cursor=KEPT", "results": []}
+            )
+        )
+
+    assert str(raised.value).startswith(
+        "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
+        "'https://evil.test'"
+    )
+
+
 def test_http_error_of_a_url_that_redirected_to_itself_leaves_out_its_query(
     requests_mock: Any,
 ) -> None:
