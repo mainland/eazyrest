@@ -7290,6 +7290,153 @@ def test_a_key_that_holds_a_later_model_by_a_string_alias_is_refused_after(
         hash(used)
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+@pytest.mark.parametrize("shape", ["typed-dict", "named-tuple", "dataclass"])
+def test_an_object_keyed_by_an_alias_of_a_module_attribute_has_its_key_after(
+    shape: str,
+) -> None:
+    """An alias of a module's attribute is unresolved until it is set.
+
+    The alias's value names a class as an attribute of a module, as it does
+    when two modules import each other. Reading an attribute that the module
+    does not have yet raises an ``AttributeError``, which leaves the key
+    unknown like a name that is not defined. Until the attribute is set,
+    ``url`` and ``hash()`` raise it, ``==`` is ``False``, and nothing is kept,
+    so afterwards the key reads the class as a new object's does, and two
+    spellings of one ``datetime`` are the same key.
+
+    Args:
+        shape: The kind of form that holds the alias.
+    """
+    later: Any = types.ModuleType("later_stamp_module")
+    namespace: dict[str, Any] = {"later_stamp_module": later}
+    exec("type When = later_stamp_module.Stamp", namespace)  # noqa: S102
+    form, _ = _form_keyed_by(shape, namespace["When"])
+    box = _box_keyed_by(form)
+    zulu = "2026-01-01T00:00:00Z"
+    offset = "2026-01-01T00:00:00+00:00"
+    values: dict[str, Callable[[str], Any]] = {
+        "typed-dict": lambda text: {"n": text},
+        "named-tuple": lambda text: [text],
+        "dataclass": lambda text: {"n": text},
+    }
+    value_of = values[shape]
+    used = box(json={"id": value_of(zulu)})
+    twin = box(json={"id": value_of(zulu)})
+
+    with pytest.raises(AttributeError, match="Stamp"):
+        used.url  # noqa: B018
+    assert used != twin
+    with pytest.raises(AttributeError, match="Stamp"):
+        hash(used)
+    assert "_canonical" not in vars(used)
+    assert "analyzed_type" not in vars(box._pk)
+
+    later.Stamp = datetime.datetime
+
+    fresh = box(json={"id": value_of(offset)})
+    assert used.url == fresh.url
+    assert used == fresh
+    assert used == twin
+    assert hash(used) == hash(fresh)
+    assert len({used, twin, fresh}) == 1
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+def test_a_model_in_a_key_by_a_module_attribute_alias_is_refused_after() -> (
+    None
+):
+    """An alias of a module's attribute that is a model is refused when set.
+
+    Until the attribute is set, ``==`` is ``False``, and nothing is kept, so
+    once it is, the declaration's ``TypeError`` reaches ``url``, ``==``, and
+    ``hash()`` of every object of the class, as for a model named directly.
+    """
+    later: Any = types.ModuleType("later_owner_module")
+    namespace: dict[str, Any] = {"later_owner_module": later}
+    exec("type Owner = later_owner_module.Owner", namespace)  # noqa: S102
+    form, value = _form_keyed_by("typed-dict", namespace["Owner"])
+    box = _box_keyed_by(form)
+    used = box(json={"id": value})
+    assert used != box(json={"id": value})
+
+    @json_object
+    class Owner(ModelBase):
+        class_url = "/owners/"
+
+        id: int
+
+    later.Owner = Owner
+
+    match = r"Box\.id is the primary key"
+    for obj in (used, box(json={"id": value})):
+        with pytest.raises(TypeError, match=match):
+            obj.url  # noqa: B018
+        with pytest.raises(TypeError, match=match):
+            obj == box(json={"id": value})  # noqa: B015
+        with pytest.raises(TypeError, match=match):
+            hash(obj)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+@pytest.mark.parametrize("field", ["alias", "nested", "items", "mapping"])
+def test_a_field_that_is_not_the_key_raises_the_name_error_of_a_later_alias(
+    field: str,
+) -> None:
+    """A type alias that names a later class raises its own error in a field.
+
+    The alias is nested at any depth in a field that is not the key. Reading
+    the field raises the ``NameError`` of the undefined name, not a
+    ``FieldConversionError``, which says that a value failed to convert, and
+    not a ``TypeError`` that a handler of bad data would take. Once the class
+    is defined, the field reads.
+
+    Args:
+        field: Whether the field is the alias itself, a structure that holds
+            it, a list of the structure, or a mapping of it.
+    """
+    namespace: dict[str, Any] = {}
+    exec("type PendingNested = LaterNested", namespace)  # noqa: S102
+    inner: Any = _form_keyed_by("typed-dict", namespace["PendingNested"])[0]
+    outer: Any = _form_keyed_by("typed-dict", inner)[0]
+    annotations: dict[str, Any] = {
+        "alias": namespace["PendingNested"],
+        "nested": outer,
+        "items": list[inner],
+        "mapping": dict[str, inner],
+    }
+    values = {
+        "alias": 1,
+        "nested": {"n": {"n": 1}},
+        "items": [{"n": 1}],
+        "mapping": {"a": {"n": 1}},
+    }
+    note: Any = json_object(
+        type(
+            "Note",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, field: annotations[field]},
+                "class_url": "/notes/",
+            },
+        )
+    )
+    obj = note(json={"id": 1, field: values[field]})
+
+    with pytest.raises(NameError, match="LaterNested") as undefined:
+        getattr(obj, field)
+    assert not isinstance(undefined.value, TypeError)
+
+    namespace["LaterNested"] = int
+    assert getattr(obj, field) == values[field]
+
+
 @pytest.mark.parametrize(
     "shape",
     [

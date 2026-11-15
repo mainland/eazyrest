@@ -831,23 +831,18 @@ def _is_type_alias(ty: Any) -> bool:
     creates, or its ``typing_extensions`` backport. An ordinary assignment, as
     in ``Points = list[Point]``, binds the type itself and is not one.
 
+    The test reads the object's class and nothing of its value. Reading the
+    value evaluates it, which raises the error of a name that is not defined
+    yet, whatever that error is, and a test must not hide or change it. The
+    caller that needs the value reads it, and gets that error.
+
     Args:
         ty: Type to test.
 
     Returns:
         Whether ``ty`` is a named type alias.
-
-    Raises:
-        _UndefinedNameError: If ``ty`` is an alias whose value names a class
-            that is not defined yet, since reading the value to see that it has
-            one evaluates it. It is also a ``NameError``.
     """
-    if type(ty).__name__ != "TypeAliasType":
-        return False
-    try:
-        return hasattr(ty, "__value__")
-    except NameError as err:
-        raise _UndefinedNameError(str(err)) from err
+    return type(ty).__name__ == "TypeAliasType"
 
 
 def _expand_alias(
@@ -959,6 +954,8 @@ def _resolve_alias_value(alias: Any) -> Any:
     Raises:
         _UnresolvedAnnotationsError: If a string reference names nothing in the
             alias's module, which is a ``TypeError``.
+        Exception: If evaluating the alias's value raises, as for a name that
+            is not defined yet, whatever that raises.
     """
     value = alias.__value__
     if not _has_forward_refs(value):
@@ -1090,7 +1087,9 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             string in a named type alias that names nothing in the alias's
             module raises one that says the annotations cannot be resolved.
         NameError: If ``ty`` holds a named type alias whose value names a class
-            that is not defined yet.
+            that is not defined yet. Evaluating the value raises whatever the
+            name raises, so an attribute of a module that does not have it yet
+            raises an ``AttributeError``, and that is raised as it is.
     """
     ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
