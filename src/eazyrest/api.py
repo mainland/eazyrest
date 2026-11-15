@@ -220,7 +220,7 @@ def _redirect_destination(resp: requests.Response, target: str) -> str:
 
 def _prepare_redirect(
     session: requests.Session, resp: requests.Response, target: str
-) -> tuple[_ServerURL, frozenset[tuple[str, str | None, int | None]]] | None:
+) -> tuple[_ServerURL, _ServerURL] | None:
     r"""Read the destination of a redirect as requests sends the request.
 
     A redirect is safe only if every reading of its target names an allowed
@@ -236,8 +236,8 @@ def _prepare_redirect(
         target: Redirect target, from ``Session.get_redirect_target()``.
 
     Returns:
-        The destination and the origins of both readings, or ``None`` if
-        requests cannot prepare either.
+        The destination and the joined reading, or ``None`` if requests cannot
+        prepare either.
 
     Raises:
         ValueError: If the target cannot be joined onto the request's URL.
@@ -248,7 +248,28 @@ def _prepare_redirect(
     joined = _prepare_server_url(session, urljoin(resp.url, target))
     if destination is None or joined is None:
         return None
-    return destination, frozenset({destination.origin, joined.origin})
+    return destination, joined
+
+
+def _refused_reading(
+    prepared: tuple[_ServerURL, _ServerURL],
+    allowed: Collection[tuple[str, str | None, int | None]],
+) -> _ServerURL | None:
+    """Return the reading of a redirect that names an origin not allowed.
+
+    Args:
+        prepared: The readings that ``_prepare_redirect()`` returned.
+        allowed: The origins that the redirect may reach.
+
+    Returns:
+        The destination if its origin is not allowed, else the joined reading
+        if its origin is not, else ``None``, so a message names an origin that
+        is refused and not one that is allowed.
+    """
+    for reading in prepared:
+        if reading.origin not in allowed:
+            return reading
+    return None
 
 
 def _drop_response_hooks(resp: Any, request: Any = None) -> None:
@@ -1456,8 +1477,10 @@ class API:
                     ``Location`` cannot be parsed or prepared, or it leads to
                     an origin that is not allowed, or requests would follow it
                     without the request's body. The message of the origin case
-                    quotes the target's origin alone, or names its scheme if it
-                    is not HTTP or HTTPS. The response is closed first.
+                    quotes the origin of the reading that is not allowed, the
+                    destination's or the joined target's, and nothing else, or
+                    names its scheme if it is not HTTP or HTTPS. The response
+                    is closed first.
             """
             if not follow:
                 if resp.is_redirect and budget is not None:
@@ -1476,9 +1499,9 @@ class API:
                     # requests cannot prepare the target, as for a port that is
                     # not a number.
                     raise _unquotable_redirect(resp, "requests cannot prepare")
-                destination, origins = prepared
-                if origins <= allowed:
-                    _check_write_redirect(resp, destination)
+                refused = _refused_reading(prepared, allowed)
+                if refused is None:
+                    _check_write_redirect(resp, prepared[0])
                     nonlocal followed
                     followed = True
                     if budget is not None:
@@ -1491,7 +1514,7 @@ class API:
                 raise RedirectError(
                     f"{resp.request.method} {_response_url(resp)} was "
                     f"redirected with status {resp.status_code} to "
-                    f"{destination.origin_text}, "
+                    f"{refused.origin_text}, "
                     "whose origin differs from the request's, so it was not "
                     "followed. Add the origin to API.redirect_origins to "
                     "follow it.",

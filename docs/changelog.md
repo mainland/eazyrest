@@ -680,10 +680,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   such as the signature of a download URL. The URL that the caller gave keeps
   its query. The error's `response` holds the whole URL.
 - A `RedirectError` that refuses a redirect to another origin quotes the origin
-  that requests reads from the target, as `https://files.example.com` or
-  `http://host:8080`, and nothing else, so it holds no user, password, path,
-  query, or fragment of the target, such as the signature of a download URL. It
-  names a target that is not an HTTP or HTTPS URL, such as
+  of a reading of the target that is not allowed, as
+  `https://files.example.com` or `http://host:8080`, and nothing else. It never
+  names an origin that the request allows, and it holds no user, password,
+  path, query, or fragment of the target, such as the signature of a download
+  URL. It names a target that is not an HTTP or HTTPS URL, such as
   `mailto:user:pass@host/x` or `ftp://user:pass@host/x`, by its scheme alone,
   as `a location whose scheme is mailto:`. The error's `response` holds the
   header.

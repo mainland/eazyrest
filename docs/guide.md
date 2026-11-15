@@ -1743,10 +1743,11 @@ joined onto the request's URL and percent-encoded as requests does. The other
 is the raw target joined by `urljoin()`, which another client could read as a
 different host, as it can for a backslash before an `@`. The redirect is
 refused unless both readings name an allowed origin. The error quotes the
-origin of the destination alone, as `https://files.example.com`, and never its
-user, password, path, query, or fragment, since a signed download URL carries
-its credential in the query. The error's `response` holds the whole header. A
-target that is not an HTTP or HTTPS URL, such as `ftp://user:pass@host/x` or
+origin of a reading that is not allowed, the destination's or else the joined
+target's, alone, as `https://files.example.com`, and never its user, password,
+path, query, or fragment, since a signed download URL carries its credential in
+the query. The error's `response` holds the whole header. A target that is not
+an HTTP or HTTPS URL, such as `ftp://user:pass@host/x` or
 `mailto:user:pass@host`, has no origin, and its text can read as a user and
 password, so the error names its scheme alone, as
 `a location whose scheme is mailto:`. For an API that redirects to another

@@ -28,6 +28,7 @@ from .api import (
     _origin,
     _prepare_redirect,
     _prepare_server_url,
+    _refused_reading,
     _response_hooks,
 )
 
@@ -267,13 +268,14 @@ def _request_page(
         Raises:
             PaginationError: If ``resp`` redirects to an origin other than the
                 API's base URL and other origins are not allowed. The message
-                quotes the target's origin as requests prepares it, or names
-                its scheme alone if it is not HTTP or HTTPS. The response is
-                closed first. A target that cannot be prepared is left to the
-                API's guard. A client that does not follow redirects never
-                raises it, because its page requests would not follow the
-                redirect even with ``allow_other_origins=True``, and the
-                unfollowed redirect raises ``RedirectError`` instead.
+                quotes the origin of the reading of the target that is not the
+                API's, as requests prepares it, or names its scheme alone if it
+                is not HTTP or HTTPS. The response is closed first. A target
+                that cannot be prepared is left to the API's guard. A client
+                that does not follow redirects never raises it, because its
+                page requests would not follow the redirect even with
+                ``allow_other_origins=True``, and the unfollowed redirect
+                raises ``RedirectError`` instead.
         """
         if not follow:
             return
@@ -289,10 +291,10 @@ def _request_page(
             # that cannot be parsed or prepared, with a message that quotes
             # none of it, so this hook leaves it to the guard.
             return
-        destination, origins = prepared
-        if origins != {api_origin}:
+        refused = _refused_reading(prepared, {api_origin})
+        if refused is not None:
             resp.close()
-            quoted = destination.scheme_name or repr(destination.origin_text)
+            quoted = refused.scheme_name or repr(refused.origin_text)
             raise PaginationError(
                 f"Page request {_response_url(resp)!r} was redirected to "
                 f"{quoted}, which has a different origin "

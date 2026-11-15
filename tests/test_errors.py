@@ -32,7 +32,7 @@ from eazyrest import (
     json_object,
 )
 from eazyrest._errors import _mark_redirected, _redact_url, _response_url
-from eazyrest.api import _prepare_redirect
+from eazyrest.api import _prepare_redirect, _refused_reading
 
 
 @pytest.mark.parametrize(
@@ -1096,8 +1096,9 @@ def test_followed_redirect_message_is_built_from_the_prepared_parts(
         quoted = "a location that requests cannot prepare"
         rest = ", so it was not followed. The response of this error holds"
     else:
-        destination, _ = prepared
-        quoted = destination.origin_text
+        refused = _refused_reading(prepared, {("https", "example.com", 443)})
+        assert refused is not None
+        quoted = refused.origin_text
         rest = ", whose origin differs from the request's, so it was not"
     assert f"status 302 to {quoted}{rest}" in str(raised.value)
     for text in (
@@ -1817,3 +1818,66 @@ def test_a_redirected_response_that_requests_could_not_have_sent_shows_no_url(
     _mark_redirected(resp)
 
     assert _response_url(resp) == "<URL not shown>"
+
+
+@pytest.mark.parametrize(
+    ("location", "named"),
+    [
+        # requests reads the host after the backslash, and urljoin() before it.
+        ("https://evil.test\\@api.test/p?q=SECRET", "https://evil.test"),
+        ("https://api.test\\@evil.test/p?q=SECRET", "https://evil.test"),
+        ("https://evil.test:8443\\@api.test/p", "https://evil.test:8443"),
+    ],
+)
+def test_redirect_names_the_origin_that_a_reading_of_it_refuses(
+    requests_mock: Any, location: str, named: str
+) -> None:
+    """The message names an origin that is not allowed, never one that is.
+
+    The two readings of a target can name different hosts, and either can be
+    the allowed one.
+
+    Args:
+        location: The redirect's ``Location`` header.
+        named: The origin that the message names.
+    """
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/a", status_code=302, headers={"Location": location}
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.get("a")
+
+    assert str(raised.value).startswith(
+        f"GET https://api.test/a was redirected with status 302 to {named}, "
+        "whose origin differs from the request's"
+    )
+    for text in _printed(raised.value):
+        assert "SECRET" not in text
+
+
+def test_page_redirect_names_the_origin_that_a_reading_of_it_refuses(
+    requests_mock: Any,
+) -> None:
+    """A next-page request's redirect names the origin that is refused."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://evil.test\\@api.test/p?q=SECRET"},
+    )
+
+    with pytest.raises(PaginationError) as raised:
+        list(
+            follow_next_links(
+                api, {"next": "https://api.test/p", "results": []}
+            )
+        )
+
+    assert str(raised.value) == (
+        "Page request 'https://api.test/p' was redirected to "
+        "'https://evil.test', which has a different origin from the API's "
+        "base URL 'https://api.test/'. Pass allow_other_origins=True to "
+        "follow it."
+    )
