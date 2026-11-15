@@ -6457,6 +6457,245 @@ def test_a_primary_key_that_holds_no_related_object_is_accepted(
     )
 
 
+_UserPairKey = NewType("_UserPairKey", _UserPair)
+_UserRecordKey = NewType(  # type: ignore[valid-newtype]
+    "_UserRecordKey", _UserRecord
+)
+_UserEntryKey = NewType("_UserEntryKey", _UserEntry)
+
+
+@pytest.mark.parametrize(
+    "newtype",
+    [_UserPairKey, _UserRecordKey, _UserEntryKey],
+    ids=["named-tuple", "typed-dict", "dataclass"],
+)
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param(lambda ty: ty, id="alone"),
+        pytest.param(
+            lambda ty: Optional[ty],  # noqa: UP045
+            id="optional",
+        ),
+        pytest.param(
+            lambda ty: dict[str, ty],  # type: ignore[valid-type]
+            id="mapping",
+        ),
+        pytest.param(
+            lambda ty: list[ty],  # type: ignore[valid-type]
+            id="list",
+        ),
+        pytest.param(
+            lambda ty: tuple[ty, int],  # type: ignore[valid-type]
+            id="fixed-tuple",
+        ),
+    ],
+)
+def test_a_primary_key_cannot_hold_related_objects_through_a_new_type(
+    newtype: Any, shape: Callable[[Any], Any]
+) -> None:
+    """A ``NewType`` of a form that holds a model is refused as the form is.
+
+    Args:
+        newtype: ``NewType`` of a ``NamedTuple``, ``TypedDict``, or dataclass
+            that holds a model.
+        shape: Wraps the ``NewType`` in the container that the key declares.
+    """
+    with pytest.raises(
+        TypeError,
+        match=r"Crate\.id is the primary key.*cannot hold related objects",
+    ) as error:
+        json_object(
+            type(
+                "Crate",
+                (ModelBase,),
+                {
+                    "__annotations__": {"id": shape(newtype)},
+                    "class_url": "/crates/",
+                },
+            )
+        )
+
+    assert not isinstance(error.value, FieldConversionError)
+
+
+def test_a_primary_key_cannot_hold_related_objects_in_a_list_new_type() -> (
+    None
+):
+    """A ``NewType`` of a list of a form that holds a model is refused."""
+    with pytest.raises(TypeError, match=r"Crate\.id is the primary key"):
+        json_object(
+            type(
+                "Crate",
+                (ModelBase,),
+                {
+                    "__annotations__": {
+                        "id": NewType("_Records", list[_UserRecord])
+                    },
+                    "class_url": "/crates/",
+                },
+            )
+        )
+
+
+def _decode_pair(value: Any, cls: Any) -> _UserPair:
+    return _UserPair(User(id=value), 0)
+
+
+def _decode_record(value: Any, cls: Any) -> _UserRecord:
+    return {"user": User(id=value)}
+
+
+def _decode_entry(value: Any, cls: Any) -> _UserEntry:
+    return _UserEntry(User(id=value))
+
+
+@pytest.mark.parametrize(
+    ("form", "key_type", "decode", "encode", "expected"),
+    [
+        pytest.param(
+            _UserPair,
+            _UserPair,
+            _decode_pair,
+            lambda value, cls: value.user.pk,
+            _UserPair(User(id=7), 0),
+            id="named-tuple",
+        ),
+        pytest.param(
+            _UserRecord,
+            _UserRecord,
+            _decode_record,
+            lambda value, cls: value["user"].pk,
+            {"user": User(id=7)},
+            id="typed-dict",
+        ),
+        pytest.param(
+            _UserEntry,
+            _UserEntry,
+            _decode_entry,
+            lambda value, cls: value.user.pk,
+            _UserEntry(User(id=7)),
+            id="dataclass",
+        ),
+        pytest.param(
+            _UserEntry,
+            _UserEntryKey,
+            _decode_entry,
+            lambda value, cls: value.user.pk,
+            _UserEntry(User(id=7)),
+            id="new-type-of-dataclass",
+        ),
+        pytest.param(
+            _UserEntryKey,
+            _UserEntryKey,
+            _decode_entry,
+            lambda value, cls: value.user.pk,
+            _UserEntry(User(id=7)),
+            id="new-type-with-its-own-entry",
+        ),
+    ],
+)
+def test_a_key_that_a_conversion_converts_may_name_a_model(
+    requests_mock: Any,
+    form: Any,
+    key_type: Any,
+    decode: Callable[[Any, Any], Any],
+    encode: Callable[[Any, Any], Any],
+    expected: Any,
+) -> None:
+    """A conversion replaces a key class's structure, so it is not refused.
+
+    The conversion reads and writes the related model's key. The key declares
+    and works for ``pk``, ``url``, equality, hashing, and ``save()``.
+
+    Args:
+        requests_mock: Mocks the write.
+        form: Type that the conversion table has an entry for.
+        key_type: Declared type of the primary key.
+        decode: The entry's ``decode``.
+        encode: The entry's ``encode``.
+        expected: What ``pk`` reads for the key 7.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/crates/7/", json={"id": 7, "label": "b"}
+    )
+    crate_type: Any = json_object(
+        type(
+            "Crate",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": key_type, "label": str},
+                "class_url": "/crates/",
+                "conversions": {
+                    form: Conversion(decode=decode, encode=encode)
+                },
+            },
+        )
+    )
+    crate = crate_type(json={"id": 7, "label": "a"})
+    twin = crate_type(json={"id": 7, "label": "z"})
+
+    assert crate.pk == expected
+    assert crate.url == "/crates/7/"
+    assert crate == twin
+    assert hash(crate) == hash(twin)
+    crate.label = "b"
+    crate.save()
+    assert patch.call_count == 1
+
+
+@dataclasses.dataclass
+class _EntryWrapper:
+    """A dataclass with a field of a class that a conversion converts."""
+
+    entry: _UserEntry
+
+
+@pytest.mark.parametrize(
+    ("key_type", "value"),
+    [
+        pytest.param(Optional[_UserEntry], 7, id="optional"),  # noqa: UP045
+        pytest.param(dict[str, _UserEntry], {"a": 7}, id="mapping"),
+        pytest.param(list[_UserEntry], [7], id="list"),
+        pytest.param(tuple[_UserEntry, int], [7, 1], id="fixed-tuple"),
+        pytest.param(
+            NewType("_Entries", list[_UserEntry]), [7], id="new-type-of-list"
+        ),
+        pytest.param(_EntryWrapper, {"entry": 7}, id="field-of-a-form"),
+    ],
+)
+def test_a_key_that_holds_a_converted_class_in_a_container_is_accepted(
+    key_type: Any, value: Any
+) -> None:
+    """A converted class is not looked into wherever the key holds it.
+
+    Args:
+        key_type: Declared type of the primary key.
+        value: JSON of a key of that type.
+    """
+    crate_type: Any = json_object(
+        type(
+            "Crate",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": key_type, "label": str},
+                "class_url": "/crates/",
+                "conversions": {
+                    _UserEntry: Conversion(
+                        decode=_decode_entry,
+                        encode=lambda entry, cls: entry.user.pk,
+                    )
+                },
+            },
+        )
+    )
+    crate = crate_type(json={"id": value, "label": "a"})
+    twin = crate_type(json={"id": value, "label": "z"})
+
+    assert crate == twin
+    assert hash(crate) == hash(twin)
+
+
 def test_a_key_in_a_container_that_holds_a_model_is_refused_on_first_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

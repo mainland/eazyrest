@@ -1473,16 +1473,22 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
 
 
 def _holds_model_anywhere(
-    analyzed: AnalyzedType, seen: set[type[Any]] | None = None
+    analyzed: AnalyzedType,
+    table: Mapping[Any, Conversion],
+    seen: set[type[Any]] | None = None,
 ) -> bool:
     """Return whether a type holds a related model in any form.
 
     Unlike ``_holds_model()``, it looks inside mappings, fixed-length tuples,
     and the ``TypedDict``, ``NamedTuple``, and dataclass forms, which analyze
-    their fields when first needed.
+    their fields when first needed. It does not look inside a type that an
+    entry of the table converts, since the entry replaces that type's structure
+    and its fields are never analyzed. It looks through a ``NewType`` to the
+    type that the ``NewType`` names.
 
     Args:
         analyzed: Analyzed type.
+        table: Conversion table of the model whose field it is.
         seen: Forms already visited, which keeps a self-referential one from
             looping.
 
@@ -1492,16 +1498,20 @@ def _holds_model_anywhere(
         reports, since that reason is refused when it is first used.
     """
     seen = set() if seen is None else seen
+    if _class_entry(analyzed, table) is not None:
+        return False
     match analyzed:
         case RelatedType():
             return True
         case (
             OptionalType(inner) | CollectionType(_, inner) | MappingType(inner)
         ):
-            return _holds_model_anywhere(inner, seen)
+            return _holds_model_anywhere(inner, table, seen)
+        case NewTypeType(_, inner):
+            return _holds_model_anywhere(inner, table, seen)
         case FixedTupleType(item_types):
             return any(
-                _holds_model_anywhere(item, seen) for item in item_types
+                _holds_model_anywhere(item, table, seen) for item in item_types
             )
         case TypedDictType(form) | NamedTupleType(form) | DataclassType(form):
             if form in seen:
@@ -1519,7 +1529,9 @@ def _holds_model_anywhere(
                 return True
             except Exception:  # noqa: BLE001
                 return False
-            return any(_holds_model_anywhere(item, seen) for item in members)
+            return any(
+                _holds_model_anywhere(item, table, seen) for item in members
+            )
     return False
 
 
@@ -2950,7 +2962,8 @@ def _check_key_holds_no_relation(
     the model. A key such as ``list[User]`` would need each related object
     built, with the API and the write mode of the object that holds it. So
     would one in a mapping, a fixed-length tuple, or a ``TypedDict``,
-    ``NamedTuple``, or dataclass.
+    ``NamedTuple``, or dataclass, unless the model's conversion table converts
+    that class.
 
     Args:
         cls: Model class that declares the key.
@@ -2961,7 +2974,9 @@ def _check_key_holds_no_relation(
         TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
             other than being the relation itself.
     """
-    if _related_key_type(analyzed) is None and _holds_model_anywhere(analyzed):
+    if _related_key_type(analyzed) is None and _holds_model_anywhere(
+        analyzed, _table_of(cls)
+    ):
         raise _key_holds_relation_error(cls, field)
 
 
