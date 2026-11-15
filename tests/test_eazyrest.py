@@ -6899,6 +6899,76 @@ def test_an_object_used_before_its_key_form_resolves_is_refused_after(
         hash(used)
 
 
+def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key annotated by a class defined later is unknown until then.
+
+    That holds for the model whose key it is, and for a model keyed by a
+    relation to it. Until the class is defined, ``url`` and ``hash()`` raise
+    the ``NameError`` of the undefined name, ``==`` is ``False``, and nothing
+    is kept, so afterwards the object has the key of a new object. A field that
+    is not the key still raises a plain ``NameError``.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the objects are used.
+    """
+
+    @json_object
+    class Slot(ModelBase):
+        class_url = "/slots/"
+
+        id: LaterSlotKey
+
+    @json_object(pk="slot")
+    class Booking(ModelBase):
+        class_url = "/bookings/"
+
+        slot: Slot
+
+    @json_object
+    class Note(ModelBase):
+        class_url = "/notes/"
+
+        id: int
+        body: LaterSlotKey
+
+    monkeypatch.setitem(globals(), "Slot", Slot)
+    payloads: dict[Any, Any] = {
+        Slot: {"id": {"x": 1}},
+        Booking: {"slot": {"id": {"x": 1}}},
+    }
+    used = {model: model(json=json) for model, json in payloads.items()}
+    twins = {model: model(json=json) for model, json in payloads.items()}
+
+    for model, obj in used.items():
+        with pytest.raises(NameError, match="LaterSlotKey"):
+            obj.url  # noqa: B018
+        assert obj != twins[model]
+        with pytest.raises(NameError, match="LaterSlotKey"):
+            hash(obj)
+        assert "_canonical" not in vars(obj)
+    assert "analyzed_type" not in vars(Slot._pk)
+    # A field that is not the key raises a NameError alone, which no handler of
+    # a conversion's TypeError reads as a refusal.
+    with pytest.raises(NameError, match="LaterSlotKey") as undefined:
+        Note(json={"id": 1, "body": {"x": 1}}).body  # noqa: B018
+    assert not isinstance(undefined.value, TypeError)
+
+    class LaterSlotKey(TypedDict):
+        x: int
+
+    monkeypatch.setitem(globals(), "LaterSlotKey", LaterSlotKey)
+
+    for model, obj in used.items():
+        fresh = model(json=payloads[model])
+        assert obj.url == fresh.url
+        assert obj == fresh
+        assert obj == twins[model]
+        assert hash(obj) == hash(fresh)
+        assert len({obj, twins[model], fresh}) == 1
+
+
 def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
     """Return a key form with one member, and the JSON of a value of it.
 

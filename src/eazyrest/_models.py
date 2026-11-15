@@ -4414,9 +4414,19 @@ class JSONProperty:
             TypeError: If the type is refused, such as a primary key that is a
                 ``Hyperlinked()`` relation, or a set of them. A type that names
                 a class defined later is refused here, when it is first used.
+            NameError: If a field's annotation names a class that is not
+                defined. For a primary key it is also an
+                ``_UnresolvedAnnotationsError``, which equality and hashing
+                read as a key that is not known yet.
         """
         try:
-            analyzed = analyze_type(self.ty)
+            ty = self.ty
+        except NameError as err:
+            if not self.is_primary_key:
+                raise
+            raise _UndefinedNameError(str(err)) from err
+        try:
+            analyzed = analyze_type(ty)
         except _ModelInContainerError as err:
             if self.is_primary_key:
                 raise _key_holds_relation_error(self.cls, self.field) from err
@@ -4939,9 +4949,11 @@ class JSONObject:
         made to the key in place, and a refresh leave the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
-        converted, or whose model has no key field, equals only itself.
-        Comparing sends no request, never reads ``url``, and does not depend on
-        the identity of a decoded key.
+        converted, or whose model has no key field, equals only itself. So does
+        one whose key's type names a class that is not defined yet, wherever
+        the name appears in it, until the class is defined. Comparing sends no
+        request, never reads ``url``, and does not depend on the identity of a
+        decoded key.
 
         Args:
             other: Object to compare with.
@@ -4955,10 +4967,8 @@ class JSONObject:
                 is first used, as ``url`` refuses it.
             UsageError: If a key is a relation whose model's ``api`` was
                 assigned after the class was defined.
-            NameError: If a key's annotation names a class that is not defined.
-                Each refuses the model's declaration, so it propagates, as does
-                an exception that a custom conversion raises, other than
-                ``TypeError`` or ``ValueError``.
+            Exception: Any other exception that a custom conversion raises,
+                other than ``TypeError`` or ``ValueError``.
         """
         if not isinstance(other, JSONObject):
             return NotImplemented
@@ -4997,10 +5007,11 @@ class JSONObject:
                 model's key declaration is refused when the key is first used.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
-            NameError: If the key's annotation names a class that is not
-                defined. Each refuses the model's declaration, so it
-                propagates, as does an exception that a custom conversion
-                raises, other than ``TypeError`` or ``ValueError``.
+            NameError: If the key's annotation, or a type alias in its form,
+                names a class that is not defined yet, as ``url`` raises it.
+                Until the class is defined, ``==`` is ``False`` for the object.
+            Exception: Any other exception that a custom conversion raises,
+                other than ``TypeError`` or ``ValueError``.
         """
         if _pk_property_of(type(self)) is None:
             return object.__hash__(self)
@@ -5761,8 +5772,9 @@ class JSONObject:
         Returns:
             The key encoded as JSON, and its JSON text, or ``None`` if the
             saved key is unknown: ``null``, or JSON that the key field cannot
-            decode or encode. An unknown key is kept, except while the key's
-            form names a class that is not defined yet. Then the key is unknown
+            decode or encode. An unknown key is kept, except while a name in
+            the key's type, in its annotation, a form, a type alias, or a field
+            that Pydantic converts, is not defined yet. Then the key is unknown
             only until the class is defined, and the next call tries again.
 
         Raises:
@@ -5770,10 +5782,8 @@ class JSONObject:
                 hyperlinked key whose model is defined after it.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
-            NameError: If the key's annotation names a class that is not
-                defined. Each refuses the model's declaration, so it
-                propagates, as does any exception other than ``TypeError`` or
-                ``ValueError`` that a custom conversion raises.
+            Exception: Any exception other than ``TypeError`` or ``ValueError``
+                that a custom conversion raises.
         """
         state = vars(self)
         try:
@@ -5783,8 +5793,8 @@ class JSONObject:
         try:
             canonical = _canonical_key_of(self, self._saved_key_json)
         except _UnresolvedAnnotationsError:
-            # The key's form names a class that is not defined yet, so the key
-            # is unknown for now. Do not keep that, or it would outlast the
+            # A name in the key's type is not defined yet, so the key is
+            # unknown for now. Do not keep that, or it would outlast the
             # definition. No hash can have been taken meanwhile, since hashing
             # raises while the key is unknown.
             return None
