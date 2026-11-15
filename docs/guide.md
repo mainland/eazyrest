@@ -512,10 +512,12 @@ URL, so `http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the
 message, `args`, and `repr()`, but the error's `request` and `response` keep
 the real URL. A URL that the server supplied, such as the `Location` of a
 redirect that is refused or a next-page link, is quoted by its origin alone, as
-`http://host`, whatever it holds. The `repr()` of a `Page`, and of an object
-known only by its URL, leaves them out too. An exception that requests itself
-raises, such as `requests.ConnectionError`, quotes the URL as requests does. A
-Pydantic error says where and why a value is invalid, as in
+`http://host`, whatever it holds. A redirect that would not resend a write is
+quoted by its origin and path, as `http://host/items/`. Neither quotes a user,
+password, query, or fragment. The `repr()` of a `Page`, and of an object known
+only by its URL, leaves them out too. An exception that requests itself raises,
+such as `requests.ConnectionError`, quotes the URL as requests does. A Pydantic
+error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1714,11 +1716,13 @@ letting `create()`, `save()`, or `delete()` report success. A lazy update stays
 pending. This happens, for example, when `base_url` uses `http://` and the
 server redirects to HTTPS, or when a URL lacks the trailing slash that Django's
 `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use
-the URL that the server redirects to. A `GET`, or a `DELETE` without a body,
-answered with a 301 is followed. A 303 is different: it says that the server
-performed the request and points to its result, so its `RedirectError` says not
-to retry the request, which would repeat it. Read the result instead, or reload
-the object, whose update stays pending until then.
+the URL that the server redirects to, which the error quotes by its origin and
+path, without its user, password, query, or fragment. The whole header is on
+the error's `response`. A `GET`, or a `DELETE` without a body, answered with a
+301 is followed. A 303 is different: it says that the server performed the
+request and points to its result, so its `RedirectError` says not to retry the
+request, which would repeat it. Read the result instead, or reload the object,
+whose update stays pending until then.
 
 A redirect is followed only to the origin of the request it answers, that is,
 its scheme, host, and port. Requests drops the `Authorization` header when a

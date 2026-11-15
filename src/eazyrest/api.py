@@ -33,7 +33,6 @@ from ._errors import (
     RedirectError,
     _api_error,
     _is_failure,
-    _printable,
     _redact_url,
     _response_json,
 )
@@ -168,6 +167,18 @@ class _ServerURL(NamedTuple):
         if self.port != _DEFAULT_PORTS.get(self.scheme):
             host = f"{host}:{self.port}"
         return f"{self.scheme}://{host}"
+
+    @property
+    def origin_and_path(self) -> str:
+        """What a message quotes of a write redirect's target.
+
+        The path is the advice, as a missing trailing slash is. It is as
+        requests prepares it, which percent-encodes any character that is not
+        printable, and it ends before any query or fragment. Only an HTTP or
+        HTTPS URL has a path to quote, and a write redirect reaches a message
+        only on an origin that the request allows, which is one.
+        """
+        return self.origin_text + urlsplit(self.url).path
 
 
 def _prepare_server_url(
@@ -441,7 +452,9 @@ def _redirected_method(method: str, status: int) -> str:
     return method
 
 
-def _check_write_redirect(resp: requests.Response, destination: str) -> None:
+def _check_write_redirect(
+    resp: requests.Response, destination: _ServerURL
+) -> None:
     """Refuse a redirect that would not resend the request it answers.
 
     requests follows a 301, 302, or 303 without the request body. It changes a
@@ -452,10 +465,11 @@ def _check_write_redirect(resp: requests.Response, destination: str) -> None:
 
     Args:
         resp: Redirect response.
-        destination: The URL that requests follows, as it prepares it: the
-            redirect target joined onto the request's URL when relative, so
-            characters that a URL cannot hold, such as a backslash, are
-            percent-encoded. A message quotes it.
+        destination: The URL that requests follows, as it prepares it, on an
+            origin that the request allows. A message quotes its origin and
+            path, which show where requests would send the request, such as the
+            URL with its trailing slash. They leave out its user, password,
+            query, and fragment.
 
     Raises:
         RedirectError: If requests would follow ``resp`` with another method,
@@ -472,7 +486,7 @@ def _check_write_redirect(resp: requests.Response, destination: str) -> None:
 
     resp.close()
     url = _redact_url(resp.url)
-    quoted = _printable(_redact_url(destination))
+    quoted = destination.origin_and_path
     if resp.status_code == 303:
         # A 303 answers a request that the server performed, and points to
         # its result, so retrying the request would repeat it.
@@ -1527,7 +1541,7 @@ class API:
                     raise _unquotable_redirect(resp, "requests cannot prepare")
                 destination, origins = prepared
                 if origins <= allowed:
-                    _check_write_redirect(resp, destination.url)
+                    _check_write_redirect(resp, destination)
                     if budget is not None:
                         # requests reads a redirect's body before following it.
                         budget.check_time(resp)

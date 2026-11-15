@@ -315,8 +315,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   kept.
 - A redirect that would change a write's method or drop its body, such as a 301
   in answer to a `PATCH` to a URL without its trailing slash, raises
-  `RedirectError` before it is followed, and a lazy update stays pending. Use
-  the URL that the server expects, for example by setting `API.trailing_slash`.
+  `RedirectError` before it is followed, and a lazy update stays pending. The
+  message quotes the origin and path of the target, which show the URL that the
+  server expects, and not its user, password, query, or fragment. Use that URL,
+  for example by setting `API.trailing_slash`.
 - `create()` sends each field under its JSON key, as `field_map` names it, as a
   write does, where 0.9.0 sent the Python name.
 - `create()` and `get_or_create()` on a model without a primary-key field raise

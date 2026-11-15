@@ -1111,6 +1111,179 @@ def test_followed_redirect_message_is_built_from_the_prepared_parts(
         assert text.isprintable()
 
 
+def _printed(error: BaseException) -> list[str]:
+    """Return every text that logging an error prints from it.
+
+    Args:
+        error: The error.
+
+    Returns:
+        Its message, representation, arguments, and formatted traceback.
+    """
+    return [
+        str(error),
+        repr(error),
+        repr(error.args),
+        "".join(traceback.format_exception(error)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "status", "outcome"),
+    [
+        ("post", 301, "which requests follows as a GET, so the POST request"),
+        ("put", 301, "which requests follows without the request body"),
+        (
+            "patch",
+            302,
+            "which requests follows as a GET, so the PATCH request",
+        ),
+    ],
+)
+def test_write_redirect_quotes_the_origin_and_path_of_its_target(
+    requests_mock: Any, method: str, status: int, outcome: str
+) -> None:
+    """A write redirect shows where requests would send it, and no more.
+
+    The path is the advice, as a missing trailing slash is. The user, password,
+    query, and fragment of the target are not quoted, and the error's response
+    holds the header.
+
+    Args:
+        method: Lower-case method of the write.
+        status: Status of the redirect.
+        outcome: Part of the message that says what requests would do.
+    """
+    api = API("https://example.com/v1/")
+    location = (
+        "https://alice:hunter2@Example.COM:443/v1/items/?token=SECRETQ#SECRETF"
+    )
+    getattr(requests_mock, method)(
+        "https://example.com/v1/items",
+        status_code=status,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        getattr(api, method)("items", json={"name": "Ada"})
+
+    verb = method.upper()
+    assert str(raised.value).startswith(
+        f"{verb} https://example.com/v1/items was redirected with status "
+        f"{status} to https://example.com/v1/items/, {outcome}"
+    )
+    for text in _printed(raised.value):
+        for secret in ("alice", "hunter2", "SECRETQ", "SECRETF", "token="):
+            assert secret not in text
+    assert raised.value.response is not None
+    assert raised.value.response.headers["Location"] == location
+
+
+def test_write_redirect_answered_with_303_quotes_the_origin_and_path(
+    requests_mock: Any,
+) -> None:
+    """The 303 message points to the result by origin and path alone."""
+    api = API("https://example.com/v1/")
+    requests_mock.post(
+        "https://example.com/v1/items/",
+        status_code=303,
+        headers={"Location": "/v1/items/7/?token=SECRETQ#SECRETF"},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.post("items/", json={"name": "Ada"})
+
+    assert str(raised.value) == (
+        "POST https://example.com/v1/items/ was answered with status 303, "
+        "which says that the server performed it and points to its result at "
+        "https://example.com/v1/items/7/, which was not read. Do not retry "
+        "the POST."
+    )
+    for text in _printed(raised.value):
+        assert "SECRET" not in text
+
+
+@pytest.mark.parametrize(
+    ("base", "location", "target"),
+    [
+        (
+            "http://[::a]:8000/v1/",
+            "http://[::A]:8000/v1/items/?q=SECRET",
+            "http://[::a]:8000/v1/items/",
+        ),
+        (
+            "https://example.com/v1/",
+            "https://Example.COM/v1/It%20ems/;p=1?q=SECRET",
+            "https://example.com/v1/It%20ems/;p=1",
+        ),
+        (
+            "https://example.com/v1/",
+            "https://example.com/v1/\u00fcber/?q=SECRET",
+            "https://example.com/v1/%C3%BCber/",
+        ),
+        (
+            "https://example.com:8443/v1/",
+            "//example.com:8443/v1/items/#SECRET",
+            "https://example.com:8443/v1/items/",
+        ),
+    ],
+)
+def test_write_redirect_renders_its_target_from_the_prepared_parts(
+    requests_mock: Any, base: str, location: str, target: str
+) -> None:
+    """The host, port, and path are as requests prepares them.
+
+    Args:
+        base: The API's base URL.
+        location: The redirect's ``Location`` header, which names an allowed
+            origin.
+        target: The origin and path that the message quotes.
+    """
+    api = API(base)
+    requests_mock.post(
+        f"{base}items",
+        status_code=301,
+        # requests decodes a header's bytes as Latin-1, then as UTF-8.
+        headers={"Location": location.encode("utf-8").decode("latin-1")},
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.post("items", json={})
+
+    assert f" to {target}, which requests follows as a GET" in str(
+        raised.value
+    )
+    for text in _printed(raised.value):
+        assert "SECRET" not in text
+
+
+def test_write_redirect_to_an_allowed_origin_quotes_it_without_the_query(
+    requests_mock: Any,
+) -> None:
+    """A redirect to an origin in ``redirect_origins`` leaves out its query."""
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://files.example.com:8443"]
+    requests_mock.post(
+        "https://example.com/v1/items/",
+        status_code=301,
+        headers={
+            "Location": "https://files.example.com:8443/obj"
+            "?X-Amz-Signature=SECRETSIG&X-Amz-Credential=AKIDEXAMPLE"
+        },
+    )
+
+    with pytest.raises(RedirectError) as raised:
+        api.post("items/", json={})
+
+    assert (
+        " to https://files.example.com:8443/obj, which requests follows"
+        in (str(raised.value))
+    )
+    for text in _printed(raised.value):
+        assert "SECRETSIG" not in text
+        assert "AKIDEXAMPLE" not in text
+
+
 def test_redirect_that_cannot_be_parsed_closes_the_response(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
