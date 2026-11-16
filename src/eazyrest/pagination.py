@@ -629,6 +629,53 @@ def follow_link_headers(
     return Results(items())
 
 
+def _follow_pages(
+    api: Client,
+    first: Page[Any],
+    read_page: Callable[[Response], Page[Any]],
+) -> Results[Any]:
+    """Iterate the items of a page and of the pages that it links to.
+
+    The next page is requested only after the items of the current page have
+    been consumed. The limits, the check for a link to a page already read, and
+    the origin check are those of ``follow_next_links()``, and ``max_pages``
+    and ``max_items`` count the whole traversal. A page without a way to read
+    others ends the traversal after its items.
+
+    Args:
+        api: Client that requests the later pages.
+        first: The first page.
+        read_page: Reads a page from the response that requested it.
+
+    Returns:
+        Iterator over the items of every page, in order. Its ``count`` is the
+        first page's.
+
+    Raises:
+        PaginationError: If a next-page URL names a page already read, or has
+            another origin and the pages do not allow other origins.
+        LimitExceeded: If the pages hold more items than the API's
+            ``max_items``, or are more than its ``max_pages``.
+    """
+
+    def items() -> Iterator[Any]:
+        """Yield the items of every page.
+
+        Yields:
+            Items from every page, in order.
+        """
+        page = first
+        reader = _PageReader(api, first._allow_other_origins)
+        reader.read_urls.add(first.url)
+        while True:
+            yield from reader.count_items(page.items)
+            if page._source is None or page.next_url is None:
+                return
+            page = read_page(reader.read(page.next_url))
+
+    return Results(items(), first.count)
+
+
 class _Trail:
     """The pages read in one direction from a first page."""
 

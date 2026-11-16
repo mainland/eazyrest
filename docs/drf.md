@@ -42,8 +42,8 @@ Many DRF list endpoints return an envelope such as:
 If DRF pagination is not configured, list endpoints usually return a plain JSON
 list. If pagination is configured, each response holds one page. `filter()` and
 `all()` read both by default: their default `collection_items_from_response()`
-hook returns `follow_next_links()`, which handles unpaginated list responses as
-well as paginated responses from `PageNumberPagination`,
+hook reads each page with `collection_page()`, which handles unpaginated list
+responses as well as paginated responses from `PageNumberPagination`,
 `LimitOffsetPagination`, and `CursorPagination`. It requests the next page only
 when iteration reaches it. With `prefetch=`, iteration reads ahead by up to
 `prefetch_batch_size` objects, so a batch can span pages.
@@ -92,9 +92,9 @@ With `CursorPagination`, a response usually looks like:
 }
 ```
 
-`follow_next_links()` works the same way for all three pagination styles
-because DRF exposes the next page as a URL in each case. The only difference is
-how DRF encodes that URL.
+The default `collection_page()` works the same way for all three pagination
+styles because DRF exposes the next page as a URL in each case. The only
+difference is how DRF encodes that URL.
 
 ## Add a base model for DRF conventions
 

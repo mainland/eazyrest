@@ -33,6 +33,15 @@ describe them further.
 - `filter()` reads a Django REST Framework page, a `results` list with a `next`
   link, by default, where `v1.0.0a5` raised `ResponseShapeError`. An override
   of `collection_items()` that only read such pages can go.
+- A class that overrides only `collection_page()` now reads `filter()` and
+  `all()` through it, as it reads `get_page()`. The default
+  `collection_items_from_response()` reads the response with
+  `collection_page()` and the pages that it links to, where `v1.0.0a5` read
+  only Django REST Framework's page shape and a list, and a class for another
+  page shape had to override `collection_items_from_response()` too. A class
+  that overrides `collection_items()` or `collection_items_from_response()` is
+  read through it as before. A page that a hook builds with `Page(...)` and no
+  source ends `filter()` after its items.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

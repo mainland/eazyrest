@@ -2291,6 +2291,264 @@ def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
     assert Linked.api is not tenant
 
 
+class PageHookBase(JSONObject):
+    """Base object that overrides only the page hook, for Link headers."""
+
+    @classmethod
+    def collection_page(
+        cls, resp: Response, *, api: Client, **kwargs: Any
+    ) -> Page[Any]:
+        """Read a page and the pages that it links to by ``Link`` headers.
+
+        Args:
+            resp: Response for the page.
+            api: The query's client.
+
+        Returns:
+            The page of JSON items.
+        """
+        return link_headers_page(api, resp)
+
+
+PageHookBase.register_api(API("https://example.com/v1/"))
+
+
+@json_object
+class Hooked(PageHookBase):
+    """Model whose pages are linked by headers and read by the page hook."""
+
+    class_url = "/hooked/"
+
+    id: int
+
+
+HOOKED = "https://example.com/v1/hooked/"
+
+
+def _serve_hooked_pages(requests_mock: Any, count: int = 3) -> None:
+    """Serve ``count`` pages of one item each, linked by headers.
+
+    Args:
+        requests_mock: The mocker that serves the pages.
+        count: Number of pages.
+    """
+    for number in range(1, count + 1):
+        headers = (
+            {"Link": f'<{HOOKED}?page={number + 1}>; rel="next"'}
+            if number < count
+            else {}
+        )
+        url = HOOKED if number == 1 else f"{HOOKED}?page={number}"
+        requests_mock.get(url, json=[{"id": number}], headers=headers)
+
+
+def test_page_hook_alone_reads_every_page_through_filter_and_all(
+    requests_mock: Any,
+) -> None:
+    """A class that overrides only ``collection_page()`` reads all pages."""
+    _serve_hooked_pages(requests_mock)
+
+    assert [item.id for item in Hooked.filter()] == [1, 2, 3]
+    assert [item.id for item in Hooked.all()] == [1, 2, 3]
+    assert [item.id for item in Hooked.get_page()] == [1]
+
+
+def test_page_hook_reads_the_next_page_only_when_reached(
+    requests_mock: Any,
+) -> None:
+    """Reading through the page hook is lazy, as following links is."""
+    _serve_hooked_pages(requests_mock)
+
+    items = Hooked.filter()
+
+    assert requests_mock.call_count == 1
+    assert next(items).id == 1
+    assert requests_mock.call_count == 1
+    assert [item.id for item in items] == [2, 3]
+    assert requests_mock.call_count == 3
+
+
+def test_default_page_hook_reads_pages_lazily_and_reports_the_count(
+    requests_mock: Any,
+) -> None:
+    """A class with no override reads pages of Django REST Framework lazily."""
+
+    @json_object
+    class Plain(JSONObject):
+        class_url = "/plain/"
+
+        id: int
+
+    Plain.register_api(API("https://example.com/v1/"))
+    requests_mock.get(
+        "https://example.com/v1/plain/",
+        json={"count": 2, "next": "?page=2", "results": [{"id": 1}]},
+    )
+    requests_mock.get(
+        "https://example.com/v1/plain/?page=2",
+        json={"count": 2, "next": None, "results": [{"id": 2}]},
+    )
+
+    items = Plain.filter()
+
+    assert items.count == 2
+    assert next(items).id == 1
+    assert requests_mock.call_count == 1
+    assert [item.id for item in items] == [2]
+
+
+def test_page_hook_traversal_refuses_a_link_to_a_page_already_read(
+    requests_mock: Any,
+) -> None:
+    """A cycle of links raises ``PaginationError``, not an endless read."""
+    requests_mock.get(
+        HOOKED,
+        json=[{"id": 1}],
+        headers={"Link": f'<{HOOKED}?p=2>; rel="next"'},
+    )
+    requests_mock.get(
+        HOOKED + "?p=2",
+        json=[{"id": 2}],
+        headers={"Link": f'<{HOOKED}>; rel="next"'},
+    )
+
+    items = Hooked.filter()
+
+    assert next(items).id == 1
+    assert next(items).id == 2
+    with pytest.raises(PaginationError, match="already read"):
+        next(items)
+
+
+def test_page_hook_traversal_refuses_a_link_to_another_origin(
+    requests_mock: Any,
+) -> None:
+    """A page that links to another origin is not requested."""
+    requests_mock.get(
+        HOOKED,
+        json=[{"id": 1}],
+        headers={"Link": '<https://other.example/hooked/>; rel="next"'},
+    )
+    other = requests_mock.get("https://other.example/hooked/", json=[])
+
+    items = Hooked.filter()
+
+    assert next(items).id == 1
+    with pytest.raises(PaginationError, match="different origin"):
+        next(items)
+    assert not other.called
+
+
+def test_page_hook_traversal_counts_pages_and_items_together(
+    requests_mock: Any,
+) -> None:
+    """``max_pages`` and ``max_items`` bound the whole traversal."""
+    _serve_hooked_pages(requests_mock)
+    paged = API("https://example.com/v1/")
+    paged.max_pages = 2
+    capped = API("https://example.com/v1/")
+    capped.max_items = 2
+
+    with pytest.raises(LimitExceeded, match="more than 2 pages"):
+        list(Hooked.filter(api=paged))
+    with pytest.raises(LimitExceeded, match="more than 2 items"):
+        list(Hooked.filter(api=capped))
+
+
+def test_page_built_without_a_source_ends_the_traversal(
+    requests_mock: Any,
+) -> None:
+    """A page that a hook builds by hand yields its items and ends."""
+
+    @json_object
+    class Built(JSONObject):
+        class_url = "/built/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            return Page(
+                api.json(resp), url=resp.url, count=7, next_url="?page=2"
+            )
+
+    Built.register_api(API("https://example.com/v1/"))
+    requests_mock.get("https://example.com/v1/built/", json=[{"id": 1}])
+
+    items = Built.filter()
+
+    assert items.count == 7
+    assert [item.id for item in items] == [1]
+    assert requests_mock.call_count == 1
+
+
+def test_collection_items_override_still_receives_the_payload(
+    requests_mock: Any,
+) -> None:
+    """A class that overrides ``collection_items()`` keeps its override."""
+    payloads: list[Any] = []
+
+    @json_object
+    class Wrapped(JSONObject):
+        class_url = "/wrapped/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: Client, **kwargs: Any
+        ) -> Any:
+            payloads.append(payload)
+            return payload["rows"]
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            raise AssertionError("the override replaces the page hook")
+
+    Wrapped.register_api(API("https://example.com/v1/"))
+    requests_mock.get(
+        "https://example.com/v1/wrapped/", json={"rows": [{"id": 1}]}
+    )
+
+    assert [item.id for item in Wrapped.filter()] == [1]
+    assert payloads == [{"rows": [{"id": 1}]}]
+
+
+def test_collection_items_from_response_override_still_replaces_the_default(
+    requests_mock: Any,
+) -> None:
+    """A class that overrides the response hook is read through it alone."""
+
+    @json_object
+    class Custom(JSONObject):
+        class_url = "/custom/"
+
+        id: int
+
+        @classmethod
+        def collection_items_from_response(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Any:
+            return api.json(resp)["rows"]
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            raise AssertionError("the override replaces the page hook")
+
+    Custom.register_api(API("https://example.com/v1/"))
+    requests_mock.get(
+        "https://example.com/v1/custom/", json={"rows": [{"id": 1}]}
+    )
+
+    assert [item.id for item in Custom.filter()] == [1]
+
+
 def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:
     """A hook that returns something other than a page fails clearly."""
 

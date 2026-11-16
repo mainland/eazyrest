@@ -89,9 +89,9 @@ from .api import (
 from .pagination import (
     Page,
     _check_page_size,
+    _follow_pages,
     _PageSource,
     _request_page,
-    follow_next_links,
     next_links_page,
 )
 from .write_mode import WriteMode, validate_write_mode
@@ -6862,13 +6862,16 @@ class JSONObject:
     def collection_page(
         cls, resp: Response, *, api: Client, **kwargs: Any
     ) -> Page[Any]:
-        """Read one page of a collection response for ``get_page()``.
+        """Read one page of a collection response.
 
-        The default reads Django REST Framework's page shape with
-        ``next_links_page()``. Override it to return
-        ``link_headers_page(api, resp)`` for an API that links pages in Link
-        headers, or ``next_links_page()`` with other member names. A page
-        built another way holds its items, but cannot read other pages.
+        ``get_page()`` calls this hook, and so does the default
+        ``collection_items_from_response()``, so ``filter()`` and ``all()``
+        read the page and the pages that it links to through it. The default
+        reads Django REST Framework's page shape with ``next_links_page()``.
+        Override it to return ``link_headers_page(api, resp)`` for an API that
+        links pages in Link headers, or ``next_links_page()`` with other member
+        names. A page built another way holds its items, but cannot read other
+        pages, so ``filter()`` stops after its items.
 
         Args:
             resp: Response for the page.
@@ -6889,13 +6892,18 @@ class JSONObject:
     ) -> Iterable[Any]:
         """Iterate the JSON objects of a collection response.
 
-        ``filter()`` calls this hook with the response to its request. The
-        default reads every page of Django REST Framework's page shape, with
-        ``follow_next_links(api, api.json(resp), url=resp.url)``, and a list
-        payload as a single page. If the class overrides
+        ``filter()`` calls this hook with the response to its request, and
+        ``all()`` through it. The default reads the response with
+        ``collection_page()``, then the pages that it links to, so a class that
+        overrides only ``collection_page()`` reads ``filter()`` and
+        ``get_page()`` alike. A page without a way to read others ends the
+        traversal after its items. ``max_pages`` and ``max_items`` count the
+        whole traversal, and a link to a page already read, or to another
+        origin, raises ``PaginationError``. If the class overrides
         ``collection_items()``, the default passes the decoded payload to it
-        instead. Override this hook when the items or the later pages depend
-        on more than the payload, such as a ``Link`` header.
+        instead. Override this hook to read a collection in a way that
+        ``collection_page()`` cannot express, such as items that depend on more
+        than one response.
 
         Args:
             resp: Response to the collection request.
@@ -6909,10 +6917,15 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the payload is neither a list nor a page.
         """
-        payload = api.json(resp)
         if cls._overrides_hook("collection_items"):
-            return cls.collection_items(payload, api=api, **kwargs)
-        return follow_next_links(api, payload, url=resp.url)
+            return cls.collection_items(api.json(resp), api=api, **kwargs)
+        return _follow_pages(
+            api,
+            cls.collection_page(resp, api=api, **kwargs),
+            lambda page_resp: cls.collection_page(
+                page_resp, api=api, **kwargs
+            ),
+        )
 
     @classmethod
     def collection_items(
@@ -6921,13 +6934,13 @@ class JSONObject:
         """Iterate JSON objects for a collection query.
 
         The default accepts only a list, and does not follow pages. A class
-        that overrides this hook replaces the default paging of
+        that overrides this hook replaces the default reading of
         ``collection_items_from_response()``, which then passes it the decoded
-        payload. Override it to unwrap envelope responses, or to follow
-        pagination links by issuing additional requests through ``api``, the
-        query's client. Code that reads a collection itself should call
-        ``filter()``, or ``follow_next_links()`` with ``url=``, rather than
-        this hook.
+        payload, so ``filter()`` and ``all()`` call it and ``get_page()`` does
+        not. Override it to unwrap envelope responses, or to follow pagination
+        links by issuing additional requests through ``api``, the query's
+        client. Code that reads a collection itself should call ``filter()``,
+        or ``follow_next_links()`` with ``url=``, rather than this hook.
 
         ``api`` is the API that the query passed as ``api=``, or the class's
         registered API, and it sends the query's ``request_options`` with

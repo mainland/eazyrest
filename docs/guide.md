@@ -1166,9 +1166,9 @@ print(f"{admins.count} admins")
 ```
 
 `filter()` takes `count` from the iterable that the collection hooks return.
-`follow_next_links()`, which reads pages by default, returns one with the first
-page's `count` member, and a hook of your own can return any iterable with an
-integer `count` attribute.
+The default `collection_items_from_response()`, which reads pages through
+`collection_page()`, returns one with the first page's `count` member, and a
+hook of your own can return any iterable with an integer `count` attribute.
 
 `filter()` and `get()` encode a keyword argument named after a JSON-backed
 field with the same JSON field name and conversion as `create()`. For example,
@@ -1413,17 +1413,39 @@ def object_json(cls, payload, **kwargs):
 
 When a collection endpoint splits its results into pages linked by a next-page
 URL, as Django REST Framework's paginators do, `filter()` and `all()` read
-every page by default. The default `collection_items_from_response()` returns
-`follow_next_links(api, api.json(resp), url=resp.url)`, which yields the items
-of each page and requests the next page only when iteration reaches it, so
-`filter()` and `all()` stay lazy. A list payload is a single unpaginated page.
-With `prefetch=`, `filter()` and `all()` read up to `prefetch_batch_size`
-objects ahead of iteration to fill each batch, so they can request later pages
-early.
+every page by default. The default `collection_items_from_response()` reads the
+response with `collection_page()`, the same hook that `get_page()` calls, and
+yields its items, then those of each page that it links to. It requests the
+next page only when iteration reaches it, so `filter()` and `all()` stay lazy.
+A list payload is a single unpaginated page. With `prefetch=`, `filter()` and
+`all()` read up to `prefetch_batch_size` objects ahead of iteration to fill
+each batch, so they can request later pages early.
 
-`follow_next_links()` reads a page's items from `results` and the next page's
-URL from `next`, as Django REST Framework does. For other names, override
-`collection_items_from_response()` and pass `results_key=` and `next_key=`:
+To read another page shape, override `collection_page()`. `filter()`, `all()`,
+and `get_page()` all read through it. `next_links_page()` reads a page's items
+from `results` and the next page's URL from `next`, as Django REST Framework
+does, and takes other member names as `results_key=` and `next_key=`.
+`link_headers_page()` reads a page that is a JSON list and names the next page
+in a `Link` header with `rel="next"`, as GitHub's API does:
+
+```python
+from eazyrest import JSONObject, link_headers_page
+
+
+class GitHubObject(JSONObject):
+    @classmethod
+    def collection_page(cls, resp, *, api, **kwargs):
+        return link_headers_page(api, resp)
+```
+
+A page that a hook builds with `Page(...)` and no source cannot read other
+pages, so `filter()` stops after its items. `max_pages` and `max_items` count
+the pages and items of the whole traversal, and the result's `count` is the
+first page's.
+
+`follow_next_links()` and `follow_link_headers()` are helpers for a class that
+overrides `collection_items_from_response()` or `collection_items()`, and for
+code that reads a collection itself. They take the same member names:
 
 ```python
 from eazyrest import JSONObject, follow_next_links
@@ -1449,9 +1471,12 @@ a page.
 
 A class that overrides `collection_items()` replaces this default: the default
 `collection_items_from_response()` then passes the decoded payload to it, and
-pages only if it does. The default `collection_items()` accepts only a list, so
-code that reads a collection itself, such as a `bulk_get_by_pks()` hook, should
-call `filter()` rather than `collection_items()`.
+pages only if it does. A class that overrides
+`collection_items_from_response()` is read through it alone. In both cases
+`collection_page()` serves only `get_page()`. The default `collection_items()`
+accepts only a list, so code that reads a collection itself, such as a
+`bulk_get_by_pks()` hook, should call `filter()` rather than
+`collection_items()`.
 
 A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
@@ -1496,20 +1521,9 @@ it must lead to the origin of the page request or to one of the API's
 followed, and raises `RedirectError` for a redirect from a next-page request,
 whichever origin it names.
 
-Some APIs, such as GitHub's, return each page as a JSON list and name the next
-page in a `Link` header with `rel="next"`. Return `follow_link_headers()` from
-`collection_items_from_response()` for such an API. It resolves links and
-checks origins as `follow_next_links()` does:
-
-```python
-from eazyrest import JSONObject, follow_link_headers
-
-
-class GitHubObject(JSONObject):
-    @classmethod
-    def collection_items_from_response(cls, resp, *, api, **kwargs):
-        return follow_link_headers(api, resp)
-```
+A class that overrides `collection_items_from_response()` for a `Link` header
+API can return `follow_link_headers()` from it. It resolves links and checks
+origins as `follow_next_links()` does.
 
 ### Pages
 
@@ -1537,21 +1551,12 @@ false, even when its `next_url` names another page. Loop over pages with
 `previous_url`. The URL must have the origin of the API's base URL, and it
 cannot be combined with query parameters, because a page's URL holds its query.
 
-The `collection_page()` hook reads each page. By default it returns
+The `collection_page()` hook reads each page, for `filter()` and `all()` too,
+as "Following pages" describes. By default it returns
 `next_links_page(api, resp)`, which reads Django REST Framework's `results`,
 `next`, `previous`, and `count` members. Pass other member names to
 `next_links_page()`, or return `link_headers_page(api, resp)` for an API that
-links its pages in `Link` headers with `next` and `prev` relations:
-
-```python
-from eazyrest import JSONObject, link_headers_page
-
-
-class GitHubObject(JSONObject):
-    @classmethod
-    def collection_page(cls, resp, *, api, **kwargs):
-        return link_headers_page(api, resp)
-```
+links its pages in `Link` headers with `next` and `prev` relations.
 
 Links are checked as `follow_next_links()` checks them. A link to another
 origin raises `PaginationError` unless the helper was given
@@ -1914,7 +1919,7 @@ attribute that sets it:
 | `max_response_bytes` | 16 MiB | The decompressed size of all the response bodies that one request reads, those of its redirects and challenges included, checked as they are read. |
 | `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
 | `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
-| `max_pages` | 1,000 | The pages that one `follow_next_links()` or `follow_link_headers()` traversal reads, counting the first. |
+| `max_pages` | 1,000 | The pages that one traversal reads, counting the first, by `filter()`, `all()`, `follow_next_links()`, or `follow_link_headers()`. |
 | `max_items` | 100,000 | The items that one traversal yields. |
 
 Set an attribute on an instance or in a subclass to change a limit, or set it
