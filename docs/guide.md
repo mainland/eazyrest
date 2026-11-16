@@ -1363,14 +1363,20 @@ generator that a hook returns. A hook sends its requests through its `api`
 argument, which is the query's `api=` or its scoped client. A hook that sends
 them through `cls.api` ignores the query's `api=` and `request_options=`.
 
-When the query has `request_options=`, `api` is a copy of the API that adds
-them to every request and shares the API's session. Use it to send requests,
-not to configure, close, or compare the API. The copy adds its options and
-nothing else, so a hook that sends `allow_redirects=False` reads the 3xx
-response itself, as it does in a query without options. The copy is made with
-`copy.copy()`, so a subclass of `API` that changes its own state while it sends
-requests, such as a refreshed token, must keep that state on the session, which
-the copy shares.
+When the query has `request_options=`, `api` is a view of the API, not an
+`API`. Each request that a hook sends through it merges the call's options over
+the query's and goes through the API's own `get()`, `post()`, `put()`,
+`patch()`, or `delete()`, so a subclass of `API` that counts requests or
+refreshes a token in those methods sees every request of the query, and keeps
+its state on itself. The view adds its options and nothing else, so a hook that
+sends `allow_redirects=False` reads the 3xx response itself, as it does in a
+query without options. Reading any other attribute of the view, such as
+`api.session` or a helper that your subclass defines, reads the API's, but a
+helper that sends requests through its own `self` does not send the query's
+options. Assigning an attribute of the view raises `AttributeError`. Use it to
+send requests, not to configure, close, or compare the API, and do not check
+`isinstance(api, API)`, which is false for the view. A query without options
+passes its API itself.
 
 Every hook may receive more keyword arguments in later 1.x releases, to tell it
 more about the query or the write: those that take `api`, which are
@@ -1387,12 +1393,13 @@ a later 1.x release can send requests with another HTTP library without
 changing them. `api` is a `Client`, which has the request methods, `base_url`,
 `resolve_url()`, `json()`, and the limits, and a response is a `Response`,
 which has the status, reason, headers, body, URL, request method, and redirect
-history. At run time they are an `API` and a `requests.Response`. Annotate an
+history. At run time `api` is an `API`, or a view of one if the query has
+`request_options=`, and a response is a `requests.Response`. Annotate an
 override's parameters with the protocols, because an override that annotates
 them `API` or `requests.Response` fails type checking, and cast them to use
-anything else, such as `api.session` or `resp.links`. The query methods,
-`create()`, and the model constructor take a `Client` as `api=`, so a hook can
-pass its `api` on.
+anything else, such as `api.session` or `resp.links`. The view reads
+`api.session` from the API. The query methods, `create()`, and the model
+constructor take a `Client` as `api=`, so a hook can pass its `api` on.
 
 For example, an API that returns singleton responses in a "result" field and
 collection responses in a "results" field should define a new base class

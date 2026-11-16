@@ -22,6 +22,7 @@ from ._results import Results
 from ._urls import _ServerURL
 from .api import (
     _as_api,
+    _as_client,
     _check_final_response,
     _leaves_allowed_origins,
     _origin,
@@ -255,7 +256,7 @@ def _request_page(
             response is a redirect that was not followed.
         requests.RequestException: If the request fails, as for any request.
     """
-    api = _as_api(api)
+    api = _as_client(api)
     api_origin = _origin(api.base_url)
     if not allow_other_origins:
         _check_page_origin(api, url, from_server)

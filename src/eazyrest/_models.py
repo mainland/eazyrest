@@ -79,11 +79,13 @@ from ._protocols import Client, Response
 from ._results import Results, _count_of
 from .api import (
     API,
-    _as_api,
+    _AnyAPI,
+    _as_client,
     _canonical_url,
     _check_final_response,
     _merge_request_options,
     _origin,
+    _registered_api,
     _takes_kwargs,
 )
 from .pagination import (
@@ -210,16 +212,16 @@ _api_registry: dict[type[JSONObject], API] = {}
 class _Query:
     """The APIs and request options of one query."""
 
-    api: API | None
+    api: _AnyAPI | None
     """The API that the query passed as ``api=``, which its objects keep."""
 
-    client: API
+    client: _AnyAPI
     """The client that sends the query's own requests, with its options."""
 
     options: Mapping[str, Any]
     """Request options that the query's requests send."""
 
-    def related_client(self, model: type[JSONObject]) -> API:
+    def related_client(self, model: type[JSONObject]) -> _AnyAPI:
         """Return the client for a bulk lookup of related objects.
 
         The lookup uses the query's ``api=``, or else the related model's own
@@ -266,7 +268,7 @@ class _ModelPageSource(_PageSource[Any]):
         self._prefetch = prefetch
 
     @property
-    def api(self) -> API:
+    def api(self) -> _AnyAPI:
         """The query's client, which requests the pages."""
         return self._client
 
@@ -365,7 +367,10 @@ class APIDescriptor:
                 API is registered for ``objtype`` or any of its bases.
         """
         if obj is not None and obj._api_override is not None:
-            return obj._api_override
+            # An object built with a request-scoped view keeps the view, which
+            # has every member of Client and reads the rest from its API, so it
+            # stands in for the API that this annotation promises.
+            return cast("API", obj._api_override)
 
         if objtype is None:
             if obj is None:
@@ -2358,7 +2363,7 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 T = TypeVar("T", bound="JSONObject")
 
 
-def _checked_hyperlink(api: API, url: str) -> str:
+def _checked_hyperlink(api: _AnyAPI, url: str) -> str:
     """Return a hyperlink as an absolute URL, after checking its origin.
 
     Args:
@@ -4688,7 +4693,7 @@ class JSONObject:
     key. Only ``_record_saved_key()`` sets it.
     """
 
-    _api_override: API | None
+    _api_override: _AnyAPI | None
     """Instance-scoped API override."""
 
     _write_mode: WriteMode
@@ -4818,7 +4823,7 @@ class JSONObject:
         _check_api_attribute(type(self), UsageError)
         if kwargs:
             _refuse_keyless_assignment(type(self))
-        self._api_override = None if api is None else _as_api(api)
+        self._api_override = None if api is None else _as_client(api)
         if write_mode is None:
             try:
                 write_mode = self.api.default_write_mode
@@ -6262,7 +6267,7 @@ class JSONObject:
             TypeError: If ``api`` is not an ``API``, as for the ``api=``
                 argument of a query or a model.
         """
-        _api_registry[cls] = _as_api(api)
+        _api_registry[cls] = _registered_api(api)
 
     @property
     def pk(self) -> Any:
@@ -6762,7 +6767,7 @@ class JSONObject:
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_api(api)
+        api = None if api is None else _as_client(api)
         client = cls.api if api is None else api
         resp = client.post(
             cls.class_url, **cls._write_body(payload, files), **options
@@ -6943,13 +6948,12 @@ class JSONObject:
         or ``follow_next_links()`` with ``url=``, rather than this hook.
 
         ``api`` is the API that the query passed as ``api=``, or the class's
-        registered API, and it sends the query's ``request_options`` with
-        every request. With options, it is a copy that shares the API's
-        session, so use it to send requests, not to configure, close, or
-        compare the API. A subclass of ``API`` that changes its own state, such
-        as a refreshed token, must keep that state on the session. ``cls.api``
-        is always the class's registered API, so a hook sends its requests
-        through ``api``.
+        registered API. With ``request_options=`` it is a view of that API, not
+        an ``API``. It sends the query's options with every request, through
+        the API's own request methods, so use it to send requests, not to
+        configure, close, or compare the API, or to check ``isinstance(api,
+        API)``. ``cls.api`` is always the class's registered API, so a hook
+        sends its requests through ``api``.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.
@@ -7518,7 +7522,7 @@ class JSONObject:
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_api(api)
+        api = None if api is None else _as_client(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base
         context = _Query(api, client, options)
@@ -7641,7 +7645,7 @@ class JSONObject:
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_api(api)
+        api = None if api is None else _as_client(api)
         base = cls.api if api is None else api
         client = base._scoped(options) if options else base
         source = _ModelPageSource(

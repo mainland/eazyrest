@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import copy
 import inspect
 import time
 from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
-from typing import Any, Self
+from typing import Any, Self, TypeAlias
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
@@ -1023,7 +1022,11 @@ class API:
     """Default write mode inherited by newly created model instances."""
 
     _request_options: Mapping[str, Any] = MappingProxyType({})
-    """Request options that every request of this client sends."""
+    """Request options that every request sends, which an API has none of.
+
+    A scoped view of the API has its own, so a helper that sends a request
+    through either reads the same attribute.
+    """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Check that an override of ``raise_for_response()`` takes kwargs.
@@ -1272,24 +1275,16 @@ class API:
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
 
-    def _scoped(self, options: Mapping[str, Any]) -> Self:
-        """Return a copy of this client that sends ``options`` with requests.
-
-        The copy shares this client's session, so its cookies, adapters, and
-        configuration are the same. A request that the copy sends with its own
-        options merges them over ``options``.
+    def _scoped(self, options: Mapping[str, Any]) -> _ScopedAPI:
+        """Return a view of this client that sends ``options`` with requests.
 
         Args:
             options: Request options, as for ``requests.Session.request()``.
 
         Returns:
-            The request-scoped copy.
+            The view, which sends every request through this client.
         """
-        scoped = copy.copy(self)
-        scoped._request_options = _merge_request_options(
-            self._request_options, options
-        )
-        return scoped
+        return _ScopedAPI(self, dict(options))
 
     def _send(
         self,
@@ -1322,8 +1317,6 @@ class API:
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
         """
-        if self._request_options:
-            kwargs = _merge_request_options(self._request_options, kwargs)
         kwargs.setdefault("timeout", self.timeout)
         # A request that streams reads its own body, but not the bodies of
         # redirects, which requests reads, or of a failure, which the error
@@ -1581,20 +1574,294 @@ class API:
         return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 
 
-def _as_api(api: Client) -> API:
-    """Return a client that a hook passed back as the requests client.
+class _ScopedAPI:
+    """A view of an ``API`` that sends request options with each request.
 
-    ``API`` is the only client there is so far, so every ``Client`` that
-    eazyrest passes to a hook is one.
+    A query with ``request_options=`` passes this to its hooks as ``api``, in
+    place of the ``API``. Each request method merges the call's options over
+    the view's and sends the request with the ``API``'s method of the same
+    name, so a subclass of ``API`` that overrides ``get()`` sees every request
+    of the query. The view holds no state that a request changes. It adds its
+    options and nothing else, so a hook that sends ``allow_redirects=False``
+    reads the redirect itself, as it does without options.
+
+    The view has the members of ``Client``. Reading any other attribute reads
+    the ``API``'s, so ``api.session`` and a subclass's helpers work, but a
+    helper that sends requests through its own ``self`` does not send the
+    options. Assigning an attribute raises ``AttributeError``. It is not an
+    ``API``, so ``isinstance(api, API)`` is false.
+    """
+
+    __slots__ = ("_api", "_request_options")
+
+    _api: API
+    _request_options: Mapping[str, Any]
+
+    def __init__(self, api: API, options: Mapping[str, Any]) -> None:
+        """Wrap ``api`` with the options that its requests send.
+
+        Args:
+            api: The client that sends the requests.
+            options: Request options that every request sends.
+        """
+        object.__setattr__(self, "_api", api)
+        object.__setattr__(self, "_request_options", MappingProxyType(options))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Refuse to assign an attribute, which the ``API`` would not see.
+
+        Args:
+            name: Attribute name.
+            value: Value that was assigned.
+
+        Raises:
+            AttributeError: Always.
+        """
+        raise AttributeError(
+            f"cannot assign {name!r} on a request-scoped view of an API. "
+            "Assign it on the API"
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        """Read an attribute that the view does not define from the ``API``.
+
+        Args:
+            name: Attribute name.
+
+        Returns:
+            The ``API``'s attribute.
+        """
+        return getattr(object.__getattribute__(self, "_api"), name)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Rebuild the view from its ``API`` and a plain dict of its options.
+
+        Copying, deep-copying, and pickling use this, since the options are
+        held in a read-only mapping that cannot be pickled. A deep copy
+        deep-copies the ``API``, as for any object that holds one.
+
+        Returns:
+            The class and the arguments that build an equal view.
+        """
+        return (_ScopedAPI, (self._api, dict(self._request_options)))
+
+    def __repr__(self) -> str:
+        """Return the view's API.
+
+        Returns:
+            Representation of the view.
+        """
+        return f"<request-scoped view of {self._api!r}>"
+
+    @property
+    def base_url(self) -> str:
+        """The API's base URL."""
+        return self._api.base_url
+
+    @property
+    def total_timeout(self) -> float | None:
+        """The API's ``total_timeout``."""
+        return self._api.total_timeout
+
+    @property
+    def max_response_bytes(self) -> int | None:
+        """The API's ``max_response_bytes``."""
+        return self._api.max_response_bytes
+
+    @property
+    def max_json_depth(self) -> int | None:
+        """The API's ``max_json_depth``."""
+        return self._api.max_json_depth
+
+    @property
+    def max_pages(self) -> int | None:
+        """The API's ``max_pages``."""
+        return self._api.max_pages
+
+    @property
+    def max_items(self) -> int | None:
+        """The API's ``max_items``."""
+        return self._api.max_items
+
+    def resolve_url(self, uri: str) -> str:
+        """Resolve a request URI against the API's ``base_url``.
+
+        Args:
+            uri: Relative or absolute request URI.
+
+        Returns:
+            Fully resolved request URL.
+        """
+        return self._api.resolve_url(uri)
+
+    def json(self, resp: Response) -> Any:
+        """Decode a response's JSON with the API's depth limit.
+
+        Args:
+            resp: Response that the API returned.
+
+        Returns:
+            The decoded JSON value.
+        """
+        return self._api.json(resp)
+
+    def _scoped(self, options: Mapping[str, Any]) -> _ScopedAPI:
+        """Return a view of the same API with more options.
+
+        Args:
+            options: Request options that take precedence over this view's.
+
+        Returns:
+            The view, whose options are these merged over this view's.
+        """
+        return _ScopedAPI(
+            self._api, _merge_request_options(self._request_options, options)
+        )
+
+    def _send(
+        self,
+        send: Callable[..., requests.Response],
+        uri: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> requests.Response:
+        """Send a request with the API's method, adding this view's options.
+
+        Args:
+            send: The API's method for the request's HTTP method.
+            uri: Relative or absolute request URI.
+            args: Positional arguments for the method.
+            kwargs: Keyword arguments for the method, which take precedence
+                over this view's options.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return send(
+            uri, *args, **_merge_request_options(self._request_options, kwargs)
+        )
+
+    def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``GET`` request through the API with this view's options.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``API.get``.
+            **kwargs: Keyword arguments forwarded to ``API.get``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return self._send(self._api.get, uri, args, kwargs)
+
+    def post(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``POST`` request through the API with this view's options.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``API.post``.
+            **kwargs: Keyword arguments forwarded to ``API.post``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return self._send(self._api.post, uri, args, kwargs)
+
+    def patch(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``PATCH`` request through the API with this view's options.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``API.patch``.
+            **kwargs: Keyword arguments forwarded to ``API.patch``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return self._send(self._api.patch, uri, args, kwargs)
+
+    def put(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``PUT`` request through the API with this view's options.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``API.put``.
+            **kwargs: Keyword arguments forwarded to ``API.put``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return self._send(self._api.put, uri, args, kwargs)
+
+    def delete(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Issue a ``DELETE`` request through the API with this view's options.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments forwarded to ``API.delete``.
+            **kwargs: Keyword arguments forwarded to ``API.delete``.
+
+        Returns:
+            Validated HTTP response.
+        """
+        return self._send(self._api.delete, uri, args, kwargs)
+
+
+_AnyAPI: TypeAlias = API | _ScopedAPI
+"""An ``API``, or a scoped view that sends through one."""
+
+
+def _as_client(api: Client) -> _AnyAPI:
+    """Return a client that a hook or a caller passed back to eazyrest.
+
+    ``API`` and its scoped view are the only clients there are so far, so every
+    ``Client`` that eazyrest passes to a hook is one of them.
 
     Args:
-        api: Client that a hook passed to eazyrest.
+        api: Client that a hook or a caller passed to eazyrest.
 
     Returns:
         ``api``.
 
     Raises:
-        TypeError: If ``api`` is not an ``API``.
+        TypeError: If ``api`` is neither an ``API`` nor a scoped view of one.
+    """
+    if not isinstance(api, API | _ScopedAPI):
+        raise TypeError(
+            "eazyrest sends requests only through an API, not "
+            f"{type(api).__name__}"
+        )
+    return api
+
+
+def _as_api(api: Client) -> API:
+    """Return the ``API`` that sends a client's requests.
+
+    Args:
+        api: An ``API``, or a scoped view of one.
+
+    Returns:
+        ``api``, or the ``API`` that a view sends through.
+
+    Raises:
+        TypeError: If ``api`` is neither.
+    """
+    api = _as_client(api)
+    return api._api if isinstance(api, _ScopedAPI) else api
+
+
+def _registered_api(api: Client) -> API:
+    """Return an ``API`` that a class registers.
+
+    Args:
+        api: The client to register.
+
+    Returns:
+        ``api``.
+
+    Raises:
+        TypeError: If ``api`` is not an ``API``. A scoped view is not, since
+            the registry holds the one ``API`` that sends requests.
     """
     if not isinstance(api, API):
         raise TypeError(

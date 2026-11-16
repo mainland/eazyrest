@@ -178,7 +178,22 @@ describe them further.
   Its body also counts against the limit that the final body shares, so a
   challenge and a final body that are each within `max_response_bytes` raise
   `LimitExceeded` when they total more.
-- The copy of the client that a query with `request_options=` passes to its
+- The client that a query with `request_options=` passes to its hooks as `api`
+  is a view of the API, not a copy of it. `v1.0.0a5` passed `copy.copy()` of
+  the `API`, which shared its mutable attributes and copied its scalar ones, so
+  a subclass that counted requests or refreshed a token in its own `get()` lost
+  the requests of a scoped query. The view sends every request through the
+  API's own `get()`, `post()`, `put()`, `patch()`, or `delete()` with the
+  query's options, so the subclass sees them. It is not an `API`, so
+  `isinstance(api, API)` is false and a hook that checks it, or that casts
+  `api` and assigns an attribute, changes: reading an attribute outside
+  `Client`, such as `api.session` or a helper of your subclass, reads the
+  API's, and assigning one raises `AttributeError`. A helper of your subclass
+  that sends requests through its own `self` does not send the query's options.
+  An object that a hook builds with this `api` keeps the view, and registering
+  the view with `register_api()` raises `TypeError`. A query without
+  `request_options=` still passes its API itself.
+- The view of the client that a query with `request_options=` passes to its
   hooks adds its options and nothing else. `v1.0.0a5` raised `RedirectError`
   from it for a 3xx that the request did not follow, so a hook that sent
   `allow_redirects=False` and read the response itself failed there, and not in

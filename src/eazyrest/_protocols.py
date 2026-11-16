@@ -89,12 +89,12 @@ class Response(Protocol):
 class Client(Protocol):
     """The client that eazyrest passes to hooks as ``api``.
 
-    A hook sends requests through it, such as for later pages or a bulk
-    lookup, and reads its URL and limits. ``API`` satisfies it, and so does
-    the request-scoped copy of an ``API`` that a query with
-    ``request_options=`` passes. eazyrest's helpers accept only eazyrest's own
-    clients, so this protocol describes what a hook may use rather than an
-    interface to implement.
+    A hook sends requests through it, such as for later pages or a bulk lookup,
+    and reads its URL and limits. ``API`` satisfies it, and so does the
+    request-scoped view of an ``API`` that a query with ``request_options=``
+    passes, which sends every request through the ``API``. eazyrest's helpers
+    accept only eazyrest's own clients, so this protocol describes what a hook
+    may use rather than an interface to implement.
     """
 
     @property

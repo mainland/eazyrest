@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import http.server
 import json
 import os
+import pickle
 import re
 import threading
 from collections.abc import Callable
@@ -20,11 +22,12 @@ from hypothesis import strategies as st
 from requests_mock import ANY as requests_mock_ANY
 from requests_mock import Mocker, create_response
 
-from eazyrest import API, LimitExceeded, RedirectError, Response
+from eazyrest import API, JSONObject, LimitExceeded, RedirectError, Response
 from eazyrest.api import (
     _canonical_url,
     _prepare_server_url,
     _redirect_destination,
+    _ScopedAPI,
 )
 
 
@@ -1246,7 +1249,7 @@ def test_total_timeout_caps_request_timeout(
 def test_scoped_client_sends_its_options_with_every_request(
     requests_mock: Any,
 ) -> None:
-    """A request-scoped copy adds its options, and a call's own options win."""
+    """A request-scoped view adds its options, and a call's own options win."""
     api = API("https://example.com/v1/")
     get = requests_mock.get("https://example.com/v1/items/", json=[])
     scoped = api._scoped(
@@ -1267,7 +1270,7 @@ def test_scoped_client_sends_its_options_with_every_request(
 
 
 def test_scoped_client_shares_its_session() -> None:
-    """The copy shares the session and leaves the original's options alone."""
+    """The view shares the session and leaves the API's options alone."""
     api = API("https://example.com/v1/")
 
     scoped = api._scoped({"headers": {"X-Tenant": "a"}})
@@ -1277,6 +1280,141 @@ def test_scoped_client_shares_its_session() -> None:
     assert api._scoped({})._scoped({"timeout": 1})._request_options == {
         "timeout": 1
     }
+
+
+def test_nested_scopes_merge_their_options_over_one_api(
+    requests_mock: Any,
+) -> None:
+    """A view of a view sends both option sets through the one API."""
+    api = API("https://example.com/v1/")
+    get = requests_mock.get("https://example.com/v1/items/", json=[])
+    outer = api._scoped({"headers": {"X-A": "1", "X-B": "1"}, "timeout": 3})
+
+    outer._scoped({"headers": {"X-B": "2"}}).get("/items/")
+
+    headers = get.last_request.headers
+    assert (headers["X-A"], headers["X-B"]) == ("1", "2")
+    assert get.last_request.timeout == 3
+    assert outer._scoped({"timeout": 9})._api is api
+
+
+def test_scoped_view_sends_every_request_through_the_apis_methods(
+    requests_mock: Any,
+) -> None:
+    """A subclass that overrides a request method sees a scoped request."""
+
+    class Counting(API):
+        """An API that counts the requests that reach its methods."""
+
+        calls: tuple[str, ...] = ()
+        """The methods so far, kept on the instance."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            self.calls += ("get",)
+            return super().get(uri, *args, **kwargs)
+
+        def post(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            self.calls += ("post",)
+            return super().post(uri, *args, **kwargs)
+
+    api = Counting("https://example.com/v1/")
+    requests_mock.get("https://example.com/v1/items/", json=[])
+    requests_mock.post("https://example.com/v1/items/", json={})
+    scoped = api._scoped({"headers": {"X-Tenant": "a"}})
+
+    scoped.get("/items/")
+    scoped.post("/items/", json={})
+
+    assert api.calls == ("get", "post")
+    assert requests_mock.last_request.headers["X-Tenant"] == "a"
+
+
+def test_scoped_view_reads_other_attributes_from_the_api() -> None:
+    """The view reads the API's attributes, and a subclass's helpers."""
+
+    class Signed(API):
+        """An API with a helper of its own."""
+
+        def request_headers(self) -> dict[str, str]:
+            return {"X-Signed": "yes"}
+
+    api = Signed("https://example.com/v1/")
+    api.timeout = 7
+    scoped = api._scoped({"timeout": 1})
+
+    assert scoped.request_headers() == {"X-Signed": "yes"}
+    assert scoped.timeout == 7
+    assert scoped.base_url == api.base_url
+    assert scoped.resolve_url("/items/") == api.resolve_url("/items/")
+    assert scoped.max_items == api.max_items
+    assert not isinstance(cast(Any, scoped), API)
+
+
+def test_scoped_view_refuses_assignment() -> None:
+    """Assigning an attribute on the view raises, so it never diverges."""
+    api = API("https://example.com/v1/")
+    scoped = api._scoped({"timeout": 1})
+
+    with pytest.raises(AttributeError, match="cannot assign 'timeout'"):
+        scoped.timeout = 2
+    with pytest.raises(AttributeError, match="cannot assign 'extra'"):
+        scoped.extra = 1
+    assert api.timeout != 2
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        copy.copy,
+        copy.deepcopy,
+        lambda view: pickle.loads(pickle.dumps(view)),
+    ],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_scoped_view_can_be_copied_and_pickled_with_its_options(
+    duplicate: Callable[[Any], Any], requests_mock: Any
+) -> None:
+    """A duplicate of a view keeps its options and still sends them.
+
+    Args:
+        duplicate: Copies the view, or round-trips it through pickle.
+    """
+    get = requests_mock.get("https://example.com/v1/items/", json=[])
+    view = API("https://example.com/v1/")._scoped(
+        {"headers": {"X-Tenant": "a"}, "timeout": 3}
+    )
+
+    again = duplicate(view)
+
+    assert again is not view
+    assert dict(again._request_options) == dict(view._request_options)
+    again.get("/items/")
+    assert get.last_request.headers["X-Tenant"] == "a"
+    assert get.last_request.timeout == 3
+
+
+def test_scoped_view_without_an_api_raises_attribute_error() -> None:
+    """Reading an attribute of a view that has no API does not recurse."""
+    bare = _ScopedAPI.__new__(_ScopedAPI)
+
+    with pytest.raises(AttributeError):
+        _ = bare.anything
+
+
+def test_scoped_view_cannot_be_registered_as_an_api() -> None:
+    """The registry holds an ``API``, so a view raises ``TypeError``."""
+
+    class Registered(JSONObject):
+        pass
+
+    scoped = API("https://example.com/v1/")._scoped({"timeout": 1})
+
+    with pytest.raises(TypeError, match="only through an API"):
+        Registered.register_api(scoped)  # type: ignore[arg-type]
 
 
 def test_scoped_client_runs_option_hooks_before_its_guard(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 import re
 import socket
 import threading
@@ -1941,6 +1943,122 @@ def test_query_request_options_reach_later_pages(requests_mock: Any) -> None:
     assert first.last_request.headers["X-Trace"] == "t"
     assert second.last_request.headers["X-Trace"] == "t"
     assert all(item._api_override is None for item in items)
+
+
+def test_scoped_query_sends_every_request_through_its_api(
+    requests_mock: Any,
+) -> None:
+    """A subclass of ``API`` sees each page, and a hook's own request."""
+
+    class Counting(API):
+        """An API that counts the requests that reach ``get()``."""
+
+        calls = 0
+        """Requests so far, kept on the instance by ``get()``."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            self.calls += 1
+            return super().get(uri, *args, **kwargs)
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: Client, **kwargs: Any
+        ) -> Any:
+            api.get("/extra/")
+            return super().collection_items(payload, api=api, **kwargs)
+
+    api = Counting("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/probes/",
+        json={"results": [{"id": 1}], "next": "/v1/probes/?page=2"},
+    )
+    requests_mock.get(
+        "https://example.com/v1/probes/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+    extra = requests_mock.get("https://example.com/v1/extra/", json={})
+
+    items = list(
+        Probe.filter(api=api, request_options={"headers": {"X-Trace": "t"}})
+    )
+
+    assert [item.id for item in items] == [1, 2]
+    assert api.calls == 3
+    assert extra.last_request.headers["X-Trace"] == "t"
+    assert requests_mock.last_request.headers["X-Trace"] == "t"
+
+
+def test_object_built_by_a_scoped_hook_keeps_the_view(
+    requests_mock: Any,
+) -> None:
+    """An object that a hook builds with its ``api`` sends the options too."""
+    seen: list[Client] = []
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+        name: str
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: Client, **kwargs: Any
+        ) -> Any:
+            seen.append(api)
+            return payload
+
+    requests_mock.get("https://example.com/v1/probes/", json=[])
+    get = requests_mock.get(
+        "https://example.com/v1/probes/1/", json={"id": 1, "name": "a"}
+    )
+    list(Probe.filter(request_options={"headers": {"X-Trace": "t"}}))
+    (view,) = seen
+
+    built = Probe(id=1, api=view)
+
+    assert not isinstance(view, API)
+    assert built.name == "a"
+    assert get.last_request.headers["X-Trace"] == "t"
+
+
+@json_object
+class Scoped(PagedBase):
+    """Model for objects that are built with a request-scoped view."""
+
+    class_url = "/scoped/"
+
+    id: int
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [copy.deepcopy, lambda obj: pickle.loads(pickle.dumps(obj))],
+    ids=["deepcopy", "pickle"],
+)
+def test_object_built_with_a_scoped_view_can_be_copied_and_pickled(
+    duplicate: Any,
+) -> None:
+    """An object that keeps a view survives a deep copy and a pickle.
+
+    Args:
+        duplicate: Deep-copies the object, or round-trips it through pickle.
+    """
+    view = API("https://example.com/v1/")._scoped({"timeout": 3})
+    built = Scoped(json={"id": 1}, api=view)
+
+    again = duplicate(built)
+
+    assert again.id == 1
+    assert dict(again.api._request_options) == {"timeout": 3}
 
 
 @pytest.mark.parametrize("link", [5, ["/v1/items/?page=2"], {"href": "x"}])
