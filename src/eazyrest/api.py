@@ -381,13 +381,38 @@ def _record_asked_url(resp: requests.Response, asked: str) -> None:
 _FOLLOWING_METHODS = frozenset({"GET", "HEAD"})
 
 
-def _redirected_write(resp: requests.Response, name: str) -> RedirectError:
-    """Describe a write that the server answered with a redirect.
+def _carries_body(kwargs: dict[str, Any]) -> bool:
+    """Return whether requests sends a body with these request arguments.
+
+    requests sends a body for any ``json`` that is not ``None``, including an
+    empty one, and for ``data`` or ``files`` that is not empty. An empty
+    mapping, string, or list is no body, but a stream is one.
+
+    Args:
+        kwargs: Keyword arguments of the request, after the client's options
+            were merged into them.
+
+    Returns:
+        Whether the request carries a body.
+    """
+    return (
+        kwargs.get("json") is not None
+        or bool(kwargs.get("data"))
+        or bool(kwargs.get("files"))
+    )
+
+
+def _redirected_write(
+    resp: requests.Response, name: str, what: str = "a write"
+) -> RedirectError:
+    """Describe a request that the server answered with a redirect.
 
     Args:
         resp: The 3xx response. It is closed, and its requests lose their
             response hooks, so that the error pickles.
         name: The request's method and URL, as for ``_Budget.request``.
+        what: The kind of request, which the message says does not follow a
+            redirect.
 
     Returns:
         The error to raise. The message does not quote the ``Location``, which
@@ -397,7 +422,7 @@ def _redirected_write(resp: requests.Response, name: str) -> RedirectError:
     resp.close()
     return RedirectError(
         f"{name} was answered with status {resp.status_code}, a redirect, "
-        "which a write does not follow, so it was not resent. The response "
+        f"which {what} does not follow, so it was not resent. The response "
         "of this error holds the Location header. Send the request to the "
         "URL that the server expects, for example by setting "
         "API.trailing_slash.",
@@ -877,19 +902,21 @@ class API:
     The class wraps a ``requests.Session`` and automatically joins request
     paths against ``base_url`` while applying a default timeout.
 
-    A write follows no redirect. A request with any method but ``GET`` or
-    ``HEAD`` is sent with ``allow_redirects=False``, whatever the caller
-    passes, and a 3xx response to it raises ``RedirectError``, whose
-    ``response`` holds the ``Location``. Django's ``APPEND_SLASH`` answers a
-    URL that lacks its trailing slash with such a redirect.
+    A write or any request with a body follows no redirect. A request with any
+    method but ``GET`` or ``HEAD``, or with a non-empty ``data`` or ``files``
+    or a ``json`` that is not ``None``, is sent with ``allow_redirects=False``,
+    whatever the caller passes, and a 3xx response to it raises
+    ``RedirectError``, whose ``response`` holds the ``Location``. Django's
+    ``APPEND_SLASH`` answers a URL that lacks its trailing slash with such a
+    redirect.
 
-    A ``GET`` or ``HEAD`` follows a redirect only to the origin of the request
-    it answers, or to an origin in ``redirect_origins``. Requests drops an
-    ``Authorization`` header when a redirect leaves the host, but it sends
-    every other header, such as an API key or a CSRF token. A redirect to
-    another origin raises ``RedirectError`` before anything is sent there.
-    ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is the
-    redirect. A raw ``GET`` or ``HEAD`` sent with ``allow_redirects=False``
+    A ``GET`` or ``HEAD`` without a body follows a redirect only to the origin
+    of the request it answers, or to an origin in ``redirect_origins``.
+    Requests drops an ``Authorization`` header when a redirect leaves the host,
+    but it sends every other header, such as an API key or a CSRF token. A
+    redirect to another origin raises ``RedirectError`` before anything is sent
+    there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
+    the redirect. A raw ``GET`` or ``HEAD`` sent with ``allow_redirects=False``
     follows nothing, so it returns a redirect as it is, without these checks,
     unless requests raises ``ValueError`` or ``UnicodeError`` while it prepares
     ``Response.next`` for it, which raises ``RedirectError``. Any other
@@ -1285,11 +1312,11 @@ class API:
             Validated HTTP response.
 
         Raises:
-            RedirectError: If the request is a write and the response is a
-                redirect, or a redirect leads to an origin that is not allowed,
-                or the final response is a redirect that is not followed and
-                requests raises ``ValueError`` or ``UnicodeError`` while it
-                prepares the next request for it.
+            RedirectError: If the request is a write or carries a body and the
+                response is a redirect, or a redirect leads to an origin that
+                is not allowed, or the final response is a redirect that is not
+                followed and requests raises ``ValueError`` or ``UnicodeError``
+                while it prepares the next request for it.
             requests.HTTPError: If ``raise_for_response()`` raises it for the
                 response.
             ValueError: If requests raises it, unless the final response is a
@@ -1322,8 +1349,13 @@ class API:
             kwargs.setdefault("proxies", dict(self.session.proxies))
 
         write = method.upper() not in _FOLLOWING_METHODS
-        if write:
-            # A write follows no redirect, whatever the caller passed.
+        # requests resends a body only for a 307 or 308, and drops it for a
+        # 301, 302, or 303 even from a GET, so a request that carries one
+        # follows no redirect, as a write does.
+        no_follow = write or _carries_body(kwargs)
+        what = "a write" if write else "a request with a body"
+        if no_follow:
+            # Such a request follows no redirect, whatever the caller passed.
             kwargs["allow_redirects"] = False
         kwargs["hooks"] = self._guard_redirects(
             url,
@@ -1353,13 +1385,13 @@ class API:
             if rejected is not None:
                 # The error that rejected the header can quote it, so none is
                 # attached.
-                if write:
-                    raise _redirected_write(rejected, name) from None
+                if no_follow:
+                    raise _redirected_write(rejected, name, what) from None
                 raise _unpreparable_redirect(rejected, name) from None
             _drop_response_hooks(resp)
             _record_asked_url(resp, _redact_url(url))
-            if write and 300 <= resp.status_code < 400:
-                raise _redirected_write(resp, name)
+            if no_follow and 300 <= resp.status_code < 400:
+                raise _redirected_write(resp, name, what)
             budget.check_time(resp)
             if not streamed or _is_failure(resp.status_code):
                 budget.read_body(resp)

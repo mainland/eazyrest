@@ -166,15 +166,18 @@ describe them further.
   `allow_redirects=False` and read the response itself failed there, and not in
   a query without options. It gets the 3xx back now, as from the API. A query
   and a next-page request still raise `RedirectError` for an unfollowed 3xx.
-- A write follows no redirect. A request with any method but `GET` or `HEAD`,
-  from a model or from `API.post()`, `put()`, `patch()`, or `delete()`, is sent
-  with `allow_redirects=False`, even if you pass `allow_redirects=True`, and a
-  3xx response to it raises `RedirectError`. `v1.0.0a5` followed a 307 or 308
-  to the request's origin, or to an origin in `API.redirect_origins`, and
-  resent the request with its body, and a raw write sent with
-  `allow_redirects=False` returned the 3xx response. The message does not quote
-  the `Location`, which is on the error's `response`. Send the write to the URL
-  that the server expects, for example by setting `API.trailing_slash`.
+- A write or any request with a body follows no redirect. A request with any
+  method but `GET` or `HEAD`, from a model or from `API.post()`, `put()`,
+  `patch()`, or `delete()`, and a `GET` with `data`, `json`, or `files`, is
+  sent with `allow_redirects=False`, even if you pass `allow_redirects=True`,
+  and a 3xx response to it raises `RedirectError`. `v1.0.0a5` followed a 307 or
+  308 of such a request to the request's origin, or to an origin in
+  `API.redirect_origins`, and resent it with its body, and a raw write sent
+  with `allow_redirects=False` returned the 3xx response. It refused a 301,
+  302, or 303 of a `GET` with a body, as this release does. The message does
+  not quote the `Location`, which is on the error's `response`. Send the
+  request to the URL that the server expects, for example by setting
+  `API.trailing_slash`.
 - A raw `GET` or `HEAD` sent with `allow_redirects=False` returns a 3xx
   response, where it raised `RedirectError` for a `Location` on another origin,
   though nothing was followed. A query and a next-page request raise

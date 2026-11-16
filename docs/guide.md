@@ -1731,25 +1731,27 @@ catches its errors and a lazy load of an object deleted on the server still
 raises `DoesNotExist`. The [Django REST Framework guide](drf.md) shows one that
 keeps the default message and `data`.
 
-A write follows no redirect. A request with any method but `GET` or `HEAD`,
-from a model's `create()`, `save()`, or `delete()` or from `API.post()`,
-`put()`, `patch()`, or `delete()`, is sent with `allow_redirects=False`,
-whatever the caller passes, and a 3xx response to it raises `RedirectError`.
-The message says that the server redirected the write and that it was not
-resent. It does not quote the `Location`, which is on the error's `response`. A
-lazy update stays pending. The write is not resent because requests changes it
-when it follows a redirect. It sends a `POST` answered with a 301 or 302, and
-any other write answered with a 302 or 303, as a `GET`, and it resends a
-`PATCH`, `PUT`, or `DELETE` answered with a 301 without its body, so the server
-would never receive the write. A 307 or 308 would resend it, with every header,
-to a URL that the server chose. A redirect of a write happens, for example,
-when `base_url` uses `http://` and the server redirects to HTTPS, or when a URL
-lacks the trailing slash that Django's `APPEND_SLASH` adds, as with
-`trailing_slash = False` against a DRF router. Send the write to the URL that
-the server expects.
+A write or any request with a body follows no redirect. A request with any
+method but `GET` or `HEAD`, from a model's `create()`, `save()`, or `delete()`
+or from `API.post()`, `put()`, `patch()`, or `delete()`, and a request of any
+method with a non-empty `data` or `files` or a `json` that is not `None`, is
+sent with `allow_redirects=False`, whatever the caller passes, and a 3xx
+response to it raises `RedirectError`. The message says that the server
+redirected the request and that it was not resent. It does not quote the
+`Location`, which is on the error's `response`. A lazy update stays pending.
+The request is not resent because requests changes it when it follows a
+redirect. It sends a `POST` answered with a 301 or 302, and any other method
+answered with a 302 or 303, as a `GET`, and it resends a `PATCH`, `PUT`, or
+`DELETE` answered with a 301 without its body, so the server would never
+receive the write, and a `GET` would reach the server without its body. A 307
+or 308 would resend it, with every header, to a URL that the server chose. A
+redirect of a write happens, for example, when `base_url` uses `http://` and
+the server redirects to HTTPS, or when a URL lacks the trailing slash that
+Django's `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF
+router. Send the request to the URL that the server expects.
 
-A `GET` or `HEAD` follows a redirect only to the origin of the request it
-answers, that is, its scheme, host, and port. Requests drops the
+A `GET` or `HEAD` without a body follows a redirect only to the origin of the
+request it answers, that is, its scheme, host, and port. Requests drops the
 `Authorization` header when a redirect leaves the host, but it sends every
 other header, such as an API key or a CSRF token. A redirect to another origin,
 including one from `http://` to `https://`, raises `RedirectError` before

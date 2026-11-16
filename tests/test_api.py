@@ -108,6 +108,112 @@ def test_api_never_follows_a_redirect_of_a_write(
     assert not destination.called
 
 
+@pytest.mark.parametrize("allow_redirects", [None, True])
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_api_never_follows_a_redirect_of_a_request_with_a_body(
+    requests_mock: Any,
+    status: int,
+    allow_redirects: bool | None,
+) -> None:
+    """A ``GET`` with a body raises and sends nothing further.
+
+    requests drops the body of a 301, 302, or 303 when it follows one, so the
+    server would answer a different request from the one that was made.
+
+    Args:
+        status: Redirect status code that the server returns.
+        allow_redirects: Value that the caller passes, or ``None`` for none.
+    """
+    api = API("https://example.com/v1/")
+    source = requests_mock.get(
+        "https://example.com/v1/users/1",
+        status_code=status,
+        headers={"Location": "https://example.com/v1/users/1/?sig=abc123"},
+    )
+    destination = requests_mock.request(
+        requests_mock_ANY, "https://example.com/v1/users/1/", json={"id": 1}
+    )
+    options = {} if allow_redirects is None else {"allow_redirects": True}
+
+    with pytest.raises(RedirectError) as info:
+        api.get("/users/1", json={"q": 1}, **options)
+
+    message = str(info.value)
+    assert "GET https://example.com/v1/users/1 was" in message
+    assert "which a request with a body does not follow" in message
+    assert "abc123" not in message
+    assert info.value.response is not None
+    assert info.value.response.status_code == status
+    assert source.call_count == 1
+    assert not destination.called
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"json": {}},
+        {"json": []},
+        {"json": 0},
+        {"data": b"x"},
+        {"data": {"a": "1"}},
+        {"data": iter([b"x"])},
+        {"files": {"f": b"x"}},
+    ],
+)
+def test_api_get_with_any_body_follows_no_redirect(
+    requests_mock: Any, body: dict[str, Any]
+) -> None:
+    """Each argument that makes requests send a body stops a redirect.
+
+    Args:
+        body: Keyword arguments of a ``GET`` that carry a body.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/a",
+        status_code=302,
+        headers={"Location": "https://example.com/v1/b"},
+    )
+    other = requests_mock.get("https://example.com/v1/b", json={})
+
+    with pytest.raises(RedirectError):
+        api.get("/a", **body)
+
+    assert not other.called
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"json": None},
+        {"data": None},
+        {"data": {}},
+        {"data": b""},
+        {"files": {}},
+    ],
+)
+def test_api_get_without_a_body_follows_a_same_origin_redirect(
+    requests_mock: Any, body: dict[str, Any]
+) -> None:
+    """A ``GET`` that sends no body still follows a same-origin redirect.
+
+    Args:
+        body: Keyword arguments of a ``GET`` that carry no body.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/a",
+        status_code=301,
+        headers={"Location": "https://example.com/v1/b"},
+    )
+    requests_mock.get("https://example.com/v1/b", json={"id": 1})
+
+    response = api.get("/a", **body)
+
+    assert response.json() == {"id": 1}
+
+
 @pytest.mark.parametrize("status", [301, 307])
 def test_api_refuses_a_redirect_of_a_write_to_another_origin(
     requests_mock: Any, status: int
@@ -454,7 +560,7 @@ def test_api_refuses_redirect_to_other_origin(
 ) -> None:
     """A redirect to another origin raises before anything is sent there.
 
-    requests would send custom credentials and a preserved body along.
+    requests would send custom credentials along.
 
     Args:
         method: Name of the ``API`` method that sends the request.
@@ -472,7 +578,7 @@ def test_api_refuses_redirect_to_other_origin(
     other = requests_mock.request(method.upper(), target, json={})
 
     with pytest.raises(requests.HTTPError, match="redirect_origins") as info:
-        getattr(api, method)("/users/1", json={"password": "secret"})
+        getattr(api, method)("/users/1")
 
     assert info.value.response is not None
     assert info.value.response.status_code == status
