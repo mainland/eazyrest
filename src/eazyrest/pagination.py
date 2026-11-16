@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Generic, TypeVar
-from urllib.parse import parse_qsl, urljoin, urlsplit
+from urllib.parse import urljoin
 
 import requests
 from requests.utils import parse_header_links
@@ -27,7 +27,6 @@ from .api import (
     _as_client,
     _check_final_response,
     _origin,
-    _prepare_server_url,
 )
 
 __all__ = [
@@ -214,7 +213,7 @@ def _check_page_origin(
             says only that the URL is not an HTTP or HTTPS URL if it is not.
             The page's link is on ``Page.next_url``.
     """
-    prepared = _prepare_server_url(_as_api(api).session, url)
+    prepared = _as_api(api)._read_server_url(url)
     if prepared is None:
         raise PaginationError(_UNPARSABLE_PAGE_URL)
     if prepared.origin != _origin(api.base_url):
@@ -267,7 +266,7 @@ def _request_page(
     # error that requests raises for the link, which can quote it, is not the
     # request's. An error from the request itself, or from a session hook,
     # keeps its own type.
-    prepared = _prepare_server_url(api.session, url)
+    prepared = _as_api(api)._read_server_url(url)
     if prepared is None or not prepared.sendable:
         raise PaginationError(
             "A page URL cannot be requested, so nothing was sent."
@@ -288,16 +287,7 @@ def _request_page(
             "Pass allow_other_origins=True to follow it."
         )
 
-    # A link carries the query that the server received, with the session's
-    # parameters, which requests would add again to each page. A parameter
-    # given as None is left out when requests merges them.
-    session_params = api.session.params
-    query = {name for name, _ in parse_qsl(urlsplit(url).query, True)}
-    params = (
-        {name: None for name in session_params if name in query}
-        if isinstance(session_params, Mapping)
-        else {}
-    )
+    params = _as_api(api)._repeated_params(url)
     # Without allow_other_origins, the API's guard limits this request's
     # redirects to the API's origin. The limit reaches the request through
     # api.get(), which a subclass may override, and applies to every request
@@ -373,7 +363,7 @@ class _PageReader:
         """
         if url in self.read_urls:
             subject = _page_url_subject(
-                _prepare_server_url(_as_api(self.api).session, url),
+                _as_api(self.api)._read_server_url(url),
                 "Next-page URL",
                 from_server=True,
             )
@@ -835,7 +825,7 @@ class Page(Generic[T]):
         trail = self._forward if forward else self._backward
         if url in trail.urls:
             subject = _page_url_subject(
-                _prepare_server_url(_as_api(self._source.api).session, url),
+                _as_api(self._source.api)._read_server_url(url),
                 "Page URL",
                 from_server=True,
             )

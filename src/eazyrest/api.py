@@ -8,7 +8,13 @@ from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
 from typing import Any, Self, TypeAlias
-from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import requests
 import requests.adapters
@@ -1276,6 +1282,44 @@ class API:
             return uri
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
+
+    def _read_server_url(self, url: str) -> _ServerURL | None:
+        """Read a URL that a server supplied, as this session will send it.
+
+        Pagination checks the origin of a next-page link and names it in a
+        message, so it needs the reading that requests will act on, which
+        depends on this API's session, and not the text of the link.
+
+        Args:
+            url: Absolute URL, such as a link to another page.
+
+        Returns:
+            The reading that ``_prepare_server_url()`` gives for this API's
+            session, or ``None`` if requests cannot prepare the URL.
+        """
+        return _prepare_server_url(self.session, url)
+
+    def _repeated_params(self, url: str) -> dict[str, None]:
+        """Name the session parameters that the query of ``url`` already has.
+
+        A server builds a next-page link from the URL that it received, so the
+        link carries the session's parameters, which requests would add again
+        to each page. Pagination passes this result as ``params=``, where a
+        parameter given as ``None`` is left out when requests merges them.
+
+        Args:
+            url: Absolute URL of a page.
+
+        Returns:
+            A mapping from each session parameter that the query of ``url``
+            names to ``None``. It is empty if the session's parameters are not
+            a mapping.
+        """
+        session_params = self.session.params
+        if not isinstance(session_params, Mapping):
+            return {}
+        query = {name for name, _ in parse_qsl(urlsplit(url).query, True)}
+        return {name: None for name in session_params if name in query}
 
     def _scoped(self, options: Mapping[str, Any]) -> _ScopedAPI:
         """Return a view of this client that sends ``options`` with requests.

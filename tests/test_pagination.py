@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import copy
+import pathlib
 import pickle
 import re
 import socket
@@ -30,7 +32,9 @@ from eazyrest import (
     json_object,
     link_headers_page,
     next_links_page,
+    pagination,
 )
+from eazyrest.api import _as_api, _prepare_server_url
 
 
 class PagedBase(JSONObject):
@@ -3243,3 +3247,66 @@ def test_page_limit_applies_to_each_request_for_the_page_url(
         )
 
     assert not target.called
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://alice:hunter2@api.test:8443/x?a=1",
+        "HTTP://API.TEST/x",
+        "ftp://api.test/x",
+        "http://alice:hunter2#@api.test/x",
+        "http://alice:hunter2@api.test:bad/x",
+        "\x01https://api.test/x",
+        "/relative",
+    ],
+)
+def test_api_reads_a_server_url_as_its_session_sends_it(
+    url: str, scoped: bool
+) -> None:
+    """An API and a scoped view of it read a URL as the session does."""
+    api = API("https://api.test/")
+    client = api._scoped({"timeout": 3}) if scoped else api
+
+    assert _as_api(client)._read_server_url(url) == _prepare_server_url(
+        api.session, url
+    )
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize(
+    ("session_params", "url", "expected"),
+    [
+        ({"api_key": "k"}, "https://api.test/x?api_key=k&page=2", ["api_key"]),
+        ({"api_key": "k"}, "https://api.test/x?page=2", []),
+        ({"a": "1", "b": "2"}, "https://api.test/x?b=3", ["b"]),
+        ({"api_key": "k"}, "https://api.test/x?api_key=", ["api_key"]),
+        ({}, "https://api.test/x?api_key=k", []),
+        ([("api_key", "k")], "https://api.test/x?api_key=k", []),
+        (None, "https://api.test/x?api_key=k", []),
+    ],
+)
+def test_api_names_session_params_that_a_url_query_carries(
+    session_params: Any, url: str, expected: list[str], scoped: bool
+) -> None:
+    """Only a mapping's names that the query carries are left out."""
+    api = API("https://api.test/")
+    api.session.params = session_params
+    client = api._scoped({"timeout": 3}) if scoped else api
+
+    result = _as_api(client)._repeated_params(url)
+
+    assert result == dict.fromkeys(expected)
+
+
+def test_pagination_module_reads_no_session_attribute() -> None:
+    """Pagination reaches the session only through the API's methods."""
+    source = pathlib.Path(pagination.__file__).read_text(encoding="utf-8")
+    reads = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Attribute) and node.attr == "session"
+    ]
+
+    assert reads == []
