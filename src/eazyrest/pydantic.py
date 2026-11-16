@@ -918,10 +918,7 @@ def _eazyrest_types(ty: Any) -> Any:
     if not args or origin is Literal:
         return ty
     if origin is Annotated:
-        # Mypy targeting Python 3.10 rejects a starred tuple inside a
-        # subscript, even in parentheses, so build the tuple first.
-        params = (_eazyrest_types(args[0]), *args[1:])
-        return Annotated[params]
+        return Annotated[_eazyrest_types(args[0]), *args[1:]]
 
     new_args = tuple(_eazyrest_types(arg) for arg in args)
     if all(new is old for new, old in zip(new_args, args, strict=True)):

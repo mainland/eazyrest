@@ -340,8 +340,9 @@ _TIME = re.compile(
 def _decode_time(value: Any) -> datetime.time:
     """Decode a JSON ISO 8601 time string.
 
-    Python's ``time.fromisoformat()`` reads more forms on Python 3.11 than on
-    3.10, so the format is checked here, the same on every version.
+    Python's ``time.fromisoformat()`` accepts different forms on different
+    versions, so the format is checked here, and the documented forms hold on
+    every version.
 
     Args:
         value: ISO 8601 time, such as ``"09:30"``, ``"09:30:00.5"``, or
@@ -368,7 +369,7 @@ def _decode_time(value: Any) -> datetime.time:
     hour, minute, second, fraction, offset = match.groups()
     tzinfo: datetime.tzinfo | None = None
     if offset == "Z":
-        tzinfo = datetime.timezone.utc
+        tzinfo = datetime.UTC
     elif offset is not None:
         hours, minutes = int(offset[1:3]), int(offset[4:6])
         if hours > 23 or minutes > 59:
@@ -776,10 +777,10 @@ def _is_class(ty: Any) -> bool:
         ty: Annotation.
 
     Returns:
-        Whether ``ty`` is a class. Python 3.10 counts ``list[int]`` as a
-        type, so a parameterized type is excluded explicitly.
+        Whether ``ty`` is a class, which a parameterized type such as
+        ``list[int]`` is not.
     """
-    return isinstance(ty, type) and typing.get_origin(ty) is None
+    return isinstance(ty, type)
 
 
 def _is_typed_dict(ty: Any) -> bool:

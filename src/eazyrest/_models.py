@@ -43,6 +43,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Self,
     TypeAlias,
     TypeVar,
     Union,
@@ -96,17 +97,12 @@ from .pagination import (
 )
 from .write_mode import WriteMode, validate_write_mode
 
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
-
 if sys.version_info >= (3, 14):
     from annotationlib import Format
 
 # typing_extensions recognizes its own TypedDicts as well as typing's, and
-# reads the qualifiers of their keys on every supported Python. It is a
-# dependency only before Python 3.11.
+# reads the qualifiers of their keys on every supported Python. The package
+# does not require it, so it is optional here.
 _typing_extensions: types.ModuleType | None
 try:
     import typing_extensions as _typing_extensions_module

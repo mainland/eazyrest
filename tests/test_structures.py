@@ -111,7 +111,7 @@ class Shape(StructureBase):
 
 DAY = datetime.date(2026, 11, 7)
 TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
-START = datetime.datetime(2026, 11, 7, 9, tzinfo=datetime.timezone.utc)
+START = datetime.datetime(2026, 11, 7, 9, tzinfo=datetime.UTC)
 
 SHAPE_JSON: dict[str, Any] = {
     "id": 1,

@@ -98,9 +98,7 @@ def parse_datetime(value: str | float) -> datetime.datetime:
 
     if not isinstance(value, bool) and isinstance(value, (int, float)):
         try:
-            return datetime.datetime.fromtimestamp(
-                value, datetime.timezone.utc
-            )
+            return datetime.datetime.fromtimestamp(value, datetime.UTC)
         except (OverflowError, OSError, ValueError) as err:
             # The platform's time_t limits the range, so report it as an
             # invalid value like a malformed string.

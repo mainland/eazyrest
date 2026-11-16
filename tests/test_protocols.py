@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import pytest
 from requests.structures import CaseInsensitiveDict
-from typing_extensions import Self
 
 from eazyrest import (
     API,

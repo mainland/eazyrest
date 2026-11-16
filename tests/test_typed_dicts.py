@@ -10,12 +10,20 @@ import dataclasses
 import datetime
 import uuid
 from collections.abc import Mapping
-from typing import Any, Generic, NamedTuple, TypeVar, cast
+from typing import (
+    Any,
+    Generic,
+    NamedTuple,
+    NotRequired,
+    Required,
+    TypeVar,
+    cast,
+)
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
+from typing_extensions import ReadOnly, TypedDict
 
 from eazyrest import (
     API,
@@ -139,7 +147,7 @@ WINDOW_JSON: dict[str, Any] = {
 }
 
 WINDOW: dict[str, Any] = {
-    "start": datetime.datetime(2026, 11, 7, 9, tzinfo=datetime.timezone.utc),
+    "start": datetime.datetime(2026, 11, 7, 9, tzinfo=datetime.UTC),
     "length": datetime.timedelta(hours=1),
     "token": uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40"),
     "day": datetime.date(2026, 11, 7),
@@ -304,11 +312,7 @@ def test_typed_dict_reads_reject_other_shapes(
         ("days", {1: datetime.date(2026, 1, 1)}, "keys must be strings"),
         (
             "window",
-            {
-                "day": datetime.datetime(
-                    2026, 1, 1, tzinfo=datetime.timezone.utc
-                )
-            },
+            {"day": datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)},
             "must be dates",
         ),
     ],
@@ -504,7 +508,7 @@ JSON_SCALARS = st.none() | st.booleans() | st.integers() | st.text()
 
 WINDOWS = st.fixed_dictionaries(
     {
-        "start": st.datetimes(timezones=st.just(datetime.timezone.utc)),
+        "start": st.datetimes(timezones=st.just(datetime.UTC)),
         "length": st.timedeltas(),
         "token": st.uuids(),
         "day": st.dates(),

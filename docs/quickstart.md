@@ -12,7 +12,7 @@ To send requests through a SOCKS proxy, install the `socks` extra:
 pip install "eazyrest[socks]"
 ```
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ## Example
 

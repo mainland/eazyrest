@@ -58,7 +58,7 @@ def _timestamp(value: Any, cls: type[Any]) -> float:
 
 TIMESTAMP = Conversion(
     decode=lambda value, cls: datetime.datetime.fromtimestamp(
-        value, datetime.timezone.utc
+        value, datetime.UTC
     ),
     encode=_timestamp,
 )
@@ -135,7 +135,7 @@ class Event(TimestampBase):
     address: ipaddress.IPv4Address
 
 
-WHEN = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
+WHEN = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
 
 HOST_JSON: dict[str, Any] = {
     "id": 1,
@@ -336,8 +336,7 @@ class _Mixin:
         ({NewType("Owner", Host): ADDRESS}, "the key Owner, a model or a"),
         ({NewType("Ints", list[int]): ADDRESS}, "which is not a class"),
         ({NewType("Labels", set[str]): ADDRESS}, "which is not a class"),
-        # Python 3.10 refuses Any as not a type, and later Pythons, where it
-        # is a class, as one that isinstance() cannot check.
+        # Any is a class that isinstance() cannot check.
         ({Any: ADDRESS}, r"the key typing\.Any, "),
         ({_Sized: ADDRESS}, "cannot be recognized with isinstance"),
         ({NewType("Sizes", _Sized): ADDRESS}, "cannot be recognized with"),

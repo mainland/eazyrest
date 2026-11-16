@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import copy
 import inspect
-import sys
 import time
 from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
@@ -42,11 +41,6 @@ from ._urls import _DEFAULT_PORTS, _ServerURL
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
 
 # The configuration that reset_session() copies to a new session. These are the
 # attributes of requests.Session.__attrs__ other than adapters, which hold the

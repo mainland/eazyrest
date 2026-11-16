@@ -50,7 +50,7 @@ from test_eazyrest import (
 
 from eazyrest import JSONObject, WriteMode
 
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 @dataclass(frozen=True)

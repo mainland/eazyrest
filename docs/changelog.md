@@ -289,6 +289,9 @@ describe them further.
   subclass of it, naming the hook, the model, the field, and the class
   returned. A parent whose key matched such an object used to read it, an
   object of another model and resource.
+- eazyrest requires Python 3.11 or later. Python 3.10 is no longer supported.
+  The package no longer depends on `typing_extensions`, which only the
+  `pydantic` extra needs.
 
 ### Migrating from 0.9.0
 
@@ -302,10 +305,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   `eazyrest[socks]` to send requests through a SOCKS proxy. Without it, the
   first request through one raises `requests.exceptions.InvalidSchema`.
 - Every dependency now has a minimum version: requests 2.33.0, urllib3 2.8.0,
-  isodate 0.7.2, python-dateutil 2.9.0.post0, and, before Python 3.11,
-  typing_extensions 4.14.1. The new `pydantic` extra needs Pydantic 2.12, or
-  2.14.1 on Python 3.15, and below 3.
-- Python 3.10 through 3.15 are supported.
+  isodate 0.7.2, and python-dateutil 2.9.0.post0. The new `pydantic` extra
+  needs Pydantic 2.12, or 2.14.1 on Python 3.15, and below 3, and
+  typing_extensions 4.14.1.
+- Python 3.11 through 3.15 are supported.
 
 #### Writes
 

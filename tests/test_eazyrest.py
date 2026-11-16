@@ -457,14 +457,16 @@ class AnnotatedTimeline(ModelBase):
     starts_at: Annotated[list[Annotated[datetime.datetime, "start"]], "all"]
 
 
-class IssueStatus(str, enum.Enum):
+# Enums that mix str into Enum are a common form in user code, and they format
+# differently from StrEnum, so the tests keep them.
+class IssueStatus(str, enum.Enum):  # noqa: UP042
     """Status values for enum conversion tests."""
 
     OPEN = "open"
     CLOSED = "closed"
 
 
-class Priority(str, enum.Enum):
+class Priority(str, enum.Enum):  # noqa: UP042
     """Priority values whose enum maps unknown values to ``UNKNOWN``."""
 
     LOW = "low"
@@ -818,7 +820,7 @@ def test_create_encodes_datetime_fields(requests_mock: Any) -> None:
         1,
         12,
         0,
-        tzinfo=datetime.timezone.utc,
+        tzinfo=datetime.UTC,
     )
     post = requests_mock.post(
         "https://example.com/v1/events/",
@@ -1062,9 +1064,7 @@ def test_repeated_datetime_access_returns_cached_instance(
     second = event.starts_at
 
     assert first is second
-    assert first == datetime.datetime(
-        2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc
-    )
+    assert first == datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.UTC)
 
 
 def test_datetime_list_field_decodes_nested_items() -> None:
@@ -1074,8 +1074,8 @@ def test_datetime_list_field_decodes_nested_items() -> None:
     )
 
     assert timeline.starts_at == [
-        datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.timezone.utc),
-        datetime.datetime(2024, 4, 1, 13, 0, tzinfo=datetime.timezone.utc),
+        datetime.datetime(2024, 4, 1, 12, 0, tzinfo=datetime.UTC),
+        datetime.datetime(2024, 4, 1, 13, 0, tzinfo=datetime.UTC),
     ]
 
 
@@ -1089,7 +1089,7 @@ def test_annotated_field_types_convert_like_their_types(
     timeline = AnnotatedTimeline(
         json={"id": 1, "owner": {"id": 2}, "starts_at": [1711972800]}
     )
-    start = datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc)
+    start = datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.UTC)
 
     assert isinstance(timeline.owner, User)
     assert timeline.owner.id == 2
@@ -1113,7 +1113,7 @@ def test_annotated_field_types_convert_like_their_types(
     [
         (
             "2024-04-01T12:00:00Z",
-            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc),
+            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.UTC),
         ),
         (
             "2024-04-01T14:00:00+02:00",
@@ -1132,7 +1132,7 @@ def test_annotated_field_types_convert_like_their_types(
         ),
         (
             1711972800,
-            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.timezone.utc),
+            datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.UTC),
         ),
     ],
 )
@@ -1184,7 +1184,7 @@ def test_datetime_with_sub_minute_offset_is_rejected(
         Event.create(starts_at=value)
 
     assert event.starts_at == datetime.datetime(
-        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+        2024, 4, 1, 12, tzinfo=datetime.UTC
     )
     assert event._pending_updates == {}
     assert requests_mock.call_count == 0
@@ -1370,7 +1370,7 @@ def test_decimal_field_refuses_to_write_non_finite_values(
         ("09:30:15", datetime.time(9, 30, 15)),
         ("09:30:15.5", datetime.time(9, 30, 15, 500000)),
         ("09:30:15.123456", datetime.time(9, 30, 15, 123456)),
-        ("09:30Z", datetime.time(9, 30, tzinfo=datetime.timezone.utc)),
+        ("09:30Z", datetime.time(9, 30, tzinfo=datetime.UTC)),
         (
             "09:30:00-05:30",
             datetime.time(
@@ -1386,10 +1386,10 @@ def test_decimal_field_refuses_to_write_non_finite_values(
 def test_time_field_reads_iso_8601(
     value: str, expected: datetime.time
 ) -> None:
-    """A time reads from ISO 8601 alike on every supported Python.
+    """A time reads from ISO 8601 as documented, whatever Python reads.
 
-    Python 3.10's ``time.fromisoformat()`` rejects ``Z`` and fractions of
-    other than three or six digits.
+    ``time.fromisoformat()`` accepts different forms on different Python
+    versions, so the field checks the format itself.
 
     Args:
         value: ISO 8601 time.
@@ -1724,7 +1724,7 @@ def test_enum_fallback_keeps_the_server_value(requests_mock: Any) -> None:
 def test_conversion_errors_name_the_field(requests_mock: Any) -> None:
     """A conversion error names the model and field and keeps its cause."""
     booking = Booking(json={"id": 1, "day": "2026-13-01", "token": "x"})
-    when = datetime.datetime(2026, 1, 3, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2026, 1, 3, tzinfo=datetime.UTC)
 
     with pytest.raises(FieldConversionError, match=r"^Booking\.day: ") as info:
         _ = booking.day
@@ -1750,7 +1750,7 @@ def test_date_field_rejects_datetime() -> None:
 
     with pytest.raises(TypeError, match="must be dates, got datetime"):
         booking.day = datetime.datetime(
-            2026, 1, 3, 10, 30, tzinfo=datetime.timezone.utc
+            2026, 1, 3, 10, 30, tzinfo=datetime.UTC
         )
 
     assert booking.day == datetime.date(2026, 1, 2)
@@ -1852,7 +1852,7 @@ def test_create_encodes_nested_datetime_and_enum_collections(
             1,
             12,
             0,
-            tzinfo=datetime.timezone.utc,
+            tzinfo=datetime.UTC,
         ),
         datetime.datetime(
             2024,
@@ -1860,7 +1860,7 @@ def test_create_encodes_nested_datetime_and_enum_collections(
             1,
             13,
             0,
-            tzinfo=datetime.timezone.utc,
+            tzinfo=datetime.UTC,
         ),
     ]
     timeline_post = requests_mock.post(
@@ -3154,7 +3154,7 @@ def test_in_place_change_compares_encodings(requests_mock: Any) -> None:
         "https://example.com/v1/timelines/1/", status_code=204
     )
     timeline = Timeline(json={"id": 1, "starts_at": ["2026-01-02T03:04:05Z"]})
-    later = datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc)
+    later = datetime.datetime(2026, 2, 1, tzinfo=datetime.UTC)
 
     assert len(timeline.starts_at) == 1
     timeline.save()
@@ -3409,7 +3409,7 @@ def test_postponed_annotations_resolve_local_self_and_nested_types() -> None:
     class Node(JSONObject):
         """Local model with postponed annotations."""
 
-        class Kind(str, enum.Enum):
+        class Kind(str, enum.Enum):  # noqa: UP042
             """Type declared in the model's own namespace."""
 
             ROOT = "root"
@@ -3759,7 +3759,7 @@ def test_get_or_create_encodes_lookup_like_create(
         (
             lambda: Event.filter(
                 starts_at=datetime.datetime(
-                    2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc
+                    2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC
                 )
             ),
             "https://example.com/v1/events/",
@@ -4024,7 +4024,7 @@ def test_named_type_aliases_convert_as_their_types() -> None:
 
     This holds for an alias with type parameters, and for one inside another.
     """
-    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
     timeline = AliasedTimeline(
         json={
             "id": 1,
@@ -4091,9 +4091,7 @@ def test_quoted_reference_in_alias_resolves_in_its_module() -> None:
 
     quoted = Quoted(json={"id": 1, "dates": ["2024-01-01T00:00:00Z"]})
 
-    assert quoted.dates == [
-        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
-    ]
+    assert quoted.dates == [datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)]
 
 
 @pytest.mark.parametrize(
@@ -4131,7 +4129,7 @@ def test_collection_field_values_must_be_collections(
     """A field value is not converted as one item of a collection."""
     profile = Profile(json={"id": 1, "settings": {}, "contacts": []})
     timeline = Timeline(json={"id": 1, "starts_at": []})
-    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)
 
     # The annotations reject these values statically, so assign them
     # dynamically to check the run-time behavior.
@@ -5238,7 +5236,7 @@ def test_string_annotation_naming_its_field_resolves_to_the_type() -> None:
     )
 
     assert obj.datetime == datetime.datetime(
-        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+        2024, 4, 1, 12, tzinfo=datetime.UTC
     )
     assert obj.uuid == uuid.UUID("12345678-1234-5678-1234-567812345678")
 
@@ -9402,9 +9400,7 @@ def test_a_datetime_key_spelled_two_ways_is_one_key() -> None:
     """A spelling that decodes and encodes alike is the same key."""
     first = TimeKeyed(json={"id": "2026-01-01T00:00:00Z"})
     second = TimeKeyed(json={"id": "2026-01-01T00:00:00+00:00"})
-    built = TimeKeyed(
-        id=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
-    )
+    built = TimeKeyed(id=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC))
 
     assert first == second == built
     assert hash(first) == hash(second) == hash(built)

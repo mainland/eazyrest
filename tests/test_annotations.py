@@ -27,7 +27,7 @@ def test_field_annotation_can_refer_to_decorated_class() -> None:
 
         id: int
         # Python 3.14 defers evaluation of this annotation, but ruff checks
-        # with target-version py310, where Node is not defined yet.
+        # with target-version py311, where Node is not defined yet.
         parent: Node | None  # noqa: F821
 
     node = Node(json={"id": 2, "parent": {"id": 1, "parent": None}})

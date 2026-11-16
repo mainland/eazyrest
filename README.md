@@ -27,7 +27,7 @@ To send requests through a SOCKS proxy, install the `socks` extra:
 pip install "eazyrest[socks]"
 ```
 
-Requires Python 3.10+.
+Requires Python 3.11+.
 
 ## Documentation
 
@@ -171,7 +171,7 @@ Build the documentation with warnings treated as errors:
 ```
 
 On every push and pull request, GitHub Actions runs the test suite on Python
-3.10 through 3.15, at the minimum declared dependency versions, with the oldest
+3.11 through 3.15, at the minimum declared dependency versions, with the oldest
 supported Pydantic, and without Pydantic. It also runs the lint and
 documentation environments, checks that `uv.lock` is current, audits the locked
 dependencies for known vulnerabilities, and checks that the built wheel imports

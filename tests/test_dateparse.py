@@ -9,7 +9,7 @@ import pytest
 
 from eazyrest import parse_datetime, parse_duration
 
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 @pytest.mark.parametrize(

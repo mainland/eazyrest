@@ -83,7 +83,7 @@ def test_timestamp_example_encodes_datetimes_as_timestamps() -> None:
         when: datetime.datetime
         note: str
 
-    when = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2026, 1, 2, tzinfo=datetime.UTC)
     event = Event(json={"id": 1, "when": when.timestamp(), "note": "a"})
 
     assert event.when == when
@@ -130,7 +130,7 @@ def test_pydantic_example_converts_fields(requests_mock: Any) -> None:
     assert logo.rendering["timeout"] == datetime.timedelta(seconds=90)
     assert logo.rendering["dpi"] == 300
     assert logo.published == datetime.datetime(
-        2024, 4, 1, 12, tzinfo=datetime.timezone.utc
+        2024, 4, 1, 12, tzinfo=datetime.UTC
     )
 
     logo.anchors[0].x = 2
@@ -392,7 +392,7 @@ def test_reservation_example_converts_typed_dict_keys(
     )
 
     assert reservation.window["start"] == datetime.datetime(
-        2026, 11, 7, 9, tzinfo=datetime.timezone.utc
+        2026, 11, 7, 9, tzinfo=datetime.UTC
     )
     assert reservation.holidays == {"new_year": datetime.date(2027, 1, 1)}
     reservation.window["length"] = datetime.timedelta(hours=2)

@@ -67,7 +67,7 @@ from eazyrest.pydantic import UUID, Date, Datetime, Duration, Time
 from eazyrest.pydantic import Decimal as DecimalType
 
 TOKEN = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 class Schedule(TypedDict):
@@ -101,9 +101,7 @@ def test_types_read_values_as_eazyrest_fields_do() -> None:
     )
 
     assert schedule == {
-        "starts": datetime.datetime(
-            2024, 4, 1, 12, tzinfo=datetime.timezone.utc
-        ),
+        "starts": datetime.datetime(2024, 4, 1, 12, tzinfo=datetime.UTC),
         "day": datetime.date(2024, 4, 1),
         "length": datetime.timedelta(days=1, hours=2, minutes=3, seconds=4),
         "token": TOKEN,
@@ -401,7 +399,7 @@ def test_pydantic_converts_types_that_mention_it(
 def test_pydantic_fields_read_values() -> None:
     """Pydantic reads the field values, with eazyrest's codecs."""
     asset = Asset(json=deepcopy(ASSET_JSON))
-    utc = datetime.timezone.utc
+    utc = datetime.UTC
 
     assert asset.image == b"hello"
     assert asset.spec == {"name": "a", "size": 1, "extra": {"tags": ["x"]}}
@@ -2758,7 +2756,7 @@ def test_a_conversion_bug_on_the_first_attempt_propagates(hint: Any) -> None:
     event: Any = model(json={"id": 1, "at": "2020-01-01T00:00:00+00:00"})
 
     with pytest.raises(RuntimeError) as raised:
-        event.at = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+        event.at = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
 
     assert raised.value is bug
     assert len(calls) == 1
@@ -3042,7 +3040,7 @@ def test_conversion_errors_propagate_through_pydantic(
     """
     stamp = Conversion(
         decode=lambda value, cls: datetime.datetime.fromtimestamp(
-            value, datetime.timezone.utc
+            value, datetime.UTC
         ),
         encode=encode,
     )
@@ -3061,7 +3059,7 @@ def test_conversion_errors_propagate_through_pydantic(
         pinned: Annotated[datetime.datetime, Field()]
 
     event = Event(json={"id": 1, "at": 0, "pinned": 0})
-    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
     for field in ("at", "pinned"):
         with pytest.raises(error):
             setattr(event, field, when)
@@ -3109,7 +3107,7 @@ def test_write_schemas_describe_what_pydantic_fields_write() -> None:
             "gauge": {"level": 0},
         }
     )
-    dial.stamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    dial.stamp = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
     dial.payload = [1, 2]
     dial.gauge = Gauge(level=3)
     written = Dial.json_schema("write")
@@ -3282,7 +3280,7 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
         conversions: ClassVar[Mapping[Any, Conversion]] = {
             _Millis: Conversion(
                 decode=lambda value, cls: datetime.datetime.fromtimestamp(
-                    value / 1000, datetime.timezone.utc
+                    value / 1000, datetime.UTC
                 ),
                 encode=lambda value, cls: value.timestamp() * 1000,
                 schema={"type": "number"},
@@ -3299,7 +3297,7 @@ def test_a_new_types_entry_applies_under_pydantic() -> None:
         listed: Annotated[list[_Millis], Field()]
         other: Annotated[_Plain, Field()]
 
-    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    when = datetime.datetime(2020, 1, 1, tzinfo=datetime.UTC)
     mark = Mark(
         json={
             "id": 1,

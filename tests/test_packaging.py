@@ -52,8 +52,8 @@ def _taken_body(statement: ast.If) -> list[ast.stmt]:
     if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
         return statement.orelse
     if "version_info" in ast.unparse(test):
-        # The test is the package's own guard, such as
-        # sys.version_info >= (3, 11), so evaluating it is safe.
+        # The test is the package's own guard, such as sys.version_info >=
+        # (3, 14), so evaluating it is safe.
         taken = eval(
             compile(ast.Expression(test), "<guard>", "eval"), {"sys": sys}
         )
