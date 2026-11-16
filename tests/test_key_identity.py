@@ -1,18 +1,18 @@
 """Stateful property test of the laws of equality by key.
 
 A rule-based state machine builds objects of models with keys of several types,
-and loads them, refreshes them, merges pushed payloads into them, changes their
-keys lazily, eagerly, and in place, and saves them. A fake server answers at
-the key that an object is saved under, spells the key it returns in more than
-one way, and moves a record when a write changes its key. After every step,
-each object must agree with a model that moves its saved key only when the
-object records the key of server state, and these laws must hold:
+and loads them, refreshes them, merges pushed payloads into them, tries to
+change their keys by assignment and in place, and saves them. A fake server
+answers at the key that an object is saved under and spells the key it returns
+in more than one way. After every step, each object must agree with a model
+that moves its saved key only when the object records the key of server state,
+and these laws must hold:
 
 - If two objects are equal, they have the same ``url``.
 - The equalities and the hash of an object, and its ``url``, change only when
   it records server state that names another key. A spelling of the same key
-  does not change them, and neither does a change to a Python value, such as a
-  key changed in place or assigned and not yet saved.
+  does not change them, and neither does an attempt to change the key, which
+  is refused and sends nothing.
 - Comparing and hashing send no request.
 """
 
@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import hypothesis.strategies as st
+import pytest
 import requests_mock
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import (
@@ -47,7 +48,7 @@ from test_eazyrest import (
     test_api,
 )
 
-from eazyrest import JSONObject, WriteMode
+from eazyrest import JSONObject, UsageError, WriteMode
 
 UTC = datetime.UTC
 
@@ -68,15 +69,17 @@ class Kind:
     """The key as a caller gives it to the constructor or assigns it."""
     spell: Callable[[Any, str], Any]
     """The key's JSON in the spelling ``"plain"`` or ``"alt"``."""
-    from_body: Callable[[Any], Any]
-    """The key that a request body names."""
-    changed: Callable[[Any], tuple[Any, Any]] | None = None
-    """Change a key in place, and return the key that it then names."""
+    changed: Callable[[Any], Callable[[], None]] | None = None
+    """Change a key in place, and return the function that changes it back."""
 
 
-def _change_cell(key: Cell) -> Any:
+def _change_cell(key: Cell) -> Callable[[], None]:
     key.value += 10
-    return key.value
+
+    def undo() -> None:
+        key.value -= 10
+
+    return undo
 
 
 def _day(n: int) -> datetime.datetime:
@@ -84,9 +87,7 @@ def _day(n: int) -> datetime.datetime:
 
 
 KINDS: dict[str, Kind] = {
-    "int": Kind(
-        User, "id", "name", (1, 2, 3), lambda n: n, lambda n, v: n, lambda b: b
-    ),
+    "int": Kind(User, "id", "name", (1, 2, 3), lambda n: n, lambda n, v: n),
     "cell": Kind(
         Grid,
         "id",
@@ -94,7 +95,6 @@ KINDS: dict[str, Kind] = {
         (1, 2, 3),
         Cell,
         lambda n, v: n,
-        lambda b: b,
         _change_cell,
     ),
     "decimal": Kind(
@@ -104,7 +104,6 @@ KINDS: dict[str, Kind] = {
         ("1.0", "1.00", "2"),
         decimal.Decimal,
         lambda n, v: n,
-        lambda b: b,
     ),
     "datetime": Kind(
         TimeKeyed,
@@ -115,7 +114,6 @@ KINDS: dict[str, Kind] = {
         lambda n, v: (
             f"2026-01-0{n}T00:00:00" + ("Z" if v == "plain" else "+00:00")
         ),
-        lambda b: datetime.datetime.fromisoformat(b).day,
     ),
     "grid": Kind(
         GridProfile,
@@ -124,7 +122,6 @@ KINDS: dict[str, Kind] = {
         (1, 2, 3),
         lambda n: Grid(id=Cell(n)),
         lambda n, v: n if v == "plain" else {"id": n, "name": "e"},
-        lambda b: b,
     ),
     "user": Kind(
         UserProfile,
@@ -133,7 +130,6 @@ KINDS: dict[str, Kind] = {
         (1, 2, 3),
         lambda n: User(id=n),
         lambda n, v: n if v == "plain" else {"id": n, "name": "e"},
-        lambda b: b,
     ),
 }
 
@@ -160,8 +156,6 @@ class Subject:
     obj: Any
     saved: Any
     """The key that the object is saved under, by the model."""
-    pending: Any = None
-    """The key that a lazy assignment or a change in place waits to send."""
     mode: WriteMode = "lazy"
 
 
@@ -221,7 +215,7 @@ class KeyIdentityMachine(RuleBasedStateMachine):
         }
 
     def handle(self, request: Any, context: Any) -> str:
-        """Answer a request at a resource, moving it if its key changes.
+        """Answer a request at a resource, which never sends a key.
 
         Args:
             request: The request.
@@ -236,17 +230,13 @@ class KeyIdentityMachine(RuleBasedStateMachine):
             context.status_code = 404
             return "{}"
         kind, n = entry
-        spec = KINDS[kind]
         if request.method == "GET":
             named = n if self.next_key is None else self.next_key
             self.next_key = None
             return json.dumps(self.record(kind, named))
-        body = request.json()
-        named = n
-        if spec.key_field in body:
-            named = spec.from_body(body[spec.key_field])
-            self.path(kind, named)
-        return json.dumps(self.record(kind, named))
+        if KINDS[kind].key_field in request.json():
+            self.violations.append(f"{request.method} {request.url} sends key")
+        return json.dumps(self.record(kind, n))
 
     def act(self, subject: Subject, action: Callable[[], Any]) -> Any:
         """Run an action, and check that it sends requests only to the key.
@@ -323,7 +313,6 @@ class KeyIdentityMachine(RuleBasedStateMachine):
         if subject is None:
             return
         self.act(subject, subject.obj.refresh)
-        subject.pending = None
 
     @rule(
         data=st.data(),
@@ -338,7 +327,6 @@ class KeyIdentityMachine(RuleBasedStateMachine):
         spec = KINDS[subject.kind]
         self.variant = variant
         subject.obj.refresh()
-        subject.pending = None
         named = subject.saved
         if other:
             named = data.draw(st.sampled_from(spec.keys))
@@ -374,51 +362,55 @@ class KeyIdentityMachine(RuleBasedStateMachine):
             assert how == "other"
             return
         assert how != "other"
-        if how == "own":
-            subject.pending = None
 
     @rule(data=st.data())
     def assign_key(self, data: st.DataObject) -> None:
-        """Assign a key, which waits for ``save()`` or is sent at once."""
-        subject = self.pick(data, lambda s: s.pending is None)
+        """Assign a key, which is refused unless it is the object's own."""
+        subject = self.pick(data)
         if subject is None:
             return
         spec = KINDS[subject.kind]
         n = data.draw(st.sampled_from(spec.keys))
         self.path(subject.kind, n)
-        self.act(
-            subject,
-            lambda: setattr(subject.obj, spec.key_field, spec.given(n)),
-        )
-        if subject.mode == "eager":
-            subject.saved = n
+        calls = self.mocker.call_count
+
+        def assign() -> None:
+            setattr(subject.obj, spec.key_field, spec.given(n))
+
+        if n == subject.saved:
+            assign()
         else:
-            subject.pending = n
+            with pytest.raises(AttributeError, match="cannot change"):
+                assign()
+        assert self.mocker.call_count == calls
 
     @rule(data=st.data())
     def change_key_in_place(self, data: st.DataObject) -> None:
-        """Change the key that the object returns, in place."""
-        subject = self.pick(
-            data, lambda s: s.pending is None and bool(KINDS[s.kind].changed)
-        )
+        """Change the key that the object returns in place, and try to save.
+
+        The write is refused before anything is sent, and the object is as it
+        was once the key is changed back.
+        """
+        subject = self.pick(data, lambda s: bool(KINDS[s.kind].changed))
         if subject is None:
             return
         change = KINDS[subject.kind].changed
         assert change is not None
         key = self.act(subject, lambda: subject.obj.pk)
-        subject.pending = change(key)
-        self.path(subject.kind, subject.pending)
+        calls = self.mocker.call_count
+        undo = change(key)
+        with pytest.raises(UsageError, match="cannot change"):
+            subject.obj.save()
+        assert self.mocker.call_count == calls
+        undo()
 
     @rule(data=st.data())
     def save(self, data: st.DataObject) -> None:
-        """Save an object, which sends a pending change of its key."""
+        """Save an object, which has no key to send."""
         subject = self.pick(data)
         if subject is None:
             return
         self.act(subject, subject.obj.save)
-        if subject.pending is not None:
-            subject.saved = subject.pending
-            subject.pending = None
 
     @rule(data=st.data(), variant=st.sampled_from(["plain", "alt"]))
     def read(self, data: st.DataObject, variant: str) -> None:
@@ -438,9 +430,6 @@ class KeyIdentityMachine(RuleBasedStateMachine):
             return
         spec = KINDS[subject.kind]
         self.act(subject, lambda: setattr(subject.obj, spec.name_field, "w"))
-        if subject.mode == "eager" and subject.pending is not None:
-            subject.saved = subject.pending
-            subject.pending = None
 
     @invariant()
     def laws_hold(self) -> None:

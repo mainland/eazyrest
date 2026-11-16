@@ -437,28 +437,25 @@ def test_read_only_value_changed_in_place_is_not_sent(
 
 
 @pytest.mark.parametrize("mode", ["lazy", "eager"])
-def test_hyperlink_key_assignment_updates_existing_identity(
+def test_hyperlink_key_assignment_is_refused(
     requests_mock: Any, mode: WriteMode
 ) -> None:
-    """A URL identifies an existing resource before its key is loaded.
+    """A URL identifies an existing resource, whose key is the server's.
+
+    Nothing is sent, and the object still names the resource that the URL
+    names.
 
     Args:
         mode: Write mode of the parent and related user.
     """
-    requests_mock.get(
-        "https://mocked.example/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    patch = requests_mock.patch(
-        "https://mocked.example/users/2/", status_code=204
-    )
     user = MockedDoc(json=DOC_JSON, write_mode=mode).linked
 
-    user.id = 3
-    user.save()
+    with pytest.raises(AttributeError, match="hyperlink"):
+        user.id = 3
 
-    assert patch.last_request.json() == {"id": 3}
-    assert user.pk == 3
-    assert user.absolute_url == "https://mocked.example/users/3/"
+    assert not requests_mock.called
+    assert user.absolute_url == "https://mocked.example/users/2/"
+    assert user._pending_updates == {}
 
 
 def test_hyperlink_accepts_pushed_identity_without_loading(

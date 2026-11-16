@@ -292,9 +292,11 @@ describe them further.
   equal hashes, and spellings that decode to one value and encode alike, such
   as `Z` and `+00:00`, are one key. A key that encodes differently is another
   key, so `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
-  `User(id=1)`. Give the key in its field's type. A pending change of the key,
-  a change made to it in place, and `refresh()` leave the key, the hash, and
-  the `url` as they were until `save()` sends the change. An object without a
+  `User(id=1)`. Give the key in its field's type. A refresh leaves the key, the
+  hash, and the `url` as they were. Assigning another key to an object that has
+  its key raises `AttributeError`, and a key changed in place raises
+  `UsageError` from `save()`, where 1.0.0a5 kept the change pending and left
+  the key, the hash, and the `url` until `save()` sent it. An object without a
   known key still equals only itself, and `hash()` of one raises `TypeError`,
   unless its model has no key field. The message says what is wrong with the
   key.
@@ -347,6 +349,21 @@ that can break code written for 0.9.0, followed by what to do about it.
   one `PATCH`. Call `save()` after changing an object, or construct the API
   with `API(url, default_write_mode="eager")`, or call
   `obj.set_write_mode("eager")`, to send each assignment as it is made.
+- Assigning the key of an object that has its key raises `AttributeError` when
+  the value names another key, where 0.9.0 sent a `PATCH` of the new key to the
+  object's URL and, for an object that had not loaded, pointed the object at
+  the new key. That covers the key field, `pk`, and a key that is a relation.
+  Assigning the key that the object has does nothing and sends nothing. A key
+  that is changed in place, as to a key that is an object with a conversion,
+  raises `UsageError` from `save()` and from an eager assignment of any field,
+  before anything is sent. An object that has no key and no URL of its own
+  takes the key that it is given, as before, and so does one built from JSON
+  that lacks the key or holds `null`, which 1.0.0a5 queued as a change that
+  `save()` could not send. An object read from a hyperlink learns its key at
+  its first load, so assigning it a key raises `AttributeError`. To rename a
+  resource on a server that allows it, send the write with the raw API, as
+  `api.patch(obj.url, json={"id": 2})`, and build the object again from the
+  response.
 - A write response is merged into the object through the new `merge_response()`
   hook, rather than replacing its JSON. A response without a body, such as
   `204 No Content`, keeps the values that were sent. `create()` keeps only the
@@ -485,19 +502,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   spellings that decode to one value and encode alike, such as `Z` and
   `+00:00`, are one key. A key that encodes differently is another key, so
   `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
-  `User(id=1)`. Give the key in its field's type. A pending change of the key,
-  a change made to it in place, and `refresh()` leave the key, the hash, and
-  the `url` as they were until `save()` sends the change. An object without a
-  known key still equals only itself, and `hash()` of one raises `TypeError`,
-  unless its model has no key field. The message says what is wrong with the
-  key.
+  `User(id=1)`. Give the key in its field's type. A refresh leaves the key, the
+  hash, and the `url` as they were. An object without a known key still equals
+  only itself, and `hash()` of one raises `TypeError`, unless its model has no
+  key field. The message says what is wrong with the key.
 - The `pk` and `url` of a model whose primary key is a relation give the key
   that the model copied from the related object when the relation was assigned
   or loaded, where 0.9.0 asked the related object that the constructor or the
   `pk` setter was given, until the model loaded, so they followed its key as it
   changed. A loaded model read a new object from its JSON each time, and did
-  not follow. A later change of the related object's key no longer changes
-  them. Assign the relation again to change the model's key.
+  not follow. They no longer follow the related object.
 
 #### Declarations
 

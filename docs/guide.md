@@ -131,10 +131,32 @@ The canonical key comes from the key that the object last took from the server,
 or was given: the saved key. An object takes the key when it is built from
 `json=`, when its key is first given, as `User(id=1)` does, when it loads, when
 a write's response is recorded, and when `update_from_json()` merges a payload
-that names the key. Nothing else changes it. In particular, a lazy change of
-the key, a change made to the key in place, and `refresh()` leave it, so the
-object keeps comparing, hashing, and forming its `url` by the key that the
-server has until `save()` sends the change and the response is recorded.
+that names the key. `refresh()` leaves it.
+
+Once the key is known, the program cannot change it, as Django's key field
+cannot be renamed through the object either:
+
+- Assigning the key field, `pk`, or a key that is a relation a value that names
+  another key raises `AttributeError`, as assigning a read-only field does, and
+  sends nothing. Assigning the key that the object has does nothing and sends
+  nothing. To name another object, build it, as `User(id=2)`.
+- Changing the key in place, as to a key that is an object with a conversion,
+  makes `save()`, and an eager assignment of any field, raise `UsageError`
+  before anything is sent. The pending updates stay, and putting the key back
+  lets the object save again.
+- An object that names no resource yet takes the key that it is given, and
+  giving it sends nothing. That is an object with no key and no URL of its own,
+  including one built from JSON that lacks the key or holds `null`. An object
+  read from a hyperlink already names a resource and learns its key at its
+  first load, so assigning it a key raises `AttributeError` too.
+
+A program that must rename a resource, on a server that allows it, sends the
+write with the raw API and builds the object again from the response:
+
+```python
+response = user.api.patch(user.url, json={"id": 2})
+user = User(json=user.api.json(response))
+```
 
 The canonical key is the saved key's JSON, decoded and encoded again by the
 key's field type, and written as text. So it is the key as the server names the
@@ -152,10 +174,6 @@ resource, and these laws follow:
   different URLs. `User(id="1")` does not equal `User(id=1)` either, although
   both name `/users/1/`, because a string and a number are different JSON. Give
   the key in its field's type, as the server returns it.
-- A change to a Python value, including the value that `pk` returns, changes
-  nothing until a write sends it and its response is recorded. A change made in
-  place to the `pk` of a model keyed by a relation is never sent, as the next
-  section says.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
@@ -177,54 +195,36 @@ or only part of it. Otherwise it says that the key is missing from the JSON, is
 A key that is a relation behaves as a key that is not. The model holds the key
 of the related object, copied when the relation is assigned or loaded, so
 `UserProfile(user=User(id=2))` holds 2 and equals another profile that holds 2.
-The copy is what a write of the relation sends, so a related object whose own
-key change is pending gives the key that the change set. The profile's `pk`,
-`url`, `refresh()`, `update_from_json()`, `==`, and `hash()` all use that copy,
-and none asks the related object again.
+The profile's `pk`, `url`, `refresh()`, `update_from_json()`, `==`, and
+`hash()` all use that copy, and none asks the related object again.
 
-- A later change of the user's key, pending or saved, does not move the
-  profile. After `profile.user.id = 6` is saved, `profile.pk` is still 2, its
-  `url` is still `/profiles/2/`, and it still equals
-  `UserProfile(user=User(id=2))` with the same hash. This holds however the
-  profile holds its user: built with it, loaded, embedding it in its JSON, or
-  sharing a prefetched one. Profiles that share a prefetched user keep their
-  own keys.
-- Assigning the relation again changes the key, as any change of a key does. In
-  lazy mode `profile.user = User(id=3)` waits for `save()`, and until then the
-  profile still equals `UserProfile(user=User(id=2))`, keeps its hash and its
-  place in a set, and has the `url` of the saved profile. In eager mode the key
-  moves, and the hash with it, when the change is sent. A second change begins
-  from the key that the first one set.
+- Assigning `profile.user` or `profile.pk` another user raises
+  `AttributeError`, as for any key that is known. Assigning the user that the
+  profile has does nothing.
 - Reading `profile.pk` decodes the copied key afresh each time, so a change
   made in place to the value that it returns, as to a key that is an object
-  with a conversion, changes a copy. It is not kept and `save()` does not send
-  it, whether the profile has loaded or not. Change the key by assigning the
-  relation, as above, or by assigning `profile.pk`.
+  with a conversion, changes a copy. It is neither kept nor refused, and
+  `save()` does not send it, whether the profile has loaded or not.
 - Reading `profile.user` does not give the key's owner. After an assignment it
   gives the assigned object. When the profile embeds its user, it gives the
   object built from the embedded JSON, with its other fields. When the profile
   shares a prefetched user, it gives that object. Otherwise it gives an object
-  built from the key. In each case, after the user's key changes,
-  `profile.user.pk` can differ from `profile.pk`.
+  built from the key.
 
 ### When the hash changes
 
 The hash is that of the model and its canonical key, so it changes only when
-the object takes from the server a key that has another canonical key. That
-happens at two points:
-
-- at `save()` of the object's own key change, which sends the new key, or at
-  the assignment in eager mode, which sends it at once, and
-- at a load or a write's response that names another key. `update_from_json()`
-  refuses a payload that names another key, and one that names a key when the
-  object's key or the payload's is not known, as when either is `None` or
-  cannot be converted. An object that has its own URL, as one read from a
-  hyperlink has, takes the payload's key if its saved key is absent or `null`.
+the object takes from the server a key that has another canonical key, at a
+load or a write's response that names another key. `update_from_json()` refuses
+a payload that names another key, and one that names a key when the object's
+key or the payload's is not known, as when either is `None` or cannot be
+converted. An object that has its own URL, as one read from a hyperlink has,
+takes the payload's key if its saved key is absent or `null`.
 
 A set or dict that holds the object then no longer finds it. Take the object
-out before such a change, and put it back after. A pending change, a change
-made to the key in place, a refresh, and a load or a write that spells the same
-key another way do not change the hash.
+out before such a load, and put it back after. A refresh, an attempt to change
+the key, and a load or a write that spells the same key another way do not
+change the hash.
 
 ### What a key may be
 
@@ -276,8 +276,14 @@ one-to-one relation has the copied column value as its `pk`, such as `user_id`,
 and so does eazyrest's. Django copies the key that a related object has when
 the relation is assigned, or at `save()` if the object had none then. eazyrest
 refuses a related object without a key at assignment, so the copy always
-exists. Django also has no pending key change: assigning `pk` changes the hash
-at once, where eazyrest keeps the saved key until `save()` sends the change.
+exists. Django does not refuse a change of the key. Its documentation says that
+the primary key field is read-only, and that if you change the value of the
+primary key on an existing object and then save it, a new object is created
+alongside the old one. `save()` updates the row that has the new key, so a key
+that another row has overwrites that row. Django REST framework makes an
+automatic or non-editable key read-only and ignores it in a request. eazyrest
+refuses the assignment of another key instead, so no write can create or
+overwrite the resource at another key by accident.
 
 ## Loading and caching
 
@@ -297,29 +303,29 @@ without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
 loads, and the constructor raises `ValueError` for a key that is not a UUID.
 The value is decoded from the saved key, as a loaded object's is, so a change
-made to it in place, as to a key that is an object with a conversion, is sent
-by `save()` as a change of the key, to the URL of the saved key. That does not
-hold for a key that is a relation, whose `pk` reads a new value each time. A
-key that is a relation takes an object of the related model or a subclass, and
-any other model object raises `FieldConversionError`, as does a model object
-given for a key that is not a relation. The model holds the related object's
-key, not the object, so the related object must have its key without a request:
-it holds the key, as `User(id=1)` does, or its JSON has the key field. A
-related object that is known only by its URL, as one named by a `Hyperlinked()`
-relation is until it loads, raises `FieldConversionError`, whose message says
-to load or save it first. So does one whose own key is a relation that is not
-known. Once such an object has loaded, it is accepted if its JSON has the key.
-If its JSON lacks the key field, loading again cannot help, and the message
-says that the key is missing from its JSON. If it holds the key as `null`, the
-message says that the key is `None`. A related object without a key, such as
-`User()`, raises `FieldConversionError` too, as a relation write does. The
-constructor and the `pk` setter therefore never send a request, and neither do
-`repr()` and `update_from_json()` of such a model. Reading the field returns a
-new related object that holds the key, not the object that was given, though it
-equals that object, also after `refresh()`. An object constructed from `json=`
-starts with that payload already loaded. It keeps a deep copy of the payload,
-as `update_from_json()` does, so changing the payload or its nested values
-afterward does not change the object.
+made to it in place, as to a key that is an object with a conversion, is
+detected and refused, as [Equality by key](#equality-by-key) says. That does
+not hold for a key that is a relation, whose `pk` reads a new value each time.
+A key that is a relation takes an object of the related model or a subclass,
+and any other model object raises `FieldConversionError`, as does a model
+object given for a key that is not a relation. The model holds the related
+object's key, not the object, so the related object must have its key without a
+request: it holds the key, as `User(id=1)` does, or its JSON has the key field.
+A related object that is known only by its URL, as one named by a
+`Hyperlinked()` relation is until it loads, raises `FieldConversionError`,
+whose message says to load or save it first. So does one whose own key is a
+relation that is not known. Once such an object has loaded, it is accepted if
+its JSON has the key. If its JSON lacks the key field, loading again cannot
+help, and the message says that the key is missing from its JSON. If it holds
+the key as `null`, the message says that the key is `None`. A related object
+without a key, such as `User()`, raises `FieldConversionError` too, as a
+relation write does. The constructor and the `pk` setter therefore never send a
+request, and neither do `repr()` and `update_from_json()` of such a model.
+Reading the field returns a new related object that holds the key, not the
+object that was given, though it equals that object, also after `refresh()`. An
+object constructed from `json=` starts with that payload already loaded. It
+keeps a deep copy of the payload, as `update_from_json()` does, so changing the
+payload or its nested values afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -725,7 +731,7 @@ type for Pydantic, or annotate its JSON form, such as `dict[str, Any]`.
 
 A field's value is cached when it is first read, so later reads return the same
 value. If you change that value in place, `save()` sends the change, as it does
-for an assignment:
+for an assignment, except for the key, whose change is refused:
 
 ```python
 profile.settings["theme"] = "dark"

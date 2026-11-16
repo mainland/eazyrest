@@ -1,14 +1,14 @@
 """Stateful property tests of an object's local state against a server.
 
-A rule-based state machine applies random sequences of assignments, key
+A rule-based state machine applies random sequences of assignments, refused key
 changes, in-place changes, saves, full saves, failed and unconfirmed writes,
 refreshes, pushed updates, and write-mode changes to one object, which it
-loads, creates, or makes partial, and changes the values that the caller
-passed to ``create()``. Some assigned and in-place values cannot be encoded,
-and every write must then fail before it sends anything. A related object
-changed but not saved must survive a load that leaves its JSON as it was. A
-save with a file sends the changes as form fields, which the fake server
-parses as Django REST Framework would.
+loads, creates, or makes partial, and changes the values that the caller passed
+to ``create()``. Some assigned and in-place values cannot be encoded, and every
+write must then fail before it sends anything. A related object changed but not
+saved must survive a load that leaves its JSON as it was. A save with a file
+sends the changes as form fields, which the fake server parses as Django REST
+Framework would.
 
 A second machine follows a related object that a note names by its URL, as
 ``Hyperlinked()`` reads one: an object that knows only its URL, its load, its
@@ -247,11 +247,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
     ``pending_secret`` is the write-only value assigned but not saved, and
     ``in_place`` names the fields changed in place but not detected.
 
-    The object's key can change too. ``server_key`` is the key under which
-    the model says the server holds the object, ``stored_key`` the key in the
-    object's JSON, and ``saved_key`` the key under which the object is saved,
-    which differs from ``stored_key`` while a key change is pending. The fake
-    server answers only at its object's current key.
+    The object's key is 1 throughout, because a key cannot change. The fake
+    server answers only at that key.
 
     A subclass can model a subclass of ``Doc`` with more fields by setting
     the class attributes, adding rules for the new fields, and extending
@@ -504,9 +501,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def handle_patch(self, request: Any, context: Any) -> str:
         """Apply a PATCH and answer it.
 
-        A body that holds the key moves the object to that key. A multipart
-        body's form fields are applied as a JSON body's members are, and its
-        files are recorded in ``uploads``.
+        A body that holds the key is a violation, because a write never sends
+        one. A multipart body's form fields are applied as a JSON body's
+        members are, and its files are recorded in ``uploads``.
 
         Args:
             request: Request that the mock received, whose JSON or multipart
@@ -527,12 +524,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         fields, files = sent_fields(request)
         self.uploads.update(files)
         body = self.accept(fields)
-        key = body.pop("id", None)
-        if key is not None:
-            self.server_id = key
+        if "id" in body:
+            self.violations.append(f"key sent by a PATCH: {body}")
         self.fake.update(body)
-        if key is not None:
-            body["id"] = key
         return self.answer(request, body, context)
 
     def handle_put(self, request: Any, context: Any) -> str:
@@ -617,7 +611,6 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.pending_secret: str | None = None
         self.in_place: set[str] = set()
         self.cached: set[str] = set()
-        self.server_key = self.stored_key = self.saved_key = 1
         # Whether the cached days hold a value changed in place that cannot
         # be encoded, so that every write fails before sending anything.
         self.poisoned = False
@@ -677,8 +670,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         not follow an object whose cached days cannot be encoded.
 
         Args:
-            field: Name of the field that the step reads or assigns, or
-                ``"id"`` for the key.
+            field: Name of the field that the step reads or assigns.
         """
         if self.poisoned:
             return
@@ -689,19 +681,10 @@ class ObjectStateMachine(RuleBasedStateMachine):
             self.detect_in_place_changes()
 
     def send_pending(self) -> None:
-        """Model a PATCH of every pending update.
-
-        A pending key change moves the server's object, and the object is
-        saved under its new key from then on.
-        """
+        """Model a PATCH of every pending update."""
         self.server.update(
-            {
-                name: copy.deepcopy(self.stored[name])
-                for name in self.pending - {"id"}
-            }
+            {name: copy.deepcopy(self.stored[name]) for name in self.pending}
         )
-        if "id" in self.pending:
-            self.server_key = self.saved_key = self.stored_key
         if self.pending_secret is not None:
             self.server_secret = self.pending_secret
 
@@ -710,7 +693,6 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.server = {
             name: copy.deepcopy(self.stored[name]) for name in self.DECLARED
         }
-        self.server_key = self.saved_key = self.stored_key
         if self.pending_secret is not None:
             self.server_secret = self.pending_secret
 
@@ -764,7 +746,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         lazy mode, an assignment of the stored value is no change.
 
         Args:
-            field: Name of the field assigned, or ``"id"`` for the key.
+            field: Name of the field assigned.
             same: Whether the assigned value equals the stored one.
 
         Returns:
@@ -939,33 +921,23 @@ class ObjectStateMachine(RuleBasedStateMachine):
 
     @rule(key=KEYS)
     def change_key(self, key: int) -> None:
-        """Assign a new primary key, which a write sends to the saved key.
+        """Assign a primary key, which is refused unless it is the object's.
 
-        Until the change is sent, the object is saved under its old key, so a
-        write reaches the server's object, which then moves to the new key.
+        Nothing is sent, and the object is as it was. The object does not load
+        or detect changes made in place either.
 
         Args:
-            key: New primary key.
+            key: Primary key to assign.
         """
-        self.detect_before_load("id")
-        unchanged = self.same_assignment("id", key == self.stored_key)
-        if self.poisoned and self.sends(unchanged):
-            self.refused(lambda: setattr(self.obj, "id", key))
-            return
-
-        self.obj.id = key
-        if unchanged:
-            return
-
-        self.stored_key = key
-        self.pending.add("id")
-        if self.obj.write_mode == "lazy":
-            return
-
-        self.detect_in_place_changes()
-        self.send_pending()
-        self.pending.clear()
-        self.pending_secret = None
+        before = len(self.mocker.request_history)
+        state = copy.deepcopy(vars(self.obj)["_pending_updates"])
+        if key == 1:
+            self.obj.id = key
+        else:
+            with pytest.raises(AttributeError, match="cannot change"):
+                self.obj.id = key
+        assert len(self.mocker.request_history) == before
+        assert vars(self.obj)["_pending_updates"] == state
 
     @precondition(lambda self: "tags" in self.cached)
     @rule(word=WORDS)
@@ -1016,7 +988,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Returns:
             Whether a multipart write can hold every pending update.
         """
-        values = [self.stored[name] for name in self.pending - {"id"}]
+        values = [self.stored[name] for name in self.pending]
         return not any(
             isinstance(value, dict) or value == [] for value in values
         )
@@ -1140,11 +1112,6 @@ class ObjectStateMachine(RuleBasedStateMachine):
         an applied write, but the object cannot confirm it, so the changes stay
         pending too.
 
-        An unconfirmed write of a key change moves the server's object while
-        the object correctly keeps its saved key, which then names nothing.
-        The model cannot follow that, so it draws no such failure while a key
-        change is pending.
-
         Args:
             data: Hypothesis data object that draws how the write fails:
                 ``"error"`` for an HTTP error, ``"redirect"`` for a redirect,
@@ -1153,10 +1120,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
                 that is not a JSON object.
             full: Whether to save with ``full=True``.
         """
-        failures = sorted(FAILURES)
-        if "id" in self.pending:
-            failures.remove("shape")
-        failure = data.draw(st.sampled_from(failures))
+        failure = data.draw(st.sampled_from(sorted(FAILURES)))
         options: dict[str, Any] = {}
         if failure == "redirect":
             status = data.draw(st.sampled_from(REDIRECT_STATUSES))
@@ -1214,7 +1178,6 @@ class ObjectStateMachine(RuleBasedStateMachine):
         self.obj.refresh()
         self.stored = copy.deepcopy(self.server)
         self.expected = copy.deepcopy(self.server)
-        self.stored_key = self.saved_key
         self.pending.clear()
         self.pending_secret = None
         self.in_place.clear()
@@ -1279,19 +1242,16 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if hasattr(self, "server"):
             assert self.fake == self.server
             assert self.fake_secret == self.server_secret
-            assert self.server_id == self.server_key
+            assert self.server_id == 1
 
     @invariant()
     def key_matches_model(self) -> None:
-        """The object reads its new key, and is saved under its saved key.
-
-        Neither reads loads the object.
-        """
+        """The object has its key and its URL, which read without a load."""
         if not hasattr(self, "obj"):
             return
         before = len(self.mocker.request_history)
-        assert self.obj.pk == self.stored_key
-        assert self.obj.url == f"/docs/{self.saved_key}/"
+        assert self.obj.pk == 1
+        assert self.obj.url == "/docs/1/"
         assert len(self.mocker.request_history) == before
 
     @invariant()

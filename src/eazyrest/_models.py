@@ -4367,10 +4367,13 @@ class JSONProperty:
         Raises:
             UsageError: If the model has no primary-key field, so its objects
                 are read-only values.
-            AttributeError: If the backing JSON does not contain this field.
+            AttributeError: If the backing JSON does not contain this field, or
+                the field is the key of an object that already names a resource
+                and the value names another key. Assigning the same key does
+                nothing.
             FieldConversionError: If the value cannot be converted to the
-                field's JSON value, or a primary key that initializes an
-                unloaded object is not a valid value of the field's type.
+                field's JSON value, or a primary key that an object takes is
+                not a valid value of the field's type.
         """
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
@@ -4379,35 +4382,8 @@ class JSONProperty:
             obj._update_write_only_field(self.json_field, _copy_json(encoded))
             return
 
-        # Only the first key assignment initializes a lazy object's identity.
-        # Later assignments must update the resource at its saved key.
-        if (
-            self._is_key_of(obj)
-            and obj._json is None
-            and obj._saved_key_json is None
-            and obj._url_override is None
-        ):
-            # Convert the key as if it were read from JSON, so it has the same
-            # type before and after the object loads. A related object passed
-            # as the key gives its own key, which it must know without a
-            # request, and the object holds that key, not the related object.
-            # The key is copied here, so a later change of the related object
-            # does not change it. Its class is checked as a relation write
-            # checks it, so a key that is not a relation refuses an object, and
-            # one that is refuses an object of another model.
-            conversion = self.analyzed_type
-            with _converting(type(obj), self.field):
-                related = _related_key_type(conversion)
-                if isinstance(value, JSONObject) and related is not None:
-                    _check_related_class(value, related.model_type)
-                    value = _known_key(value)
-                value = obj._key_as_read_from_json(value)
-
-            with _converting(type(obj), self.field):
-                obj._record_saved_key(obj._to_json(value, conversion))
-            # The key reads from the saved key, and not as it was cached.
-            obj._field_cache.pop(self.field, None)
-            obj._field_snapshots.pop(self.field, None)
+        if self._is_key_of(obj):
+            self._set_key(obj, value)
             return
 
         if self.read_only:
@@ -4461,6 +4437,72 @@ class JSONProperty:
                 # The caller can change a collection in place, as one read
                 # from JSON.
                 obj._field_snapshots[self.field] = _copy_json(new_value)
+
+    def _set_key(self, obj: JSONObject, value: Any) -> None:
+        """Give an object its key, or check that an assignment keeps it.
+
+        An object that names no resource yet, with no key and no URL of its
+        own, takes the key and sends nothing. An object whose key is known, or
+        that is read from a hyperlink and so names a resource, keeps its key.
+        Assigning the same key does nothing.
+
+        Args:
+            obj: Object whose key is assigned.
+            value: The key, or a related object when the key is a relation.
+
+        Raises:
+            AttributeError: If the object already names a resource and the
+                value names another key, or any key for an object read from a
+                hyperlink that has not learned its key.
+            FieldConversionError: If the value cannot be converted to the key's
+                JSON value, or a related object cannot give its key.
+        """
+        # Convert the key as if it were read from JSON, so it has the same
+        # type before and after the object loads. A related object passed as
+        # the key gives its own key, which it must know without a request, and
+        # the object holds that key, not the related object. The key is copied
+        # here, so a later change of the related object does not change it. Its
+        # class is checked as a relation write checks it, so a key that is not
+        # a relation refuses an object, and one that is refuses an object of
+        # another model.
+        conversion = self.analyzed_type
+        with _converting(type(obj), self.field):
+            related = _related_key_type(conversion)
+            if isinstance(value, JSONObject) and related is not None:
+                _check_related_class(value, related.model_type)
+                value = _known_key(value)
+            value = obj._key_as_read_from_json(value)
+            encoded = obj._to_json(value, conversion)
+            named = _canonical_key_of(obj, encoded)
+
+        name = type(obj).__name__
+        if obj._saved_key_json is not None:
+            saved = obj._canonical_key()
+            if (
+                saved is not None
+                and named is not None
+                and saved[1] == named[1]
+            ):
+                return
+            raise AttributeError(
+                f"The key of a saved {name} object cannot change, so "
+                f"{name}.{self.field} cannot be assigned another value. Name "
+                f"another object as {name}({self.field}=...)"
+            )
+        if obj._url_override is not None:
+            raise AttributeError(
+                f"A {name} object that was read from a hyperlink learns its "
+                f"key when it loads, so {name}.{self.field} cannot be "
+                f"assigned. Name another object as {name}({self.field}=...)"
+            )
+
+        obj._record_saved_key(encoded)
+        if obj._json is not None:
+            # JSON that lacks the key, or holds None, now holds it.
+            obj._json[self.json_field] = _copy_json(encoded)
+        # The key reads from the saved key, and not as it was cached.
+        obj._field_cache.pop(self.field, None)
+        obj._field_snapshots.pop(self.field, None)
 
     def _assigned_related(self, value: Any) -> Any:
         """Return the field value that keeps assigned related objects.
@@ -4517,18 +4559,21 @@ class JSONObject:
     same model are equal if they have the same canonical key: the key that the
     object last took from the server or was given, decoded and encoded again by
     the key's field type. A key that is a relation is the related object's key
-    that the object copied when the relation was assigned or loaded, so a later
-    change of the related object's key does not move it. Any other object, such
-    as one built without a key, equals only itself. Hashing an object whose key
-    is not known raises ``TypeError``, so the hash cannot change when the key
-    becomes known.
+    that the object copied when the relation was assigned or loaded. Any other
+    object, such as one built without a key, equals only itself. Hashing an
+    object whose key is not known raises ``TypeError``, so the hash cannot
+    change when the key becomes known.
 
     A key compares by its encoding, so ``User(id="1")`` does not equal
     ``User(id=1)``, and a spelling of one key that encodes alike, such as ``Z``
     for ``+00:00``, does not change the hash. Give the key in its field's type.
-    A load or a write's response that names another key changes the hash, and
-    so does ``save()`` of a change of the key, so take the object out of a set
-    or dict before such a change.
+    A load or a write's response that names another key changes the hash, so
+    take the object out of a set or dict before such a load.
+
+    Once the key is known, the program cannot change it. Assigning the key
+    field, ``pk``, or a key relation a value that names another key raises
+    ``AttributeError``, and a key changed in place makes ``save()``, an eager
+    assignment, or a load raise ``UsageError``, before anything is sent.
     """
 
     class_url: ClassVar[str]
@@ -4580,8 +4625,7 @@ class JSONObject:
 
     For an object that was given its key and has not loaded, this is the key's
     encoding, and ``pk`` decodes it. ``None`` if the object has recorded no
-    key. Only ``_record_saved_key()`` sets it, so a pending change of the key
-    leaves it as it was.
+    key. Only ``_record_saved_key()`` sets it.
     """
 
     _api_override: API | None
@@ -4772,8 +4816,7 @@ class JSONObject:
         ``Num(id=1)`` differ, as do ``Decimal`` keys of different precision.
         Equal objects have the same ``url``, unless one has its own URL, as an
         object read through a ``Hyperlinked()`` relation has, or its class
-        overrides ``url``. A pending key change, a change made to the key in
-        place, and a refresh leave the saved key as it was.
+        overrides ``url``. A refresh leaves the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself. So does
@@ -4812,12 +4855,11 @@ class JSONObject:
         """Return a hash that agrees with equality.
 
         The hash is that of the model and the canonical key, so it changes only
-        when the object records server state that names another key, as when
-        ``save()`` or an eager assignment sends a key change, or a load or a
-        write's response names another key. A spelling of the same key does not
-        change it, and neither does a pending key change. An object of a model
-        without a key field hashes by identity, because its key can never
-        become known. Hashing sends no request.
+        when the object records server state that names another key, as when a
+        load or a write's response names another key. A spelling of the same
+        key does not change it. An object of a model without a key field hashes
+        by identity, because its key can never become known. Hashing sends no
+        request.
 
         Returns:
             The hash.
@@ -5582,8 +5624,8 @@ class JSONObject:
         Call it wherever the object takes server state that has the key field:
         when it is built from JSON, when its key is first given, when it loads,
         when a write's response is recorded, and when ``update_from_json()``
-        merges a payload. Nothing else sets the saved key, so a pending change
-        of the key, a change in place, and a refresh leave it.
+        merges a payload. Nothing else sets the saved key, so a refresh leaves
+        it.
 
         Args:
             key: The JSON of the key field. A container is copied.
@@ -5646,10 +5688,8 @@ class JSONObject:
             json_field: Name of the backing JSON field.
             value: JSON-serializable field value.
         """
-        # A new primary key waits for save(), and until then the object is
-        # still saved under the key that it last recorded. An object that has
-        # not loaded has no JSON to change, and the update that waits here is
-        # laid over the JSON when it loads.
+        # An object that has not loaded has no JSON to change, and the update
+        # that waits here is laid over the JSON when it loads.
         if self._json is not None:
             self._json[json_field] = value
         self._pending_updates[json_field] = value
@@ -5668,6 +5708,8 @@ class JSONObject:
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
+            UsageError: If the key was changed in place to name another key.
+                Nothing is queued, and the pending updates stay.
         """
         if _pk_property_of(type(self)) is None:
             return []
@@ -5679,8 +5721,18 @@ class JSONObject:
                 encoded = self._to_json(
                     self._field_cache[field], descriptor.analyzed_type
                 )
-            if not _json_equal(encoded, snapshot):
-                changed.append((field, descriptor, encoded))
+            if _json_equal(encoded, snapshot):
+                continue
+            if descriptor._is_key_of(self):
+                # The key's encoding is its canonical form, so any change of
+                # the encoding names another key.
+                name = type(self).__name__
+                raise UsageError(
+                    f"The key of a saved {name} object cannot change, but "
+                    f"{name}.{field} was changed in place. Name another "
+                    f"object as {name}({field}=...)"
+                )
+            changed.append((field, descriptor, encoded))
         return changed
 
     def _queue_changes(
@@ -5703,6 +5755,7 @@ class JSONObject:
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
+            UsageError: If the key was changed in place.
         """
         changed = self._changes_in_place()
         if changed and self._json is None:
@@ -5890,7 +5943,9 @@ class JSONObject:
 
         Raises:
             UsageError: If the model has no primary-key field, even when
-                nothing is pending, or a class had ``api`` assigned.
+                nothing is pending, a class had ``api`` assigned, or the key
+                was changed in place. Nothing is sent, and the pending updates
+                stay.
             ValueError: If the object has no URL, because its primary key is
                 ``None``, as for an object built without a key or read from
                 JSON that lacks it.
@@ -6066,8 +6121,7 @@ class JSONObject:
         """Mark this object stale and discard pending local updates.
 
         The saved key does not change, so the object keeps its equality, its
-        hash, and its ``url``. A pending change of the key is discarded, and
-        the object holds the saved key until it loads.
+        hash, and its ``url``. The object holds the saved key until it loads.
 
         Raises:
             UsageError: If the model has no key field. Such an object has
@@ -6113,8 +6167,7 @@ class JSONObject:
         A model without a key field has the key ``None``, and so has an object
         built without a key or read from JSON that lacks it. A key that is a
         relation is the related object's key as this object copied it when the
-        relation was assigned or loaded, so a later change of the related
-        object's key does not change it.
+        relation was assigned or loaded.
         """
         pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
         if pk_property is None:
@@ -6141,11 +6194,13 @@ class JSONObject:
                 that is not known. The assignment sends no request.
 
         Raises:
-            AttributeError: If the model has no key field.
-            FieldConversionError: If the first assignment to an unloaded
-                object's key gives a related object that the key cannot take.
-                For one whose key is not known, the message says to load or
-                save it first.
+            AttributeError: If the model has no key field, or the object
+                already names a resource and the value names another key.
+                Assigning the key that the object has does nothing.
+            FieldConversionError: If the first assignment to an object that has
+                no key gives a related object that the key cannot take. For one
+                whose key is not known, the message says to load or save it
+                first.
         """
         pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
         if pk_property is None:
@@ -6199,9 +6254,7 @@ class JSONObject:
 
         The primary key is converted to its JSON value and percent-encoded, so
         it always forms a single path segment. The key is the one that the
-        object last recorded from the server, or that it was given. So while a
-        primary-key change waits for ``save()``, or after one is made in place,
-        the URL names the saved object, and ``save()`` sends the change there.
+        object last recorded from the server, or that it was given.
 
         Returns:
             Relative URL for this object. It ends with ``/`` unless the API's
@@ -6282,6 +6335,7 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If the response does not hold a JSON object.
+            UsageError: If the key was changed in place.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())

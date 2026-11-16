@@ -2614,155 +2614,86 @@ def test_lazy_write_mode_batches_updates_until_save(
     assert patch.last_request.json() == {"title": "new", "userId": 3}
 
 
+def _saved_user(state: str, write_mode: WriteMode) -> User:
+    """Return the user 1 in a loading state.
+
+    Args:
+        state: ``"unloaded"`` for a user known by its key, ``"loaded"`` for one
+            built from its JSON, or ``"refreshed"`` for a loaded user that has
+            discarded its JSON.
+        write_mode: Write mode of the user.
+
+    Returns:
+        The user, with its key 1.
+    """
+    if state == "unloaded":
+        return User(id=1, write_mode=write_mode)
+    user = User(json={"id": 1, "name": "Ada"}, write_mode=write_mode)
+    if state == "refreshed":
+        user.refresh()
+    return user
+
+
+@pytest.mark.parametrize("how", ["field", "pk"])
 @pytest.mark.parametrize("state", ["unloaded", "loaded", "refreshed"])
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_primary_key_assignment_preserves_saved_identity(
-    requests_mock: Any, state: str, write_mode: WriteMode
+def test_assigning_another_key_to_an_object_that_has_its_key_is_refused(
+    requests_mock: Any, write_mode: WriteMode, state: str, how: str
 ) -> None:
-    """Key changes address the saved object in every loading state.
+    """The key of a saved object cannot change, and nothing is sent.
+
+    The key, the hash, the URL, and the pending updates stay as they were.
 
     Args:
-        state: Loading state of the user before its key changes, one of
-            ``"unloaded"``, ``"loaded"``, or ``"refreshed"``.
         write_mode: Write mode of the user.
+        state: Loading state of the user.
+        how: Whether the key is assigned as the field or as ``pk``.
     """
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/users/1/", status_code=204
-    )
-    if state == "unloaded":
-        user = User(id=1, write_mode=write_mode)
-    else:
-        user = User(json={"id": 1, "name": "Ada"}, write_mode=write_mode)
-        if state == "refreshed":
-            user.refresh()
+    user = _saved_user(state, write_mode)
+    hashed = hash(user)
+    if state == "loaded" and write_mode == "lazy":
+        user.name = "Grace"
+    before = copy.deepcopy(user._json)
+    pending = copy.deepcopy(user._pending_updates)
+    requests_mock.reset_mock()
+
+    name = "id" if how == "field" else "pk"
+    with pytest.raises(AttributeError, match=r"key .* cannot change"):
+        setattr(user, name, 2)
 
     assert requests_mock.call_count == 0
-    user.pk = 2
-
-    assert user.pk == 2
-    assert patch.call_count == (1 if write_mode == "eager" else 0)
-    if write_mode == "lazy":
-        assert user.url == "/users/1/"
-    user.save()
-
-    assert patch.call_count == 1
-    assert patch.last_request.json() == {"id": 2}
-    assert user.url == "/users/2/"
-
-
-def test_failed_unloaded_primary_key_write_keeps_saved_identity(
-    requests_mock: Any,
-) -> None:
-    """A rejected eager key change preserves the original resource."""
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-    requests_mock.patch("https://example.com/v1/users/1/", status_code=400)
-    user = User(id=1, write_mode="eager")
-
-    with pytest.raises(requests.HTTPError):
-        user.id = 2
-
     assert user.pk == 1
     assert user.url == "/users/1/"
+    assert hash(user) == hashed
+    assert user == User(id=1)
+    assert user._pending_updates == pending
+    assert user._json == before
 
 
-def test_lazy_primary_key_change_saves_to_saved_url(
-    requests_mock: Any,
+@pytest.mark.parametrize("how", ["field", "pk"])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_assigning_the_key_that_an_object_has_sends_nothing(
+    requests_mock: Any, write_mode: WriteMode, how: str
 ) -> None:
-    """``save()`` sends a new primary key to the object's saved URL."""
-    old = requests_mock.patch(
-        "https://example.com/v1/users/1/",
-        json={"id": 2, "name": "Ada"},
-    )
-
-    user = User(json={"id": 1, "name": "Ada"})
-    user.id = 2
-
-    assert user.pk == 2
-    assert user.url == "/users/1/"
-
-    user.save()
-
-    assert old.last_request.json() == {"id": 2}
-    assert user.url == "/users/2/"
-
-
-@pytest.mark.parametrize("loaded", [False, True])
-def test_delete_with_pending_primary_key_change_uses_saved_url(
-    requests_mock: Any, loaded: bool
-) -> None:
-    """``delete()`` removes the saved object, not one at the new key.
+    """A key that names the object's own key is not a change.
 
     Args:
-        loaded: Whether the user starts from its JSON or from only its primary
-            key.
+        write_mode: Write mode of the user.
+        how: Whether the key is assigned as the field or as ``pk``.
     """
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-    delete = requests_mock.delete("https://example.com/v1/users/1/")
+    user = User(json={"id": 1, "name": "Ada"}, write_mode=write_mode)
+    hashed = hash(user)
 
-    user = User(json={"id": 1, "name": "Ada"}) if loaded else User(id=1)
-    user.id = 2
-    user.delete()
+    if how == "field":
+        user.id = 1
+    else:
+        user.pk = 1
+    user.save()
 
-    assert delete.called
-
-
-def test_eager_write_after_lazy_primary_key_change_uses_saved_url(
-    requests_mock: Any,
-) -> None:
-    """An eager write sends the pending key change to the saved URL."""
-    patch = requests_mock.patch(
-        "https://example.com/v1/users/1/",
-        json={"id": 2, "name": "Grace"},
-    )
-
-    user = User(json={"id": 1, "name": "Ada"})
-    user.id = 2
-    user.set_write_mode("eager")
-    user.name = "Grace"
-
-    assert patch.last_request.json() == {"id": 2, "name": "Grace"}
-    assert user.url == "/users/2/"
-
-
-def test_update_from_json_matches_saved_primary_key() -> None:
-    """Server state for the saved object replaces a pending key change."""
-    user = User(json={"id": 1, "name": "Ada"})
-    user.id = 2
-
-    user.update_from_json({"id": 1, "name": "Grace"})
-
+    assert requests_mock.call_count == 0
     assert user.pk == 1
-    assert user.name == "Grace"
-    assert user.url == "/users/1/"
-
-
-@pytest.mark.parametrize("loaded", [False, True])
-def test_refresh_discards_pending_primary_key_change(
-    requests_mock: Any, loaded: bool
-) -> None:
-    """``refresh()`` reloads the object under its saved primary key.
-
-    Args:
-        loaded: Whether the user starts from its JSON or from only its primary
-            key.
-    """
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-
-    user = User(json={"id": 1, "name": "Ada"}) if loaded else User(id=1)
-    user.id = 2
-    user.refresh()
-
-    assert user.name == "Ada"
-    assert user.pk == 1
+    assert hash(user) == hashed
+    assert user._pending_updates == {}
 
 
 def test_refresh_discards_pending_updates_and_reloads(
@@ -4836,7 +4767,7 @@ def test_enum_primary_key_urls_use_serialized_values(
         "https://example.com/v1/workflows/open/", status_code=204
     )
     delete = requests_mock.delete(
-        "https://example.com/v1/workflows/closed/", status_code=204
+        "https://example.com/v1/workflows/open/", status_code=204
     )
     if initialization == "json":
         workflow = Workflow(json={"state": "open", "label": "Active"})
@@ -4850,12 +4781,13 @@ def test_enum_primary_key_urls_use_serialized_values(
     assert workflow.label == "Active"
     assert workflow.pk is IssueStatus.OPEN
     assert workflow.url == "/workflows/open/"
-    workflow.status = IssueStatus.CLOSED
-    assert workflow.url == "/workflows/open/"
+    with pytest.raises(AttributeError, match="cannot change"):
+        workflow.status = IssueStatus.CLOSED
+    workflow.status = IssueStatus.OPEN
     workflow.save()
 
-    assert patch.last_request.json() == {"state": "closed"}
-    assert workflow.url == "/workflows/closed/"
+    assert patch.call_count == 0
+    assert workflow.url == "/workflows/open/"
     workflow.delete()
     assert delete.called
 
@@ -7942,32 +7874,82 @@ def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
     assert requests_mock.call_count == 0
 
 
-def test_a_pending_key_change_compares_by_the_saved_key(
-    requests_mock: Any,
+@pytest.mark.parametrize("how", ["field", "pk"])
+@pytest.mark.parametrize("kind", ["constructed", "loaded"])
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_assigning_another_object_to_a_key_that_is_a_relation_is_refused(
+    requests_mock: Any, write_mode: WriteMode, kind: str, how: str
 ) -> None:
-    """Until ``save()`` sends a key change, the object has its saved key.
+    """A profile keeps the key that it copied from its user.
 
-    The hash does not change while the object sits in a set, and after
-    ``save()`` the object has the new key.
+    Assigning the user that it has is not a change, and sends nothing.
+
+    Args:
+        write_mode: Write mode of the profile.
+        kind: Whether the profile is built with its user or from its JSON.
+        how: Whether the key is assigned as the field or as ``pk``.
     """
-    patch = requests_mock.patch(
-        "https://example.com/v1/users/1/", status_code=204
-    )
-    user = User(json={"id": 1, "name": "Ada"}, write_mode="lazy")
-    before = hash(user)
-    members = {user}
-    user.pk = 2
+    if kind == "constructed":
+        profile = UserProfile(user=User(id=2), write_mode=write_mode)
+    else:
+        profile = UserProfile(
+            json={"user": 2, "bio": "Hi"}, write_mode=write_mode
+        )
+    hashed = hash(profile)
 
-    assert user == User(id=1)
-    assert user != User(id=2)
-    assert hash(user) == before
-    assert User(id=1) in members
-    user.save()
+    name = "user" if how == "field" else "pk"
+    with pytest.raises(AttributeError, match=r"key .* cannot change"):
+        setattr(profile, name, User(id=3) if how == "field" else 3)
+    setattr(profile, name, User(id=2) if how == "field" else 2)
 
-    assert patch.call_count == 1
-    assert user == User(id=2)
-    assert user != User(id=1)
-    assert hash(user) == hash(User(id=2))
+    assert requests_mock.call_count == 0
+    assert profile.pk == 2
+    assert profile.url == "/profiles/2/"
+    assert profile == UserProfile(user=User(id=2))
+    assert profile != UserProfile(user=User(id=3))
+    assert hash(profile) == hashed
+    assert profile._pending_updates == {}
+
+
+@pytest.mark.parametrize("how", ["field", "pk"])
+@pytest.mark.parametrize(
+    "json",
+    [{"name": "Ada"}, {"id": None, "name": "Ada"}],
+    ids=["missing", "null"],
+)
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_an_object_built_from_json_without_a_key_takes_the_key_it_is_given(
+    requests_mock: Any,
+    write_mode: WriteMode,
+    json: dict[str, Any],
+    how: str,
+) -> None:
+    """Giving the first key sends nothing, and a second one is refused.
+
+    Args:
+        write_mode: Write mode of the user.
+        json: The user's JSON, which has no key.
+        how: Whether the key is assigned as the field or as ``pk``.
+    """
+    user = User(json=json, write_mode=write_mode)
+
+    if how == "field":
+        user.id = 5
+    else:
+        user.pk = 5
+
+    assert requests_mock.call_count == 0
+    assert user.pk == 5
+    assert user.url == "/users/5/"
+    assert user.json["id"] == 5
+    assert user.name == "Ada"
+    assert user == User(id=5)
+    assert hash(user) == hash(User(id=5))
+    assert user._pending_updates == {}
+    with pytest.raises(AttributeError, match=r"key .* cannot change"):
+        user.id = 6
+    assert user.pk == 5
+    assert requests_mock.call_count == 0
 
 
 def _objects_with_unknown_keys() -> list[Callable[[], JSONObject]]:
@@ -8051,58 +8033,19 @@ def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize("write_mode", ["eager", "lazy"])
-def test_a_set_refuses_an_object_whose_pending_key_has_no_saved_key(
-    requests_mock: Any,
-    write_mode: WriteMode,
-) -> None:
-    """A set cannot hold an object that has no hash, and the write is refused.
-
-    The object's pending key encodes, but its saved key is ``None``, so it has
-    no hash. Nothing is sent or queued.
-
-    Args:
-        requests_mock: Mocks the write that must not happen.
-        write_mode: Write mode of the object that holds the set.
-    """
-    patch = requests_mock.patch(
-        "https://example.com/v1/set-teams/1/", json={"id": 1}
-    )
-    user = User(json={"id": None, "name": "a"}, write_mode="lazy")
-    user.id = 5
-    team = SetTeam(json={"id": 1, "members": []}, write_mode=write_mode)
-
-    with pytest.raises(
-        FieldConversionError,
-        match=(
-            r"SetTeam\.members: .*The User object's primary key is None, "
-            r"so it cannot be hashed"
-        ),
-    ):
-        cast(Any, team).members = [user]
-
-    assert user.pk == 5
-    assert patch.call_count == 0
-    assert team._pending_updates == {}
-    assert team.json["members"] == []
-
-
-def test_the_hash_message_of_a_null_saved_key_ignores_a_pending_key(
+def test_a_key_that_is_given_later_makes_an_object_hashable(
     requests_mock: Any,
 ) -> None:
-    """A pending key does not make a null saved key unreadable.
-
-    The key that waits for ``save()`` reads as 5, and the saved key is
-    ``None``, so the message says that the key is ``None``.
-    """
+    """A key of ``None`` has no hash, and the key that is given has one."""
     user = User(json={"id": None, "name": "a"}, write_mode="lazy")
-    user.id = 5
-
-    assert user.pk == 5
     with pytest.raises(
         TypeError, match=r"key is None, so it cannot be hashed$"
     ):
         hash(user)
+
+    user.id = 5
+
+    assert hash(user) == hash(User(id=5))
     assert requests_mock.call_count == 0
 
 
@@ -8170,386 +8113,6 @@ def test_update_from_json_refuses_a_payload_whose_key_or_saved_key_is_unknown(
 
     assert obj._json == before
     assert requests_mock.call_count == 0
-
-
-def test_a_key_change_sent_eagerly_replaces_the_key_that_a_payload_held(
-    requests_mock: Any,
-) -> None:
-    """The JSON's key takes precedence over the key that the object held.
-
-    A payload from ``update_from_json()`` leaves the object partial, with the
-    key it was constructed with still held. A change of the key that is sent at
-    once makes the response's key the object's key, though it never loaded.
-    """
-    patch = requests_mock.patch(
-        "https://example.com/v1/users/1/", json={"id": 2, "name": "Ada"}
-    )
-    user = User(id=1, write_mode="eager")
-    user.update_from_json({"id": 1, "name": "Ada"})
-    assert user == User(id=1)
-
-    user.pk = 2
-
-    assert patch.call_count == 1
-    assert user == User(id=2)
-    assert user != User(id=1)
-    assert hash(user) == hash(User(id=2))
-    assert requests_mock.call_count == 1
-
-
-def test_a_pending_change_of_a_relation_key_compares_by_the_saved_key(
-    requests_mock: Any,
-) -> None:
-    """The saved key is the related object's key, not a related object.
-
-    Until ``save()``, the object still equals one built with the saved key, and
-    hashes as it does.
-    """
-    profile = UserProfile(json={"user": 2, "bio": "Hi"}, write_mode="lazy")
-    saved = UserProfile(user=User(id=2))
-
-    profile.user = User(id=3)
-
-    assert profile._pending_updates == {"user": 3}
-    assert profile == saved
-    assert saved == profile
-    assert profile != UserProfile(user=User(id=3))
-    assert hash(profile) == hash(saved)
-    assert requests_mock.call_count == 0
-
-
-def _profile_of_user_5(kind: str, requests_mock: Any) -> UserProfile:
-    """Return a profile keyed by user 5, however a profile comes to hold it.
-
-    The requests that the user's key change needs are mocked.
-
-    Args:
-        kind: ``"constructed"`` for a profile built with its user, ``"loaded"``
-            for one built from JSON, or ``"prefetched"`` for one that shares a
-            prefetched user.
-        requests_mock: Mock of the API's responses.
-
-    Returns:
-        The profile, with its user read, so that the profile holds it.
-    """
-    requests_mock.get(
-        "https://example.com/v1/users/5/", json={"id": 5, "name": "Ada"}
-    )
-    requests_mock.patch(
-        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
-    )
-    requests_mock.get(
-        "https://example.com/v1/profiles/", json=[{"user": 5, "bio": "a"}]
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
-    )
-    match kind:
-        case "constructed":
-            profile = UserProfile(user=User(id=5))
-        case "loaded":
-            profile = UserProfile(json={"user": 5, "bio": "a"})
-        case _:
-            (profile,) = UserProfile.filter(prefetch=["user"])
-    assert profile.user.pk == 5
-    return profile
-
-
-@pytest.mark.parametrize("kind", ["constructed", "loaded", "prefetched"])
-@pytest.mark.parametrize("mode", ["lazy", "eager"])
-def test_a_relation_key_stays_when_the_related_objects_key_changes(
-    requests_mock: Any,
-    kind: str,
-    mode: str,
-) -> None:
-    """A profile keeps the key that it copied from its user.
-
-    The user's key change, pending or saved, does not move the profile's
-    ``pk``, ``url``, equality, or hash, however the profile holds its user.
-
-    Args:
-        kind: How the profile comes to hold its user.
-        mode: Write mode of the user.
-    """
-    profile = _profile_of_user_5(kind, requests_mock)
-    old = UserProfile(user=User(id=5))
-    new = UserProfile(user=User(id=6))
-    hashed = hash(profile)
-    members = {profile}
-
-    profile.user.set_write_mode(cast(Any, mode))
-    profile.user.id = 6
-
-    for state in ("changed", "saved"):
-        assert profile.pk == 5
-        assert profile.url == "/profiles/5/"
-        assert profile == old
-        assert old == profile
-        assert profile != new
-        assert hash(profile) == hashed
-        assert profile in members
-        if state == "changed" and mode == "lazy":
-            profile.user.save()
-        elif mode == "eager":
-            break
-    assert profile.user.pk == 6
-
-
-def test_profiles_that_share_a_prefetched_user_keep_their_key(
-    requests_mock: Any,
-) -> None:
-    """A key change through one profile's user does not reach the other."""
-    requests_mock.get(
-        "https://example.com/v1/profiles/",
-        json=[{"user": 5, "bio": "a"}, {"user": 5, "bio": "b"}],
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
-    )
-    requests_mock.patch(
-        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
-    )
-    first, second = UserProfile.filter(prefetch=["user"])
-    assert first.user is second.user
-    hash(first)
-
-    first.user.set_write_mode("eager")
-    first.user.id = 6
-
-    assert second.user.pk == 6
-    assert first.pk == second.pk == 5
-    assert first == second
-    assert first == UserProfile(user=User(id=5))
-    assert second != UserProfile(user=User(id=6))
-    assert hash(first) == hash(second)
-
-
-def test_a_relation_key_moves_when_the_relation_is_assigned_again(
-    requests_mock: Any,
-) -> None:
-    """Assigning the relation again changes the key as any key change does.
-
-    A lazy change waits, so the profile compares by the saved key until
-    ``save()`` sends it, and an eager one moves the key when it is sent. This
-    was so before the model copied the related object's key, so the test pins
-    behavior that the copy keeps.
-    """
-    requests_mock.patch(
-        "https://example.com/v1/profiles/5/", json={"user": 7, "bio": "a"}
-    )
-    requests_mock.patch(
-        "https://example.com/v1/profiles/7/", json={"user": 8, "bio": "a"}
-    )
-    lazy = UserProfile(json={"user": 5, "bio": "a"}, write_mode="lazy")
-    eager = UserProfile(json={"user": 5, "bio": "a"}, write_mode="eager")
-
-    lazy.user = User(id=7)
-
-    assert lazy.pk == 7
-    assert lazy.url == "/profiles/5/"
-    assert lazy == UserProfile(user=User(id=5))
-    assert hash(lazy) == hash(UserProfile(user=User(id=5)))
-
-    lazy.save()
-
-    assert lazy.url == "/profiles/7/"
-    assert lazy == UserProfile(user=User(id=7))
-    assert hash(lazy) == hash(UserProfile(user=User(id=7)))
-
-    eager.user = User(id=7)
-
-    assert eager.pk == 7
-    assert eager == UserProfile(user=User(id=7))
-    assert eager != UserProfile(user=User(id=5))
-    assert hash(eager) == hash(UserProfile(user=User(id=7)))
-
-
-def test_a_profiles_key_change_does_not_follow_a_user_that_changed_before(
-    requests_mock: Any,
-) -> None:
-    """The profile's saved key is the one its user had when it was copied.
-
-    Two prefetched profiles share one user. Its key change waits, and then one
-    profile's own key change begins. Until that change is saved, the profile
-    keeps the key it copied, so it still equals its twin, keeps its hash and
-    its place in a set, and its URL names the saved profile.
-    """
-    requests_mock.get(
-        "https://example.com/v1/profiles/",
-        json=[{"user": 5, "bio": "a"}, {"user": 5, "bio": "b"}],
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
-    )
-    first, second = UserProfile.filter(prefetch=["user"])
-    assert first.user is second.user
-    first.user.set_write_mode("lazy")
-    first.set_write_mode("lazy")
-    first.user.id = 6
-    hashed = hash(first)
-    members = {first}
-
-    first.user = User(id=7)
-
-    assert first.pk == 7
-    assert first.url == "/profiles/5/"
-    assert hash(first) == hashed
-    assert first in members
-    assert first == second
-    assert second == first
-    assert first == UserProfile(user=User(id=5))
-
-
-def test_a_second_key_change_begins_from_the_key_that_the_first_one_set(
-    requests_mock: Any,
-) -> None:
-    """A user that the first change assigned does not move the second.
-
-    The profile keeps the user it was assigned, and that user's key changes
-    before the profile's second key change begins. The profile's saved key is
-    the first change's key, not the user's current one.
-    """
-    requests_mock.patch(
-        "https://example.com/v1/profiles/2/",
-        json={"user": 3, "bio": "Hi"},
-    )
-    profile = UserProfile(json={"user": 2, "bio": "Hi"}, write_mode="lazy")
-    third = User(json={"id": 3, "name": "Ada"}, write_mode="lazy")
-    profile.user = third
-    profile.save()
-    assert profile == UserProfile(user=User(id=3))
-    third.id = 9
-
-    profile.user = User(id=4)
-
-    assert profile.url == "/profiles/3/"
-    assert profile == UserProfile(user=User(id=3))
-    assert profile != UserProfile(user=User(id=2))
-    assert profile != UserProfile(user=User(id=9))
-    assert hash(profile) == hash(UserProfile(user=User(id=3)))
-
-
-@pytest.mark.parametrize("kind", ["constructed", "prefetched"])
-def test_refresh_keeps_the_key_while_the_related_objects_change_waits(
-    requests_mock: Any,
-    kind: str,
-) -> None:
-    """A profile keeps its hash and its place in a set when it refreshes.
-
-    Its user's key change waits, so nothing was sent, and the profile refreshes
-    to the key it copied.
-
-    Args:
-        kind: How the profile comes to hold its user.
-    """
-    profile = _profile_of_user_5(kind, requests_mock)
-    profile.user.set_write_mode("lazy")
-    hashed = hash(profile)
-    members = {profile}
-    profile.user.id = 6
-    requests_mock.reset_mock()
-
-    profile.refresh()
-
-    assert profile in members
-    assert hash(profile) == hashed
-    assert profile == UserProfile(user=User(id=5))
-    assert profile.url == "/profiles/5/"
-    assert requests_mock.call_count == 0
-
-
-def test_refresh_keeps_the_key_when_the_related_object_was_saved_meanwhile(
-    requests_mock: Any,
-) -> None:
-    """Refreshing drops the profile's own key change and keeps its saved key.
-
-    The change began when the shared user had the key 5. The user's change to 6
-    is then saved, and the profile still compares by the key that it had saved.
-    """
-    requests_mock.get(
-        "https://example.com/v1/profiles/", json=[{"user": 5, "bio": "a"}]
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
-    )
-    requests_mock.patch(
-        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
-    )
-    (profile,) = UserProfile.filter(prefetch=["user"])
-    profile.set_write_mode("lazy")
-    user = profile.user
-    user.set_write_mode("eager")
-    profile.user = User(id=3)
-    user.id = 6
-    assert profile.pk == 3
-    hashed = hash(profile)
-    members = {profile}
-
-    profile.refresh()
-
-    assert profile in members
-    assert hash(profile) == hashed
-    assert profile.pk == 5
-    assert profile.url == "/profiles/5/"
-
-
-@pytest.mark.parametrize("kind", ["constructed", "prefetched"])
-def test_update_from_json_accepts_the_key_that_the_profile_compares_by(
-    requests_mock: Any,
-    kind: str,
-) -> None:
-    """The payload's key is checked against the key that the profile has.
-
-    Its user's key change waits, so the key is the one that the profile copied,
-    and ``url`` agrees with equality.
-
-    Args:
-        kind: How the profile comes to hold its user.
-    """
-    profile = _profile_of_user_5(kind, requests_mock)
-    profile.user.set_write_mode("lazy")
-    profile.user.id = 6
-
-    with pytest.raises(ValueError, match="does not match"):
-        profile.update_from_json({"user": 6, "bio": "server"})
-    profile.update_from_json({"user": 5, "bio": "server"})
-
-    assert profile.url == "/profiles/5/"
-    assert profile == UserProfile(user=User(id=5))
-    assert profile.bio == "server"
-
-
-def test_update_from_json_and_url_use_the_saved_key_of_a_pending_change(
-    requests_mock: Any,
-) -> None:
-    """While the profile's own key change waits, all three use the saved key.
-
-    The shared user's change is saved meanwhile, and neither the payload's
-    check, the URL, nor equality moves to it.
-    """
-    requests_mock.get(
-        "https://example.com/v1/profiles/", json=[{"user": 5, "bio": "a"}]
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 5, "name": "Ada"}]
-    )
-    requests_mock.patch(
-        "https://example.com/v1/users/5/", json={"id": 6, "name": "Ada"}
-    )
-    (profile,) = UserProfile.filter(prefetch=["user"])
-    profile.set_write_mode("lazy")
-    user = profile.user
-    profile.user = User(id=3)
-    user.set_write_mode("eager")
-    user.id = 6
-
-    assert profile.url == "/profiles/5/"
-    assert profile == UserProfile(user=User(id=5))
-    with pytest.raises(ValueError, match="does not match"):
-        profile.update_from_json({"user": 6, "bio": "server"})
-    profile.update_from_json({"user": 5, "bio": "server"})
-
-    assert profile == UserProfile(user=User(id=5))
 
 
 def test_a_key_that_cannot_be_converted_equals_only_itself(
@@ -8877,25 +8440,6 @@ def test_a_key_that_hashes_by_identity_survives_an_embedded_change_in_a_write(
     assert profile in members
 
 
-def test_a_refresh_that_discards_a_key_change_drops_the_saved_key(
-    requests_mock: Any,
-) -> None:
-    """The object compares by the saved key once the pending key is gone."""
-    requests_mock.get(
-        "https://example.com/v1/grids/1/", json={"id": 1, "name": "a"}
-    )
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 1, "name": "a"})
-    original = grid.pk
-
-    grid.id = Cell(2)
-    grid.refresh()
-
-    assert grid.name == "a"
-    assert grid.pk.value == 1
-    assert original.value == 1
-
-
 def test_a_key_that_hashes_by_identity_moves_when_a_refresh_loads_another(
     requests_mock: Any,
 ) -> None:
@@ -9158,45 +8702,6 @@ def test_a_refresh_followed_by_a_load_keeps_the_hash(
     assert grid == Grid(id=Cell(1))
 
 
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_changed_in_place_before_a_load_is_sent_to_the_saved_url(
-    requests_mock: Any,
-    write_mode: WriteMode,
-) -> None:
-    """An object that has not loaded sends a change of its key as a change.
-
-    The object loads from the saved key first, and then sends the new key to
-    that URL.
-
-    Args:
-        requests_mock: Mocks the load and the write.
-        write_mode: Whether the change is sent at once or waits for ``save()``.
-    """
-    get = requests_mock.get(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/grids/5/", json={"id": 9, "name": "b"}
-    )
-    Grid.register_api(test_api)
-    grid = Grid(id=Cell(5), write_mode=write_mode)
-
-    grid.id.value = 9
-    assert grid.url == "/grids/5/"
-    assert get.call_count == 0
-
-    if write_mode == "lazy":
-        grid.save()
-    else:
-        grid.name = "b"
-
-    assert get.call_count == 1
-    assert patch.call_count == 1
-    assert patch.last_request.json()["id"] == 9
-    assert grid.url == "/grids/9/"
-    assert grid.pk.value == 9
-
-
 @pytest.mark.parametrize("loaded", [False, True])
 def test_a_change_in_place_to_the_pk_of_a_relation_key_is_not_kept_or_sent(
     requests_mock: Any,
@@ -9230,26 +8735,6 @@ def test_a_change_in_place_to_the_pk_of_a_relation_key_is_not_kept_or_sent(
     assert patch.call_count == 0
 
 
-def test_a_change_in_place_of_a_key_that_has_not_loaded_survives_the_load(
-    requests_mock: Any,
-) -> None:
-    """Reading another field loads the object once, and keeps the change."""
-    get = requests_mock.get(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
-    )
-    Grid.register_api(test_api)
-    grid = Grid(id=Cell(5))
-    grid.id.value = 9
-
-    assert grid.name == "a"
-
-    assert get.call_count == 1
-    assert grid.pk.value == 9
-    assert grid.url == "/grids/5/"
-    assert grid._pending_updates == {"id": 9}
-    assert grid == Grid(id=Cell(5))
-
-
 def test_reading_the_key_of_an_unloaded_object_sends_no_request(
     requests_mock: Any,
 ) -> None:
@@ -9267,28 +8752,6 @@ def test_reading_the_key_of_an_unloaded_object_sends_no_request(
     assert grid.name == "a"
 
     assert get.call_count == 1
-
-
-def test_a_key_changed_in_place_after_a_refresh_is_sent_to_the_saved_url(
-    requests_mock: Any,
-) -> None:
-    """A refreshed object reads its key as an object that has not loaded."""
-    requests_mock.get(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/grids/5/", json={"id": 9, "name": "a"}
-    )
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 5, "name": "a"})
-    grid.refresh()
-
-    grid.id.value = 9
-    grid.save()
-
-    assert patch.call_count == 1
-    assert patch.last_request.json()["id"] == 9
-    assert grid.url == "/grids/9/"
 
 
 class Route:
@@ -9341,15 +8804,14 @@ class StopHolder(RouteBase):
 
 
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_that_a_conversion_aliases_is_sent_to_the_saved_url(
+def test_a_key_that_a_conversion_aliases_is_refused_when_it_changes(
     requests_mock: Any,
     write_mode: WriteMode,
 ) -> None:
     """Changing the decoded key of an unloaded object leaves its saved key.
 
     The conversion keeps the list that it decodes, so the change in place must
-    reach a copy. The object loads from the saved key, and sends the new key to
-    that URL.
+    reach a copy. A write is refused, and nothing is sent.
 
     Args:
         requests_mock: Mocks the load and the write.
@@ -9370,19 +8832,19 @@ def test_a_key_that_a_conversion_aliases_is_sent_to_the_saved_url(
     assert hash(stop) == hash(twin)
     assert stop.pk.parts == ["a", "b"]
 
-    if write_mode == "lazy":
-        stop.name = "renamed"
-        stop.save()
-    else:
-        stop.name = "renamed"
+    def write() -> None:
+        if write_mode == "lazy":
+            stop.save()
+        else:
+            stop.name = "renamed"
 
-    assert [call.path for call in get.request_history] == [
-        "/v1/stops/%5b%27a%27%5d/"
-    ]
-    assert [call.path for call in patch.request_history] == [
-        "/v1/stops/%5b%27a%27%5d/"
-    ]
-    assert patch.last_request.json() == {"id": ["a", "b"], "name": "renamed"}
+    with pytest.raises(UsageError, match=r"key .* cannot change"):
+        write()
+
+    assert get.call_count == 0
+    assert patch.call_count == 0
+    assert stop.url == "/stops/%5B%27a%27%5D/"
+    assert hash(stop) == hash(twin)
 
 
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
@@ -9602,26 +9064,6 @@ def test_an_object_equals_one_with_its_key_once_the_key_is_assigned() -> None:
     assert hash(user) == hash(User(id=4))
 
 
-def test_the_saved_key_follows_a_save_of_a_key_change(
-    requests_mock: Any,
-) -> None:
-    """The key that a save sends counts, or the one its response names."""
-    requests_mock.patch(
-        "https://example.com/v1/users/1/", json={"id": 3, "name": "Ada"}
-    )
-    user = User(json={"id": 1, "name": "Ada"}, write_mode="lazy")
-    assert user == User(id=1)
-    user.pk = 2
-    assert user == User(id=1)
-
-    user.save()
-
-    assert user == User(id=3)
-    assert user != User(id=1)
-    assert user != User(id=2)
-    assert hash(user) == hash(User(id=3))
-
-
 @json_object
 class TimeKeyed(ModelBase):
     """Model whose key is a ``datetime``, which JSON can spell two ways."""
@@ -9632,53 +9074,65 @@ class TimeKeyed(ModelBase):
     name: str
 
 
-def _changed_in_place_key(write_mode: WriteMode) -> Any:
-    """Build an object whose key is a mutable value, and change it in place.
-
-    Args:
-        write_mode: Write mode of the object.
-
-    Returns:
-        The object, whose key has changed, and whose other field is unsent.
-    """
-    grid = Grid(json={"id": 5, "name": "a"}, write_mode=write_mode)
-    grid.id.value = 9
-    return grid
-
-
+@pytest.mark.parametrize("state", ["unloaded", "loaded", "refreshed"])
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_changed_in_place_is_sent_to_the_url_of_the_saved_key(
-    requests_mock: Any, write_mode: WriteMode
+def test_a_key_changed_in_place_is_refused_before_anything_is_sent(
+    requests_mock: Any, write_mode: WriteMode, state: str
 ) -> None:
-    """The write goes to the saved key, and its response moves the URL.
+    """``save()`` and an eager assignment raise, and the updates stay.
+
+    The key, the hash, and the URL stay as they were, and putting the key back
+    lets the object save again.
 
     Args:
-        requests_mock: Mocks the write.
-        write_mode: Whether the change is sent at once or waits for ``save()``.
+        write_mode: Write mode of the grid.
+        state: Loading state of the grid.
     """
-    saved_url = "/grids/5/"
+    requests_mock.get(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/grids/5/", json={"id": 5, "name": "b"}
+    )
     Grid.register_api(test_api)
-    keyed = _changed_in_place_key(write_mode)
-    urls_at_the_write = []
-
-    def respond(request: Any, context: Any) -> dict[str, Any]:
-        urls_at_the_write.append(keyed.url)
-        return {"id": 9, "name": "b"}
-
-    patch = requests_mock.patch(requests_mock_ANY, json=respond)
-    assert keyed.url == saved_url
-
-    if write_mode == "lazy":
-        keyed.save()
+    if state == "unloaded":
+        grid = Grid(id=Cell(5), write_mode=write_mode)
     else:
-        keyed.name = "b"
+        grid = Grid(json={"id": 5, "name": "a"}, write_mode=write_mode)
+        if state == "refreshed":
+            grid.refresh()
+    hashed = hash(grid)
+    if write_mode == "lazy" and state == "loaded":
+        grid.name = "b"
+    pending = copy.deepcopy(grid._pending_updates)
+    requests_mock.reset_mock()
 
-    assert [call.path for call in patch.request_history] == [
-        "/v1" + saved_url.lower()
-    ]
-    assert patch.last_request.json()["id"] == 9
-    assert urls_at_the_write == [saved_url]
-    assert keyed.url != saved_url
+    grid.id.value = 9
+
+    def write() -> None:
+        if write_mode == "lazy":
+            grid.save()
+        else:
+            grid.name = "b"
+
+    with pytest.raises(UsageError, match=r"key .* cannot change"):
+        write()
+
+    assert requests_mock.call_count == 0
+    assert grid.url == "/grids/5/"
+    assert hash(grid) == hashed
+    assert grid == Grid(id=Cell(5))
+    assert grid._pending_updates == pending
+
+    grid.id.value = 5
+    if write_mode == "lazy":
+        grid.name = "b"
+        grid.save()
+    else:
+        grid.name = "b"
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"name": "b"}
 
 
 def test_the_url_of_an_object_that_has_not_loaded_ignores_a_key_change() -> (

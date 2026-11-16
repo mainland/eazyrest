@@ -416,7 +416,8 @@ SYNCED_JSON: dict[str, Any] = {
 }
 
 # An operation on a Synced object: an assignment of a field, an in-place change
-# of a value read from a field, or a change of the primary key.
+# of a value read from a field, or an attempt to assign the primary key, which
+# only the key that the object has is accepted.
 _SYNC_OPERATIONS = st.one_of(
     st.tuples(st.just("title"), st.text(max_size=3)),
     st.tuples(st.just("tags"), st.lists(st.text(max_size=2), max_size=3)),
@@ -503,9 +504,12 @@ def _run_synced(
                 obj.meta[value[0]] = value[1]
             elif kind == "owner":
                 obj.owner = Owner(id=value)
+            elif kind == "id" and value != 1:
+                with pytest.raises(AttributeError, match="cannot change"):
+                    obj.id = value
             else:
                 setattr(obj, kind, value)
-            if mode == "eager" and kind not in ("append", "put"):
+            if mode == "eager" and kind not in ("append", "put", "id"):
                 # An eager assignment is sent at once.
                 assert obj._pending_updates == {}
                 (server,) = store.values()
@@ -534,12 +538,14 @@ def test_eager_and_lazy_writes_converge(
     object sends each assignment at once, and a change made in place to a
     value read from a field at its next ``PATCH`` or at ``save()``. Either way,
     the server and the object end with the same state, whether a ``PATCH``
-    answers with the object or with no body.
+    answers with the object or with no body. An assignment of another key is
+    refused in both modes, and leaves the key as it was.
 
     Args:
         start: Whether the object starts loaded or from its primary key.
         body: Body of the server's ``PATCH`` responses.
-        operations: Assignments, in-place changes, and key changes to make.
+        operations: Assignments, in-place changes, and attempts to change the
+            key to make.
     """
     lazy, lazy_store, lazy_state = _run_synced("lazy", start, body, operations)
     eager, eager_store, eager_state = _run_synced(
@@ -553,7 +559,7 @@ def test_eager_and_lazy_writes_converge(
             expected["tags"].append(value)
         elif kind == "put":
             expected["meta"][value[0]] = value[1]
-        else:
+        elif kind != "id":
             expected[kind] = copy.deepcopy(value)
     assert lazy_store == {expected["id"]: expected}
     assert lazy_store == eager_store
