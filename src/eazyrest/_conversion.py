@@ -34,7 +34,7 @@ from collections.abc import (
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, NamedTuple, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 
 import isodate
 
@@ -821,10 +821,46 @@ def _supertype(ty: Any) -> Any:
     Returns:
         The type that ``ty`` was made from, or ``None`` if ``ty`` is not a
         ``NewType``.
+
+    Raises:
+        TypeError: If the supertype names a type by a string. Python never
+            resolves a string in a ``NewType``'s supertype, so it would stay a
+            string in the type that eazyrest converts, and Pydantic would
+            resolve it in the wrong module.
     """
     if isinstance(ty, type):
         return None
-    return getattr(ty, "__supertype__", None)
+    supertype = getattr(ty, "__supertype__", None)
+    if supertype is not None and _names_by_string(supertype):
+        raise TypeError(
+            f"The NewType {getattr(ty, '__name__', ty)!r} has a string in its "
+            f"supertype {supertype!r}. Write the type itself."
+        )
+    return supertype
+
+
+def _names_by_string(ty: Any) -> bool:
+    """Return whether a type names a type by a string, at any depth.
+
+    The values of a ``Literal`` and the metadata of an ``Annotated`` are
+    strings that name nothing, so they do not count.
+
+    Args:
+        ty: Type to examine.
+
+    Returns:
+        Whether ``ty``, or a type argument within it, is a string or a
+        ``ForwardRef``.
+    """
+    if isinstance(ty, (str, typing.ForwardRef)):
+        return True
+    origin = typing.get_origin(ty)
+    if origin is Literal:
+        return False
+    args = typing.get_args(ty)
+    if origin is Annotated:
+        args = args[:1]
+    return any(_names_by_string(arg) for arg in args)
 
 
 class _Found(NamedTuple):

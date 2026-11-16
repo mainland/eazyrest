@@ -2679,6 +2679,47 @@ def test_new_types_convert_as_their_supertype_inside_pydantic() -> None:
     assert opening.json["annotated"] == "2023-11-14T22:13:20+00:00"
 
 
+PydanticStamps = NewType("PydanticStamps", list["datetime.datetime"])
+
+
+@json_object
+class QuotedStamped(PydanticBase):
+    """Model whose fields hold a ``NewType`` with a quoted supertype."""
+
+    class_url = "/quoted-stamped/"
+
+    id: int
+    plain: PydanticStamps
+    annotated: Annotated[PydanticStamps, Field()]
+
+
+@pytest.mark.parametrize("field", ["plain", "annotated"])
+def test_pydantic_refuses_a_string_in_a_new_types_supertype(
+    field: str,
+) -> None:
+    """Pydantic does not resolve the string in the wrong module instead.
+
+    The field raises ``TypeError``, naming the field and the ``NewType``, where
+    Pydantic alone would convert the list by its own rules.
+    """
+    stamped = QuotedStamped(json={"id": 1, field: ["2026-01-02T03:04:05Z"]})
+
+    with pytest.raises(
+        FieldConversionError, match=rf"^QuotedStamped\.{field}: "
+    ) as refused:
+        _ = getattr(stamped, field)
+
+    assert isinstance(refused.value, TypeError)
+    assert "Write the type itself" in str(refused.value)
+    assert "PydanticStamps" in str(refused.value)
+
+
+def test_pydantic_encoding_refuses_a_string_in_a_new_types_supertype() -> None:
+    """Writing a value refuses a quoted ``NewType`` as reading does."""
+    with pytest.raises(TypeError, match="Write the type itself"):
+        encode_json([], Annotated[PydanticStamps, Field()])
+
+
 def test_pydantic_floats_that_are_not_finite_raise_when_written(
     requests_mock: Any,
 ) -> None:

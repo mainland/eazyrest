@@ -19,7 +19,15 @@ from collections.abc import (
     Sequence,
 )
 from collections.abc import Set as AbstractSet
-from typing import Any, ClassVar, Literal, NamedTuple, NewType, Protocol
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    NamedTuple,
+    NewType,
+    Protocol,
+)
 
 import jsonschema
 import pytest
@@ -1180,6 +1188,63 @@ def test_a_new_type_of_a_collection_converts_by_its_own_entry() -> None:
         assert properties["more"]["items"] == {
             "anyOf": [{"type": "string"}, {"type": "null"}]
         }
+
+
+QuotedStamps = NewType("QuotedStamps", list["datetime.datetime"])
+ChainedStamps = NewType("ChainedStamps", QuotedStamps)
+Described = NewType("Described", Annotated[int, "a note, not a name"])
+Chosen = NewType("Chosen", Literal["a", "b"])  # type: ignore[valid-newtype]
+
+
+@json_object
+class QuotedModel(JSONObject):
+    """Model whose fields hold a ``NewType`` with a string in its supertype."""
+
+    class_url = "/quoted/"
+
+    id: int
+    stamps: QuotedStamps
+    chained: ChainedStamps
+    several: list[QuotedStamps]
+
+
+@pytest.mark.parametrize("field", ["stamps", "chained", "several"])
+def test_a_new_type_with_a_string_in_its_supertype_is_refused(
+    field: str,
+) -> None:
+    """A string in a ``NewType``'s supertype raises ``TypeError``.
+
+    Python never resolves such a string, so it would stay a string in the type
+    that is converted. The message names the field and tells the user to write
+    the type itself.
+    """
+    quoted = QuotedModel(json={"id": 1, field: ["2026-01-02T03:04:05Z"]})
+
+    with pytest.raises(
+        FieldConversionError, match=f"^QuotedModel.{field}: "
+    ) as refused:
+        _ = getattr(quoted, field)
+
+    assert isinstance(refused.value, TypeError)
+    assert "Write the type itself" in str(refused.value)
+    assert "QuotedStamps" in str(refused.value)
+
+
+def test_a_new_type_may_hold_strings_that_name_nothing() -> None:
+    """``Literal`` values and ``Annotated`` metadata are not type names."""
+
+    @json_object
+    class Notes(JSONObject):
+        class_url = "/described/"
+
+        id: int
+        note: Described
+        choice: Chosen
+
+    described = Notes(json={"id": 1, "note": 2, "choice": "a"})
+
+    assert described.note == 2
+    assert described.choice == "a"
 
 
 def test_a_new_type_of_a_collection_without_an_entry_is_its_supertype() -> (

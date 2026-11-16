@@ -294,6 +294,12 @@ describe them further.
   there that is not an expression, such as `"a note"`, made the alias raise
   `SyntaxError` when a field of it was read. On Python 3.14 and later the alias
   handed its metadata on as a forward reference, not as the string.
+- A `NewType` whose supertype holds a string, as in
+  `NewType("Stamps", list["datetime.datetime"])`, raises `TypeError` when a
+  field of it is read or written, naming the `NewType` and saying to write the
+  type itself. Python never resolves such a string, so it stayed a string in
+  eazyrest's conversion, and Pydantic resolved it in `eazyrest.pydantic`'s
+  namespace, not the user's.
 - eazyrest requires Python 3.11 or later. Python 3.10 is no longer supported.
   The package no longer depends on `typing_extensions`, which only the
   `pydantic` extra needs.
