@@ -894,39 +894,6 @@ def _has_forward_refs(ty: Any) -> bool:
     return any(_has_forward_refs(arg) for arg in typing.get_args(ty))
 
 
-def _as_forward_refs(ty: Any) -> Any:
-    """Return a type with each string in it made a ``ForwardRef``.
-
-    Before Python 3.11, ``typing.get_type_hints()`` resolves a string inside a
-    built-in generic, as in ``list["datetime.datetime"]``, only if it is a
-    ``ForwardRef``.
-
-    Args:
-        ty: Type to convert.
-
-    Returns:
-        ``ty`` with each string, also as a type argument, replaced by a
-        ``ForwardRef`` to it.
-    """
-    if isinstance(ty, str):
-        return typing.ForwardRef(ty)
-    origin = typing.get_origin(ty)
-    args = typing.get_args(ty)
-    if not args or origin is Literal:
-        return ty
-
-    new_args = tuple(_as_forward_refs(arg) for arg in args)
-    if all(new is old for new, old in zip(new_args, args, strict=True)):
-        return ty
-    if origin is Annotated:
-        params = new_args
-        return Annotated[params]
-    if origin is types.UnionType:
-        origin = Union
-
-    return origin[new_args]
-
-
 def _resolve_alias_value(alias: Any) -> Any:
     """Return the value of a named alias with its string references resolved.
 
@@ -956,7 +923,7 @@ def _resolve_alias_value(alias: Any) -> Any:
         (),
         {
             "__module__": alias.__module__,
-            "__annotations__": {"value": _as_forward_refs(value)},
+            "__annotations__": {"value": value},
         },
     )
     try:

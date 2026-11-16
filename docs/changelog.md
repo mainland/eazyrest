@@ -289,6 +289,11 @@ describe them further.
   subclass of it, naming the hook, the model, the field, and the class
   returned. A parent whose key matched such an object used to read it, an
   object of another model and resource.
+- A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
+  reads the string in its metadata as written. On Python 3.11 to 3.13, a string
+  there that is not an expression, such as `"a note"`, made the alias raise
+  `SyntaxError` when a field of it was read. On Python 3.14 and later the alias
+  handed its metadata on as a forward reference, not as the string.
 - eazyrest requires Python 3.11 or later. Python 3.10 is no longer supported.
   The package no longer depends on `typing_extensions`, which only the
   `pydantic` extra needs.

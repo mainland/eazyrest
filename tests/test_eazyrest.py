@@ -422,6 +422,10 @@ Dates = TypeAliasType("Dates", list[datetime.datetime])
 ListOf = TypeAliasType("ListOf", list[T], type_params=(T,))
 MaybeDates = TypeAliasType("MaybeDates", Dates | None)
 QuotedDates = TypeAliasType("QuotedDates", list["datetime.datetime"])
+NotedQuotedDates = TypeAliasType(
+    "NotedQuotedDates",
+    Annotated[list["datetime.datetime"], "a note, not a name"],
+)
 # Build list["..."] at run time, since mypy rejects what these aliases test: a
 # quoted self-reference and an unknown name.
 QuotedRecursive = TypeAliasType(
@@ -4121,6 +4125,21 @@ def test_unresolvable_quoted_alias_raises(alias: Any, match: str) -> None:
 
     with pytest.raises(FieldConversionError, match=match):
         _ = model(json={"id": 1, "value": ["bad"]}).value
+
+
+def test_string_metadata_of_a_quoted_alias_is_not_a_reference() -> None:
+    """A string in ``Annotated`` metadata is kept, not resolved as a name."""
+
+    @json_object
+    class Noted(ModelBase):
+        class_url = "/noted/"
+
+        id: int
+        dates: NotedQuotedDates
+
+    noted = Noted(json={"id": 1, "dates": ["2024-01-01T00:00:00Z"]})
+
+    assert noted.dates == [datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)]
 
 
 def test_collection_field_values_must_be_collections(
