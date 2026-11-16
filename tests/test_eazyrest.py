@@ -5547,6 +5547,44 @@ def test_query_with_unfollowed_redirect_raises(requests_mock: Any) -> None:
         Todo.filter(request_options={"allow_redirects": False})
 
 
+@pytest.mark.parametrize("options", [None, {"timeout": 5}])
+def test_hook_that_does_not_follow_a_redirect_gets_it_back(
+    requests_mock: Any, options: dict[str, Any] | None
+) -> None:
+    """A hook's client returns a 3xx, in a query with options and without.
+
+    Args:
+        options: The query's ``request_options``, or ``None`` for none.
+    """
+    statuses: list[int] = []
+
+    @json_object
+    class Probe(ModelBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: Client, **kwargs: Any
+        ) -> Any:
+            statuses.append(
+                api.get("/moved/", allow_redirects=False).status_code
+            )
+            return super().collection_items(payload, api=api, **kwargs)
+
+    requests_mock.get("https://example.com/v1/probes/", json=[{"id": 1}])
+    requests_mock.get(
+        "https://example.com/v1/moved/",
+        status_code=301,
+        headers={"Location": "/v1/elsewhere/"},
+    )
+
+    list(Probe.filter(request_options=options))
+
+    assert statuses == [301]
+
+
 def test_get_or_create_sends_request_options_to_both_requests(
     requests_mock: Any,
 ) -> None:

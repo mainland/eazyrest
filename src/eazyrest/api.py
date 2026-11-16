@@ -998,9 +998,6 @@ class API:
     _request_options: Mapping[str, Any] = MappingProxyType({})
     """Request options that every request of this client sends."""
 
-    _request_scoped: bool = False
-    """Whether this client is a request-scoped copy made by ``_scoped()``."""
-
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Check that an override of ``raise_for_response()`` takes kwargs.
 
@@ -1253,8 +1250,7 @@ class API:
 
         The copy shares this client's session, so its cookies, adapters, and
         configuration are the same. A request that the copy sends with its own
-        options merges them over ``options``. The copy expects a final
-        response to every request, so a redirect that is not followed raises.
+        options merges them over ``options``.
 
         Args:
             options: Request options, as for ``requests.Session.request()``.
@@ -1266,7 +1262,6 @@ class API:
         scoped._request_options = _merge_request_options(
             self._request_options, options
         )
-        scoped._request_scoped = True
         return scoped
 
     def _send(
@@ -1368,12 +1363,7 @@ class API:
             budget.check_time(resp)
             if not streamed or _is_failure(resp.status_code):
                 budget.read_body(resp)
-            resp = self._check_response(resp)
-            if self._request_scoped:
-                return _check_final_response(
-                    resp, "the request has no response to read"
-                )
-            return resp
+            return self._check_response(resp)
         finally:
             _request_budget.reset(token)
 

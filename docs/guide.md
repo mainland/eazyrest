@@ -1339,12 +1339,12 @@ API.
 
 When the query has `request_options=`, `api` is a copy of the API that adds
 them to every request and shares the API's session. Use it to send requests,
-not to configure, close, or compare the API. Like a model write, the copy
-raises `RedirectError` for a redirect that it did not follow, so a hook that
-sends `allow_redirects=False` and reads the 3xx response itself works only in a
-query without options. The copy is made with `copy.copy()`, so a subclass of
-`API` that changes its own state while it sends requests, such as a refreshed
-token, must keep that state on the session, which the copy shares.
+not to configure, close, or compare the API. The copy adds its options and
+nothing else, so a hook that sends `allow_redirects=False` reads the 3xx
+response itself, as it does in a query without options. The copy is made with
+`copy.copy()`, so a subclass of `API` that changes its own state while it sends
+requests, such as a refreshed token, must keep that state on the session, which
+the copy shares.
 
 Every hook may receive more keyword arguments in later 1.x releases, to tell it
 more about the query or the write: those that take `api`, which are

@@ -1167,8 +1167,6 @@ def test_scoped_client_shares_its_session() -> None:
     scoped = api._scoped({"headers": {"X-Tenant": "a"}})
 
     assert scoped.session is api.session
-    assert scoped._request_scoped
-    assert not api._request_scoped
     assert dict(api._request_options) == {}
     assert api._scoped({})._scoped({"timeout": 1})._request_options == {
         "timeout": 1
@@ -1202,10 +1200,13 @@ def test_scoped_client_runs_option_hooks_before_its_guard(
 
 
 @pytest.mark.parametrize("status", [300, 302, 304, 307])
-def test_scoped_client_refuses_a_final_redirect(
+def test_scoped_client_returns_a_redirect_that_it_does_not_follow(
     requests_mock: Any, status: int
 ) -> None:
-    """A scoped request expects a response to read, not an unfollowed redirect.
+    """A scoped client adds its options and nothing else.
+
+    A request that does not follow redirects gets the 3xx back, as it does from
+    the client that the scope was made from.
 
     Args:
         status: Final redirect status.
@@ -1217,9 +1218,9 @@ def test_scoped_client_refuses_a_final_redirect(
         headers={"Location": "/elsewhere/"},
     )
 
-    with pytest.raises(RedirectError, match=f"status {status}"):
-        api._scoped({"allow_redirects": False}).get("/items/")
+    scoped = api._scoped({"allow_redirects": False}).get("/items/")
 
+    assert scoped.status_code == status
     assert api.get("/items/", allow_redirects=False).status_code == status
 
 
@@ -1237,8 +1238,8 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
     """A raw request that follows nothing returns any redirect as it is.
 
     The redirect guard refuses a redirect to another origin, but with
-    ``allow_redirects=False`` it follows none. The same redirect still raises
-    for a request-scoped client, which expects a final response.
+    ``allow_redirects=False`` it follows none. A request-scoped client returns
+    the same redirect.
 
     Args:
         method: Request method.
@@ -1257,8 +1258,11 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
 
     assert resp.status_code == status
     assert resp.headers["Location"] == location
-    with pytest.raises(RedirectError, match=f"returned status {status}"):
-        getattr(api._scoped({"allow_redirects": False}), method)("/items/")
+    scoped = getattr(api._scoped({"allow_redirects": False}), method)(
+        "/items/"
+    )
+    assert scoped.status_code == status
+    assert scoped.headers["Location"] == location
 
 
 def test_redirect_error_of_a_write_leaves_out_the_location() -> None:

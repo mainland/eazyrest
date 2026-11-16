@@ -160,6 +160,12 @@ describe them further.
   Its body also counts against the limit that the final body shares, so a
   challenge and a final body that are each within `max_response_bytes` raise
   `LimitExceeded` when they total more.
+- The copy of the client that a query with `request_options=` passes to its
+  hooks adds its options and nothing else. `v1.0.0a5` raised `RedirectError`
+  from it for a 3xx that the request did not follow, so a hook that sent
+  `allow_redirects=False` and read the response itself failed there, and not in
+  a query without options. It gets the 3xx back now, as from the API. A query
+  and a next-page request still raise `RedirectError` for an unfollowed 3xx.
 - A write follows no redirect. A request with any method but `GET` or `HEAD`,
   from a model or from `API.post()`, `put()`, `patch()`, or `delete()`, is sent
   with `allow_redirects=False`, even if you pass `allow_redirects=True`, and a

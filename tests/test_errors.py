@@ -34,7 +34,7 @@ from eazyrest import (
     json_object,
 )
 from eazyrest._errors import _redact_url, _response_name
-from eazyrest.api import _prepare_redirect
+from eazyrest.api import _check_final_response, _prepare_redirect
 
 
 @pytest.mark.parametrize(
@@ -597,7 +597,11 @@ def test_error_messages_leave_out_the_user_and_password_of_a_url(
     collect(lambda: api.json(api.get(f"/html{query}")))
     collect(lambda: api.post(f"/redirect{query}", json={}))
     collect(lambda: api.get(f"/elsewhere{query}"))
-    collect(lambda: api._scoped({"allow_redirects": False}).get("/redirect"))
+    collect(
+        lambda: _check_final_response(
+            api.get("/redirect", allow_redirects=False), "the query is empty"
+        )
+    )
     api.max_response_bytes = 1
     collect(lambda: api.get(f"/html{query}"))
     api.max_response_bytes = None
@@ -1292,15 +1296,16 @@ def test_unfollowed_final_redirect_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
     """A final 3xx that a redirect reached is named by the URL asked for."""
-    api = _download_api(requests_mock)._scoped({})
+    api = _download_api(requests_mock)
     requests_mock.get("https://files.test/o", status_code=300)
+    resp = api.get("dl/")
 
     with pytest.raises(RedirectError) as raised:
-        api.get("dl/")
+        _check_final_response(resp, "the query has no collection to read")
 
     assert str(raised.value) == (
-        "GET https://api.test/dl/ returned status 300, so the request has "
-        "no response to read"
+        "GET https://api.test/dl/ returned status 300, so the query has no "
+        "collection to read"
     )
     _assert_unsigned(raised.value)
 
