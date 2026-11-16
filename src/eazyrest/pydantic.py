@@ -21,6 +21,7 @@ import enum
 import types
 import typing
 import uuid
+import weakref
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
@@ -115,8 +116,13 @@ def _validator(is_value: Callable[[Any], bool], ty: Any) -> PlainValidator:
     return PlainValidator(validate)
 
 
-_TABLE_SERIALIZERS: set[Callable[[Any], Any]] = set()
-"""The serializers of the types in this module, which encode by the table."""
+_TABLE_SERIALIZERS: weakref.WeakSet[Callable[[Any], Any]] = weakref.WeakSet()
+"""The serializers of the types in this module, which encode by the table.
+
+The set holds them weakly, since it only tells them from other serializers.
+The schema that uses one keeps it alive, and a serializer made for an
+annotation that is analyzed on each call is freed with its schema.
+"""
 
 
 # The exceptions that the encode functions of table conversions raise during

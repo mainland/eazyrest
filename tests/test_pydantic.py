@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 import decimal
 import enum
+import gc
 import importlib
 import subprocess
 import sys
@@ -195,6 +196,37 @@ def test_enum_converted_by_pydantic_lists_its_values() -> None:
     adapter = PydanticType(list[Level]).adapter
 
     assert adapter.json_schema()["items"] == {"enum": [1, 2]}
+
+
+def test_repeated_encoding_does_not_grow_the_table_serializers() -> None:
+    """Each encoding of an annotation that Pydantic converts is freed."""
+    annotation = Annotated[Level, Field()]
+
+    def count() -> int:
+        gc.collect()
+        return len(eazyrest.pydantic._TABLE_SERIALIZERS)
+
+    # A bounded cache of generated annotations keeps some of them alive, and
+    # each holds a serializer. Fill that cache first, so that only a leak
+    # shows.
+    for _ in range(200):
+        encode_json(Level.LOW, annotation)
+    warm = count()
+    for _ in range(300):
+        encode_json(Level.LOW, annotation)
+
+    assert count() <= warm
+
+
+def test_live_adapter_keeps_its_conversion_schema_after_collection() -> None:
+    """A serializer in use is still told from Pydantic's after a collection."""
+    adapter = TypeAdapter(DecimalType)
+    expected = {"type": "string", "format": "decimal"}
+    assert adapter.json_schema(mode="serialization") == expected
+
+    gc.collect()
+
+    assert adapter.json_schema(mode="serialization") == expected
 
 
 @with_config(ConfigDict(extra="allow"))
