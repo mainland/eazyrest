@@ -42,6 +42,11 @@ describe them further.
   that overrides `collection_items()` or `collection_items_from_response()` is
   read through it as before. A page that a hook builds with `Page(...)` and no
   source ends `filter()` after its items.
+- The redirect checks apply to requests that go through the API's request
+  methods, and a request that a subclass sends another way skips them. A
+  subclass whose `get()` sends through the session directly no longer has the
+  redirects of its next-page requests checked. Call `super().get()` to keep the
+  checks.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

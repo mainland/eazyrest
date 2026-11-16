@@ -1852,10 +1852,10 @@ def test_response_that_no_api_request_returned_is_named_by_its_own_url(
     assert _response_name(resp) == f"GET {named}"
 
 
-def test_page_link_refused_by_a_client_that_skips_the_request_method_is_named(
+def test_page_redirect_is_not_checked_by_a_client_that_skips_the_api_methods(
     requests_mock: Any,
 ) -> None:
-    """A client whose get() skips the API's request method names the link."""
+    """A get() that sends through the session skips every redirect check."""
 
     class Direct(API):
         def get(self, uri: str, *args: Any, **kwargs: Any) -> Any:
@@ -1865,20 +1865,20 @@ def test_page_link_refused_by_a_client_that_skips_the_request_method_is_named(
     requests_mock.get(
         "https://api.test/p",
         status_code=302,
-        headers={"Location": "https://evil.test/z"},
+        headers={"Location": "https://other.test/z"},
+    )
+    other = requests_mock.get(
+        "https://other.test/z", json={"results": [{"id": 1}]}
     )
 
-    with pytest.raises(PaginationError) as raised:
-        list(
-            follow_next_links(
-                api, {"next": "https://api.test/p?cursor=KEPT", "results": []}
-            )
+    items = list(
+        follow_next_links(
+            api, {"next": "https://api.test/p?cursor=KEPT", "results": []}
         )
-
-    assert str(raised.value).startswith(
-        "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
-        "a different origin"
     )
+
+    assert items == [{"id": 1}]
+    assert other.called
 
 
 def test_http_error_of_a_url_that_redirected_to_itself_names_the_url_asked_for(

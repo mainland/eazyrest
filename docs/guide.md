@@ -1528,6 +1528,11 @@ it must lead to the origin of the page request or to one of the API's
 followed, and raises `RedirectError` for a redirect from a next-page request,
 whichever origin it names.
 
+The redirect checks, those of next-page requests included, apply to requests
+that go through the API's request methods. An override of `get()` or another
+request method keeps them only if it calls the API's method, as `super().get()`
+does. One that sends through the session directly skips them.
+
 A class that overrides `collection_items_from_response()` for a `Link` header
 API can return `follow_link_headers()` from it. It resolves links and checks
 origins as `follow_next_links()` does.

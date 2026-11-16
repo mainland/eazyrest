@@ -30,6 +30,8 @@ from ._errors import (
     RedirectError,
     _api_error,
     _is_failure,
+    _page_limit,
+    _PageLimit,
     _redact_url,
     _request_budget,
     _response_json,
@@ -1296,6 +1298,10 @@ class API:
     ) -> requests.Response:
         """Send a request with this client's defaults and check the response.
 
+        A page request's limit on the origins of its redirects, which
+        ``_request_page()`` sets, applies to every request for its URL during
+        the call, and ``_guard_redirects()`` checks it.
+
         Args:
             method: The request's method, as ``"GET"``, which an error names.
             send: Session method that sends the request with that method.
@@ -1350,11 +1356,19 @@ class API:
         if no_follow:
             # Such a request follows no redirect, whatever the caller passed.
             kwargs["allow_redirects"] = False
+        limit = _page_limit.get()
+        if limit is not None and limit.url != url:
+            # A page request's limit belongs to requests for the page's URL
+            # alone, a retry included. Another request that the same call
+            # sends, such as a token refresh that a subclass's get() makes
+            # first, is checked as any other.
+            limit = None
         kwargs["hooks"] = self._guard_redirects(
             url,
             kwargs.get("hooks"),
             budget,
             follow=bool(kwargs.get("allow_redirects", True)),
+            limit=limit,
         )
         token = _request_budget.set(budget)
         rejected: requests.Response | None = None
@@ -1398,8 +1412,13 @@ class API:
         hooks: dict[str, Any] | None,
         budget: _Budget | None = None,
         follow: bool = True,
+        limit: _PageLimit | None = None,
     ) -> dict[str, Any]:
         """Return request hooks that refuse unsafe redirects.
+
+        The hook checks every redirect once, against the request's origin and
+        ``redirect_origins``, or against ``limit``'s origins if a page request
+        passes one.
 
         Args:
             url: Absolute URL of the request.
@@ -1412,13 +1431,19 @@ class API:
                 records a final redirect on ``budget``, so that ``_send()`` can
                 tell a ``ValueError`` that requests raises while it prepares
                 ``Response.next`` for the redirect from any other.
+            limit: The limit of a page request, which replaces the allowed
+                origins and supplies the error for a redirect outside them.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
             hooks, with a final response hook that checks each redirect before
             requests follows it.
         """
-        allowed = {_origin(url), *map(_origin, self.redirect_origins)}
+        allowed = (
+            set(limit.origins)
+            if limit is not None
+            else {_origin(url), *map(_origin, self.redirect_origins)}
+        )
 
         def name(resp: requests.Response) -> str:
             """Return the request that a message names.
@@ -1445,6 +1470,8 @@ class API:
                     an origin that is not allowed. The message names the
                     request by the URL that was asked for, and quotes no part
                     of the ``Location``. The response is closed first.
+                Exception: The error that ``limit`` supplies, instead of
+                    ``RedirectError``, for a redirect outside its origins.
             """
             if not follow:
                 if resp.is_redirect and budget is not None:
@@ -1473,6 +1500,8 @@ class API:
                     return
 
                 resp.close()
+                if limit is not None:
+                    raise limit.refusal()
                 raise RedirectError(
                     f"{name(resp)} was redirected with status "
                     f"{resp.status_code} to another origin, so it was not "

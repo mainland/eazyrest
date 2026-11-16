@@ -15,6 +15,8 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _asked_url,
+    _page_limit,
+    _PageLimit,
     _redact_url,
 )
 from ._protocols import Client, Response
@@ -24,11 +26,8 @@ from .api import (
     _as_api,
     _as_client,
     _check_final_response,
-    _leaves_allowed_origins,
     _origin,
-    _prepare_redirect,
     _prepare_server_url,
-    _response_hooks,
 )
 
 __all__ = [
@@ -235,6 +234,10 @@ def _request_page(
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
+    The API's guard checks the redirects, as for any request. Unless
+    ``allow_other_origins`` is set, this function gives the guard the API's
+    origin as the only one that the page's redirects may reach.
+
     Args:
         api: Client that sends the request.
         url: Absolute URL of the page.
@@ -269,63 +272,22 @@ def _request_page(
         raise PaginationError(
             "A page URL cannot be requested, so nothing was sent."
         )
-    follow = bool(api._request_options.get("allow_redirects", True))
     # The page link as requests sends it, which is what the message names.
     asked = _redact_url(prepared.url)
 
-    def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
-        """Check redirects before requests follows them.
+    def refusal() -> Exception:
+        """Return the error for a redirect to another origin.
 
-        The API checks every redirect too, as for any request. This hook adds
-        the page's own origin restriction.
-
-        Args:
-            resp: Response, which may be a redirect.
-            kwargs: Other arguments that requests passes to response hooks,
-                which are ignored.
-
-        Raises:
-            PaginationError: If ``resp`` redirects to an origin other than the
-                API's base URL and other origins are not allowed. The message
-                names the request by its link and quotes no part of the target.
-                The response is closed first. A target that cannot be prepared
-                is left to the API's guard. A client that does not follow
-                redirects never raises it, because its page requests would not
-                follow the redirect even with ``allow_other_origins=True``, and
-                the unfollowed redirect raises ``RedirectError`` instead.
+        Returns:
+            An error whose message names the request by its link and quotes no
+            part of the redirect's target.
         """
-        if not follow:
-            return
-        try:
-            target = api.session.get_redirect_target(resp)
-            if not target or allow_other_origins:
-                return
-            prepared = _prepare_redirect(api.session, resp, target)
-        except ValueError:
-            prepared = None
-        if prepared is None:
-            # The API's own guard runs after this hook. It refuses a target
-            # that cannot be parsed or prepared, with a message that quotes
-            # none of it, so this hook leaves it to the guard.
-            return
-        if _leaves_allowed_origins(prepared, {api_origin}):
-            resp.close()
-            raise PaginationError(
-                f"Page request {asked!r} was redirected to a different origin "
-                f"from the API's base URL {_redact_url(api.base_url)!r}. "
-                "Pass allow_other_origins=True to follow it."
-            )
+        return PaginationError(
+            f"Page request {asked!r} was redirected to a different origin "
+            f"from the API's base URL {_redact_url(api.base_url)!r}. "
+            "Pass allow_other_origins=True to follow it."
+        )
 
-    # Request hooks replace session hooks, so preserve the existing ones,
-    # unless the API's request options carry hooks, which replace them as they
-    # do for the first page. Run the guard after any hook that might change
-    # the response.
-    session_hooks = (
-        None
-        if api._request_options.get("hooks")
-        else api.session.hooks.get("response")
-    )
-    hooks = [*_response_hooks(session_hooks), check_redirect]
     # A link carries the query that the server received, with the session's
     # parameters, which requests would add again to each page. A parameter
     # given as None is left out when requests merges them.
@@ -336,7 +298,17 @@ def _request_page(
         if isinstance(session_params, Mapping)
         else {}
     )
-    resp = api.get(url, params=params, hooks={"response": hooks})
+    # Without allow_other_origins, the API's guard limits this request's
+    # redirects to the API's origin. The limit reaches the request through
+    # api.get(), which a subclass may override, and applies to every request
+    # for this URL during the call, such as a retry, and to no other.
+    token = _page_limit.set(
+        None if allow_other_origins else _PageLimit(url, {api_origin}, refusal)
+    )
+    try:
+        resp = api.get(url, params=params)
+    finally:
+        _page_limit.reset(token)
     return _check_final_response(resp, "the page has no response to read")
 
 

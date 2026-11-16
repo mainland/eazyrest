@@ -3041,3 +3041,205 @@ def test_model_page_repr_keeps_the_url_that_the_caller_gave(
     page = User.get_page(api=api, url="/users/?q=KEPT")
 
     assert repr(page) == "<Page url='https://api.test/users/?q=KEPT' items=1>"
+
+
+class _ForwardingAPI(API):
+    """API whose ``get()`` forwards its keywords, as a subclass may."""
+
+    def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Forward the request.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments for the request.
+            **kwargs: Keyword arguments for the request.
+
+        Returns:
+            The response.
+        """
+        return super().get(uri, *args, **kwargs)
+
+
+def test_page_through_a_scoped_view_limits_redirects_to_the_api_origin(
+    requests_mock: Any,
+) -> None:
+    """A subclass's ``get()`` still sees a page request that is limited.
+
+    A page's redirect may reach the API's origin alone, though
+    ``redirect_origins`` allows another for a request that is not a page's.
+    """
+    api = _ForwardingAPI("https://api.test/")
+    api.redirect_origins = ["https://other.test"]
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://other.test/x"},
+    )
+    target = requests_mock.get("https://other.test/x", json={"results": []})
+    view = api._scoped({"timeout": 3})
+    first_page = {"next": "https://api.test/p", "results": []}
+
+    with pytest.raises(PaginationError, match="different origin"):
+        list(follow_next_links(view, first_page))
+
+    assert not target.called
+
+
+def test_request_sent_before_a_page_request_is_not_limited_to_its_origins(
+    requests_mock: Any,
+) -> None:
+    """A request that a ``get()`` override sends first follows its redirects.
+
+    Such a request may be a token refresh. It is checked against
+    ``redirect_origins`` as any request is, not against the page's origins.
+    """
+
+    class Refreshing(_ForwardingAPI):
+        """API that requests a token before it requests a page."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            """Request a token, then the page.
+
+            Args:
+                uri: Relative or absolute request URI.
+                *args: Positional arguments for the request.
+                **kwargs: Keyword arguments for the request.
+
+            Returns:
+                The page's response.
+            """
+            if uri.endswith("/p"):
+                super().get("/token")
+            return super().get(uri, *args, **kwargs)
+
+    api = Refreshing("https://api.test/")
+    api.redirect_origins = ["https://auth.test"]
+    requests_mock.get(
+        "https://api.test/token",
+        status_code=302,
+        headers={"Location": "https://auth.test/token"},
+    )
+    token = requests_mock.get("https://auth.test/token", json={})
+    requests_mock.get("https://api.test/p", json={"results": [{"id": 1}]})
+    first_page = {"next": "https://api.test/p", "results": []}
+
+    items = list(follow_next_links(api, first_page))
+
+    assert items == [{"id": 1}]
+    assert token.called
+
+
+def test_other_origin_page_redirects_follow_the_apis_allowed_origins(
+    requests_mock: Any,
+) -> None:
+    """With ``allow_other_origins``, a redirect is checked as any other is."""
+    api = API("https://api.test/")
+    api.redirect_origins = ["https://cdn.test"]
+    requests_mock.get(
+        "https://api.test/ok",
+        status_code=302,
+        headers={"Location": "https://cdn.test/page"},
+    )
+    requests_mock.get("https://cdn.test/page", json={"results": [{"id": 1}]})
+    requests_mock.get(
+        "https://api.test/bad",
+        status_code=302,
+        headers={"Location": "https://evil.test/page"},
+    )
+    evil = requests_mock.get("https://evil.test/page", json={"results": []})
+
+    followed = list(
+        follow_next_links(
+            api,
+            {"next": "https://api.test/ok", "results": []},
+            allow_other_origins=True,
+        )
+    )
+    with pytest.raises(RedirectError, match="redirect_origins"):
+        list(
+            follow_next_links(
+                api,
+                {"next": "https://api.test/bad", "results": []},
+                allow_other_origins=True,
+            )
+        )
+
+    assert followed == [{"id": 1}]
+    assert not evil.called
+
+
+def test_refused_page_redirect_runs_session_hooks_once_per_response(
+    requests_mock: Any,
+) -> None:
+    """A page's redirect is checked once, after the session's hooks ran."""
+    api = API("https://api.test/")
+    calls: list[int] = []
+
+    def count(resp: requests.Response, **kwargs: Any) -> None:
+        calls.append(resp.status_code)
+
+    api.session.hooks["response"].append(count)
+    requests_mock.get(
+        "https://api.test/p",
+        status_code=302,
+        headers={"Location": "https://other.test/x"},
+    )
+
+    with pytest.raises(PaginationError, match="different origin"):
+        list(
+            follow_next_links(
+                api, {"next": "https://api.test/p", "results": []}
+            )
+        )
+
+    assert calls == [302]
+
+
+def test_page_limit_applies_to_each_request_for_the_page_url(
+    requests_mock: Any,
+) -> None:
+    """A retry of the page's request is limited as the first attempt was."""
+
+    class Retrying(_ForwardingAPI):
+        """API whose ``get()`` sends the request again."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            """Send the request twice and return the second response.
+
+            Args:
+                uri: Relative or absolute request URI.
+                *args: Positional arguments for the request.
+                **kwargs: Keyword arguments for the request.
+
+            Returns:
+                The second response.
+            """
+            super().get(uri, *args, **kwargs)
+            return super().get(uri, *args, **kwargs)
+
+    api = Retrying("https://api.test/")
+    api.redirect_origins = ["https://other.test"]
+    requests_mock.get(
+        "https://api.test/p",
+        [
+            {"json": {"results": []}},
+            {
+                "status_code": 302,
+                "headers": {"Location": "https://other.test/x"},
+            },
+        ],
+    )
+    target = requests_mock.get("https://other.test/x", json={"results": []})
+
+    with pytest.raises(PaginationError, match="different origin"):
+        list(
+            follow_next_links(
+                api, {"next": "https://api.test/p", "results": []}
+            )
+        )
+
+    assert not target.called
