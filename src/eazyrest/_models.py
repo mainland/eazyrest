@@ -5944,16 +5944,14 @@ class JSONObject:
             f"{type(self).__name__} object, whose key cannot change"
         )
 
-    def _replace_json(
-        self,
-        json: dict[str, Any],
-        server_json: Mapping[str, Any] | None = None,
-    ) -> None:
+    def _replace_json(self, json: dict[str, Any]) -> None:
         """Replace this object's JSON after a write or a load.
 
-        The object records the key of the server's JSON as its saved key, if
-        that has the key field. A key that is known never changes, so JSON that
-        names another key is refused before anything changes.
+        The object records the key of the JSON as its saved key, if that has
+        the key field. No pending update holds the key, since the key of an
+        object that names a resource cannot change, so the key of this JSON is
+        the server's. A key that is known never changes, so JSON that names
+        another key is refused before anything changes.
 
         Cached values stay valid for the fields whose JSON is unchanged, so
         only the others are dropped. In particular, a related object assigned
@@ -5962,8 +5960,6 @@ class JSONObject:
 
         Args:
             json: The object's new JSON.
-            server_json: The JSON that the server sent, if that is not
-                ``json``, which then holds the pending updates laid over it.
 
         Raises:
             ResponseShapeError: If the server's JSON names another key than the
@@ -5973,10 +5969,9 @@ class JSONObject:
         json = self._readable_json(json)
         if _pk_property_of(type(self)) is not None:
             key: str = type(self)._pk.json_field
-            server = json if server_json is None else server_json
-            if key in server:
-                self._refuse_other_key(server[key], adopt=True)
-                self._record_saved_key(server[key])
+            if key in json:
+                self._refuse_other_key(json[key], adopt=True)
+                self._record_saved_key(json[key])
         self._json = json
 
         for field in getattr(self, "_json_fields", ()):
@@ -6486,13 +6481,6 @@ class JSONObject:
         # URL holds it. Keep the key that the object was loaded by, so that the
         # object keeps its identity and URL.
         pk_json_field = getattr(type(self), "_pk_json_field", None)
-        # The key that the server sent is the saved key, before the pending
-        # updates are laid over it.
-        server_json = (
-            {pk_json_field: json[pk_json_field]}
-            if pk_json_field is not None and pk_json_field in json
-            else {}
-        )
         if pk_json_field is not None and pk_json_field not in json:
             if self._json is not None and pk_json_field in self._json:
                 json[pk_json_field] = self._json[pk_json_field]
@@ -6509,7 +6497,7 @@ class JSONObject:
         )
         # Keep the values of fields that the load left unchanged, such as a
         # related object with unsaved changes of its own.
-        self._replace_json(json, server_json)
+        self._replace_json(json)
         self._json_is_partial = False
 
     def _json_having(self, json_field: str) -> Any:
