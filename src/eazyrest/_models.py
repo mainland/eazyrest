@@ -4478,9 +4478,7 @@ class JSONProperty:
         # Drop cached values only now, because the update may read this field.
         # An assignment also replaces any change made in place to the old
         # value.
-        obj._prefetched_related.pop(self.field, None)
-        obj._field_cache.pop(self.field, None)
-        obj._field_snapshots.pop(self.field, None)
+        obj._forget_fields([self.field])
 
         # An eager write's response can name other related objects, which
         # then replace the assigned ones, as after save().
@@ -4563,9 +4561,10 @@ class JSONProperty:
         if obj._json is not None:
             # JSON that lacks the key, or holds None, now holds it.
             obj._json[self.json_field] = _copy_json(encoded)
-        # The key reads from the saved key, and not as it was cached.
-        obj._field_cache.pop(self.field, None)
-        obj._field_snapshots.pop(self.field, None)
+        # The key reads from the saved key, and not as it was cached. A key
+        # that is a relation keeps its prefetched object, which the key just
+        # given names.
+        obj._forget_fields([self.field], keep_prefetched=True)
 
     def _assigned_related(self, value: Any) -> Any:
         """Return the field value that keeps assigned related objects.
@@ -4994,6 +4993,38 @@ class JSONObject:
         # Copy the outer mapping so each parent can drop an entire prefetched
         # field cache independently while still sharing the related objects.
         self._prefetched_related = dict(prefetched_related)
+
+    def _forget_fields(
+        self,
+        fields: Iterable[str] | None = None,
+        *,
+        keep_prefetched: bool = False,
+    ) -> None:
+        """Drop the cached state of fields, so the next read decodes anew.
+
+        A field's cached value, the encoding of it that detects a change made
+        in place, and its prefetched related objects go together, since a value
+        that outlives the others would be read stale or saved wrongly.
+
+        Args:
+            fields: Python attribute names of the fields to drop, or ``None``
+                for every field.
+            keep_prefetched: Whether to keep the prefetched related objects. A
+                key that is a relation looks up its related object there, by
+                the key just given.
+        """
+        if fields is None:
+            self._field_cache.clear()
+            self._field_snapshots.clear()
+            if not keep_prefetched:
+                self._prefetched_related.clear()
+            return
+
+        for field in fields:
+            self._field_cache.pop(field, None)
+            self._field_snapshots.pop(field, None)
+            if not keep_prefetched:
+                self._prefetched_related.pop(field, None)
 
     def _create_related(
         self,
@@ -5954,9 +5985,7 @@ class JSONObject:
                 before.get(json_field, _MISSING),
                 json.get(json_field, _MISSING),
             ):
-                self._field_cache.pop(field, None)
-                self._field_snapshots.pop(field, None)
-                self._prefetched_related.pop(field, None)
+                self._forget_fields([field])
 
     def merge_response(
         self,
@@ -6221,9 +6250,7 @@ class JSONObject:
             if descriptor.json_field not in payload:
                 continue
 
-            self._field_cache.pop(field, None)
-            self._field_snapshots.pop(field, None)
-            self._prefetched_related.pop(field, None)
+            self._forget_fields([field])
             self._pending_updates.pop(descriptor.json_field, None)
 
     def refresh(self) -> None:
@@ -6248,9 +6275,7 @@ class JSONObject:
         # The saved key stays, so the object still has its key without its
         # JSON. Discard unsaved local changes
         self._pending_updates.clear()
-        self._field_cache.clear()
-        self._field_snapshots.clear()
-        self._prefetched_related.clear()
+        self._forget_fields()
         # Clear JSON
         self._json = None
         self._json_is_partial = False

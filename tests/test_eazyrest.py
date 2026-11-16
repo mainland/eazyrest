@@ -1920,6 +1920,30 @@ def test_assigning_field_invalidates_cached_related_value(
     assert updated is not original
 
 
+@pytest.mark.parametrize("failure", ["conversion", "write"])
+def test_a_refused_assignment_keeps_the_cached_value(
+    requests_mock: Any, failure: str
+) -> None:
+    """An assignment that raises leaves the field's cached value as it was."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "a", "completed": False},
+    )
+    requests_mock.patch("https://example.com/v1/todos/1/", status_code=500)
+    todo = Todo(id=1, write_mode="eager")
+    original = todo.user
+    value = Todo(id=9) if failure == "conversion" else User(id=3)
+    error = (
+        FieldConversionError if failure == "conversion" else requests.HTTPError
+    )
+
+    with pytest.raises(error):
+        todo.user = value  # type: ignore[assignment]
+
+    assert todo.user is original
+    assert todo._pending_updates == {}
+
+
 def test_reassigning_related_object_keeps_its_unsaved_changes(
     requests_mock: Any,
 ) -> None:
