@@ -113,6 +113,11 @@ describe them further.
   name raises `ValueError` when it is decorated, and a class variable, method,
   or property of that name raises `TypeError` when the class is defined. Give
   the field another attribute name, with `field_map=` to keep its JSON key.
+- `cls.api` is the class's registered API everywhere. While `filter()` called a
+  collection hook, `v1.0.0a5` made `cls.api` the API that the query passed as
+  `api=`, and the guide promised it. The promise ended when the hook returned,
+  so the generator of a lazy hook already saw the registered API. A hook that
+  reads `cls.api` to send a request must use its `api` argument.
 - `api=` and `register_api()` take an `API`. Another object, such as a test
   double, raises `TypeError`.
 - Requests send `Accept: application/json`, where `v1.0.0a5` sent requests'

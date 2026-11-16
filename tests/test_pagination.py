@@ -1835,10 +1835,10 @@ def test_unfollowed_redirect_of_a_later_page_raises(
         next(items)
 
 
-def test_query_api_is_the_class_api_during_the_hook(
+def test_class_api_is_the_registered_api_inside_a_hook(
     requests_mock: Any,
 ) -> None:
-    """While a hook runs, ``cls.api`` is the query's API, as ``api`` is."""
+    """``cls.api`` in a hook is the registered API, not the query's."""
     tenant = API("https://tenant.example.com/v1/")
     seen: list[tuple[API, Client]] = []
 
@@ -1859,7 +1859,68 @@ def test_query_api_is_the_class_api_during_the_hook(
 
     list(Probe.filter(api=tenant))
 
-    assert seen == [(tenant, tenant)]
+    assert seen == [(Probe.api, tenant)]
+    assert Probe.api is not tenant
+
+
+def test_class_api_is_the_registered_api_in_a_lazy_hook(
+    requests_mock: Any,
+) -> None:
+    """A hook's generator sees the registered API as ``cls.api`` too."""
+    tenant = API("https://tenant.example.com/v1/")
+    seen: list[tuple[API, Client]] = []
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_items(
+            cls, payload: Any, *, api: Client, **kwargs: Any
+        ) -> Any:
+            for item in payload:
+                seen.append((cls.api, api))
+                yield item
+
+    requests_mock.get(
+        "https://tenant.example.com/v1/probes/", json=[{"id": 1}]
+    )
+
+    list(Probe.filter(api=tenant))
+
+    assert seen == [(Probe.api, tenant)]
+    assert Probe.api is not tenant
+
+
+def test_class_api_is_the_registered_api_in_the_page_hook(
+    requests_mock: Any,
+) -> None:
+    """``cls.api`` in ``collection_page()`` is the registered API."""
+    tenant = API("https://tenant.example.com/v1/")
+    seen: list[tuple[API, Client]] = []
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Any, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            seen.append((cls.api, api))
+            return super().collection_page(resp, api=api, **kwargs)
+
+    requests_mock.get(
+        "https://tenant.example.com/v1/probes/", json=[{"id": 1}]
+    )
+
+    Probe.get_page(api=tenant)
+
+    assert seen == [(Probe.api, tenant)]
     assert Probe.api is not tenant
 
 
@@ -2226,7 +2287,8 @@ def test_collection_page_hook_reads_link_headers(requests_mock: Any) -> None:
     assert second is not None
     assert [item.id for item in second] == [2]
     assert all(item.api is tenant for item in second)
-    assert seen == [(tenant, tenant), (tenant, tenant)]
+    assert seen == [(Linked.api, tenant), (Linked.api, tenant)]
+    assert Linked.api is not tenant
 
 
 def test_collection_page_hook_must_return_a_page(requests_mock: Any) -> None:

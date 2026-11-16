@@ -1358,6 +1358,11 @@ query passed as `api=` or the class's registered API. Send any request for
 later pages with it, so that a query with `api=` reads every page from that
 API.
 
+`cls.api` is the class's registered API, also inside a hook and inside the
+generator that a hook returns. A hook sends its requests through its `api`
+argument, which is the query's `api=` or its scoped client. A hook that sends
+them through `cls.api` ignores the query's `api=` and `request_options=`.
+
 When the query has `request_options=`, `api` is a copy of the API that adds
 them to every request and shares the API's session. Use it to send requests,
 not to configure, close, or compare the API. The copy adds its options and

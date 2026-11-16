@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import contextlib
-import contextvars
 import copy
 import dataclasses
 import datetime
@@ -206,11 +205,6 @@ PrefetchFields: TypeAlias = str | Sequence[str] | None
 
 _api_registry: dict[type[JSONObject], API] = {}
 
-_query_api: contextvars.ContextVar[tuple[type[JSONObject], API] | None] = (
-    contextvars.ContextVar("_query_api", default=None)
-)
-"""The class and API of a query that passed ``api=``, while it reads items."""
-
 
 @dataclass(frozen=True)
 class _Query:
@@ -304,11 +298,7 @@ class _ModelPageSource(_PageSource[Any]):
             TypeError: If ``collection_page()`` does not return a ``Page``.
         """
         model = self._model
-        token = _query_api.set((model, self.api))
-        try:
-            raw = model.collection_page(resp, api=self.api)
-        finally:
-            _query_api.reset(token)
+        raw = model.collection_page(resp, api=self.api)
         if not isinstance(raw, Page):
             raise TypeError(
                 f"{model.__name__}.collection_page() must return a Page, got "
@@ -376,14 +366,6 @@ class APIDescriptor:
         """
         if obj is not None and obj._api_override is not None:
             return obj._api_override
-
-        if obj is None and objtype is not None:
-            # While a query that passed api= calls a collection hook, that API
-            # is the queried class's API, so code in the hook that reads
-            # cls.api, rather than the hook's api argument, uses it too.
-            query = _query_api.get()
-            if query is not None and query[0] is objtype:
-                return query[1]
 
         if objtype is None:
             if obj is None:
@@ -6952,8 +6934,9 @@ class JSONObject:
         every request. With options, it is a copy that shares the API's
         session, so use it to send requests, not to configure, close, or
         compare the API. A subclass of ``API`` that changes its own state, such
-        as a refreshed token, must keep that state on the session. While
-        ``filter()`` calls this hook, ``cls.api`` is ``api`` too.
+        as a refreshed token, must keep that state on the session. ``cls.api``
+        is always the class's registered API, so a hook sends its requests
+        through ``api``.
 
         This hook receives only the decoded payload. To read the response's
         headers or URL, override ``collection_items_from_response()``.
@@ -7530,11 +7513,7 @@ class JSONObject:
             client.get(cls.class_url, params=cls._encode_query(query)),
             "the query has no collection to read",
         )
-        token = _query_api.set((cls, client))
-        try:
-            items = cls.collection_items_from_response(resp, api=client)
-        finally:
-            _query_api.reset(token)
+        items = cls.collection_items_from_response(resp, api=client)
 
         count = _count_of(items)
         # Treat an empty prefetch list the same as no prefetch at all.
