@@ -31,6 +31,7 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
+    Literal,
     NewType,
     Optional,
     TypeVar,
@@ -2556,10 +2557,10 @@ def test_refresh_refuses_an_object_that_has_no_url(
     Args:
         key: Primary key that the object is built with, or ``None`` for none.
     """
-    todo = Todo() if key is None else Todo(id=key)
+    obj = Todo() if key is None else TextKeyed(id=key)
 
     with pytest.raises(ValueError, match="so it has no URL"):
-        todo.refresh()
+        obj.refresh()
     assert requests_mock.call_count == 0
 
 
@@ -8137,31 +8138,191 @@ def test_a_key_that_cannot_be_converted_equals_only_itself(
     assert requests_mock.call_count == 0
 
 
-def test_a_key_given_as_a_string_for_an_int_field_is_another_key(
-    requests_mock: Any,
+_CountKey = NewType("_CountKey", int)
+
+
+@json_object
+class TextKeyed(ModelBase):
+    """Model whose key is a ``str``."""
+
+    class_url = "/text-keyed/"
+
+    id: str
+    name: str
+
+
+@json_object
+class RatioKeyed(ModelBase):
+    """Model whose key is a ``float``."""
+
+    class_url = "/ratio-keyed/"
+
+    id: float
+    name: str
+
+
+@json_object
+class FlagKeyed(ModelBase):
+    """Model whose key is a ``bool``."""
+
+    class_url = "/flag-keyed/"
+
+    id: bool
+    name: str
+
+
+@json_object
+class ChoiceKeyed(ModelBase):
+    """Model whose key is one of two strings."""
+
+    class_url = "/choice-keyed/"
+
+    id: Literal["a", "b"]
+    name: str
+
+
+@json_object
+class WrappedKeyed(ModelBase):
+    """Model whose key is an ``int`` in the wrappers that a key may have."""
+
+    class_url = "/wrapped-keyed/"
+
+    id: Annotated[_CountKey | None, "the key"]
+    name: str
+
+
+@pytest.mark.parametrize(
+    ("model", "given"),
+    [
+        (User, "1"),
+        (User, 1.0),
+        (User, True),
+        (User, None),
+        (TextKeyed, 1),
+        (TextKeyed, True),
+        (RatioKeyed, 1),
+        (RatioKeyed, "1.5"),
+        (FlagKeyed, 1),
+        (FlagKeyed, "true"),
+        (ChoiceKeyed, 1),
+        (ChoiceKeyed, True),
+        (WrappedKeyed, "1"),
+    ],
+)
+def test_a_key_of_another_json_type_is_refused_where_it_is_given(
+    requests_mock: Any, model: type[JSONObject], given: Any
 ) -> None:
-    """A key that encodes differently is another key, until a load names it.
+    """A key that is a leaf type has one JSON type, which a given key must be.
 
-    ``User(id="1")`` has the saved key ``"1"``, which encodes as a string, so
-    it does not equal ``User(id=1)``. When it loads and the JSON spells the key
-    as ``1``, that becomes the saved key, so equality and the hash change.
+    ``bool`` is not an ``int`` key and ``int`` is not a ``float`` key, because
+    each encodes differently. The constructor and the first assignment refuse
+    the value, whether the key is a plain type, a ``Literal``, or wrapped as an
+    optional, a ``NewType``, or ``Annotated``, and the object has no key
+    afterward.
+
+    Args:
+        model: Model with a key of a leaf type.
+        given: A key of another JSON type than the field's.
     """
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-    user = User(id=cast(Any, "1"))
-    held_hash = hash(user)
+    if given is None:
+        # ``None`` is no key at all, so it is not refused.
+        assert model(id=given).pk is None
+        return
 
-    assert user != User(id=1)
-    assert User(id=1) != user
-    assert user == User(id=cast(Any, "1"))
+    with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
+        model(id=given)
+    obj = model()
+    with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
+        obj.pk = given
+    with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
+        setattr(obj, "id", given)  # noqa: B010
 
-    assert user.name == "Ada"
+    assert obj.pk is None
+    assert requests_mock.call_count == 0
 
-    assert user == User(id=1)
-    assert user != User(id=cast(Any, "1"))
-    assert hash(user) != held_hash
-    assert hash(user) == hash(User(id=1))
+
+@pytest.mark.parametrize(
+    ("model", "given"),
+    [
+        (User, 1),
+        (TextKeyed, "a"),
+        (RatioKeyed, 1.5),
+        (FlagKeyed, True),
+        (ChoiceKeyed, "a"),
+        (WrappedKeyed, 1),
+    ],
+)
+def test_a_key_of_its_own_json_type_is_taken(
+    model: type[JSONObject], given: Any
+) -> None:
+    """The constructor takes the key of the field's type.
+
+    Args:
+        model: Model with a key of a leaf type.
+        given: A key of the field's JSON type.
+    """
+    obj = model(id=given)
+
+    assert obj.pk == given
+    assert obj == model(id=given)
+    assert hash(obj) == hash(model(id=given))
+
+
+@pytest.mark.parametrize("how", ["constructor", "pk"])
+def test_a_key_that_is_a_relation_refuses_a_key_of_another_json_type(
+    requests_mock: Any, how: str
+) -> None:
+    """The key that a profile copies from its user has the user's JSON type.
+
+    Args:
+        how: Whether the key is given to the constructor or assigned as ``pk``.
+    """
+    profile = UserProfile()
+
+    def give() -> None:
+        if how == "constructor":
+            UserProfile(pk=cast(Any, "2"))
+        else:
+            profile.pk = "2"
+
+    with pytest.raises(FieldConversionError, match=r"UserProfile\.user"):
+        give()
+
+    assert requests_mock.call_count == 0
+    assert profile.pk is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("lead", "2"),
+        ("lead", 2.0),
+        ("lead", True),
+        ("members", ["3", 4]),
+    ],
+)
+def test_a_related_key_of_another_json_type_from_the_server_is_refused(
+    requests_mock: Any, field: str, value: Any
+) -> None:
+    """A related object read from the server's JSON has its key's JSON type.
+
+    The key is not given by the program, but a wrong one would name an object
+    that never equals the one with the key's own type, and would fail only at
+    its first load. The read refuses it, names the relation field and not the
+    related model's key, and caches nothing.
+
+    Args:
+        field: Name of the related field.
+        value: The field's JSON, with a key of another type.
+    """
+    crew = Crew(json={**CREW_JSON, field: value})
+
+    for _ in range(2):
+        with pytest.raises(FieldConversionError, match=rf"Crew\.{field}"):
+            getattr(crew, field)
+
+    assert field not in crew._field_cache
+    assert requests_mock.call_count == 0
 
 
 def test_an_object_read_from_a_hyperlink_keeps_its_key_across_refreshes(
@@ -8440,22 +8601,150 @@ def test_a_key_that_hashes_by_identity_survives_an_embedded_change_in_a_write(
     assert profile in members
 
 
-def test_a_key_that_hashes_by_identity_moves_when_a_refresh_loads_another(
-    requests_mock: Any,
+def _keyed_user(write_mode: WriteMode = "lazy") -> User:
+    """Return the user 1 with its JSON, in a hash set that it must stay in.
+
+    Args:
+        write_mode: Write mode of the user.
+
+    Returns:
+        The user.
+    """
+    return User(json={"id": 1, "name": "Ada"}, write_mode=write_mode)
+
+
+def _assert_user_kept(user: User) -> None:
+    """Check that an object kept its key, hash, URL, and JSON.
+
+    Args:
+        user: The user 1, after a refused server state.
+    """
+    assert user.pk == 1
+    assert user.url == "/users/1/"
+    assert user == User(id=1)
+    assert hash(user) == hash(User(id=1))
+    assert user.json["id"] == 1
+
+
+@pytest.mark.parametrize("named", [2, None, "1"])
+def test_a_load_that_names_another_key_is_refused(
+    requests_mock: Any, named: Any
 ) -> None:
-    """A load that returns another key after a refresh moves the key."""
+    """The hash of an object never changes once its key is known.
+
+    Server state that names another key, no key, or the key in another JSON
+    type is refused, and the object, its JSON included, is as it was.
+
+    Args:
+        named: What the server's JSON holds for the key.
+    """
     requests_mock.get(
-        "https://example.com/v1/grids/1/", json={"id": 2, "name": "a"}
+        "https://example.com/v1/users/1/", json={"id": named, "name": "Grace"}
     )
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 1, "name": "a"})
-    before = hash(grid)
+    user = _keyed_user()
+    members = {user}
+    user.refresh()
 
-    grid.refresh()
-    assert grid.name == "a"
+    def load() -> None:
+        user.name  # noqa: B018
 
-    assert grid.pk.value == 2
-    assert hash(grid) != before
+    with pytest.raises(ResponseShapeError, match="primary key does not match"):
+        load()
+
+    assert user in members
+    assert user.pk == 1
+    assert user.url == "/users/1/"
+    assert hash(user) == hash(User(id=1))
+    assert user._json is None
+
+
+@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
+def test_a_write_response_that_names_another_key_is_refused(
+    requests_mock: Any, write_mode: WriteMode
+) -> None:
+    """The object keeps its key and its pending updates, and the write is sent.
+
+    Args:
+        write_mode: Write mode of the user.
+    """
+    patch = requests_mock.patch(
+        "https://example.com/v1/users/1/", json={"id": 2, "name": "Grace"}
+    )
+    user = _keyed_user(write_mode)
+    members = {user}
+
+    def write() -> None:
+        user.name = "Grace"
+        if write_mode == "lazy":
+            user.save()
+
+    with pytest.raises(ResponseShapeError, match="primary key does not match"):
+        write()
+
+    assert patch.call_count == 1
+    assert user in members
+    _assert_user_kept(user)
+    if write_mode == "lazy":
+        assert user._pending_updates == {"name": "Grace"}
+    else:
+        assert user._pending_updates == {}
+        assert user.json["name"] == "Ada"
+
+
+@pytest.mark.parametrize("named", [2, None])
+def test_update_from_json_refuses_a_payload_that_names_another_key(
+    requests_mock: Any, named: Any
+) -> None:
+    """The refusal is a ``ResponseShapeError``, which is a ``ValueError``.
+
+    Args:
+        named: What the payload holds for the key.
+    """
+    user = _keyed_user()
+    members = {user}
+
+    with pytest.raises(ResponseShapeError) as caught:
+        user.update_from_json({"id": named, "name": "Grace"})
+
+    assert isinstance(caught.value, ValueError)
+    assert user in members
+    _assert_user_kept(user)
+    assert user.name == "Ada"
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("path", ["load", "write", "update_from_json"])
+def test_server_state_that_spells_the_same_key_another_way_is_taken(
+    requests_mock: Any, path: str
+) -> None:
+    """``Z`` and ``+00:00`` are one key, so the hash and the URL stay.
+
+    Args:
+        path: How the object takes the server's state.
+    """
+    url = (
+        "https://example.com/v1/time-keyed/2026-01-01T00%3A00%3A00%2B00%3A00/"
+    )
+    spelled = {"id": "2026-01-01T00:00:00+00:00", "name": "b"}
+    requests_mock.get(url, json=spelled)
+    requests_mock.patch(url, json=spelled)
+    stamp = TimeKeyed(json={"id": "2026-01-01T00:00:00Z", "name": "a"})
+    members = {stamp}
+    before = (stamp.url, hash(stamp))
+
+    if path == "load":
+        stamp.refresh()
+        assert stamp.name == "b"
+    elif path == "write":
+        stamp.name = "b"
+        stamp.save()
+    else:
+        stamp.update_from_json(spelled)
+
+    assert stamp.name == "b"
+    assert (stamp.url, hash(stamp)) == before
+    assert stamp in members
+    assert stamp.json["id"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_two_loads_of_a_key_that_hashes_by_identity_are_equal() -> None:
@@ -8490,24 +8779,6 @@ def test_a_decimal_key_of_another_precision_is_another_key() -> None:
     assert one.url != other.url
     assert PriceKeyed(json={"id": "1.0"}) == one
     assert hash(PriceKeyed(json={"id": "1.0"})) == hash(one)
-
-
-@pytest.mark.parametrize("given", [1.0, True, "1"])
-def test_a_key_given_in_another_type_than_its_field_is_another_key(
-    given: Any,
-) -> None:
-    """The key's encoding is compared, so ``1.0`` and ``True`` are not ``1``.
-
-    Args:
-        given: A key that equals ``1`` in Python or reads as it, but not in
-            JSON.
-    """
-    other = User(id=cast(Any, given))
-
-    assert other != User(id=1)
-    assert User(id=1) != other
-    assert other == User(id=cast(Any, given))
-    assert hash(other) == hash(User(id=cast(Any, given)))
 
 
 def test_a_datetime_key_spelled_two_ways_is_one_key() -> None:
@@ -8988,24 +9259,6 @@ def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
     assert grid in members
 
 
-def test_the_saved_key_follows_a_load_that_spells_the_key_differently(
-    requests_mock: Any,
-) -> None:
-    """A key that was compared before a load is compared again after it."""
-    requests_mock.get(
-        "https://example.com/v1/users/1/", json={"id": 1, "name": "Ada"}
-    )
-    user = User(id=cast(Any, "1"))
-    assert user == User(id=cast(Any, "1"))
-    assert hash(user) == hash(User(id=cast(Any, "1")))
-
-    assert user.name == "Ada"
-
-    assert user == User(id=1)
-    assert user != User(id=cast(Any, "1"))
-    assert hash(user) == hash(User(id=1))
-
-
 @pytest.mark.parametrize(
     "duplicate",
     [copy.deepcopy, copy.copy, lambda obj: pickle.loads(pickle.dumps(obj))],
@@ -9028,24 +9281,6 @@ def test_a_copy_of_an_object_whose_key_is_unknown_cannot_be_hashed(
     with pytest.raises(TypeError, match="cannot be hashed"):
         hash(twin)
     assert twin != User(id=1)
-
-
-def test_the_saved_key_follows_a_load_of_a_partial_object(
-    requests_mock: Any,
-) -> None:
-    """A payload held its key as given, and a load that follows replaces it."""
-    requests_mock.get(
-        "https://example.com/v1/todos/1/",
-        json={"id": 1, "user": 2, "title": "t", "completed": False},
-    )
-    todo = Todo(id=cast(Any, "1"))
-    todo.update_from_json({"id": "1", "title": "t"})
-    assert todo == Todo(id=cast(Any, "1"))
-
-    assert todo.completed is False
-
-    assert todo == Todo(id=1)
-    assert hash(todo) == hash(Todo(id=1))
 
 
 def test_an_object_equals_one_with_its_key_once_the_key_is_assigned() -> None:

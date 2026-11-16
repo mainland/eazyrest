@@ -131,7 +131,8 @@ The canonical key comes from the key that the object last took from the server,
 or was given: the saved key. An object takes the key when it is built from
 `json=`, when its key is first given, as `User(id=1)` does, when it loads, when
 a write's response is recorded, and when `update_from_json()` merges a payload
-that names the key. `refresh()` leaves it.
+that names the key. Once the key is known, server state may name only that key,
+and `refresh()` leaves it.
 
 Once the key is known, the program cannot change it, as Django's key field
 cannot be renamed through the object either:
@@ -169,11 +170,16 @@ resource, and these laws follow:
   compares by identity, or that cannot be hashed, still gives equal objects
   when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
-  their values. `User(id=1.0)` and `User(id=True)` do not equal `User(id=1)`,
-  and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each pair names
-  different URLs. `User(id="1")` does not equal `User(id=1)` either, although
-  both name `/users/1/`, because a string and a number are different JSON. Give
-  the key in its field's type, as the server returns it.
+  their values, and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each
+  pair names different URLs. A key whose type is `int`, `str`, `float`, or
+  `bool`, or a `Literal` of such values, has one JSON type, and a value of
+  another type raises `FieldConversionError` where it is given, as
+  `"not-a-uuid"` does for a `UUID` key. So `User(id="1")`, `User(id=1.0)`, and
+  `User(id=True)` raise for an `int` key, because a `bool` is not an `int` and
+  an `int` is not a `float`, since each encodes differently. A related object
+  that a read builds from the server's JSON is checked the same way, and the
+  error names the relation field, as in `Post.owner`. Give the key in its
+  field's type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
@@ -213,18 +219,26 @@ The profile's `pk`, `url`, `refresh()`, `update_from_json()`, `==`, and
 
 ### When the hash changes
 
-The hash is that of the model and its canonical key, so it changes only when
-the object takes from the server a key that has another canonical key, at a
-load or a write's response that names another key. `update_from_json()` refuses
-a payload that names another key, and one that names a key when the object's
-key or the payload's is not known, as when either is `None` or cannot be
-converted. An object that has its own URL, as one read from a hyperlink has,
-takes the payload's key if its saved key is absent or `null`.
+Once an object's key is known, its hash never changes, so a set or dict that
+holds it keeps finding it. The hash is that of the model and its canonical key,
+and nothing changes the canonical key:
 
-A set or dict that holds the object then no longer finds it. Take the object
-out before such a load, and put it back after. A refresh, an attempt to change
-the key, and a load or a write that spells the same key another way do not
-change the hash.
+- The program cannot change it, as [Equality by key](#equality-by-key) says.
+- Server state that names another canonical key is refused on every path. A
+  load, a write's response, and `update_from_json()` raise
+  `ResponseShapeError`, which is a `ValueError`, before they change anything. A
+  write's response that is refused leaves the pending updates, as any
+  `ResponseShapeError` from a write does, although the server may have applied
+  them. That includes a payload or response that holds `null` or a key that the
+  field cannot convert.
+- A spelling of the same key, such as `Z` and `+00:00` for a `datetime`, is the
+  same key and is taken.
+
+An object whose key is not known takes the key that the server first names, so
+its hash is the one that raises until then. `update_from_json()` also refuses a
+payload that names a key when the object has no key and no URL of its own. An
+object that has its own URL, as one read from a hyperlink has, takes the key
+that its payload names if its saved key is absent or `null`.
 
 ### What a key may be
 

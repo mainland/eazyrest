@@ -4,15 +4,14 @@ A rule-based state machine builds objects of models with keys of several types,
 and loads them, refreshes them, merges pushed payloads into them, tries to
 change their keys by assignment and in place, and saves them. A fake server
 answers at the key that an object is saved under and spells the key it returns
-in more than one way. After every step, each object must agree with a model
-that moves its saved key only when the object records the key of server state,
-and these laws must hold:
+in more than one way, and sometimes names another key, which the object
+refuses. After every step, each object must agree with a model whose saved key
+is the one that the object was built with, and these laws must hold:
 
 - If two objects are equal, they have the same ``url``.
-- The equalities and the hash of an object, and its ``url``, change only when
-  it records server state that names another key. A spelling of the same key
-  does not change them, and neither does an attempt to change the key, which
-  is refused and sends nothing.
+- The equalities and the hash of an object, and its ``url``, never change.
+  Neither a spelling of the same key, nor an attempt to change the key, nor
+  server state that names another key changes them.
 - Comparing and hashing send no request.
 """
 
@@ -48,7 +47,7 @@ from test_eazyrest import (
     test_api,
 )
 
-from eazyrest import JSONObject, UsageError, WriteMode
+from eazyrest import JSONObject, ResponseShapeError, UsageError, WriteMode
 
 UTC = datetime.UTC
 
@@ -320,7 +319,10 @@ class KeyIdentityMachine(RuleBasedStateMachine):
         other=st.booleans(),
     )
     def load(self, data: st.DataObject, variant: str, other: bool) -> None:
-        """Refresh an object and load it, perhaps as another key."""
+        """Refresh an object and load it, perhaps as another key.
+
+        A load that names another key is refused, and the object keeps its key.
+        """
         subject = self.pick(data)
         if subject is None:
             return
@@ -332,8 +334,12 @@ class KeyIdentityMachine(RuleBasedStateMachine):
             named = data.draw(st.sampled_from(spec.keys))
             self.path(subject.kind, named)
             self.next_key = named
-        self.act(subject, lambda: getattr(subject.obj, spec.name_field))
-        subject.saved = named
+        try:
+            self.act(subject, lambda: getattr(subject.obj, spec.name_field))
+        except ResponseShapeError:
+            assert named != subject.saved
+        else:
+            assert named == subject.saved
 
     @rule(
         data=st.data(),

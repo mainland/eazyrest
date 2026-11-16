@@ -1776,6 +1776,77 @@ def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
     return encoded, json.dumps(encoded, sort_keys=True, separators=(",", ":"))
 
 
+def _json_kind(value: Any) -> str | None:
+    """Return the JSON type of a scalar, or ``None`` for any other value.
+
+    Args:
+        value: A value that encoding gave.
+
+    Returns:
+        ``"bool"``, ``"int"``, ``"float"``, or ``"str"``. A ``bool`` is not an
+        ``int``, and an ``int`` is not a ``float``, because each encodes
+        differently.
+    """
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    return None
+
+
+def _check_key_json_type(cls: type[JSONObject], key: Any) -> None:
+    """Refuse a key that is given as another JSON type than its field's.
+
+    A key whose type is ``int``, ``str``, ``float``, or ``bool``, or a
+    ``Literal`` of such values, inside ``T | None``, ``NewType``, and
+    ``Annotated``, has one JSON type. A value of another type would name
+    another key than the server's spelling of it, which a later load would
+    refuse. Any other key type converts the value it is given.
+
+    Args:
+        cls: Model whose key field holds ``key``.
+        key: The JSON of the key field, as the assignment encoded it.
+
+    Raises:
+        TypeError: If the key is a value of another JSON type.
+    """
+    reduced = _reduce_key(cls, key)
+    if reduced is None:
+        return
+    owner, conversion, value = reduced
+    while isinstance(conversion, OptionalType | NewTypeType):
+        conversion = (
+            conversion.inner_type
+            if isinstance(conversion, OptionalType)
+            else conversion.inner
+        )
+    if not isinstance(conversion, BaseType):
+        return
+    base = conversion.base_type
+    while hasattr(base, "__supertype__"):
+        base = base.__supertype__
+    if typing.get_origin(base) is Literal:
+        table = _table_of(owner)
+        kinds = {
+            kind
+            for member in typing.get_args(base)
+            if (kind := _json_kind(_literal_json(member, table))) is not None
+        }
+    elif base in (int, str, float, bool):
+        kinds = {base.__name__}
+    else:
+        return
+    if _json_kind(value) not in kinds:
+        raise TypeError(
+            f"The key must be a JSON {' or '.join(sorted(kinds))}, not a "
+            f"{type(value).__name__}"
+        )
+
+
 def _key_problem(obj: JSONObject) -> str:
     """Say why an object's key is not known without a request.
 
@@ -4455,7 +4526,9 @@ class JSONProperty:
                 value names another key, or any key for an object read from a
                 hyperlink that has not learned its key.
             FieldConversionError: If the value cannot be converted to the key's
-                JSON value, or a related object cannot give its key.
+                JSON value, is of another JSON type than a key of type ``int``,
+                ``str``, ``float``, or ``bool`` has, or a related object cannot
+                give its key.
         """
         # Convert the key as if it were read from JSON, so it has the same
         # type before and after the object loads. A related object passed as
@@ -4473,6 +4546,7 @@ class JSONProperty:
                 value = _known_key(value)
             value = obj._key_as_read_from_json(value)
             encoded = obj._to_json(value, conversion)
+            _check_key_json_type(type(obj), encoded)
             named = _canonical_key_of(obj, encoded)
 
         name = type(obj).__name__
@@ -4564,11 +4638,13 @@ class JSONObject:
     object whose key is not known raises ``TypeError``, so the hash cannot
     change when the key becomes known.
 
-    A key compares by its encoding, so ``User(id="1")`` does not equal
-    ``User(id=1)``, and a spelling of one key that encodes alike, such as ``Z``
-    for ``+00:00``, does not change the hash. Give the key in its field's type.
-    A load or a write's response that names another key changes the hash, so
-    take the object out of a set or dict before such a load.
+    Once the key is known, the hash never changes. A spelling of one key that
+    encodes alike, such as ``Z`` for ``+00:00``, is the same key and is taken.
+    A key of type ``int``, ``str``, ``float``, or ``bool`` refuses a value of
+    another JSON type where it is given, so ``User(id="1")`` raises
+    ``FieldConversionError`` for an ``int`` key. Server state that names
+    another key, from a load, a write's response, or ``update_from_json()``, is
+    refused with ``ResponseShapeError``.
 
     Once the key is known, the program cannot change it. Assigning the key
     field, ``pk``, or a key relation a value that names another key raises
@@ -4812,11 +4888,10 @@ class JSONObject:
         key's field type, and written as text. So spellings of one value that
         encode alike, such as ``Z`` and ``+00:00`` for a ``datetime``, are one
         key, and so are a bare key and an embedded object of a relation. Keys
-        that encode differently are two keys, so ``Num(id="1")`` and
-        ``Num(id=1)`` differ, as do ``Decimal`` keys of different precision.
-        Equal objects have the same ``url``, unless one has its own URL, as an
-        object read through a ``Hyperlinked()`` relation has, or its class
-        overrides ``url``. A refresh leaves the saved key as it was.
+        that encode differently are two keys, as ``Decimal`` keys of different
+        precision are. Equal objects have the same ``url``, unless one has its
+        own URL, as an object read through a ``Hyperlinked()`` relation has, or
+        its class overrides ``url``. A refresh leaves the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself. So does
@@ -4854,12 +4929,12 @@ class JSONObject:
     def __hash__(self) -> int:
         """Return a hash that agrees with equality.
 
-        The hash is that of the model and the canonical key, so it changes only
-        when the object records server state that names another key, as when a
-        load or a write's response names another key. A spelling of the same
-        key does not change it. An object of a model without a key field hashes
-        by identity, because its key can never become known. Hashing sends no
-        request.
+        The hash is that of the model and the canonical key, so once the key is
+        known it never changes. A spelling of the same key does not change it,
+        and server state that names another key is refused. Hashing raises
+        ``TypeError`` until the key is known. An object of a model without a
+        key field hashes by identity, because its key can never become known.
+        Hashing sends no request.
 
         Returns:
             The hash.
@@ -4946,7 +5021,8 @@ class JSONObject:
                 key value for lazy lookup, or, for a hyperlinked relation, the
                 related object's URL.
             ty: Related ``JSONObject`` subclass type.
-            field: Optional owning field name for prefetch lookup.
+            field: Optional owning field name for prefetch lookup and for the
+                error that a wrong key raises.
             hyperlinked: Whether a string value is the related object's URL.
 
         Returns:
@@ -4957,6 +5033,8 @@ class JSONObject:
             ValueError: If a URL's origin is not one that the related model's
                 API allows.
             UsageError: If a class in the MRO of ``ty`` had ``api`` assigned.
+            FieldConversionError: If a key is of another JSON type than the
+                related model's key. It names ``field`` when that is given.
         """
         # If the argument is already an instance of ty, keep it as-is.
         if isinstance(arg, ty):
@@ -4990,7 +5068,17 @@ class JSONObject:
             related._url_override = url
             return related
 
-        related = ty(pk=arg, api=api, write_mode=self.write_mode)
+        related = ty(api=api, write_mode=self.write_mode)
+        try:
+            ty._pk._set_key(related, arg)
+        except FieldConversionError as err:
+            # The server's value is the relation field's, so the error names
+            # that field and not the related model's key.
+            if field is None or err.__cause__ is None:
+                raise
+            raise FieldConversionError(
+                type(self), field, cast(Exception, err.__cause__)
+            ) from err.__cause__
         if field is not None and field in self._prefetched_related:
             canonical = related._canonical_key()
             if canonical is not None:
@@ -5799,6 +5887,43 @@ class JSONObject:
             self._replace_json(self.merge_response(resp, self.json, sent))
         self._pending_updates.clear()
 
+    def _refuse_other_key(self, key: Any, *, adopt: bool) -> None:
+        """Refuse server state that names another key than the saved one.
+
+        A known key never changes, so the hash of an object does not change
+        once its key is known. A spelling of the same key is the same key.
+
+        Args:
+            key: The JSON that the server's state holds for the key field.
+            adopt: Whether an object whose key is not known takes the key that
+                the state names. If not, such an object refuses any key.
+
+        Raises:
+            ResponseShapeError: If the saved key is known and the state names
+                no key or another key, or the saved key is not known and
+                ``adopt`` is false. Nothing has changed.
+            TypeError: If the model's key declaration is refused when the key
+                is first used.
+            Exception: If the key's type cannot be resolved yet, whatever
+                resolving it raises, as ``url`` raises it.
+        """
+        _ = type(self)._pk.analyzed_type
+        saved = self._canonical_key()
+        if saved is None and adopt:
+            return
+        try:
+            named = _canonical_key_of(self, key)
+        except (TypeError, ValueError) as err:
+            if getattr(err, _DECLARATION_ERROR, False):
+                raise
+            named = None
+        if saved is not None and named is not None and named[1] == saved[1]:
+            return
+        raise ResponseShapeError(
+            "Incoming JSON primary key does not match this "
+            f"{type(self).__name__} object, whose key cannot change"
+        )
+
     def _replace_json(
         self,
         json: dict[str, Any],
@@ -5807,7 +5932,8 @@ class JSONObject:
         """Replace this object's JSON after a write or a load.
 
         The object records the key of the server's JSON as its saved key, if
-        that has the key field.
+        that has the key field. A key that is known never changes, so JSON that
+        names another key is refused before anything changes.
 
         Cached values stay valid for the fields whose JSON is unchanged, so
         only the others are dropped. In particular, a related object assigned
@@ -5818,6 +5944,10 @@ class JSONObject:
             json: The object's new JSON.
             server_json: The JSON that the server sent, if that is not
                 ``json``, which then holds the pending updates laid over it.
+
+        Raises:
+            ResponseShapeError: If the server's JSON names another key than the
+                saved key. The object is unchanged.
         """
         before = self._json if self._json is not None else {}
         json = self._readable_json(json)
@@ -5825,12 +5955,8 @@ class JSONObject:
             key: str = type(self)._pk.json_field
             server = json if server_json is None else server_json
             if key in server:
-                # A URL that a hyperlink named is the object's only while the
-                # object keeps its key.
-                known = self._canonical_key() if self._url_override else None
+                self._refuse_other_key(server[key], adopt=True)
                 self._record_saved_key(server[key])
-                if known is not None and known != self._canonical_key():
-                    self._url_override = None
         self._json = json
 
         for field in getattr(self, "_json_fields", ()):
@@ -5859,9 +5985,9 @@ class JSONObject:
         is a body. A body that omits fields, or no body at all, as with
         ``204 No Content``, therefore keeps their values. A field that the
         server computes, such as a modification time, keeps its old value
-        unless the body holds it. The body may change any field, including the
-        primary key, so the object then names the object that the body
-        describes.
+        unless the body holds it. The body may change any field, but not a
+        primary key that is known. A body that names another key makes the
+        object raise ``ResponseShapeError`` when it records the body.
 
         Override this hook for an API whose write responses hold something
         other than the object, such as a status message. Raise before changing
@@ -5950,8 +6076,8 @@ class JSONObject:
                 ``None``, as for an object built without a key or read from
                 JSON that lacks it.
             ResponseShapeError: If the response body does not hold a JSON
-                object. The server may have applied the updates, but they
-                remain pending.
+                object, or names another primary key than the object has. The
+                server may have applied the updates, but they remain pending.
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response, or a field cannot be sent as a form
                 field.
@@ -6034,12 +6160,14 @@ class JSONObject:
                 later does not change the object.
 
         Raises:
-            ValueError: If the payload has the key field and its key, or the
-                object's saved key, is not known, or the two have different
-                canonical keys, so that the payload does not name this object.
-                A key is not known if it is ``None`` or cannot be converted. An
-                object that has its own URL, as one read from a hyperlink has,
-                takes the payload's key if its saved key is absent or ``None``.
+            ResponseShapeError: If the payload has the key field and its key,
+                or the object's saved key, is not known, or the two have
+                different canonical keys, so that the payload does not name
+                this object. A key is not known if it is ``None`` or cannot be
+                converted. An object that has its own URL, as one read from a
+                hyperlink has, takes the payload's key if its saved key is
+                absent or ``None``. It is a ``ValueError``, and nothing is
+                merged.
             TypeError: If the model's key declaration is refused when the key
                 is first used.
             Exception: If the key's type cannot be resolved yet, whatever
@@ -6055,21 +6183,13 @@ class JSONObject:
         # refuses is refused here, as every other use of the key refuses it.
         _ = type(self)._pk.analyzed_type
         # A payload without the key names no other object. An object known only
-        # by its URL takes the key that the payload names.
-        if self._pk_json_field in payload and not self._key_is_unknown():
-            try:
-                named = _canonical_key_of(self, payload[self._pk_json_field])
-            except (TypeError, ValueError) as err:
-                if getattr(err, _DECLARATION_ERROR, False):
-                    raise
-                named = None
-            saved = self._canonical_key()
-            # Two keys that are not known name no common resource, and an
-            # object whose key is not known equals only itself.
-            if named is None or saved is None or named[1] != saved[1]:
-                raise ValueError(
-                    "Incoming JSON primary key does not match this object"
-                )
+        # by its URL takes the key that the payload names. Two keys that are
+        # not known name no common resource, and an object whose key is not
+        # known equals only itself.
+        if self._pk_json_field in payload:
+            self._refuse_other_key(
+                payload[self._pk_json_field], adopt=self._key_is_unknown()
+            )
 
         if self._json is None:
             self._json = {}
@@ -6224,7 +6344,11 @@ class JSONObject:
             returns.
         """
         conversion = type(self)._pk.analyzed_type
-        value = self._from_json(self._to_json(key, conversion), conversion)
+        value = self._from_json(
+            self._to_json(key, conversion),
+            conversion,
+            field=type(self)._pk.field,
+        )
         while isinstance(value, JSONObject):
             value = _held_key(value)
         return value
@@ -6334,7 +6458,8 @@ class JSONObject:
         """Load this object's JSON from the API, keeping pending updates.
 
         Raises:
-            ResponseShapeError: If the response does not hold a JSON object.
+            ResponseShapeError: If the response does not hold a JSON object, or
+                names another primary key than the object has.
             UsageError: If the key was changed in place.
         """
         # Reloading drops cached values, so queue their in-place changes first.

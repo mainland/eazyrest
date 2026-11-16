@@ -291,15 +291,22 @@ describe them further.
   identity or cannot be hashed, such as a `list`, gives equal objects with
   equal hashes, and spellings that decode to one value and encode alike, such
   as `Z` and `+00:00`, are one key. A key that encodes differently is another
-  key, so `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
-  `User(id=1)`. Give the key in its field's type. A refresh leaves the key, the
-  hash, and the `url` as they were. Assigning another key to an object that has
-  its key raises `AttributeError`, and a key changed in place raises
-  `UsageError` from `save()`, where 1.0.0a5 kept the change pending and left
-  the key, the hash, and the `url` until `save()` sent it. An object without a
-  known key still equals only itself, and `hash()` of one raises `TypeError`,
-  unless its model has no key field. The message says what is wrong with the
-  key.
+  key, as `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`,
+  `float`, or `bool` refuses a value of another JSON type where it is given,
+  with `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
+  `User(id=True)` raise, where `v1.0.0a5` gave other keys that a load of the
+  object then replaced and so changed its hash. A related object that a read
+  builds from the server's JSON is checked too, and the error names the
+  relation field. Give the key in its field's type. Once the key is known it
+  never changes. A refresh leaves the key, the hash, and the `url` as they
+  were. Assigning another key to an object that has its key raises
+  `AttributeError`, and a key changed in place raises `UsageError` from
+  `save()`, where `v1.0.0a5` kept the change pending and left the key, the
+  hash, and the `url` until `save()` sent it. A load, a write's response, and
+  `update_from_json()` that name another key raise `ResponseShapeError`, a
+  `ValueError`, and change nothing. An object without a known key still equals
+  only itself, and `hash()` of one raises `TypeError`, unless its model has no
+  key field. The message says what is wrong with the key.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary. A key that hashes by identity is found
@@ -358,12 +365,19 @@ that can break code written for 0.9.0, followed by what to do about it.
   raises `UsageError` from `save()` and from an eager assignment of any field,
   before anything is sent. An object that has no key and no URL of its own
   takes the key that it is given, as before, and so does one built from JSON
-  that lacks the key or holds `null`, which 1.0.0a5 queued as a change that
+  that lacks the key or holds `null`, which `v1.0.0a5` queued as a change that
   `save()` could not send. An object read from a hyperlink learns its key at
   its first load, so assigning it a key raises `AttributeError`. To rename a
   resource on a server that allows it, send the write with the raw API, as
   `api.patch(obj.url, json={"id": 2})`, and build the object again from the
-  response.
+  response. A known key is also kept when the server names another one. A load,
+  a write's response, and `update_from_json()` raise `ResponseShapeError`, a
+  `ValueError`, and change nothing, where 0.9.0 replaced the object's JSON and
+  so its key. A write's response that is refused leaves the pending updates. A
+  key whose type is `int`, `str`, `float`, or `bool` refuses a value of another
+  JSON type where it is given, as `User(id="1")` does for an `int` key, with
+  `FieldConversionError`. So does a related object that a read builds from the
+  server's JSON, and the error names the relation field.
 - A write response is merged into the object through the new `merge_response()`
   hook, rather than replacing its JSON. A response without a body, such as
   `204 No Content`, keeps the values that were sent. `create()` keeps only the
@@ -500,12 +514,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   JSON, so a key of any type, including one that compares by identity or cannot
   be hashed, such as a `list`, gives equal objects with equal hashes, and
   spellings that decode to one value and encode alike, such as `Z` and
-  `+00:00`, are one key. A key that encodes differently is another key, so
-  `User(id="1")`, `User(id=1.0)`, and `User(id=True)` do not equal
-  `User(id=1)`. Give the key in its field's type. A refresh leaves the key, the
-  hash, and the `url` as they were. An object without a known key still equals
-  only itself, and `hash()` of one raises `TypeError`, unless its model has no
-  key field. The message says what is wrong with the key.
+  `+00:00`, are one key. A key that encodes differently is another key, as
+  `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`, `float`,
+  or `bool` refuses a value of another JSON type where it is given, with
+  `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
+  `User(id=True)` raise, and so does a related object that a read builds from
+  the server's JSON, with an error that names the relation field. Give the key
+  in its field's type. A refresh leaves the key, the hash, and the `url` as
+  they were. An object without a known key still equals only itself, and
+  `hash()` of one raises `TypeError`, unless its model has no key field. The
+  message says what is wrong with the key.
 - The `pk` and `url` of a model whose primary key is a relation give the key
   that the model copied from the related object when the relation was assigned
   or loaded, where 0.9.0 asked the related object that the constructor or the
