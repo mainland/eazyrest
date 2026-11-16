@@ -286,7 +286,9 @@ class _ModelPageSource(_PageSource[Any]):
         Returns:
             The page of objects.
         """
-        return self.page(_request_page(self.api, url, allow_other_origins))
+        return self.page(
+            _request_page(self.api, url, allow_other_origins, from_server=True)
+        )
 
     def page(self, resp: Response) -> Page[Any]:
         """Read a page of objects from its response.

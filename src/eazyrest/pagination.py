@@ -162,29 +162,39 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
     return results
 
 
-def _page_url_subject(prepared: _ServerURL | None, label: str) -> str:
+def _page_url_subject(
+    prepared: _ServerURL | None, label: str, from_server: bool
+) -> str:
     """Name a page URL in a message.
 
     Args:
         prepared: The URL as requests prepares it, or ``None`` if requests
             cannot.
         label: What the message calls the URL, such as ``"Page URL"``.
+        from_server: Whether a response supplied the link, as a next-page link,
+            and eazyrest refuses to send it or stops on it. A link that the
+            caller gave is the URL that eazyrest was asked to send.
 
     Returns:
-        ``label`` with the URL, as requests prepares it and without its user
-        and password, since the link is the URL that eazyrest was asked to
-        send. For a URL that is not HTTP or HTTPS, whose text can read as a
-        user and password, ``label`` says only that. For a URL that requests
-        cannot prepare, ``label`` alone.
+        ``label`` with the URL's origin if ``from_server``, built from the
+        parts of its reading so that it holds no user, password, or query.
+        Otherwise ``label`` with the URL as requests prepares it, without its
+        user and password. For a URL that is not HTTP or HTTPS, whose text can
+        read as a user and password, ``label`` says only that. For a URL that
+        requests cannot prepare, ``label`` alone.
     """
     if prepared is None:
         return label
     if not prepared.is_http:
         return f"{label}, which is not an HTTP or HTTPS URL,"
+    if from_server:
+        return f"{label} {prepared.origin_text!r}"
     return f"{label} {_redact_url(prepared.url)!r}"
 
 
-def _check_page_origin(api: Client, url: str) -> None:
+def _check_page_origin(
+    api: Client, url: str, from_server: bool = False
+) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
     The URL is read once, as requests prepares it, and the origin and the
@@ -193,27 +203,34 @@ def _check_page_origin(api: Client, url: str) -> None:
     Args:
         api: Client that would request the page.
         url: Absolute URL of the page.
+        from_server: Whether a response supplied ``url``, as a next-page link.
 
     Raises:
         PaginationError: If ``url`` has another origin, or requests cannot
             prepare it. The message of the second quotes none of it, and
             attaches no error, as for ``_resolve()``. The message of the first
-            quotes the link as requests prepares it, without its user and
-            password, or says that it is not an HTTP or HTTPS URL.
+            quotes the URL's origin alone if ``from_server``, and otherwise the
+            link as requests prepares it, without its user and password. It
+            says only that the URL is not an HTTP or HTTPS URL if it is not.
+            The page's link is on ``Page.next_url``.
     """
     prepared = _prepare_server_url(_as_api(api).session, url)
     if prepared is None:
         raise PaginationError(_UNPARSABLE_PAGE_URL)
     if prepared.origin != _origin(api.base_url):
+        subject = _page_url_subject(prepared, "Page URL", from_server)
         raise PaginationError(
-            f"{_page_url_subject(prepared, 'Page URL')} has a different "
-            f"origin from the API's base URL {_redact_url(api.base_url)!r}. "
+            f"{subject} has a different origin from the API's base URL "
+            f"{_redact_url(api.base_url)!r}. "
             "Pass allow_other_origins=True to follow it."
         )
 
 
 def _request_page(
-    api: Client, url: str, allow_other_origins: bool
+    api: Client,
+    url: str,
+    allow_other_origins: bool,
+    from_server: bool = False,
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
@@ -223,6 +240,8 @@ def _request_page(
         allow_other_origins: Whether the page and its redirects may have an
             origin other than the API's base URL. A redirect must still lead
             to an origin that the API allows.
+        from_server: Whether a response supplied ``url``, as a next-page link,
+            so that a message quotes its origin alone.
 
     Returns:
         Response for the page.
@@ -239,7 +258,7 @@ def _request_page(
     api = _as_api(api)
     api_origin = _origin(api.base_url)
     if not allow_other_origins:
-        _check_page_origin(api, url)
+        _check_page_origin(api, url, from_server)
     # Prepare the link as requests will, before anything is sent, so that an
     # error that requests raises for the link, which can quote it, is not the
     # request's. An error from the request itself, or from a session hook,
@@ -383,20 +402,23 @@ class _PageReader:
             subject = _page_url_subject(
                 _prepare_server_url(_as_api(self.api).session, url),
                 "Next-page URL",
+                from_server=True,
             )
             raise PaginationError(
                 f"{subject} names a page that was already read, so "
                 "following it would never end"
             )
         if not self.allow_other_origins:
-            _check_page_origin(self.api, url)
+            _check_page_origin(self.api, url, from_server=True)
         limit = self.api.max_pages
         if limit is not None and self.pages >= limit:
             raise LimitExceeded(
                 "max_pages", f"The collection has more than {limit} pages"
             )
         self.pages += 1
-        resp = _request_page(self.api, url, self.allow_other_origins)
+        resp = _request_page(
+            self.api, url, self.allow_other_origins, from_server=True
+        )
         # After a redirect, a page's links are relative to its final URL.
         self.read_urls.update((url, resp.url))
         return resp
@@ -795,6 +817,7 @@ class Page(Generic[T]):
             subject = _page_url_subject(
                 _prepare_server_url(_as_api(self._source.api).session, url),
                 "Page URL",
+                from_server=True,
             )
             raise PaginationError(
                 f"{subject} names a page that was already read, so "
@@ -866,7 +889,9 @@ class _JSONPageSource(_PageSource[Any]):
         Returns:
             The page.
         """
-        return self.page(_request_page(self.api, url, allow_other_origins))
+        return self.page(
+            _request_page(self.api, url, allow_other_origins, from_server=True)
+        )
 
     def page(self, resp: Response) -> Page[Any]:
         """Read a page from its response and attach this source.

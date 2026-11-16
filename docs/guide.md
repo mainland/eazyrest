@@ -533,16 +533,17 @@ appear. Send a secret in a header or the body, not in the query. A message
 leaves out a user and password in such a URL, so `http://user:pass@host/x?a=b`
 appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
 error's `request` and `response` keep the real URL. No message quotes any part
-of a URL that a response supplied: a `Location`, the URL that a followed
-redirect reached, such as a signed download URL, or a URL that a response hook
-chose. A message about such a URL says what happened, as that a request "was
-redirected to another origin", and the URL stays on the error's `response`. The
-`repr()` of a `Page` shows the URL that it was asked for, and not the one that
-a redirect chose, and the `repr()` of an object known only by its URL leaves
-out a user and password too. An exception that requests itself raises, such as
-`requests.ConnectionError`, quotes the URL as requests does, with its path and
-query, also for the host that a redirect reached. A Pydantic error says where
-and why a value is invalid, as in
+of a URL that a response supplied, such as a `Location`, the URL that a
+followed redirect reached, like a signed download URL, or a URL that a response
+hook chose, but for one case: a next-page link that eazyrest refuses to send or
+stops on is quoted by its origin alone. A message about a redirect says what
+happened, as that a request "was redirected to another origin", and the URL
+stays on the error's `response`. The `repr()` of a `Page` shows the URL that it
+was asked for, and not the one that a redirect chose, and the `repr()` of an
+object known only by its URL leaves out a user and password too. An exception
+that requests itself raises, such as `requests.ConnectionError`, quotes the URL
+as requests does, with its path and query, also for the host that a redirect
+reached. A Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1467,12 +1468,15 @@ that requests cannot prepare or send raises `PaginationError`, whose message
 quotes none of the link, since the server chose it, and which has no
 `__cause__` or `__context__`, since the error that rejected the link can quote
 it. This holds also with `allow_other_origins=True`, and for the link to a
-previous page. The error for a link to another origin quotes the link as
-requests prepares it, without its user and password, since the link is the URL
-that eazyrest was asked to send, and so does the error for a link to a page
-already read. The whole link is on `Page.next_url` or `Page.previous_url`. A
-link that is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is not
-quoted, since its text can read as a user and password.
+previous page. The error for a link to another origin, and the error for a link
+to a page already read, quote the link's origin alone, such as
+`'https://other.example.net'`, because the server chose the link and eazyrest
+refuses to send it or stops on it, and its query can hold a signature or a
+token. The whole link is on `Page.next_url` or `Page.previous_url`. A link that
+is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is not quoted at
+all, since its text can read as a user and password. The URL that you give for
+the first page is not a link of the server, so a message about it quotes the
+URL as requests prepares it, with its query and without its user and password.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed, and reads the target as the check of any other

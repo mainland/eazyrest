@@ -53,3 +53,21 @@ class _ServerURL(NamedTuple):
     def origin(self) -> tuple[str, str | None, int | None]:
         """The scheme, host, and port that requests reads from the URL."""
         return self.scheme, self.host, self.port
+
+    @property
+    def origin_text(self) -> str:
+        """What a message quotes of an HTTP or HTTPS URL that it refuses.
+
+        The text is built from the parts of the reading and not from the URL's
+        text, so it holds no user, password, path, query, or fragment. It is
+        ``scheme://host``, with ``:port`` unless the port is the scheme's
+        default, and the host in brackets if it is an IPv6 address. Only an
+        HTTP or HTTPS URL has an origin, so this is meaningful only if
+        ``is_http`` is true.
+        """
+        host = self.host or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if self.port != _DEFAULT_PORTS.get(self.scheme):
+            host = f"{host}:{self.port}"
+        return f"{self.scheme}://{host}"

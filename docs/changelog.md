@@ -144,13 +144,17 @@ describe them further.
   as `http://user:pass@host/` must compare it without them. The `repr()` of a
   `Page`, and of an object known only by its URL, leaves them out too. A
   message names a request by the URL that eazyrest was asked to send, such as
-  the one that you passed to `get()` or a next-page link, and quotes no part of
-  a URL that a response supplied. After a followed redirect it names the URL
-  that was asked for, and not the one that the redirect reached, and a refused
-  redirect no longer names the origin that it was refused for, so code that
-  looked in a message for either must read the error's `response`, whose `url`
-  and `Location` header hold them. The `repr()` of a `Page` shows the URL that
-  it was asked for. An exception that requests itself raises, such as
+  the one that you passed to `get()` or a next-page link that was sent, and
+  quotes no part of a URL that a response supplied. The one exception is a
+  next-page link that eazyrest refuses to send or stops on, because it has
+  another origin or names a page that was already read: the message quotes its
+  origin alone, without its query, which can hold a signature or a token, and
+  the whole link is on `Page.next_url`. After a followed redirect it names the
+  URL that was asked for, and not the one that the redirect reached, and a
+  refused redirect no longer names the origin that it was refused for, so code
+  that looked in a message for either must read the error's `response`, whose
+  `url` and `Location` header hold them. The `repr()` of a `Page` shows the URL
+  that it was asked for. An exception that requests itself raises, such as
   `requests.ConnectionError`, quotes the URL of that host with its path and
   query.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
