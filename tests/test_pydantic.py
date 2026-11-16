@@ -11,6 +11,7 @@ import importlib
 import subprocess
 import sys
 import uuid
+import weakref
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import (
@@ -218,15 +219,43 @@ def test_repeated_encoding_does_not_grow_the_table_serializers() -> None:
     assert count() <= warm
 
 
-def test_live_adapter_keeps_its_conversion_schema_after_collection() -> None:
-    """A serializer in use is still told from Pydantic's after a collection."""
-    adapter = TypeAdapter(DecimalType)
-    expected = {"type": "string", "format": "decimal"}
+def test_table_serializer_lives_exactly_as_long_as_its_adapter() -> None:
+    """A serializer is kept while an adapter uses it and freed after."""
+
+    class Color(enum.Enum):
+        """Enum that only this test names."""
+
+        RED = "red"
+
+    serializers = eazyrest.pydantic._TABLE_SERIALIZERS
+    before = set(serializers)
+    adapter = PydanticType(Color).adapter
+    # eazyrest's schema of an enum, unlike Pydantic's, has no title or type.
+    expected = {"enum": ["red"]}
     assert adapter.json_schema(mode="serialization") == expected
 
     gc.collect()
 
     assert adapter.json_schema(mode="serialization") == expected
+
+    (serializer,) = set(serializers) - before
+    freed = weakref.ref(serializer)
+    del serializer, before
+    gc.collect()
+    assert freed() is not None
+
+    del adapter
+    # The annotation that holds the serializer is also in a bounded cache of
+    # typing's, which fresh annotations push it out of.
+    for count in range(4096):
+        Annotated[int, count]
+        if count % 64 == 0:
+            gc.collect()
+            if freed() is None:
+                break
+    gc.collect()
+
+    assert freed() is None
 
 
 @with_config(ConfigDict(extra="allow"))
