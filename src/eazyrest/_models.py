@@ -1450,94 +1450,6 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
     return False
 
 
-def _holds_model_anywhere(
-    analyzed: AnalyzedType,
-    table: Mapping[Any, Conversion],
-    seen: set[type[Any]] | None = None,
-    *,
-    strict: bool = False,
-) -> bool:
-    """Return whether a type holds a related model in any form.
-
-    Unlike ``_holds_model()``, it looks inside mappings, fixed-length tuples,
-    and the ``TypedDict``, ``NamedTuple``, and dataclass forms, which analyze
-    their fields when first needed. It does not look inside a type that an
-    entry of the table converts, since the entry replaces that type's structure
-    and its fields are never analyzed. It looks through a ``NewType`` to the
-    type that the ``NewType`` names.
-
-    A strict walk resolves the whole type, as converting a value of it would.
-    It builds the adapter of each type that Pydantic converts, and resolves the
-    annotations of each form, so that whatever a conversion would resolve, it
-    resolves first. It stops at the first model that it finds, since a key that
-    holds one is refused whatever else it holds.
-
-    Args:
-        analyzed: Analyzed type.
-        table: Conversion table of the model whose field it is.
-        seen: Forms already visited, which keeps a self-referential one from
-            looping.
-        strict: Whether anything that cannot be resolved raises, as when the
-            key is first used, so that the check runs again once it can be.
-            Otherwise a form that cannot be analyzed holds no model that this
-            reports.
-
-    Returns:
-        Whether ``analyzed`` is a related model or holds one. A form whose
-        fields cannot be analyzed holds none that this reports unless
-        ``strict``, since that reason is refused when it is first used.
-
-    Raises:
-        Exception: If ``strict`` and a form's annotations cannot be resolved, a
-            name in a type alias names nothing yet, or an adapter cannot be
-            built, whatever resolving the name raised.
-    """
-    seen = set() if seen is None else seen
-    if _class_entry(analyzed, table) is not None:
-        return False
-    match analyzed:
-        case RelatedType():
-            return True
-        case PydanticType():
-            if strict:
-                _ = analyzed.adapter
-            return False
-        case (
-            OptionalType(inner) | CollectionType(_, inner) | MappingType(inner)
-        ):
-            return _holds_model_anywhere(inner, table, seen, strict=strict)
-        case NewTypeType(_, inner):
-            return _holds_model_anywhere(inner, table, seen, strict=strict)
-        case FixedTupleType(item_types):
-            return any(
-                _holds_model_anywhere(item, table, seen, strict=strict)
-                for item in item_types
-            )
-        case TypedDictType(form) | NamedTupleType(form) | DataclassType(form):
-            if form in seen:
-                return False
-            seen.add(form)
-            try:
-                if isinstance(analyzed, TypedDictType):
-                    members = list(analyzed.keys.values())
-                elif isinstance(analyzed, NamedTupleType):
-                    members = [member for _, member in analyzed.fields]
-                else:
-                    assert isinstance(analyzed, DataclassType)
-                    members = [member for _, member, _ in analyzed.fields]
-            except _ModelInContainerError:
-                return True
-            except Exception:
-                if strict:
-                    raise
-                return False
-            return any(
-                _holds_model_anywhere(item, table, seen, strict=strict)
-                for item in members
-            )
-    return False
-
-
 def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
     """Refuse a related object that is not of the relation's model.
 
@@ -1710,10 +1622,9 @@ def _held_key(obj: JSONObject) -> Any:
         obj: Model object.
 
     Returns:
-        The key as ``pk`` returns it, so the related object's own key, and in
-        turn its key if that is a relation, when the key is a relation.
-        ``None`` if the model has no key field, or the object holds no key, or
-        holds ``None``.
+        The key as ``pk`` returns it, so the related object's own key when the
+        key is a relation. ``None`` if the model has no key field, or the
+        object holds no key, or holds ``None``.
 
     Raises:
         ValueError: If the JSON holds a key that the field cannot convert. A
@@ -1736,21 +1647,21 @@ def _held_key(obj: JSONObject) -> Any:
 def _reduce_key(
     cls: type[JSONObject], key: Any
 ) -> tuple[type[JSONObject], AnalyzedType, Any] | None:
-    """Reduce a saved key's JSON to the key of the last model of its chain.
+    """Reduce a saved key's JSON to the key of the model that holds the value.
 
-    A key that is a relation names the related object's key, which may be a
-    relation in turn. An embedded object gives its key field's value, and a
-    bare key already is the related key's JSON.
+    A key that is a relation names the related object's key, which is not a
+    relation. An embedded object gives its key field's value, and a bare key
+    already is the related key's JSON.
 
     Args:
         cls: Model whose key field holds ``key``.
         key: The JSON of the key field.
 
     Returns:
-        The model at the end of the chain of relations, the analyzed type of
-        its key field, and the key's JSON for that field. ``None`` if the chain
-        does not reach a key: the JSON is ``null``, or it embeds an object
-        without the key field, or the relation is hyperlinked.
+        The model whose conversions decode the key, the analyzed type of its
+        key field, and the key's JSON for that field. ``None`` if the JSON does
+        not give a key: it is ``null``, or it embeds an object without the key
+        field.
 
     Raises:
         UsageError: If a related model had ``api`` assigned after the class was
@@ -1761,39 +1672,21 @@ def _reduce_key(
     prop = _pk_property_of(cls)
     if prop is None or key is None:
         return None
-    owner = cls
     conversion = prop.analyzed_type
-    while (related := _related_key_type(conversion)) is not None:
-        _check_api_attribute(related.model_type, UsageError)
-        inner = _pk_property_of(related.model_type)
-        if related.hyperlinked or inner is None:
+    related = _related_key_type(conversion)
+    if related is None:
+        return cls, conversion, key
+    _check_api_attribute(related.model_type, UsageError)
+    inner = _pk_property_of(related.model_type)
+    # The check of the key refused a relation to a model without a key.
+    assert inner is not None
+    if isinstance(key, dict):
+        if inner.json_field not in key:
             return None
-        if isinstance(key, dict):
-            if inner.json_field not in key:
-                return None
-            key = key[inner.json_field]
-            if key is None:
-                return None
-        owner = related.model_type
-        conversion = inner.analyzed_type
-    return owner, conversion, key
-
-
-def _resolve_key_chain(analyzed: AnalyzedType) -> None:
-    """Resolve the key type of each model that a key relation leads to.
-
-    The related model's key resolves in turn, so the whole chain does. A key
-    that is a hyperlinked relation is refused before this is reached.
-
-    Args:
-        analyzed: Analyzed type of a primary key field.
-
-    Raises:
-        Exception: Whatever resolving the key type of a related model raises.
-    """
-    related = _related_key_type(analyzed)
-    if related is not None:
-        _ = related.model_type._pk.analyzed_type
+        key = key[inner.json_field]
+        if key is None:
+            return None
+    return related.model_type, inner.analyzed_type, key
 
 
 def _resolve_key(cls: type[JSONObject]) -> None:
@@ -1801,11 +1694,10 @@ def _resolve_key(cls: type[JSONObject]) -> None:
 
     Every use of a key resolves its type through this, before it converts
     anything. Resolving the type is everything that converting a key would
-    resolve: the key's annotation, the value of each type alias in it, the
-    annotations of each ``TypedDict``, ``NamedTuple``, and dataclass in it, the
-    adapter of each type that Pydantic converts, and the key type of each model
-    that a key relation leads to. Converting a key then resolves no name. The
-    result is cached on the key's property, and only once it is complete.
+    resolve: the key's annotation, the value of each type alias in it, and the
+    key type of the model that a key relation leads to. Converting a key then
+    resolves no name. The result is cached on the key's property, and only once
+    it is complete.
 
     Args:
         cls: Model class that has a primary key.
@@ -1814,8 +1706,7 @@ def _resolve_key(cls: type[JSONObject]) -> None:
         TypeError: If the model's key declaration is refused, which carries a
             mark that tells it from a name that is not defined yet.
         Exception: Whatever resolving a name in the key's type raises, such as
-            a ``NameError``, an ``AttributeError``, or a ``TypeError`` that
-            says that a form's annotations cannot be resolved.
+            a ``NameError`` or an ``AttributeError``.
     """
     _ = cls._pk.analyzed_type
 
@@ -1828,9 +1719,9 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
         key: The JSON of the key field.
 
     Returns:
-        The key as ``pk`` returns it, so the key of the last model of a chain
-        of relations, decoded with that model's conversions. ``None`` if the
-        chain does not reach a key.
+        The key as ``pk`` returns it, so the related model's key when the key
+        is a relation, decoded with that model's conversions. ``None`` if the
+        JSON does not give a key.
 
     Raises:
         TypeError: If the key cannot be decoded.
@@ -1853,9 +1744,9 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
 def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
     """Return the canonical key that the JSON of a key field names.
 
-    The key is reduced along its chain of relations, decoded and encoded again
-    by the last model's field type, and written as JSON text with sorted keys
-    and fixed separators.
+    The key is reduced to the related model's key if it is a relation, decoded
+    and encoded again by that field's type, and written as JSON text with
+    sorted keys and fixed separators.
 
     Args:
         obj: Model object, or any object of the model that owns the key field.
@@ -1952,8 +1843,7 @@ def _known_key(obj: JSONObject) -> Any:
     """Return a related object's primary key if it is known without a request.
 
     The key is known if the object holds it, or its JSON has it. A key that is
-    itself a relation gives the key of the model it ends at, so no level loads
-    anything.
+    a relation gives the related model's key, so nothing loads.
 
     Args:
         obj: Related object that is to be the key of a model.
@@ -3089,185 +2979,17 @@ def _check_key_is_leaf_or_relation(
         return
     related = _related_key_type(analyzed)
     if related is not None:
-        prop = _pk_property_of(related.model_type)
-        if prop is not None:
-            try:
-                inner = analyze_type(prop._resolve_type())
-            except _ModelInContainerError:
-                pass
-            except Exception:
-                if strict:
-                    raise
-                return
-            else:
-                if _is_leaf_key(inner, _table_of(related.model_type)):
-                    return
-    raise _key_type_error(cls, field)
-
-
-def _key_holds_relation_error(cls: type[JSONObject], field: str) -> TypeError:
-    """Return the refusal of a primary key that holds related objects.
-
-    Args:
-        cls: Model class that declares the key.
-        field: Name of the primary-key field.
-
-    Returns:
-        A ``TypeError`` that a conversion reports as a plain one, as decorating
-        the class does, not as the conversion of a value.
-    """
-    error = TypeError(
-        f"{cls.__name__}.{field} is the primary key, and a primary key "
-        "cannot hold related objects inside a collection, a mapping, a "
-        "fixed-length tuple, a TypedDict, a NamedTuple, or a dataclass. "
-        "Declare the key as the related model, or as the type of its key."
-    )
-    setattr(error, _DECLARATION_ERROR, True)
-    return error
-
-
-def _check_key_holds_no_relation(
-    cls: type[JSONObject],
-    field: str,
-    analyzed: AnalyzedType,
-    *,
-    strict: bool = False,
-) -> None:
-    """Refuse a primary key whose type holds relations inside a container.
-
-    A key that is a relation reads as the related object's key, which the model
-    copies, and equality and ``url`` read the key's JSON without an object of
-    the model. A key such as ``list[User]`` would need each related object
-    built, with the API and the write mode of the object that holds it. So
-    would one in a mapping, a fixed-length tuple, or a ``TypedDict``,
-    ``NamedTuple``, or dataclass, unless the model's conversion table converts
-    that class.
-
-    Args:
-        cls: Model class that declares the key.
-        field: Name of the primary-key field.
-        analyzed: Analyzed type of the field.
-        strict: Whether to resolve the whole type, so that anything in it that
-            cannot be resolved raises, as it does when the key is first used.
-            At decoration it is ignored, since the class may be defined later.
-
-    Raises:
-        TypeError: If ``analyzed`` holds a relation, such as ``list[User]``,
-            other than being the relation itself.
-        Exception: If ``strict`` and anything in the type cannot be resolved,
-            whatever resolving it raises.
-    """
-    if _related_key_type(analyzed) is None and _holds_model_anywhere(
-        analyzed, _table_of(cls), strict=strict
-    ):
-        raise _key_holds_relation_error(cls, field)
-
-
-def _resolve_chain_key(
-    cls: type[JSONObject],
-    prop: JSONProperty,
-    names: Mapping[str, Any] | None,
-) -> Any:
-    """Resolve the key type of a model in the chain that ``cls`` starts.
-
-    A model resolves its key in its own module's namespace. The class being
-    decorated is not bound there yet, so a reference to it by name can fail,
-    and only for a model in that class's module does the name stand for it.
-
-    Args:
-        cls: Model class whose key is being checked.
-        prop: Primary-key property of a model in the chain.
-        names: Classes to resolve names to if the model's own namespace does
-            not resolve them, or ``None``.
-
-    Returns:
-        The resolved type of the key.
-
-    Raises:
-        Exception: If the annotation names something undefined.
-    """
-    try:
-        return prop._resolve_type()
-    except Exception:
-        if not names or prop.cls.__module__ != cls.__module__:
-            raise
-        return prop._resolve_type(names)
-
-
-def _key_cycle(
-    cls: type[JSONObject],
-    analyzed: AnalyzedType,
-    names: Mapping[str, Any] | None = None,
-) -> list[type[JSONObject]] | None:
-    """Find the cycle that a key relation makes, if it leads back to a model.
-
-    Follows the chain of models whose keys are relations, starting at ``cls``,
-    and stops at a key that is not a relation, a model without a key, or a key
-    whose type does not resolve yet.
-
-    Args:
-        cls: Model class whose key has the type ``analyzed``.
-        analyzed: Analyzed type of ``cls``'s primary key.
-        names: Classes to resolve names to when following the chain.
-
-    Returns:
-        The models of the chain from the first one that repeats, ending with
-        that model again, or ``None`` if the chain does not return to a model.
-    """
-    chain = [cls]
-    related = _related_key_type(analyzed)
-    while related is not None:
-        model = related.model_type
-        if model in chain:
-            return [*chain[chain.index(model) :], model]
-        chain.append(model)
-        prop = _pk_property_of(model)
-        if prop is None:
-            return None
         try:
-            related = _related_key_type(
-                analyze_type(_resolve_chain_key(cls, prop, names))
-            )
-        except Exception:  # noqa: BLE001
-            # A reference to a class that is not defined yet, or a type that is
-            # refused when its field is first used. The chain is checked again
-            # then.
-            return None
-    return None
-
-
-def _check_key_not_cyclic(
-    cls: type[JSONObject],
-    field: str,
-    analyzed: AnalyzedType,
-    names: Mapping[str, Any] | None = None,
-) -> None:
-    """Refuse a primary key that is a relation leading back to a model in it.
-
-    Such a key never gives a key that is not a relation, so the model's objects
-    have no URL and no key to compare by.
-
-    Args:
-        cls: Model class that declares the key.
-        field: Name of the primary-key field.
-        analyzed: Analyzed type of the field.
-        names: Classes to resolve names to when following the chain.
-
-    Raises:
-        TypeError: If the chain of key relations returns to a model in it.
-    """
-    cycle = _key_cycle(cls, analyzed, names)
-    if cycle is not None:
-        path = " -> ".join(model.__name__ for model in cycle)
-        error = TypeError(
-            f"{cls.__name__}.{field} is the primary key, and a primary key "
-            f"cannot be a relation that leads back to a model in its own "
-            f"chain of keys: {path}. End the chain at a model whose key is "
-            "not a relation."
-        )
-        # Report it as a plain TypeError, as decorating the class does.
-        setattr(error, _DECLARATION_ERROR, True)
-        raise error
+            inner = analyze_type(related.model_type._pk._resolve_type())
+        except _ModelInContainerError:
+            raise _key_type_error(cls, field) from None
+        except Exception:
+            if strict:
+                raise
+            return
+        if _is_leaf_key(inner, _table_of(related.model_type)):
+            return
+    raise _key_type_error(cls, field)
 
 
 def _refuse_invalid_key(cls: type[JSONObject]) -> None:
@@ -3297,8 +3019,6 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
         return
     _check_key_not_hyperlinked(cls, prop.field, analyzed)
     _check_key_is_leaf_or_relation(cls, prop.field, analyzed)
-    _check_key_holds_no_relation(cls, prop.field, analyzed)
-    _check_key_not_cyclic(cls, prop.field, analyzed, {cls.__name__: cls})
 
 
 def _check_api_attribute(
@@ -4543,10 +4263,10 @@ class JSONProperty:
                 a class defined later is refused here, when it is first used.
             NameError: If a field's annotation names a class that is not
                 defined. It is raised as it is, for a primary key too.
-            Exception: If a primary key's type holds anything that cannot be
-                resolved yet, whatever resolving it raises. The type is
-                resolved whole, as ``_resolve_key()`` says, and cached only
-                then.
+            Exception: If a primary key's type, or the key type of a model that
+                it relates to, holds a name that cannot be resolved yet,
+                whatever resolving it raises. It is cached only once it
+                resolves.
         """
         try:
             analyzed = analyze_type(self.ty)
@@ -4559,11 +4279,6 @@ class JSONProperty:
             _check_key_is_leaf_or_relation(
                 self.cls, self.field, analyzed, strict=True
             )
-            _check_key_holds_no_relation(
-                self.cls, self.field, analyzed, strict=True
-            )
-            _check_key_not_cyclic(self.cls, self.field, analyzed)
-            _resolve_key_chain(analyzed)
         _check_not_hyperlinked_set(self.cls, self.field, analyzed)
         return analyzed
 
@@ -5063,23 +4778,23 @@ class JSONObject:
         to its base. The API, the JSON, and the field values are not compared.
 
         The canonical key is computed from the key that the object last
-        recorded from the server, or was given. Its JSON is read along the
-        chain of relations to the key of the last model, decoded and encoded
-        again by that key's field type, and written as text. So spellings of
-        one value that encode alike, such as ``Z`` and ``+00:00`` for a
-        ``datetime``, are one key, and so are a bare key and an embedded object
-        of a relation. Keys that encode differently are two keys, so
-        ``Num(id="1")`` and ``Num(id=1)`` differ, as do ``Decimal`` keys of
-        different precision. Equal objects have the same ``url``, unless one
-        has its own URL, as an object read through a ``Hyperlinked()`` relation
-        has, or its class overrides ``url``. A pending key change, a change
-        made to the key in place, and a refresh leave the saved key as it was.
+        recorded from the server, or was given. Its JSON is read as the related
+        model's key if the key is a relation, decoded and encoded again by that
+        key's field type, and written as text. So spellings of one value that
+        encode alike, such as ``Z`` and ``+00:00`` for a ``datetime``, are one
+        key, and so are a bare key and an embedded object of a relation. Keys
+        that encode differently are two keys, so ``Num(id="1")`` and
+        ``Num(id=1)`` differ, as do ``Decimal`` keys of different precision.
+        Equal objects have the same ``url``, unless one has its own URL, as an
+        object read through a ``Hyperlinked()`` relation has, or its class
+        overrides ``url``. A pending key change, a change made to the key in
+        place, and a refresh leave the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself. So does
-        one whose key's type cannot be resolved yet, wherever the unresolved
-        name appears in it, until it can be. Comparing sends no request, never
-        reads ``url``, and does not depend on the identity of a decoded key.
+        one whose key's type, or the related model's key type, cannot be
+        resolved yet, until it can be. Comparing sends no request, never reads
+        ``url``, and does not depend on the identity of a decoded key.
 
         Args:
             other: Object to compare with.
@@ -6466,8 +6181,8 @@ class JSONObject:
 
         Returns:
             The key converted as if it were read from JSON. A key that is a
-            relation gives the key of the model that the chain of relations
-            ends at, which is what ``pk`` returns.
+            relation gives the related model's key, which is what ``pk``
+            returns.
         """
         conversion = type(self)._pk.analyzed_type
         value = self._from_json(self._to_json(key, conversion), conversion)

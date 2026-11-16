@@ -7476,13 +7476,13 @@ def test_a_key_of_a_later_class_that_is_not_one_value_is_refused_on_first_use(
 
         id: LaterRosterKey
 
+    monkeypatch.setitem(globals(), "Roster", Roster)
+
     @json_object(pk="roster")
     class RosterNote(ModelBase):
         class_url = "/roster-notes/"
 
         roster: Roster
-
-    monkeypatch.setitem(globals(), "Roster", Roster)
 
     with pytest.raises(NameError, match="LaterRosterKey"):
         Roster(json={"id": [1]}).url  # noqa: B018
@@ -7809,6 +7809,65 @@ def test_objects_of_one_model_with_equal_known_keys_are_equal(
     assert loaded != User(json={"id": 3, "name": "Ada"})
     assert hash(held) == hash(loaded) == hash(other_api)
     assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "embedded", [{"name": "Ada"}, {"id": None, "name": "Ada"}]
+)
+def test_a_key_that_is_a_relation_to_an_embedded_object_without_a_key_is_none(
+    requests_mock: Any, embedded: dict[str, Any]
+) -> None:
+    """An embedded related object without its key gives no key.
+
+    The related object lacks the key field, or holds ``null`` for it.
+
+    Args:
+        requests_mock: Fails the test if a request is sent.
+        embedded: The related object's JSON.
+    """
+    profile = UserProfile(json={"user": embedded, "bio": "Hi"})
+
+    assert profile.pk is None
+    assert profile != UserProfile(json={"user": embedded, "bio": "Hi"})
+    assert requests_mock.call_count == 0
+
+
+def test_a_relation_key_to_a_model_that_is_keyed_by_models_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A related model whose key holds a model is refused when it resolves.
+
+    The related model's own declaration is refused too, when its key's class is
+    defined.
+
+    Args:
+        monkeypatch: Defines the model as a global, after the classes that name
+            it are decorated.
+    """
+
+    @json_object
+    class Crew(ModelBase):
+        class_url = "/crews/"
+
+        id: dict[str, LaterHand]
+
+    @json_object(pk="crew")
+    class CrewNote(ModelBase):
+        class_url = "/crew-notes/"
+
+        crew: Crew
+
+    @json_object
+    class LaterHand(ModelBase):
+        class_url = "/hands/"
+
+        id: int
+
+    monkeypatch.setitem(globals(), "Crew", Crew)
+    monkeypatch.setitem(globals(), "LaterHand", LaterHand)
+
+    with pytest.raises(TypeError, match=r"CrewNote\.crew is the primary key"):
+        CrewNote(json={"crew": {"a": 1}}).url  # noqa: B018
 
 
 def test_a_key_that_is_a_relation_compares_as_the_related_key(
