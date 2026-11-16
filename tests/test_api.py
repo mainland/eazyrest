@@ -60,82 +60,77 @@ def test_api_put_uses_resolved_url(requests_mock: Any) -> None:
     assert response.json() == {"id": 1}
 
 
-@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize("allow_redirects", [None, True])
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 @pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
-def test_api_refuses_redirect_that_drops_write(
-    requests_mock: Any, method: str, status: int
+def test_api_never_follows_a_redirect_of_a_write(
+    requests_mock: Any,
+    method: str,
+    status: int,
+    allow_redirects: bool | None,
 ) -> None:
-    """A write that requests would resend without its body raises.
+    """A write answered with a redirect raises and sends nothing further.
 
-    A 301 keeps ``PATCH``, ``PUT``, and ``DELETE`` but drops the body, and
-    the other redirects change the method to ``GET``. Either way the server
-    would never receive the write, so nothing is sent to the destination.
+    The ``Location`` is on the error's response and not in its message, and an
+    explicit ``allow_redirects=True`` does not make the write follow it.
 
     Args:
         method: Name of the ``API`` method that sends the write, such as
             ``"post"``.
         status: Redirect status code that the server returns for the write.
+        allow_redirects: Value that the caller passes, or ``None`` for none.
     """
     api = API("https://example.com/v1/")
-    requests_mock.request(
+    location = "https://example.com/v1/users/1/?signature=abc123"
+    source = requests_mock.request(
         method.upper(),
         "https://example.com/v1/users/1",
         status_code=status,
-        headers={"Location": "https://example.com/v1/users/1/"},
+        headers={"Location": location},
     )
     destination = requests_mock.request(
         requests_mock_ANY, "https://example.com/v1/users/1/", json={"id": 1}
     )
+    options = {} if allow_redirects is None else {"allow_redirects": True}
 
-    with pytest.raises(
-        requests.HTTPError,
-        match=(
-            "status 303, which says that the server performed it"
-            if status == 303
-            else "not be performed"
-        ),
-    ) as info:
-        getattr(api, method)("/users/1", json={"name": "Ada"})
+    with pytest.raises(RedirectError) as info:
+        getattr(api, method)("/users/1", json={"name": "Ada"}, **options)
 
+    message = str(info.value)
+    assert f"{method.upper()} https://example.com/v1/users/1 was" in message
+    assert f"status {status}" in message
+    assert "abc123" not in message
+    assert "users/1/" not in message
     assert info.value.response is not None
     assert info.value.response.status_code == status
+    assert info.value.response.headers["Location"] == location
+    assert source.call_count == 1
     assert not destination.called
 
 
-def test_api_follows_moved_bodyless_delete(requests_mock: Any) -> None:
-    """A 301 resends a bodyless ``DELETE`` unchanged, so it is followed."""
+@pytest.mark.parametrize("status", [301, 307])
+def test_api_refuses_a_redirect_of_a_write_to_another_origin(
+    requests_mock: Any, status: int
+) -> None:
+    """A write's redirect to another origin sends no header or body there.
+
+    Args:
+        status: Redirect status code that the server returns.
+    """
     api = API("https://example.com/v1/")
-    requests_mock.delete(
-        "https://example.com/v1/users/1",
-        status_code=301,
-        headers={"Location": "https://example.com/v1/users/1/"},
+    api.session.headers["X-API-Key"] = "secret"
+    requests_mock.post(
+        "https://example.com/v1/users/",
+        status_code=status,
+        headers={"Location": "https://other.example.net/users/"},
     )
-    deleted = requests_mock.delete(
-        "https://example.com/v1/users/1/", status_code=204
-    )
+    other = requests_mock.post("https://other.example.net/users/", json={})
 
-    api.delete("/users/1")
+    with pytest.raises(RedirectError) as info:
+        api.post("/users/", json={"password": "secret"})
 
-    assert deleted.called
-
-
-def test_api_check_redirects_rejects_followed_body_loss() -> None:
-    """The final-response check catches a body lost after the hook ran."""
-    first = requests.Response()
-    first.status_code = 301
-    first.url = "https://example.com/v1/users/1"
-    first.headers["Location"] = "https://example.com/v1/users/1/"
-    first.request = requests.Request(
-        "PATCH", first.url, json={"name": "Ada"}
-    ).prepare()
-    final = requests.Response()
-    final.status_code = 200
-    final.url = "https://example.com/v1/users/1/"
-    final.request = requests.Request("PATCH", final.url).prepare()
-    final.history = [first]
-
-    with pytest.raises(requests.HTTPError, match="not performed"):
-        API._check_redirects(final)
+    assert "other.example.net" not in str(info.value)
+    assert not other.called
 
 
 @pytest.mark.parametrize(
@@ -390,30 +385,6 @@ def test_value_error_of_a_response_hook_propagates(
     assert not isinstance(raised.value, RedirectError)
 
 
-def test_api_check_redirects_ignores_a_resent_401() -> None:
-    """A 401 that an authentication handler resent is not a redirect.
-
-    requests records it in the history, as ``HTTPDigestAuth`` does, and the
-    resent request keeps its method and body, which the server performs.
-    """
-    challenge = requests.Response()
-    challenge.status_code = 401
-    challenge.url = "https://example.com/v1/users/1/"
-    challenge.headers["WWW-Authenticate"] = 'Digest realm="r", nonce="n"'
-    challenge.request = requests.Request(
-        "PATCH", challenge.url, json={"name": "Ada"}
-    ).prepare()
-    final = requests.Response()
-    final.status_code = 200
-    final.url = challenge.url
-    final.request = requests.Request(
-        "PATCH", final.url, json={"name": "Ada"}
-    ).prepare()
-    final.history = [challenge]
-
-    API._check_redirects(final)
-
-
 def test_digest_authentication_writes_once() -> None:
     """A write answered by a digest challenge is resent and succeeds."""
     received: list[Any] = []
@@ -457,31 +428,6 @@ def test_digest_authentication_writes_once() -> None:
     assert received == [{"title": "new"}]
 
 
-@pytest.mark.parametrize("status", [307, 308])
-def test_api_follows_redirect_that_keeps_method(
-    requests_mock: Any, status: int
-) -> None:
-    """Redirects that keep the method and body are followed.
-
-    Args:
-        status: Redirect status code that keeps the method and body.
-    """
-    api = API("https://example.com/v1/")
-    requests_mock.post(
-        "https://example.com/v1/users/",
-        status_code=status,
-        headers={"Location": "https://example.com/v2/users/"},
-    )
-    created = requests_mock.post(
-        "https://example.com/v2/users/", status_code=201, json={"id": 1}
-    )
-
-    response = api.post("/users/", json={"name": "Ada"})
-
-    assert response.json() == {"id": 1}
-    assert created.last_request.json() == {"name": "Ada"}
-
-
 def test_api_follows_get_redirect(requests_mock: Any) -> None:
     """A redirected GET is still a GET, so it is followed."""
     api = API("https://example.com/v1/")
@@ -499,8 +445,7 @@ def test_api_follows_get_redirect(requests_mock: Any) -> None:
     ("method", "status", "target"),
     [
         ("get", 302, "https://other.example.net/users/1"),
-        ("post", 307, "https://other.example.net/users/"),
-        ("put", 308, "https://example.com:8443/v1/users/"),
+        ("get", 308, "https://example.com:8443/v1/users/1"),
         ("get", 301, "http://example.com/v1/users/1"),
     ],
 )
@@ -589,17 +534,17 @@ def test_api_refuses_backslash_authority_redirect(
     """
     api = API("https://example.com/v1/")
     api.session.headers["X-API-Key"] = "secret"
-    requests_mock.post(
+    requests_mock.get(
         "https://example.com/v1/users/",
         status_code=307,
         headers={"Location": target},
     )
-    evil = requests_mock.post(
+    evil = requests_mock.get(
         re.compile("https://.*evil\\.example\\.net/.*"), json={}
     )
 
     with pytest.raises(requests.HTTPError, match="redirect_origins"):
-        api.post("/users/", json={"password": "secret"})
+        api.get("/users/")
 
     assert not evil.called
 
@@ -681,63 +626,10 @@ def test_api_redirect_guard_keeps_response_hooks(
     assert seen == [302]
 
 
-def test_api_refuses_a_later_hop_that_drops_the_body(
-    requests_mock: Any,
-) -> None:
-    """Each hop of a chain is checked, not only the first.
-
-    A 307 resends a ``PATCH`` with its body, but a 301 after it would drop
-    the body, so the chain stops there, before the last URL is requested.
-    """
-    api = API("https://example.com/v1/")
-    first = requests_mock.patch(
-        "https://example.com/v1/a",
-        status_code=307,
-        headers={"Location": "/v1/b"},
-    )
-    second = requests_mock.patch(
-        "https://example.com/v1/b",
-        status_code=301,
-        headers={"Location": "/v1/c"},
-    )
-    last = requests_mock.patch("https://example.com/v1/c", json={})
-
-    with pytest.raises(RedirectError, match="without the request body"):
-        api.patch("a", json={"name": "Ada"})
-
-    assert first.call_count == 1
-    assert second.last_request.json() == {"name": "Ada"}
-    assert not last.called
-
-
-def test_api_follows_a_chain_that_keeps_the_request(
-    requests_mock: Any,
-) -> None:
-    """A chain of 307 and 308 redirects delivers the request unchanged."""
-    api = API("https://example.com/v1/")
-    api.redirect_origins = ["https://files.example.com"]
-    requests_mock.post(
-        "https://example.com/v1/a",
-        status_code=307,
-        headers={"Location": "https://files.example.com/b"},
-    )
-    requests_mock.post(
-        "https://files.example.com/b",
-        status_code=308,
-        headers={"Location": "https://example.com/v1/c"},
-    )
-    created = requests_mock.post(
-        "https://example.com/v1/c", status_code=201, json={"id": 1}
-    )
-
-    assert api.post("a", json={"name": "Ada"}).json() == {"id": 1}
-    assert created.last_request.json() == {"name": "Ada"}
-
-
 def test_redirect_guard_without_a_budget_checks_only_redirects(
     requests_mock: Any,
 ) -> None:
-    """The guard's hooks check origins and writes even without a budget.
+    """The guard's hooks check origins even without a budget.
 
     ``API`` passes each request's budget, which also limits the body of a
     redirect, as ``api.get()`` shows. Hooks made without one, for a request
@@ -864,58 +756,82 @@ def _send_through_chain(
     return sent, refused
 
 
-@settings(max_examples=150, deadline=None)
-@given(
-    method=st.sampled_from(["GET", "POST", "PATCH", "PUT", "DELETE"]),
-    with_body=st.booleans(),
-    chain=_REDIRECT_CHAINS,
-)
-def test_redirect_chains_deliver_the_request_or_stop_before_harm(
-    method: str, with_body: bool, chain: list[Any]
+@settings(max_examples=100, deadline=None)
+@given(method=st.sampled_from(["GET", "HEAD"]), chain=_REDIRECT_CHAINS)
+def test_redirect_chains_of_a_read_stop_before_another_origin(
+    method: str, chain: list[Any]
 ) -> None:
-    """The client sends what requests would, up to the first unsafe hop.
+    """A read follows what requests follows, up to an origin not allowed.
 
     Plain requests follows every hop of a generated chain. The client must
     send exactly the requests that plain requests sends until the first one
-    that would go to an origin that the API does not allow, or that would
-    have another method or lack the original body. There it raises
+    that would go to an origin that the API does not allow. There it raises
     ``RedirectError`` without sending that request. A chain without such a
     request is followed to the end.
 
     Args:
         method: HTTP method of the original request.
-        with_body: Whether the original request has a JSON body.
         chain: Status and location kind of each redirect, in order.
     """
-    body = {"name": "Ada"} if with_body else None
     url = "https://example.com/v1/hop0"
     session = requests.Session()
     plain, _ = _send_through_chain(
-        lambda m, **kw: session.request(m, url, **kw), method, body, chain
+        lambda m, **kw: session.request(m, url, **kw), method, None, chain
     )
     api = API("https://example.com/v1/")
     api.redirect_origins = ["https://files.example.com"]
     guarded, refused = _send_through_chain(
+        lambda m, **kw: api._send(
+            m,
+            lambda url, **opts: api.session.request(m, url, **opts),
+            "hop0",
+            **kw,
+        ),
+        method,
+        None,
+        chain,
+    )
+
+    safe = 0
+    while (
+        safe < len(plain) and _chain_origin(plain[safe][1]) in _ALLOWED_ORIGINS
+    ):
+        safe += 1
+
+    assert guarded == plain[:safe]
+    assert refused == (safe < len(plain))
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    method=st.sampled_from(["POST", "PATCH", "PUT", "DELETE"]),
+    with_body=st.booleans(),
+    chain=_REDIRECT_CHAINS,
+)
+def test_redirect_chains_of_a_write_stop_at_the_first_response(
+    method: str, with_body: bool, chain: list[Any]
+) -> None:
+    """A write sends one request, whatever status and Location answer it.
+
+    Args:
+        method: HTTP method of the write.
+        with_body: Whether the write has a JSON body.
+        chain: Status and location kind of each redirect, in order.
+    """
+    body = {"name": "Ada"} if with_body else None
+    api = API("https://example.com/v1/")
+    api.redirect_origins = ["https://files.example.com"]
+    sent, refused = _send_through_chain(
         lambda m, **kw: getattr(api, m.lower())("hop0", **kw),
         method,
         body,
         chain,
     )
 
-    original = plain[0][2]
-    safe = 0
-    while safe < len(plain) and (
-        _chain_origin(plain[safe][1]) in _ALLOWED_ORIGINS
-        and plain[safe][0] == method
-        and plain[safe][2] == original
-    ):
-        safe += 1
-
-    assert guarded == plain[:safe]
-    assert refused == (safe < len(plain))
-    assert all(
-        _chain_origin(hop_url) in _ALLOWED_ORIGINS for _, hop_url, _ in guarded
-    )
+    assert [(m, u) for m, u, _ in sent] == [
+        (method, "https://example.com/v1/hop0")
+    ]
+    assert refused
 
 
 def test_api_closes_session_as_context_manager() -> None:
@@ -1311,9 +1227,8 @@ def test_scoped_client_refuses_a_final_redirect(
     ("method", "status", "location"),
     [
         ("get", 302, "https://elsewhere.example.net/"),
-        ("post", 302, "/elsewhere/"),
-        ("post", 303, "/elsewhere/"),
-        ("patch", 301, "/elsewhere/"),
+        ("get", 303, "/elsewhere/"),
+        ("get", 301, "/elsewhere/"),
     ],
 )
 def test_unfollowed_redirect_of_a_raw_request_is_returned(
@@ -1321,10 +1236,9 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
 ) -> None:
     """A raw request that follows nothing returns any redirect as it is.
 
-    The redirect guard refuses a redirect to another origin and one that
-    changes the method, but with ``allow_redirects=False`` neither happens. The
-    same redirect still raises for a request-scoped client, which expects a
-    final response.
+    The redirect guard refuses a redirect to another origin, but with
+    ``allow_redirects=False`` it follows none. The same redirect still raises
+    for a request-scoped client, which expects a final response.
 
     Args:
         method: Request method.
@@ -1347,31 +1261,28 @@ def test_unfollowed_redirect_of_a_raw_request_is_returned(
         getattr(api._scoped({"allow_redirects": False}), method)("/items/")
 
 
-@pytest.mark.parametrize("status", [302, 303])
-def test_redirect_error_escapes_control_characters_of_the_location(
-    requests_mock: Any, status: int
-) -> None:
-    """A ``Location`` with control characters is quoted as requests sends it.
+def test_redirect_error_of_a_write_leaves_out_the_location() -> None:
+    """A ``Location`` with control characters reaches no message.
 
-    requests percent-encodes the control characters, the space, and the
-    brackets of a query, so the message quotes no raw control character.
-
-    Args:
-        status: Redirect status, whose message differs.
+    The header stays on the error's response, as the server sent it.
     """
     api = API("https://example.com/v1/")
-    requests_mock.post(
-        "https://example.com/v1/items/",
-        status_code=status,
-        headers={"Location": "/next\x1b[2J\x07forged line"},
-    )
+    location = "/next\x1b[2J\x07forged line"
 
-    with pytest.raises(RedirectError) as info:
-        api.post("/items/", json={})
+    with Mocker() as mock:
+        mock.post(
+            "https://example.com/v1/items/",
+            status_code=302,
+            headers={"Location": location},
+        )
+        with pytest.raises(RedirectError) as info:
+            api.post("/items/", json={})
 
     message = str(info.value)
     assert message.isprintable()
-    assert "https://example.com/next%1B%5B2J%07forged%20line" in message
+    assert "forged" not in message
+    assert info.value.response is not None
+    assert info.value.response.headers["Location"] == location
 
 
 @pytest.mark.parametrize(

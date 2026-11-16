@@ -518,15 +518,14 @@ redirect or a next-page link that is refused is quoted by its origin alone, as
 `http://host`, whatever it holds. A URL that a followed redirect reached, such
 as a signed download URL, is quoted by its origin and path, as
 `https://files.example.com/o`, and so is a response that a response hook
-returned for another URL or whose `url` it changed, and a redirect that would
-not resend a write, as `http://host/items/`. These quote no user, password,
-query, or fragment, but the path can hold a session ID, which the message then
-quotes. The `repr()` of a `Page`, and of an object known only by its URL,
-leaves out a user and password too, and that of a page that a followed redirect
-reached shows its origin and path alone. An exception that requests itself
-raises, such as `requests.ConnectionError`, quotes the URL as requests does,
-with its path and query, also for the host that a redirect reached. A Pydantic
-error says where and why a value is invalid, as in
+returned for another URL or whose `url` it changed. These quote no user,
+password, query, or fragment, but the path can hold a session ID, which the
+message then quotes. The `repr()` of a `Page`, and of an object known only by
+its URL, leaves out a user and password too, and that of a page that a followed
+redirect reached shows its origin and path alone. An exception that requests
+itself raises, such as `requests.ConnectionError`, quotes the URL as requests
+does, with its path and query, also for the host that a redirect reached. A
+Pydantic error says where and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1597,8 +1596,8 @@ way and raises `TypeError` before the request. Save such a field in a separate
 write without files.
 
 Requests reads a file object from its current position. Before retrying an
-upload after a failure, reopen or rewind each file. A 307 or 308 redirect
-resends the already prepared multipart body.
+upload after a failure, reopen or rewind each file. A write follows no
+redirect, so a redirect never resends the multipart body.
 
 ### Request options
 
@@ -1608,11 +1607,11 @@ names are those of the HTTP library that the client sends requests with,
 requests for `API`, so a client for another library, which a later release may
 add, can take other names. They cannot set the body, which the write builds, or
 enable `stream=True`, because model writes consume their responses. Options
-that are not a mapping raise `TypeError`, as they do for a query. An unfollowed
-final 3xx raises `RedirectError`, including when `allow_redirects=False`, and
-pending updates remain pending. A server that supports optimistic concurrency,
-for example, refuses a write whose `If-Match` header no longer names the
-object's current version:
+that are not a mapping raise `TypeError`, as they do for a query. A 3xx
+response raises `RedirectError`, whatever `allow_redirects` says, and pending
+updates remain pending. A server that supports optimistic concurrency, for
+example, refuses a write whose `If-Match` header no longer names the object's
+current version:
 
 ```python
 todo.title = "new"
@@ -1717,74 +1716,71 @@ catches its errors and a lazy load of an object deleted on the server still
 raises `DoesNotExist`. The [Django REST Framework guide](drf.md) shows one that
 keeps the default message and `data`.
 
-Requests follows redirects, but only a 307 or 308 redirect resends a request
-unchanged. It resends a `POST` answered with a 301 or 302, and any other
-request answered with a 302 or 303, as a `GET`, and it resends a `PATCH`,
-`PUT`, or `DELETE` answered with a 301 without its body. The server would then
-never receive the original request, so a redirect that would change the method
-or drop the body raises `RedirectError` before it is followed, rather than
-letting `create()`, `save()`, or `delete()` report success. A lazy update stays
-pending. This happens, for example, when `base_url` uses `http://` and the
-server redirects to HTTPS, or when a URL lacks the trailing slash that Django's
-`APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF router. Use
-the URL that the server redirects to, which the error quotes by its origin and
-path, without its user, password, query, or fragment. The whole header is on
-the error's `response`. A `GET`, or a `DELETE` without a body, answered with a
-301 is followed. A 303 is different: it says that the server performed the
-request and points to its result, so its `RedirectError` says not to retry the
-request, which would repeat it. Read the result instead, or reload the object,
-whose update stays pending until then.
+A write follows no redirect. A request with any method but `GET` or `HEAD`,
+from a model's `create()`, `save()`, or `delete()` or from `API.post()`,
+`put()`, `patch()`, or `delete()`, is sent with `allow_redirects=False`,
+whatever the caller passes, and a 3xx response to it raises `RedirectError`.
+The message says that the server redirected the write and that it was not
+resent. It does not quote the `Location`, which is on the error's `response`. A
+lazy update stays pending. The write is not resent because requests changes it
+when it follows a redirect. It sends a `POST` answered with a 301 or 302, and
+any other write answered with a 302 or 303, as a `GET`, and it resends a
+`PATCH`, `PUT`, or `DELETE` answered with a 301 without its body, so the server
+would never receive the write. A 307 or 308 would resend it, with every header,
+to a URL that the server chose. A redirect of a write happens, for example,
+when `base_url` uses `http://` and the server redirects to HTTPS, or when a URL
+lacks the trailing slash that Django's `APPEND_SLASH` adds, as with
+`trailing_slash = False` against a DRF router. Send the write to the URL that
+the server expects.
 
-A redirect is followed only to the origin of the request it answers, that is,
-its scheme, host, and port. Requests drops the `Authorization` header when a
-redirect leaves the host, but it sends every other header, such as an API key
-or a CSRF token, and a 307 or 308 resends the request body. A redirect to
-another origin, including one from `http://` to `https://`, raises
-`RedirectError` before anything is sent there. The check reads the target
-twice. One reading is the destination that requests would send, with the target
-joined onto the request's URL and percent-encoded as requests does. The other
-is the raw target joined by `urljoin()`, which another client could read as a
-different host, as it can for a backslash before an `@`. The redirect is
-refused unless both readings name an allowed origin. The error quotes the
-origin of a reading that is not allowed, the destination's or else the joined
-target's, alone, as `https://files.example.com`, and never its user, password,
-path, query, or fragment, since a signed download URL carries its credential in
-the query. The error's `response` holds the whole header. A target that is not
-an HTTP or HTTPS URL, such as `ftp://user:pass@host/x` or
-`mailto:user:pass@host`, has no origin, and its text can read as a user and
-password, so the error names its scheme alone, as
-`a location whose scheme is mailto:`. For an API that redirects to another
-server on purpose, such as a download host, list that origin in
-`redirect_origins`:
+A `GET` or `HEAD` follows a redirect only to the origin of the request it
+answers, that is, its scheme, host, and port. Requests drops the
+`Authorization` header when a redirect leaves the host, but it sends every
+other header, such as an API key or a CSRF token. A redirect to another origin,
+including one from `http://` to `https://`, raises `RedirectError` before
+anything is sent there. The check reads the target twice. One reading is the
+destination that requests would send, with the target joined onto the request's
+URL and percent-encoded as requests does. The other is the raw target joined by
+`urljoin()`, which another client could read as a different host, as it can for
+a backslash before an `@`. The redirect is refused unless both readings name an
+allowed origin. The error quotes the origin of a reading that is not allowed,
+the destination's or else the joined target's, alone, as
+`https://files.example.com`, and never its user, password, path, query, or
+fragment, since a signed download URL carries its credential in the query. The
+error's `response` holds the whole header. A target that is not an HTTP or
+HTTPS URL, such as `ftp://user:pass@host/x` or `mailto:user:pass@host`, has no
+origin, and its text can read as a user and password, so the error names its
+scheme alone, as `a location whose scheme is mailto:`. For an API that
+redirects to another server on purpose, such as a download host, list that
+origin in `redirect_origins`:
 
 ```python
 api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
 
-These checks guard the redirects that requests follows. A raw request sent with
-`allow_redirects=False` follows none, so it returns the 3xx response as it is,
-and the caller decides what to do with it. Requests does prepare
+These checks guard the redirects that requests follows. A raw `GET` or `HEAD`
+sent with `allow_redirects=False` follows none, so it returns the 3xx response
+as it is, and the caller decides what to do with it. Requests does prepare
 `Response.next` even then, and raises its own `ValueError` or `UnicodeError`
 when it cannot. The request raises `RedirectError` instead, whether or not it
 follows redirects. Any other exception that requests raises there, such as
-`requests.TooManyRedirects` when `session.max_redirects` is 0, or
-`requests.exceptions.UnrewindableBodyError` for a 307 or 308 that resends a
-body that cannot rewind, comes through unchanged. A `Location` that requests
-prepares without error is returned. Requests cannot prepare a `Location` with a
-byte that is not UTF-8, or a host such as `http://[bad/`. It cannot prepare one
-with a port that is out of range either, when it reads the port while it
-prepares the next request. Whether it does depends on the request. It reads the
-port, for example, when the request carries an `Authorization` header and the
-redirect keeps the host, or when a no-proxy list applies, from `NO_PROXY` or
-from a `no_proxy` entry in `proxies`, and the redirect names a host that is not
-an IPv4 address. It consults neither `NO_PROXY` nor a `no_proxy` entry in
-`proxies` when `session.trust_env` is false. When it does not read the port,
-the response is returned. The message of the `RedirectError` quotes no part of
-a `Location` that requests cannot prepare, since no rule says which of its text
-is a host and which a password. The error's `response` holds the header. A
-model write, a query, and a next-page request expect a final response, so they
-raise `RedirectError` for any unfollowed 3xx.
+`requests.TooManyRedirects` when `session.max_redirects` is 0, comes through
+unchanged. A `Location` that requests prepares without error is returned.
+Requests cannot prepare a `Location` with a byte that is not UTF-8, or a host
+such as `http://[bad/`. It cannot prepare one with a port that is out of range
+either, when it reads the port while it prepares the next request. Whether it
+does depends on the request. It reads the port, for example, when the request
+carries an `Authorization` header and the redirect keeps the host, or when a
+no-proxy list applies, from `NO_PROXY` or from a `no_proxy` entry in `proxies`,
+and the redirect names a host that is not an IPv4 address. It consults neither
+`NO_PROXY` nor a `no_proxy` entry in `proxies` when `session.trust_env` is
+false. When it does not read the port, the response is returned. The message of
+the `RedirectError` quotes no part of a `Location` that requests cannot
+prepare, since no rule says which of its text is a host and which a password.
+The error's `response` holds the header. A model write, a query, and a
+next-page request expect a final response, so they raise `RedirectError` for
+any unfollowed 3xx.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.

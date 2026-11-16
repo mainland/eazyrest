@@ -5102,16 +5102,16 @@ def test_merge_response_can_be_overridden(requests_mock: Any) -> None:
     assert note.json == {"id": 1, "text": "b"}
 
 
-@pytest.mark.parametrize("status", [301, 302, 303])
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
 def test_redirected_save_keeps_pending_updates(
     requests_mock: Any, status: int, write_mode: WriteMode
 ) -> None:
-    """A PATCH that a redirect would resend without its body is not saved.
+    """A PATCH that a redirect answers is not saved.
 
-    A 301 keeps the method but drops the body, as Django's ``APPEND_SLASH``
-    does to a URL without its trailing slash. The redirect is not followed. A
-    lazy update stays pending, and an eager assignment does not take effect.
+    The redirect is not followed, as for Django's ``APPEND_SLASH`` redirect of
+    a URL without its trailing slash. A lazy update stays pending, and an eager
+    assignment does not take effect.
 
     Args:
         status: Redirect status code that the server returns.
@@ -5136,10 +5136,7 @@ def test_redirected_save_keeps_pending_updates(
         todo.title = "new"
         todo.save()
 
-    with pytest.raises(
-        requests.HTTPError,
-        match="status 303" if status == 303 else "not be performed",
-    ):
+    with pytest.raises(RedirectError, match=f"answered with status {status}"):
         update()
 
     assert not moved.called

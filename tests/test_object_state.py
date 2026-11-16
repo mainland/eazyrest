@@ -231,8 +231,8 @@ FAILURES: dict[str, type[Exception]] = {
 }
 """How a write fails, and the exception that it raises."""
 
-REDIRECT_STATUSES = [300, 301, 302, 303, 307, 308, 307, 308]
-"""Statuses of a redirect that answers a write, 307 and 308 twice as often."""
+REDIRECT_STATUSES = [300, 301, 302, 303, 307, 308]
+"""Statuses of a redirect that answers a write."""
 
 
 class ObjectStateMachine(RuleBasedStateMachine):
@@ -447,7 +447,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         """Answer a write that ``failure`` says fails before it is applied.
 
         A redirect names the object's own URL, with ``?moved=1``, or another
-        origin, as ``redirect`` says. The redirected request is applied.
+        origin, as ``redirect`` says. The save does not follow it.
 
         Args:
             request: Request that the mock received.
@@ -461,7 +461,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if self.failure == "error":
             context.status_code = 500
             return json.dumps({"detail": "Server error"})
-        if self.failure == "redirect" and "moved=1" not in request.url:
+        if self.failure == "redirect":
             status, target = self.redirect
             context.status_code = status
             context.headers["Location"] = (
@@ -1133,15 +1133,11 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def save_fails(self, data: st.DataObject, full: bool) -> None:
         """A failed or unconfirmed save keeps every change pending.
 
-        An HTTP error and a redirect that does not deliver the write leave the
-        server unchanged. Only a 307 or 308 to the object's own origin, which
-        the save follows, delivers the write, with its method and body, and
-        the save then succeeds. Any other redirect raises ``RedirectError``
-        with no further request: a 300, which requests does not follow, a
-        301, 302, or 303, which would change the method or drop the body, one
-        to another origin, and any redirect that ``allow_redirects=False``
-        leaves unfollowed. A response that is not a JSON object follows an
-        applied write, but the object cannot confirm it, so the changes stay
+        An HTTP error and a redirect leave the server unchanged. A save never
+        follows a redirect, whatever its status and target, and raises
+        ``RedirectError`` with no further request, also when it passes
+        ``allow_redirects=True``. A response that is not a JSON object follows
+        an applied write, but the object cannot confirm it, so the changes stay
         pending too.
 
         An unconfirmed write of a key change moves the server's object while
@@ -1152,9 +1148,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         Args:
             data: Hypothesis data object that draws how the write fails:
                 ``"error"`` for an HTTP error, ``"redirect"`` for a redirect,
-                with its status, its target, and whether the save follows
-                redirects, or ``"shape"`` for a response body that is not a
-                JSON object.
+                with its status, its target, and whether the save passes
+                ``allow_redirects=True``, or ``"shape"`` for a response body
+                that is not a JSON object.
             full: Whether to save with ``full=True``.
         """
         failures = sorted(FAILURES)
@@ -1162,16 +1158,12 @@ class ObjectStateMachine(RuleBasedStateMachine):
             failures.remove("shape")
         failure = data.draw(st.sampled_from(failures))
         options: dict[str, Any] = {}
-        delivered = False
         if failure == "redirect":
-            # Weighted toward the one delivered case, which is the rarest.
             status = data.draw(st.sampled_from(REDIRECT_STATUSES))
-            target = data.draw(st.sampled_from(["same", "same", "other"]))
-            follow = data.draw(st.booleans())
+            target = data.draw(st.sampled_from(["same", "other"]))
             self.redirect = (status, target)
-            if not follow:
-                options["allow_redirects"] = False
-            delivered = follow and status in (307, 308) and target == "same"
+            if data.draw(st.booleans()):
+                options["allow_redirects"] = True
         before = len(self.mocker.request_history)
         if self.poisoned:
             self.refused(
@@ -1203,19 +1195,6 @@ class ObjectStateMachine(RuleBasedStateMachine):
             return
         if full:
             assert requests[writes[0]].method == "PUT"
-        if delivered:
-            # The redirected request is the only one after the write.
-            assert not raised
-            assert len(requests) == writes[0] + 2
-            self.detect_in_place_changes()
-            if full:
-                self.send_full()
-            else:
-                self.send_pending()
-            self.pending.clear()
-            self.pending_secret = None
-            return
-
         # A failed write is the save's last request.
         assert raised
         assert len(requests) == writes[0] + 1

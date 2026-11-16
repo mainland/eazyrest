@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import pytest
 import requests
+from requests_mock import ANY as requests_mock_ANY
 from typing_extensions import TypeAliasType
 
 from eazyrest import (
@@ -211,26 +212,75 @@ def test_empty_multipart_list_is_rejected_before_sending(
     assert doc._pending_updates == {"tags": []}
 
 
+@pytest.mark.parametrize("status", [301, 303, 308])
+@pytest.mark.parametrize(
+    "operation", ["create", "save", "full_save", "delete"]
+)
+def test_model_write_answered_with_a_redirect_raises_without_resending(
+    requests_mock: Any, operation: str, status: int
+) -> None:
+    """A model write never follows a redirect, even if asked to.
+
+    Args:
+        operation: The model write to send.
+        status: Redirect status code that the server returns.
+    """
+    method = {
+        "create": "POST",
+        "save": "PATCH",
+        "full_save": "PUT",
+        "delete": "DELETE",
+    }[operation]
+    url = "https://mocked.example/docs/" + (
+        "" if operation == "create" else "1/"
+    )
+    requests_mock.register_uri(
+        method, url, status_code=status, headers={"Location": "/moved/"}
+    )
+    moved = requests_mock.register_uri(
+        requests_mock_ANY, "https://mocked.example/moved/", json=DOC_JSON
+    )
+    options = {"allow_redirects": True}
+    doc = MockedDoc(json=DOC_JSON)
+    doc.title = "new"
+    writes: dict[str, Callable[[], object]] = {
+        "create": lambda: MockedDoc.create(
+            title="new", request_options=options
+        ),
+        "save": lambda: doc.save(request_options=options),
+        "full_save": lambda: doc.save(full=True, request_options=options),
+        "delete": lambda: doc.delete(request_options=options),
+    }
+
+    with pytest.raises(RedirectError, match=f"{method} {url} was answered"):
+        writes[operation]()
+
+    assert requests_mock.call_count == 1
+    assert not moved.called
+
+
 @pytest.mark.parametrize("status", [307, 308])
-def test_multipart_redirect_resends_the_prepared_body(
+def test_multipart_write_answered_with_a_redirect_is_sent_once(
     requests_mock: Any, status: int
 ) -> None:
-    """Redirects preserve uploads prepared from a file's current position."""
+    """A redirect does not make a multipart write resend its upload."""
     requests_mock.post(
         "https://mocked.example/docs/",
         status_code=status,
         headers={"Location": "/created/"},
     )
-    requests_mock.post("https://mocked.example/created/", json={"id": 1})
+    created = requests_mock.post(
+        "https://mocked.example/created/", json={"id": 1}
+    )
     upload = io.BytesIO(b"skipHELLO")
     upload.seek(4)
 
-    MockedDoc.create(title="new", files={"image": ("test.txt", upload)})
+    with pytest.raises(RedirectError, match=f"status {status}"):
+        MockedDoc.create(title="new", files={"image": ("test.txt", upload)})
 
-    first, redirected = requests_mock.request_history
-    assert first.body == redirected.body
-    assert b"HELLO" in redirected.body
-    assert b"skipHELLO" not in redirected.body
+    (sent,) = requests_mock.request_history
+    assert b"HELLO" in sent.body
+    assert not created.called
 
 
 def test_create_rejects_colliding_write_names(requests_mock: Any) -> None:
@@ -895,7 +945,7 @@ def test_request_hooks_run_for_model_writes(requests_mock: Any) -> None:
 def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
     requests_mock: Any, location: str
 ) -> None:
-    """A ``Location`` that cannot be parsed raises ``RedirectError``.
+    """A ``Location`` that cannot be parsed raises the write's error.
 
     Args:
         location: The redirect's ``Location`` header.
@@ -906,10 +956,8 @@ def test_write_refuses_an_unparsable_location_that_it_does_not_follow(
         headers={"Location": location},
     )
 
-    with pytest.raises(RedirectError, match="cannot prepare"):
-        MockedDoc.create(
-            title="new", request_options={"allow_redirects": False}
-        )
+    with pytest.raises(RedirectError, match="answered with status 302"):
+        MockedDoc.create(title="new")
 
 
 @pytest.mark.parametrize(
@@ -940,10 +988,8 @@ def test_write_refuses_an_unreadable_port_that_it_does_not_follow(
     else:
         monkeypatch.setenv("NO_PROXY", "example.invalid")
 
-    with pytest.raises(RedirectError, match="cannot prepare"):
-        MockedDoc.create(
-            title="new", api=api, request_options={"allow_redirects": False}
-        )
+    with pytest.raises(RedirectError, match="answered with status 302"):
+        MockedDoc.create(title="new", api=api)
 
 
 def test_repr_leaves_out_the_credentials_of_a_hyperlink() -> None:

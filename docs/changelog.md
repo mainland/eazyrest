@@ -156,22 +156,31 @@ describe them further.
   Its body also counts against the limit that the final body shares, so a
   challenge and a final body that are each within `max_response_bytes` raise
   `LimitExceeded` when they total more.
-- A raw request sent with `allow_redirects=False` returns a 3xx response, where
-  it raised `RedirectError` for a `Location` on another origin and for a `POST`
-  answered with a 301, 302, or 303, though nothing was followed. A model write,
-  a query, and a next-page request raise `RedirectError` for an unfollowed 3xx.
-  A next-page request to the API's origin that is answered with a redirect to
-  another origin, when the query's client does not follow redirects, raised
-  `PaginationError`, which advised `allow_other_origins=True`, though that
-  option would follow nothing. It raises `RedirectError` now. A next-page URL
-  that itself names another origin still raises `PaginationError`. A `Location`
-  that cannot be parsed raises `RedirectError`, where `v1.0.0a5` let requests'
-  `UnicodeDecodeError` or `ValueError` escape, so code that caught them must
-  catch `RedirectError`. So does any other `Location` for which requests raises
-  `ValueError` or `UnicodeError` while it prepares the next request, such as a
-  port that is out of range when the request carries an `Authorization` header
-  and the redirect keeps the host. A `Location` that requests prepares without
-  error is returned. The body of an unfollowed redirect still counts against
+- A write follows no redirect. A request with any method but `GET` or `HEAD`,
+  from a model or from `API.post()`, `put()`, `patch()`, or `delete()`, is sent
+  with `allow_redirects=False`, even if you pass `allow_redirects=True`, and a
+  3xx response to it raises `RedirectError`. `v1.0.0a5` followed a 307 or 308
+  to the request's origin, or to an origin in `API.redirect_origins`, and
+  resent the request with its body, and a raw write sent with
+  `allow_redirects=False` returned the 3xx response. The message does not quote
+  the `Location`, which is on the error's `response`. Send the write to the URL
+  that the server expects, for example by setting `API.trailing_slash`.
+- A raw `GET` or `HEAD` sent with `allow_redirects=False` returns a 3xx
+  response, where it raised `RedirectError` for a `Location` on another origin,
+  though nothing was followed. A query and a next-page request raise
+  `RedirectError` for an unfollowed 3xx. A next-page request to the API's
+  origin that is answered with a redirect to another origin, when the query's
+  client does not follow redirects, raised `PaginationError`, which advised
+  `allow_other_origins=True`, though that option would follow nothing. It
+  raises `RedirectError` now. A next-page URL that itself names another origin
+  still raises `PaginationError`. A `Location` that cannot be parsed raises
+  `RedirectError`, where `v1.0.0a5` let requests' `UnicodeDecodeError` or
+  `ValueError` escape, so code that caught them must catch `RedirectError`. So
+  does any other `Location` for which requests raises `ValueError` or
+  `UnicodeError` while it prepares the next request, such as a port that is out
+  of range when the request carries an `Authorization` header and the redirect
+  keeps the host. A `Location` that requests prepares without error is
+  returned. The body of an unfollowed redirect still counts against
   `max_response_bytes` and `total_timeout`, also when the request passes
   `stream=True`.
 - A response body that stalls until `total_timeout` raises `LimitExceeded`,
@@ -333,12 +342,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   `204 No Content`, keeps the values that were sent. `create()` keeps only the
   JSON-backed fields it sent, so a write-only key such as a password is not
   kept.
-- A redirect that would change a write's method or drop its body, such as a 301
-  in answer to a `PATCH` to a URL without its trailing slash, raises
-  `RedirectError` before it is followed, and a lazy update stays pending. The
-  message quotes the origin and path of the target, which show the URL that the
-  server expects, and not its user, password, query, or fragment. Use that URL,
-  for example by setting `API.trailing_slash`.
+- A write follows no redirect. A 3xx response to a write, such as a 301 in
+  answer to a `PATCH` to a URL without its trailing slash, raises
+  `RedirectError`, and a lazy update stays pending. The message does not quote
+  the `Location`, which is on the error's `response`. Send the write to the URL
+  that the server expects, for example by setting `API.trailing_slash`.
 - `create()` sends each field under its JSON key, as `field_map` names it, as a
   write does, where 0.9.0 sent the Python name.
 - `create()` and `get_or_create()` on a model without a primary-key field raise
@@ -556,15 +564,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   takes precedence over `REQUESTS_CA_BUNDLE`. `verify=False` no longer
   suppresses urllib3's `InsecureRequestWarning` for the whole process. Filter
   the warning yourself if you accept unverified connections.
-- A redirect is followed only to the origin of the request it answers, or to an
-  origin in `API.redirect_origins`, so that session headers such as API keys
-  are not sent elsewhere. A `Location` that cannot be parsed, such as
-  `http://[bad/` or one with a byte that is not UTF-8, raises `RedirectError`,
-  where 0.9.0 let requests' `ValueError` or `UnicodeDecodeError` escape. So
-  does a `Location` with a port that is out of range, when the redirect is
-  followed or requests must read the port of one that is not, where 0.9.0
-  raised `ValueError` or `requests.exceptions.InvalidURL`. `RedirectError` is
-  not a `ValueError`, so code that caught them must catch it.
+- A redirect of a `GET` or `HEAD` is followed only to the origin of the request
+  it answers, or to an origin in `API.redirect_origins`, so that session
+  headers such as API keys are not sent elsewhere. A `Location` that cannot be
+  parsed, such as `http://[bad/` or one with a byte that is not UTF-8, raises
+  `RedirectError`, where 0.9.0 let requests' `ValueError` or
+  `UnicodeDecodeError` escape. So does a `Location` with a port that is out of
+  range, when the redirect is followed or requests must read the port of one
+  that is not, where 0.9.0 raised `ValueError` or
+  `requests.exceptions.InvalidURL`. `RedirectError` is not a `ValueError`, so
+  code that caught them must catch it.
 - Assigning `API.cookies` replaces the session's cookies rather than merging
   into them. Call `api.cookies.update(jar)` to add cookies.
 - Each API limits the size, time, and JSON depth of a response, and the pages

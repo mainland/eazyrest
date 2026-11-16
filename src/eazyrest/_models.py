@@ -2194,21 +2194,6 @@ def _form_value(name: str, value: Any) -> Any:
     )
 
 
-def _check_model_write(resp: requests.Response) -> requests.Response:
-    """Require a completed write before acknowledging a model change.
-
-    Args:
-        resp: Response that the API accepted.
-
-    Returns:
-        The response when no redirect remains to be followed.
-
-    Raises:
-        RedirectError: If the response is a final 3xx status.
-    """
-    return _check_final_response(resp, "the model write was not confirmed")
-
-
 def _query_type(conversion: AnalyzedType) -> AnalyzedType:
     """Use primary keys for related query values, including hyperlinks.
 
@@ -5394,14 +5379,14 @@ class JSONObject:
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response.
             APIError: If the server returns an HTTP error status.
-            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
         _refuse_keyless_request(type(self), "delete")
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
-        _check_model_write(self._request_api().delete(self.url, **options))
+        self._request_api().delete(self.url, **options)
 
     def _request_api(self) -> API:
         """Return the API that this object's own requests go through.
@@ -5741,7 +5726,6 @@ class JSONObject:
                 object. The object's state, including its pending updates, is
                 unchanged.
         """
-        _check_model_write(resp)
         # The object never keeps a write-only field's value.
         write_only = self._write_only_keys()
         sent = {k: v for k, v in payload.items() if k not in write_only}
@@ -5917,7 +5901,7 @@ class JSONObject:
                 or streams the response, or a field cannot be sent as a form
                 field.
             APIError: If the server returns an HTTP error status.
-            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
@@ -6601,7 +6585,7 @@ class JSONObject:
                 wire names.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
-            RedirectError: If a redirect is unsafe or the final status is 3xx.
+            RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
@@ -6617,10 +6601,8 @@ class JSONObject:
         _check_api_attribute(cls, UsageError)
         api = None if api is None else _as_api(api)
         client = cls.api if api is None else api
-        resp = _check_model_write(
-            client.post(
-                cls.class_url, **cls._write_body(payload, files), **options
-            )
+        resp = client.post(
+            cls.class_url, **cls._write_body(payload, files), **options
         )
 
         # The object keeps neither a write-only field nor an extra key.
