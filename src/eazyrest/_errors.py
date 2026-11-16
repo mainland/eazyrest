@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import requests
 
 from ._protocols import Response
-from ._urls import _ServerURL
 
 if TYPE_CHECKING:
     from .api import _Budget
@@ -195,8 +194,8 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             too deeply for Python's decoder.
     """
     where = (
-        f"The response to {resp.request.method} {_response_url(resp)}, with "
-        f"status {resp.status_code},"
+        f"The response to {_response_name(resp)}, with status "
+        f"{resp.status_code},"
     )
     try:
         value = resp.json(
@@ -328,84 +327,49 @@ def _redact_url(url: object) -> str:
     return (match.group(1) or match.group(2)) + normal[match.end() :]
 
 
-_UNSHOWN_URL = "<URL not shown>"
-
 _request_budget: contextvars.ContextVar[_Budget | None] = (
     contextvars.ContextVar("_request_budget", default=None)
 )
 """Budget active while Requests and its adapter handle one API request."""
 
 
-def _first_url(resp: Response) -> str:
-    """Return the URL that was sent first for the request of a response.
+def _asked_url(resp: Response) -> str | None:
+    """Return the URL that eazyrest was asked to send for a response.
 
     Args:
-        resp: Response, after requests has set its ``history``.
+        resp: Response, which an ``API`` request returned or recorded in its
+            history.
 
     Returns:
-        The URL of the first response of the chain that led to ``resp``, which
-        is the URL of ``resp`` itself if no redirect led to it. A challenge
-        that an authentication handler answered by resending the request is in
-        the history too, with the URL that was given.
+        The URL as the request's caller gave it, resolved against the base URL
+        and without its user and password, or ``None`` if ``resp`` did not come
+        from an ``API`` request.
     """
-    return resp.history[0].url if resp.history else resp.url
+    return cast("str | None", getattr(resp, "_asked_url", None))
 
 
-def _response_url(resp: Response, sent: str | None = None) -> str:
-    """Return the URL of a response, to quote in a message.
+def _response_name(resp: Response) -> str:
+    """Return the request that a message names for a response.
 
-    A redirect's ``Location`` is the server's choice, and a signed download URL
-    carries its credential in the query. So the URL that the client sent first
-    for a request, which the caller gave or a page linked, is quoted by
-    ``_redact_url()``, and any other URL of a response is quoted by its origin
-    and path, built from the parts of the URL that requests sent, as for a
-    redirect that is refused.
+    The name is the method and the URL that eazyrest was asked to send, never
+    the URL that a redirect or a response hook chose, since a server decides
+    those, and a signed download URL carries its credential in the query.
 
     Args:
-        resp: Response whose URL the message names.
-        sent: The URL that was sent first for the request, as requests prepared
-            it, which a response hook knows from the request's budget because
-            requests has not set the history yet. By default, the first URL of
-            the active request's budget, so that every message of one request
-            agrees even if a hook replaced the response or changed its URL, or,
-            with no request active, the URL that the history of ``resp`` starts
-            with.
+        resp: Response whose request the message names.
 
     Returns:
-        The URL without its user and password if it is the URL that was sent
-        first. Otherwise its origin and path alone, or, if requests could not
-        have sent the URL, which cannot be read as an HTTP or HTTPS URL, a text
-        that names none of it.
+        The method and URL. A response that did not come from an ``API``
+        request, and that no request is in flight to name, is named by its own
+        URL, without its user and password.
     """
-    if sent is None:
+    asked = _asked_url(resp)
+    if asked is None:
         budget = _request_budget.get()
-        if budget is not None and budget.first_url is not None:
-            sent = budget.first_url
-        else:
-            sent = _first_url(resp)
-    if resp.url == sent:
-        return _redact_url(resp.url)
-    return _redirected_url(resp.url)
-
-
-def _redirected_url(url: str) -> str:
-    """Return a URL that the server chose, to quote in a message.
-
-    Args:
-        url: The URL, as requests sent it.
-
-    Returns:
-        Its origin and path, built from the parts that requests reads, or a
-        text that names none of it if it cannot be read as an HTTP or HTTPS
-        URL.
-    """
-    try:
-        prepared = _ServerURL.from_prepared(str(url))
-    except ValueError:
-        return _UNSHOWN_URL
-    if not prepared.is_http:
-        return _UNSHOWN_URL
-    return prepared.origin_and_path
+        if budget is not None and budget.request is not None:
+            return budget.request
+        asked = _redact_url(resp.url)
+    return f"{resp.request.method} {asked}"
 
 
 def _normalized_url(url: object) -> tuple[str, str]:
@@ -463,7 +427,7 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     kind = "Client" if 400 <= resp.status_code < 500 else "Server"
     message = (
         f"{resp.status_code} {kind} Error: {_printable(resp.reason)} for "
-        f"{resp.request.method} {_response_url(resp)}"
+        f"{_response_name(resp)}"
     )
     if isinstance(data, dict):
         # A server chooses the names, so bound them, and quote them, so that

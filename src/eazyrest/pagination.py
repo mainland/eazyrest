@@ -14,10 +14,8 @@ from ._errors import (
     PaginationError,
     ResponseShapeError,
     UsageError,
-    _first_url,
+    _asked_url,
     _redact_url,
-    _redirected_url,
-    _response_url,
 )
 from ._protocols import Client, Response
 from ._results import Results
@@ -25,10 +23,10 @@ from ._urls import _ServerURL
 from .api import (
     _as_api,
     _check_final_response,
+    _leaves_allowed_origins,
     _origin,
     _prepare_redirect,
     _prepare_server_url,
-    _refused_reading,
     _response_hooks,
 )
 
@@ -165,7 +163,7 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
 
 
 def _page_url_subject(prepared: _ServerURL | None, label: str) -> str:
-    """Name a page URL in a message, quoting only its origin.
+    """Name a page URL in a message.
 
     Args:
         prepared: The URL as requests prepares it, or ``None`` if requests
@@ -173,18 +171,17 @@ def _page_url_subject(prepared: _ServerURL | None, label: str) -> str:
         label: What the message calls the URL, such as ``"Page URL"``.
 
     Returns:
-        ``label`` with the URL's origin, built from the parts of its reading
-        and not its text, so that it holds no user, password, query, or
-        fragment. For a URL that is not HTTP or HTTPS, ``label`` with the
-        scheme's name, and for a URL that requests cannot prepare, ``label``
-        alone.
+        ``label`` with the URL, as requests prepares it and without its user
+        and password, since the link is the URL that eazyrest was asked to
+        send. For a URL that is not HTTP or HTTPS, whose text can read as a
+        user and password, ``label`` says only that. For a URL that requests
+        cannot prepare, ``label`` alone.
     """
     if prepared is None:
         return label
-    named = prepared.scheme_name
-    if named:
-        return f"{label}, {named},"
-    return f"{label} {prepared.origin_text!r}"
+    if not prepared.is_http:
+        return f"{label}, which is not an HTTP or HTTPS URL,"
+    return f"{label} {_redact_url(prepared.url)!r}"
 
 
 def _check_page_origin(api: Client, url: str) -> None:
@@ -201,8 +198,8 @@ def _check_page_origin(api: Client, url: str) -> None:
         PaginationError: If ``url`` has another origin, or requests cannot
             prepare it. The message of the second quotes none of it, and
             attaches no error, as for ``_resolve()``. The message of the first
-            quotes the URL's origin alone, or names its scheme if it is not
-            HTTP or HTTPS. The page's link is on ``Page.next_url``.
+            quotes the link as requests prepares it, without its user and
+            password, or says that it is not an HTTP or HTTPS URL.
     """
     prepared = _prepare_server_url(_as_api(api).session, url)
     if prepared is None:
@@ -253,6 +250,8 @@ def _request_page(
             "A page URL cannot be requested, so nothing was sent."
         )
     follow = bool(api._request_options.get("allow_redirects", True))
+    # The page link as requests sends it, which is what the message names.
+    asked = _redact_url(prepared.url)
 
     def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
         """Check redirects before requests follows them.
@@ -268,14 +267,12 @@ def _request_page(
         Raises:
             PaginationError: If ``resp`` redirects to an origin other than the
                 API's base URL and other origins are not allowed. The message
-                quotes the origin of the reading of the target that is not the
-                API's, as requests prepares it, or names its scheme alone if it
-                is not HTTP or HTTPS. The response is closed first. A target
-                that cannot be prepared is left to the API's guard. A client
-                that does not follow redirects never raises it, because its
-                page requests would not follow the redirect even with
-                ``allow_other_origins=True``, and the unfollowed redirect
-                raises ``RedirectError`` instead.
+                names the request by its link and quotes no part of the target.
+                The response is closed first. A target that cannot be prepared
+                is left to the API's guard. A client that does not follow
+                redirects never raises it, because its page requests would not
+                follow the redirect even with ``allow_other_origins=True``, and
+                the unfollowed redirect raises ``RedirectError`` instead.
         """
         if not follow:
             return
@@ -291,19 +288,12 @@ def _request_page(
             # that cannot be parsed or prepared, with a message that quotes
             # none of it, so this hook leaves it to the guard.
             return
-        refused = _refused_reading(prepared, {api_origin})
-        if refused is not None:
+        if _leaves_allowed_origins(prepared, {api_origin}):
             resp.close()
-            quoted = refused.scheme_name or repr(refused.origin_text)
-            # The active request's budget knows the URL that was sent first. A
-            # client whose get() does not go through the API's own request
-            # method has none, and the history of the response gives it.
-            url = _response_url(resp)
             raise PaginationError(
-                f"Page request {url!r} was redirected to "
-                f"{quoted}, which has a different origin "
-                f"from the API's base URL {_redact_url(api.base_url)!r}. Pass "
-                "allow_other_origins=True to follow it."
+                f"Page request {asked!r} was redirected to a different origin "
+                f"from the API's base URL {_redact_url(api.base_url)!r}. "
+                "Pass allow_other_origins=True to follow it."
             )
 
     # Request hooks replace session hooks, so preserve the existing ones,
@@ -709,8 +699,8 @@ class Page(Generic[T]):
         self.next_url = next_url
         self.previous_url = previous_url
         self._source: _PageSource[T] | None = None
-        self._sent_url: str | None = None
-        """URL that was sent first to read the page, if it was read."""
+        self._asked_url: str | None = None
+        """URL that was asked for to read the page, if it was read."""
         self._allow_other_origins = False
         self._forward = _Trail(frozenset({url}), 1)
         self._backward = _Trail(frozenset({url}), 1)
@@ -736,18 +726,15 @@ class Page(Generic[T]):
 
         The URL leaves out any user and password, as an error message does,
         since a representation reaches logs in the same way. A page that was
-        read shows its URL's query only if it is the URL that was sent first,
-        which is the page link or the URL that the caller gave. Another URL,
-        which a redirect chose, shows only its origin and path.
+        read shows the URL that eazyrest was asked to send, which is the page
+        link or the URL that the caller gave, and not the URL that a redirect
+        chose. A page that was built by hand shows its ``url``.
 
         Returns:
             Representation of the page.
         """
-        url = (
-            _redact_url(self.url)
-            if self._sent_url in (None, self.url)
-            else _redirected_url(self.url)
-        )
+        asked = self._asked_url
+        url = _redact_url(self.url) if asked is None else asked
         return f"<Page url={url!r} items={len(self.items)}>"
 
     def next_page(self) -> Page[T] | None:
@@ -893,7 +880,7 @@ class _JSONPageSource(_PageSource[Any]):
         page = self._parse(resp)
         _check_page_size(self.api, page.items)
         page._source = self
-        page._sent_url = _first_url(resp)
+        page._asked_url = _asked_url(resp)
         page._allow_other_origins = self._allow_other_origins
         return page
 

@@ -34,7 +34,7 @@ from ._errors import (
     _redact_url,
     _request_budget,
     _response_json,
-    _response_url,
+    _response_name,
 )
 from ._protocols import Client, Response
 from ._urls import _DEFAULT_PORTS, _ServerURL
@@ -114,8 +114,8 @@ def _prepare_server_url(
     The only reading to trust is requests', so this takes the steps that
     requests takes before it sends a request to the URL: ``prepare_url()``, the
     Basic authentication that it takes from the URL's user and password, and
-    the session's choice of adapter. A check of the URL's origin, and any
-    message that names it, must use the result and not the text.
+    the session's choice of adapter. A check of the URL's origin must use the
+    result and not the text.
 
     Args:
         session: Session that would send a request to the URL.
@@ -239,25 +239,21 @@ def _prepare_redirect(
     return destination, joined
 
 
-def _refused_reading(
+def _leaves_allowed_origins(
     prepared: tuple[_ServerURL, _ServerURL],
     allowed: Collection[tuple[str, str | None, int | None]],
-) -> _ServerURL | None:
-    """Return the reading of a redirect that names an origin not allowed.
+) -> bool:
+    """Return whether any reading of a redirect names an origin not allowed.
 
     Args:
         prepared: The readings that ``_prepare_redirect()`` returned.
         allowed: The origins that the redirect may reach.
 
     Returns:
-        The destination if its origin is not allowed, else the joined reading
-        if its origin is not, else ``None``, so a message names an origin that
-        is refused and not one that is allowed.
+        Whether the destination's origin or the joined reading's is not in
+        ``allowed``.
     """
-    for reading in prepared:
-        if reading.origin not in allowed:
-            return reading
-    return None
+    return any(reading.origin not in allowed for reading in prepared)
 
 
 def _drop_response_hooks(resp: Any, request: Any = None) -> None:
@@ -357,11 +353,26 @@ def _check_final_response(
     if 300 <= resp.status_code < 400:
         resp.close()
         raise RedirectError(
-            f"{resp.request.method} {_response_url(resp)} returned status "
-            f"{resp.status_code}, so {consequence}",
+            f"{_response_name(resp)} returned status {resp.status_code}, so "
+            f"{consequence}",
             response=resp,
         )
     return resp
+
+
+def _record_asked_url(resp: requests.Response, asked: str) -> None:
+    """Record the URL that was asked for on a response and its history.
+
+    Messages about the response then name the request by this URL, wherever
+    they are raised, and not by a URL that a redirect or a hook chose.
+
+    Args:
+        resp: The response that a request returned.
+        asked: The URL that the caller gave, resolved against the base URL and
+            without its user and password.
+    """
+    for hop in (*resp.history, resp):
+        hop._asked_url = asked  # type: ignore[attr-defined]
 
 
 # The methods whose requests follow redirects. A redirect answers any other
@@ -401,7 +412,7 @@ _READ_SIZE = 64 * 1024
 
 
 def _unquotable_redirect(
-    resp: requests.Response, problem: str, sent: str | None = None
+    resp: requests.Response, problem: str, name: str
 ) -> RedirectError:
     """Describe a redirect whose ``Location`` the message cannot quote.
 
@@ -413,23 +424,23 @@ def _unquotable_redirect(
         resp: Response that holds the ``Location``.
         problem: What is wrong with the location, completing "to a location
             that".
-        sent: The URL that was sent first for the request, as for
-            ``_response_url()``.
+        name: The request's method and URL, as for ``_Budget.request``.
 
     Returns:
         The error to raise. ``resp`` is closed first.
     """
     resp.close()
     return RedirectError(
-        f"{resp.request.method} {_response_url(resp, sent)} was redirected "
-        f"with status {resp.status_code} to a location that {problem}, so "
-        "it was not followed. The response of this error holds the Location "
-        "header.",
+        f"{name} was redirected with status {resp.status_code} to a location "
+        f"that {problem}, so it was not followed. The response of this error "
+        "holds the Location header.",
         response=resp,
     )
 
 
-def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
+def _unpreparable_redirect(
+    resp: requests.Response, name: str
+) -> RedirectError:
     """Describe an unfollowed redirect that requests cannot prepare.
 
     The message quotes no part of the ``Location``. A target that requests
@@ -439,6 +450,7 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
 
     Args:
         resp: Final response, a redirect that requests does not follow.
+        name: The request's method and URL, as for ``_Budget.request``.
 
     Returns:
         The error to raise instead of the one that requests raised while it
@@ -446,7 +458,7 @@ def _unpreparable_redirect(resp: requests.Response) -> RedirectError:
         lose their response hooks, so that the error pickles.
     """
     _drop_response_hooks(resp)
-    return _unquotable_redirect(resp, "requests cannot prepare")
+    return _unquotable_redirect(resp, "requests cannot prepare", name)
 
 
 class _Budget:
@@ -470,9 +482,11 @@ class _Budget:
                 redirects and reading bodies, or ``None`` for no limit.
             streamed: Whether the caller reads the body of a successful final
                 response, so that the adapter leaves it unread.
-            request: Method and URL of the request, as ``"GET http://host/"``
-                with the URL's user and password left out, which an error names
-                when it has no response to name, or ``None`` if unknown.
+            request: Method and URL of the request, as ``"GET http://host/"``,
+                with the URL as the caller gave it, resolved against the base
+                URL, and without its user and password. An error names the
+                request by it, and never by a URL that a response supplied.
+                ``None`` if unknown.
         """
         self.max_bytes = max_bytes
         self.request = request
@@ -482,30 +496,9 @@ class _Budget:
         self.streamed = streamed
         self.unfollowed: requests.Response | None = None
         """Final response that is a redirect that requests does not follow."""
-        self.first_url: str | None = None
-        """URL of the first response, as requests prepared it.
-
-        A message quotes this URL with its query, since the caller or a page
-        link gave it, and any other URL of the request by its origin and path.
-        """
         self.deadline = (
             None if total_timeout is None else time.monotonic() + total_timeout
         )
-
-    def see(self, url: str) -> None:
-        """Note a URL that requests sent, if it is the first of the request.
-
-        The adapter calls this with the URL of each request that it sends, and
-        the first response hook calls it for a session whose adapter is not the
-        API's own. An authentication handler's response hook runs before the
-        request's other hooks, so the hook cannot be the only source, and the
-        first request that reaches the adapter is the one that was sent first.
-
-        Args:
-            url: URL of the request, as requests prepared it.
-        """
-        if self.first_url is None:
-            self.first_url = url
 
     def timeout(self, timeout: Any) -> Any:
         """Return a request timeout that ends no later than the deadline.
@@ -551,18 +544,16 @@ class _Budget:
         """Return the method and URL that an error names for a response.
 
         Args:
-            resp: Response being handled. One that urllib3 hands to a retry
-                policy has no URL, because urllib3 passes the policy only the
-                path of the request, so it is named by the budget's request.
+            resp: Response being handled.
 
         Returns:
-            Method and URL, with the URL's user and password left out, and, for
-            any URL but the one that was sent first, its query and fragment
-            too.
+            The request's method and URL, as for ``request``, or, for a budget
+            without one, those of ``resp``, without the URL's user and
+            password.
         """
-        if not resp.url and self.request is not None:
+        if self.request is not None:
             return self.request
-        return f"{resp.request.method} {_response_url(resp, self.first_url)}"
+        return f"{resp.request.method} {_redact_url(resp.url)}"
 
     def check_time(self, resp: requests.Response | None = None) -> None:
         """Raise if the request has run out of time.
@@ -842,10 +833,6 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
     ) -> requests.Response:
         """Send a request, and bound the response before any hook sees it.
 
-        The request's budget notes the URL of the first request that arrives
-        here, before any response hook runs, since an authentication handler's
-        hook can send a request for a URL that a server chose.
-
         Requests runs its response hooks on the response that this returns, and
         an authentication handler such as ``HTTPDigestAuth`` reads the body of
         a 401 challenge there. Reading it here first, within the active budget,
@@ -872,8 +859,6 @@ class _HTTPAdapter(requests.adapters.HTTPAdapter):
                 the request has run out of time.
         """
         budget = _request_budget.get()
-        if budget is not None and request.url is not None:
-            budget.see(request.url)
         resp = super().send(request, stream, timeout, verify, cert, proxies)
         if budget is not None:
             budget.check_time(resp)
@@ -1375,8 +1360,9 @@ class API:
                 # attached.
                 if write:
                     raise _redirected_write(rejected, name) from None
-                raise _unpreparable_redirect(rejected) from None
+                raise _unpreparable_redirect(rejected, name) from None
             _drop_response_hooks(resp)
+            _record_asked_url(resp, _redact_url(url))
             if write and 300 <= resp.status_code < 400:
                 raise _redirected_write(resp, name)
             budget.check_time(resp)
@@ -1418,21 +1404,18 @@ class API:
             requests follows it.
         """
         allowed = {_origin(url), *map(_origin, self.redirect_origins)}
-        # A request without a budget still needs to know its first URL.
-        seen = _Budget(None, None) if budget is None else budget
 
-        def note_url(resp: requests.Response, **kwargs: Any) -> None:
-            """Note the URL of the first response of the request.
-
-            The API's own adapter has noted it by now, so this serves a session
-            with another adapter. An authentication handler's hook runs before
-            this one, since requests prepares the handler first.
+        def name(resp: requests.Response) -> str:
+            """Return the request that a message names.
 
             Args:
-                resp: Response, which requests has not yet given a history.
-                kwargs: Arguments that requests passes to response hooks.
+                resp: Response, whose request has the method.
+
+            Returns:
+                The method of ``resp``'s request and the URL that was asked
+                for, without its user and password.
             """
-            seen.see(resp.url)
+            return f"{resp.request.method} {_redact_url(url)}"
 
         def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
             """Refuse a redirect that is not safe to follow.
@@ -1444,11 +1427,9 @@ class API:
             Raises:
                 RedirectError: If requests follows the redirect, and its
                     ``Location`` cannot be parsed or prepared, or it leads to
-                    an origin that is not allowed. The message of the origin
-                    case quotes the origin of the reading that is not allowed,
-                    the destination's or the joined target's, and nothing else,
-                    or names its scheme if it is not HTTP or HTTPS. The
-                    response is closed first.
+                    an origin that is not allowed. The message names the
+                    request by the URL that was asked for, and quotes no part
+                    of the ``Location``. The response is closed first.
             """
             if not follow:
                 if resp.is_redirect and budget is not None:
@@ -1467,10 +1448,9 @@ class API:
                     # requests cannot prepare the target, as for a port that is
                     # not a number.
                     raise _unquotable_redirect(
-                        resp, "requests cannot prepare", seen.first_url
+                        resp, "requests cannot prepare", name(resp)
                     )
-                refused = _refused_reading(prepared, allowed)
-                if refused is None:
+                if not _leaves_allowed_origins(prepared, allowed):
                     if budget is not None:
                         # requests reads a redirect's body before following it.
                         budget.check_time(resp)
@@ -1479,19 +1459,17 @@ class API:
 
                 resp.close()
                 raise RedirectError(
-                    f"{resp.request.method} "
-                    f"{_response_url(resp, seen.first_url)} was redirected "
-                    f"with status {resp.status_code} to "
-                    f"{refused.origin_text}, "
-                    "whose origin differs from the request's, so it was not "
-                    "followed. Add the origin to API.redirect_origins to "
+                    f"{name(resp)} was redirected with status "
+                    f"{resp.status_code} to another origin, so it was not "
+                    "followed. The response of this error holds the Location "
+                    "header. Add its origin to API.redirect_origins to "
                     "follow it.",
                     response=resp,
                 )
             # The error that rejected the header can quote it, so none is
             # attached.
             raise _unquotable_redirect(
-                resp, "cannot be parsed", seen.first_url
+                resp, "cannot be parsed", name(resp)
             ) from None
 
         # requests uses a request's response hooks instead of the session's, so
@@ -1499,11 +1477,7 @@ class API:
         # after any hook that might change the response.
         merged = dict(hooks or {})
         response = merged.get("response") or self.session.hooks.get("response")
-        merged["response"] = [
-            note_url,
-            *_response_hooks(response),
-            check_redirect,
-        ]
+        merged["response"] = [*_response_hooks(response), check_redirect]
         return merged
 
     def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:

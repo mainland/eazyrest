@@ -33,8 +33,8 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
-from eazyrest._errors import _redact_url, _response_url
-from eazyrest.api import _prepare_redirect, _refused_reading
+from eazyrest._errors import _redact_url, _response_name
+from eazyrest.api import _prepare_redirect
 
 
 @pytest.mark.parametrize(
@@ -802,198 +802,6 @@ def test_followed_redirect_is_refused_if_either_reading_cannot_be_prepared(
 
 
 @pytest.mark.parametrize(
-    ("location", "scheme"),
-    [
-        ("mailto:alice:hunter2@h.test/x", "mailto"),
-        ("data:alice:hunter2@x", "data"),
-        ("javascript:alice:hunter2@h", "javascript"),
-        ("file:alice:hunter2@h/x", "file"),
-        ("ftp:///alice:hunter2?@[v1.x/a b", "ftp"),
-        ("ftp://?@alice:hunter2/x", "ftp"),
-        ("\x01mailto:alice:hunter2@h.test/x@y", "mailto"),
-        (" \t\x01mai\tlto:alice:hunter2@[::1]/x", "mailto"),
-        ("MailTo:alice:hunter2@h.test:abc/x", "mailto"),
-    ],
-)
-def test_followed_redirect_to_a_target_without_an_authority_quotes_its_scheme(
-    requests_mock: Any, location: str, scheme: str
-) -> None:
-    """A target with no ``//`` after its scheme is quoted by its scheme alone.
-
-    Such a target has no user and password to leave out, yet its text can read
-    as one. The error's response holds the header.
-
-    Args:
-        location: The redirect's ``Location`` header.
-        scheme: The scheme that the message names, in lower case as requests
-            follows it.
-    """
-    api = API("https://example.com/")
-    requests_mock.get(
-        "https://example.com/a",
-        status_code=302,
-        headers={"Location": location},
-    )
-
-    with pytest.raises(RedirectError, match="origin differs") as raised:
-        api.get("/a")
-
-    for text in (str(raised.value), repr(raised.value)):
-        assert (
-            "was redirected with status 302 to a location whose scheme is "
-            f"{scheme}:, whose origin differs from the request's, so it was "
-            "not followed."
-        ) in text
-        assert "alice" not in text
-        assert "hunter2" not in text
-    assert raised.value.response is not None
-    assert raised.value.response.headers["Location"] == location
-
-
-def test_followed_redirect_to_another_scheme_is_named_by_its_scheme(
-    requests_mock: Any,
-) -> None:
-    """A target that is not HTTP is named by its scheme, authority or not."""
-    api = API("https://example.com/")
-    requests_mock.get(
-        "https://example.com/a",
-        status_code=302,
-        headers={"Location": "ftp://alice:hunter2@h.test/x"},
-    )
-
-    with pytest.raises(RedirectError, match="origin differs") as raised:
-        api.get("/a")
-
-    message = str(raised.value)
-    assert (
-        "redirected with status 302 to a location whose scheme is ftp:, whose"
-    ) in message
-    assert "h.test" not in message
-    assert "hunter2" not in message
-
-
-def test_followed_redirect_quotes_the_origin_as_requests_prepares_it(
-    requests_mock: Any,
-) -> None:
-    """The quoted origin is the prepared URL's, not the header's text."""
-    api = API("https://example.com/")
-    requests_mock.get(
-        "https://example.com/a",
-        status_code=302,
-        headers={"Location": "http://Alice:hunter2@H.TEST:8080/x[1]"},
-    )
-
-    with pytest.raises(RedirectError, match="origin differs") as raised:
-        api.get("/a")
-
-    message = str(raised.value)
-    assert "to http://h.test:8080, whose origin differs" in message
-    assert "x%5B1%5D" not in message
-    assert "alice" not in message.lower()
-    assert "hunter2" not in message
-
-
-def test_followed_redirect_to_a_readable_origin_quotes_only_the_origin(
-    requests_mock: Any,
-) -> None:
-    """A target with a readable origin that differs is quoted by its origin."""
-    api = API("https://example.com/")
-    requests_mock.get(
-        "https://example.com/a",
-        status_code=302,
-        headers={"Location": "http://alice:hunter2@other.test:8080/x"},
-    )
-
-    with pytest.raises(RedirectError, match="origin differs") as raised:
-        api.get("/a")
-
-    message = str(raised.value)
-    assert "to http://other.test:8080, whose origin differs" in message
-    assert "alice" not in message
-    assert "hunter2" not in message
-
-
-def test_followed_redirect_to_a_signed_url_quotes_only_its_origin(
-    requests_mock: Any,
-) -> None:
-    """A refused redirect's message leaves out the target's query.
-
-    A signed download URL carries its credential in the query. The error's
-    response holds the header.
-    """
-    location = (
-        "https://files.test/obj?X-Amz-Signature=SECRETSIG"
-        "&X-Amz-Credential=AKIDEXAMPLE#SECRETFRAG"
-    )
-    api = API("https://example.com/")
-    requests_mock.get(
-        "https://example.com/a",
-        status_code=302,
-        headers={"Location": location},
-    )
-
-    with pytest.raises(RedirectError) as raised:
-        api.get("/a")
-
-    assert str(raised.value) == (
-        "GET https://example.com/a was redirected with status 302 to "
-        "https://files.test, whose origin differs from the request's, so it "
-        "was not followed. Add the origin to API.redirect_origins to follow "
-        "it."
-    )
-    for text in (
-        str(raised.value),
-        repr(raised.value),
-        repr(raised.value.args),
-        "".join(traceback.format_exception(raised.value)),
-    ):
-        for secret in ("SECRETSIG", "AKIDEXAMPLE", "SECRETFRAG", "/obj"):
-            assert secret not in text
-    assert raised.value.response is not None
-    assert raised.value.response.headers["Location"] == location
-
-
-@pytest.mark.parametrize(
-    ("location", "origin"),
-    [
-        (
-            "https://[2001:DB8::1]:8443/p?q=SECRET",
-            "https://[2001:db8::1]:8443",
-        ),
-        ("https://[::1]/p#SECRET", "https://[::1]"),
-        ("http://Other.TEST:8080/p", "http://other.test:8080"),
-        ("http://other.test:80/p?q=SECRET", "http://other.test"),
-        ("https://Other.TEST:443/p", "https://other.test"),
-        ("https://other.test:80/p", "https://other.test:80"),
-        # requests percent-encodes a redirect's target and sends it unprepared.
-        ("https://b\u00fccher.test/p?q=SECRET", "https://b%C3%BCcher.test"),
-    ],
-)
-def test_followed_redirect_quotes_the_origin_that_requests_reads(
-    requests_mock: Any, location: str, origin: str
-) -> None:
-    """The quoted origin has the host and port that requests prepares.
-
-    Args:
-        location: The redirect's ``Location`` header.
-        origin: The origin that the message quotes.
-    """
-    api = API("http://example.com/")
-    requests_mock.get(
-        "http://example.com/a",
-        status_code=302,
-        # requests decodes a header's bytes as Latin-1, then as UTF-8.
-        headers={"Location": location.encode("utf-8").decode("latin-1")},
-    )
-
-    with pytest.raises(RedirectError) as raised:
-        api.get("/a")
-
-    assert f"to {origin}, whose origin differs" in str(raised.value)
-    assert "SECRET" not in str(raised.value)
-
-
-@pytest.mark.parametrize(
     "location",
     [
         "https://alice:hunter2@evil.test/p?q=SECRET#SECRET",
@@ -1007,17 +815,25 @@ def test_followed_redirect_quotes_the_origin_that_requests_reads(
         "https://alice:hunter2%40evil.test/p?q=SECRET",
         "https://evil.test/p\x7f\n?q=SECRET",
         "//alice:hunter2@evil.test/p?q=SECRET",
+        "https://[2001:DB8::1]:8443/p?q=SECRET",
+        "http://Alice:hunter2@H.TEST:8080/x[1]",
+        "https://b\u00fccher.test/p?q=SECRET",
+        "https://files.test/obj?X-Amz-Signature=SECRETSIG#SECRETFRAG",
         "mailto:alice:hunter2@evil.test?subject=SECRET",
+        "ftp://alice:hunter2@evil.test/x",
+        "ftp:///alice:hunter2?@[v1.x/a b",
+        "\x01mailto:alice:hunter2@evil.test/x@y",
+        "MailTo:alice:hunter2@evil.test:abc/x",
     ],
 )
-def test_followed_redirect_message_is_built_from_the_prepared_parts(
+def test_refused_redirect_quotes_no_part_of_the_location(
     requests_mock: Any, location: str
 ) -> None:
-    """A target that requests prepares is quoted as its parts render.
+    """A redirect that is not followed is named by the request alone.
 
-    The message holds the scheme, host, and port that requests reads, for any
-    spelling of the target. Whatever else its text holds is not quoted, so it
-    cannot differ from the rendering of the parts.
+    The message holds no origin, user, password, path, query, or fragment of
+    the target, however requests reads it. The error's response holds the
+    header.
 
     Args:
         location: The redirect's ``Location`` header.
@@ -1026,7 +842,8 @@ def test_followed_redirect_message_is_built_from_the_prepared_parts(
     requests_mock.get(
         "https://example.com/a",
         status_code=302,
-        headers={"Location": location},
+        # requests decodes a header's bytes as Latin-1, then as UTF-8.
+        headers={"Location": location.encode("utf-8").decode("latin-1")},
     )
 
     with pytest.raises(RedirectError) as raised:
@@ -1036,25 +853,33 @@ def test_followed_redirect_message_is_built_from_the_prepared_parts(
     assert response is not None
     target = api.session.get_redirect_target(response)
     assert target is not None
-    prepared = _prepare_redirect(api.session, response, target)
-    if prepared is None:
-        quoted = "a location that requests cannot prepare"
-        rest = ", so it was not followed. The response of this error holds"
+    if _prepare_redirect(api.session, response, target) is None:
+        outcome = (
+            "to a location that requests cannot prepare, so it was not "
+            "followed. The response of this error holds the Location header."
+        )
     else:
-        refused = _refused_reading(prepared, {("https", "example.com", 443)})
-        assert refused is not None
-        quoted = refused.origin_text
-        rest = ", whose origin differs from the request's, so it was not"
-    assert f"status 302 to {quoted}{rest}" in str(raised.value)
-    for text in (
-        str(raised.value),
-        repr(raised.value),
-        repr(raised.value.args),
-    ):
-        assert "SECRET" not in text
-        assert "hunter2" not in text
-        assert "alice" not in text
-        assert text.isprintable()
+        outcome = (
+            "to another origin, so it was not followed. The response of this "
+            "error holds the Location header. Add its origin to "
+            "API.redirect_origins to follow it."
+        )
+    assert str(raised.value) == (
+        f"GET https://example.com/a was redirected with status 302 {outcome}"
+    )
+    for text in _printed(raised.value):
+        for secret in (
+            "SECRET",
+            "hunter2",
+            "alice",
+            "evil",
+            "files",
+            "h.test",
+        ):
+            assert secret not in text
+    assert response.headers["Location"] == location.encode("utf-8").decode(
+        "latin-1"
+    )
 
 
 def _printed(error: BaseException) -> list[str]:
@@ -1387,10 +1212,10 @@ def _assert_unsigned(error: BaseException) -> None:
             assert secret not in text
 
 
-def test_http_error_after_an_allowed_redirect_quotes_the_origin_and_path(
+def test_http_error_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A failure of the URL that a redirect reached leaves out its query."""
+    """A failure after a redirect names the URL that was asked for."""
     api = _download_api(requests_mock)
     requests_mock.get("https://files.test/o", status_code=403)
 
@@ -1398,17 +1223,17 @@ def test_http_error_after_an_allowed_redirect_quotes_the_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://files.test/o"
+        "403 Client Error: None for GET https://api.test/dl/"
     )
     _assert_unsigned(raised.value)
     assert raised.value.response is not None
     assert raised.value.response.url == f"https://files.test/o{_SIGNED}"
 
 
-def test_size_limit_after_an_allowed_redirect_quotes_the_origin_and_path(
+def test_size_limit_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """The response that a redirect reached is named without its query."""
+    """The response that a redirect reached is named by the URL asked for."""
     api = _download_api(requests_mock)
     api.max_response_bytes = 4
     requests_mock.get("https://files.test/o", content=b"0123456789")
@@ -1417,15 +1242,15 @@ def test_size_limit_after_an_allowed_redirect_quotes_the_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "The response to GET https://files.test/o is larger than 4 bytes"
+        "The response to GET https://api.test/dl/ is larger than 4 bytes"
     )
     _assert_unsigned(raised.value)
 
 
-def test_size_limit_of_a_redirect_after_a_redirect_quotes_the_origin_and_path(
+def test_size_limit_of_a_second_redirect_names_the_url_that_was_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A second redirect's body is named by the URL that the first reached."""
+    """A second redirect's body is named by the URL that was asked for."""
     api = _download_api(requests_mock)
     api.max_response_bytes = 4
     requests_mock.get(
@@ -1439,15 +1264,15 @@ def test_size_limit_of_a_redirect_after_a_redirect_quotes_the_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "The response to GET https://files.test/o is larger than 4 bytes"
+        "The response to GET https://api.test/dl/ is larger than 4 bytes"
     )
     _assert_unsigned(raised.value)
 
 
-def test_total_timeout_after_an_allowed_redirect_quotes_the_origin_and_path(
+def test_total_timeout_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deadline of a request names the URL that a redirect reached."""
+    """The deadline of a request names the URL that was asked for."""
     api = _download_api(requests_mock)
     api.total_timeout = 100.0
     requests_mock.get("https://files.test/o", content=b"body")
@@ -1458,15 +1283,15 @@ def test_total_timeout_after_an_allowed_redirect_quotes_the_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "GET https://files.test/o took at least 100.0 seconds"
+        "GET https://api.test/dl/ took at least 100.0 seconds"
     )
     _assert_unsigned(raised.value)
 
 
-def test_unfollowed_final_redirect_after_a_redirect_quotes_the_origin_and_path(
+def test_unfollowed_final_redirect_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A final 3xx that a redirect reached is named without its query."""
+    """A final 3xx that a redirect reached is named by the URL asked for."""
     api = _download_api(requests_mock)._scoped({})
     requests_mock.get("https://files.test/o", status_code=300)
 
@@ -1474,16 +1299,16 @@ def test_unfollowed_final_redirect_after_a_redirect_quotes_the_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value) == (
-        "GET https://files.test/o returned status 300, so the request has "
+        "GET https://api.test/dl/ returned status 300, so the request has "
         "no response to read"
     )
     _assert_unsigned(raised.value)
 
 
-def test_shape_error_after_an_allowed_redirect_quotes_the_origin_and_path(
+def test_shape_error_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A body that is not JSON is named by the URL that a redirect reached."""
+    """A body that is not JSON is named by the URL that was asked for."""
     api = _download_api(requests_mock)
     requests_mock.get("https://files.test/o", content=b"not json")
     resp = api.get("dl/")
@@ -1492,16 +1317,16 @@ def test_shape_error_after_an_allowed_redirect_quotes_the_origin_and_path(
         api.json(resp)
 
     assert str(raised.value) == (
-        "The response to GET https://files.test/o, with status 200, does "
+        "The response to GET https://api.test/dl/, with status 200, does "
         "not hold JSON"
     )
     _assert_unsigned(raised.value)
 
 
-def test_depth_limit_after_an_allowed_redirect_quotes_the_origin_and_path(
+def test_depth_limit_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """The JSON depth limit names the URL that a redirect reached."""
+    """The JSON depth limit names the URL that was asked for."""
     api = _download_api(requests_mock)
     api.max_json_depth = 1
     requests_mock.get("https://files.test/o", json=[[[1]]])
@@ -1511,16 +1336,16 @@ def test_depth_limit_after_an_allowed_redirect_quotes_the_origin_and_path(
         api.json(resp)
 
     assert str(raised.value).startswith(
-        "The response to GET https://files.test/o, with status 200, holds "
+        "The response to GET https://api.test/dl/, with status 200, holds "
         "JSON nested more than 1 levels deep"
     )
     _assert_unsigned(raised.value)
 
 
-def test_redirect_refused_after_a_redirect_names_the_url_by_origin_and_path(
+def test_redirect_refused_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """The guard names the redirecting URL that an earlier redirect reached."""
+    """The guard names the URL that was asked for, not the one it reached."""
     api = _download_api(requests_mock)
     requests_mock.get(
         "https://files.test/o",
@@ -1532,17 +1357,17 @@ def test_redirect_refused_after_a_redirect_names_the_url_by_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "GET https://files.test/o was redirected with status 302 to "
-        "https://evil.test, whose origin differs"
+        "GET https://api.test/dl/ was redirected with status 302 to "
+        "another origin, so it was not followed."
     )
     _assert_unsigned(raised.value)
 
 
 @pytest.mark.parametrize("location", ["http://[::1/p", "https://a:b@h:x/p"])
-def test_unquotable_redirect_after_a_redirect_names_the_url_by_origin_and_path(
+def test_unquotable_redirect_after_a_redirect_names_the_url_asked_for(
     requests_mock: Any, location: str
 ) -> None:
-    """A target that cannot be read is reported at the URL that was reached.
+    """A target that cannot be read is reported at the URL that was asked for.
 
     Args:
         location: The second redirect's ``Location`` header.
@@ -1558,7 +1383,7 @@ def test_unquotable_redirect_after_a_redirect_names_the_url_by_origin_and_path(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "GET https://files.test/o was redirected with status 302 to a "
+        "GET https://api.test/dl/ was redirected with status 302 to a "
         "location that "
     )
     _assert_unsigned(raised.value)
@@ -1593,76 +1418,10 @@ def test_a_url_that_the_caller_gave_keeps_its_query_in_each_message(
     )
 
 
-def test_a_resent_challenge_does_not_make_a_url_a_redirect_target() -> None:
-    """A 401 in the history does not change how the URL is quoted."""
-    challenge = requests.Response()
-    challenge.status_code = 401
-    challenge.url = "https://api.test/a?key=GIVEN"
-    final = requests.Response()
-    final.status_code = 500
-    final.url = "https://api.test/a?key=GIVEN"
-    final.request = requests.Request("GET", final.url).prepare()
-    final.history = [challenge]
-
-    assert _response_url(final) == "https://api.test/a?key=GIVEN"
-
-
-@pytest.mark.parametrize("url", ["https://host:99999/p", "ftp://host/p", ""])
-def test_a_redirected_response_that_requests_could_not_have_sent_shows_no_url(
-    url: str,
-) -> None:
-    """A URL that is not an HTTP or HTTPS URL is not quoted.
-
-    Args:
-        url: URL of a response that a redirect reached.
-    """
-    resp = requests.Response()
-    resp.url = url
-
-    assert _response_url(resp, "https://api.test/p") == "<URL not shown>"
-
-
-@pytest.mark.parametrize(
-    ("location", "named"),
-    [
-        # requests reads the host after the backslash, and urljoin() before it.
-        ("https://evil.test\\@api.test/p?q=SECRET", "https://evil.test"),
-        ("https://api.test\\@evil.test/p?q=SECRET", "https://evil.test"),
-        ("https://evil.test:8443\\@api.test/p", "https://evil.test:8443"),
-    ],
-)
-def test_redirect_names_the_origin_that_a_reading_of_it_refuses(
-    requests_mock: Any, location: str, named: str
-) -> None:
-    """The message names an origin that is not allowed, never one that is.
-
-    The two readings of a target can name different hosts, and either can be
-    the allowed one.
-
-    Args:
-        location: The redirect's ``Location`` header.
-        named: The origin that the message names.
-    """
-    api = API("https://api.test/")
-    requests_mock.get(
-        "https://api.test/a", status_code=302, headers={"Location": location}
-    )
-
-    with pytest.raises(RedirectError) as raised:
-        api.get("a")
-
-    assert str(raised.value).startswith(
-        f"GET https://api.test/a was redirected with status 302 to {named}, "
-        "whose origin differs from the request's"
-    )
-    for text in _printed(raised.value):
-        assert "SECRET" not in text
-
-
-def test_page_redirect_names_the_origin_that_a_reading_of_it_refuses(
+def test_page_redirect_to_another_origin_names_no_origin(
     requests_mock: Any,
 ) -> None:
-    """A next-page request's redirect names the origin that is refused."""
+    """A next-page request's redirect is refused without naming its target."""
     api = API("https://api.test/")
     requests_mock.get(
         "https://api.test/p",
@@ -1678,11 +1437,13 @@ def test_page_redirect_names_the_origin_that_a_reading_of_it_refuses(
         )
 
     assert str(raised.value) == (
-        "Page request 'https://api.test/p' was redirected to "
-        "'https://evil.test', which has a different origin from the API's "
-        "base URL 'https://api.test/'. Pass allow_other_origins=True to "
-        "follow it."
+        "Page request 'https://api.test/p' was redirected to a different "
+        "origin from the API's base URL 'https://api.test/'. Pass "
+        "allow_other_origins=True to follow it."
     )
+    for text in _printed(raised.value):
+        assert "SECRET" not in text
+        assert "evil" not in text
 
 
 @pytest.fixture
@@ -1759,10 +1520,10 @@ class _LoginHandler(AuthBase):
         return resp.connection.send(login)
 
 
-def test_error_after_an_authentication_hook_chose_a_url_leaves_out_its_query(
+def test_error_after_an_authentication_hook_names_the_url_asked_for(
     redirecting_server: Callable[[Callable[[Any], None]], str],
 ) -> None:
-    """An authentication hook runs first, and its URL is not the first one."""
+    """An authentication hook's URL is not the one that was asked for."""
 
     def login(handler: Any) -> None:
         if handler.path.startswith("/a"):
@@ -1783,16 +1544,16 @@ def test_error_after_an_authentication_hook_chose_a_url_leaves_out_its_query(
     with pytest.raises(APIError) as raised:
         api.get("a?CALLERQ=1")
 
-    assert (
-        str(raised.value) == f"403 Client Error: Forbidden for GET {base}login"
+    assert str(raised.value) == (
+        f"403 Client Error: Forbidden for GET {base}a?CALLERQ=1"
     )
     _assert_no_signature(raised.value)
 
 
-def test_size_limit_of_a_response_that_a_redirect_reached_names_no_query(
+def test_size_limit_of_a_redirected_response_names_the_url_asked_for(
     redirecting_server: Callable[[Callable[[Any], None]], str],
 ) -> None:
-    """The adapter names the redirect's target without its signed query."""
+    """The adapter names the URL that was asked for, not the target."""
 
     def large(handler: Any) -> None:
         handler.send_response(200)
@@ -1808,15 +1569,15 @@ def test_size_limit_of_a_response_that_a_redirect_reached_names_no_query(
         api.get("dl")
 
     assert str(raised.value).startswith(
-        f"The response to GET {base}o is larger than 10 bytes"
+        f"The response to GET {base}dl is larger than 10 bytes"
     )
     _assert_unsigned(raised.value)
 
 
-def test_total_timeout_of_a_response_that_a_redirect_reached_names_no_query(
+def test_total_timeout_of_a_redirected_response_names_the_url_asked_for(
     redirecting_server: Callable[[Callable[[Any], None]], str],
 ) -> None:
-    """The adapter names a stalled redirect target without its query."""
+    """The adapter names the URL that was asked for, not a stalled target."""
 
     def stalled(handler: Any) -> None:
         handler.send_response(200)
@@ -1835,7 +1596,7 @@ def test_total_timeout_of_a_response_that_a_redirect_reached_names_no_query(
         api.get("dl")
 
     assert str(raised.value).startswith(
-        f"GET {base}o took at least 0.2 seconds"
+        f"GET {base}dl took at least 0.2 seconds"
     )
     _assert_unsigned(raised.value)
 
@@ -1885,10 +1646,10 @@ def _resend_with_a_new_token(
     return resent
 
 
-def test_redirect_refused_after_a_hook_resent_a_request_leaves_out_the_query(
+def test_redirect_refused_after_a_hook_resend_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A hook's new response is named by the URL that a redirect reached."""
+    """A hook's new response is named by the URL that was asked for."""
     api = _download_api(requests_mock)
     api.session.hooks["response"] = [_resend_with_a_new_token]
     requests_mock.get(
@@ -1906,8 +1667,8 @@ def test_redirect_refused_after_a_hook_resent_a_request_leaves_out_the_query(
         api.get("dl/")
 
     assert str(raised.value).startswith(
-        "GET https://files.test/o was redirected with status 302 to "
-        "https://evil.test, whose origin differs"
+        "GET https://api.test/dl/ was redirected with status 302 to "
+        "another origin, so it was not followed."
     )
     _assert_unsigned(raised.value)
 
@@ -1934,7 +1695,7 @@ def test_redirect_refused_after_a_hook_resent_the_given_url_keeps_its_query(
 
     assert str(raised.value).startswith(
         "GET https://api.test/x?CALLERQ=1 was redirected with status 302 to "
-        "https://evil.test, whose origin differs"
+        "another origin, so it was not followed."
     )
 
 
@@ -1964,7 +1725,7 @@ def test_page_link_refused_after_a_hook_resent_it_keeps_its_query(
 
     assert str(raised.value).startswith(
         "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
-        "'https://evil.test'"
+        "a different origin"
     )
 
 
@@ -2000,10 +1761,10 @@ def _answer_with_another_url(
     )
 
 
-def test_error_of_a_response_that_a_hook_substituted_leaves_out_its_query(
+def test_error_of_a_response_that_a_hook_substituted_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A response for a URL that a hook chose is quoted as a redirect is."""
+    """A response for a URL that a hook chose is named by the URL asked for."""
     api = API("https://api.test/")
     api.session.hooks["response"] = [_answer_with_another_url]
     requests_mock.get("https://api.test/h", status_code=200)
@@ -2013,7 +1774,7 @@ def test_error_of_a_response_that_a_hook_substituted_leaves_out_its_query(
         api.get("h?CALLERQ=1")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://files.test/hooked"
+        "403 Client Error: None for GET https://api.test/h?CALLERQ=1"
     )
     _assert_no_signature(raised.value)
 
@@ -2032,15 +1793,15 @@ def test_messages_of_one_request_agree_on_a_url_that_a_hook_chose(
         api.get("h?CALLERQ=1")
 
     assert str(raised.value).startswith(
-        "The response to GET https://files.test/hooked is larger"
+        "The response to GET https://api.test/h?CALLERQ=1 is larger"
     )
     _assert_no_signature(raised.value)
 
 
-def test_error_of_a_response_whose_url_a_hook_rewrote_leaves_out_its_query(
+def test_error_of_a_response_whose_url_a_hook_rewrote_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A hook that changes a response's URL does not make it the first one."""
+    """A hook that changes a response's URL does not change the name."""
 
     def rewrite(resp: requests.Response, **kwargs: Any) -> requests.Response:
         resp.url = f"https://files.test/rw{_SIGNED}"
@@ -2054,26 +1815,39 @@ def test_error_of_a_response_whose_url_a_hook_rewrote_leaves_out_its_query(
         api.get("rw?CALLERQ=1")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://files.test/rw"
+        "403 Client Error: None for GET https://api.test/rw?CALLERQ=1"
     )
     _assert_no_signature(raised.value)
 
 
-def test_response_named_outside_a_request_compares_with_the_history() -> None:
-    """With no request active, the first URL is the history's first URL."""
-    challenge = requests.Response()
-    challenge.status_code = 401
-    challenge.url = "https://api.test/a?key=GIVEN"
-    final = requests.Response()
-    final.status_code = 500
-    final.url = "https://api.test/b?key=OTHER"
-    final.request = requests.Request("GET", final.url).prepare()
-    final.history = [challenge]
+@pytest.mark.parametrize(
+    ("url", "named"),
+    [
+        (
+            "https://alice:hunter2@api.test/a?key=GIVEN",
+            "https://api.test/a?key=GIVEN",
+        ),
+        ("https://api.test/b", "https://api.test/b"),
+    ],
+)
+def test_response_that_no_api_request_returned_is_named_by_its_own_url(
+    url: str, named: str
+) -> None:
+    """A response with no recorded request is named by its URL, redacted.
 
-    assert _response_url(final) == "https://api.test/b"
+    Args:
+        url: URL of the response.
+        named: The URL that the name quotes.
+    """
+    resp = requests.Response()
+    resp.status_code = 500
+    resp.url = url
+    resp.request = requests.Request("GET", url).prepare()
+
+    assert _response_name(resp) == f"GET {named}"
 
 
-def test_page_link_refused_with_no_request_active_keeps_its_query(
+def test_page_link_refused_by_a_client_that_skips_the_request_method_is_named(
     requests_mock: Any,
 ) -> None:
     """A client whose get() skips the API's request method names the link."""
@@ -2098,18 +1872,14 @@ def test_page_link_refused_with_no_request_active_keeps_its_query(
 
     assert str(raised.value).startswith(
         "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
-        "'https://evil.test'"
+        "a different origin"
     )
 
 
-def test_http_error_of_a_url_that_redirected_to_itself_leaves_out_its_query(
+def test_http_error_of_a_url_that_redirected_to_itself_names_the_url_asked_for(
     requests_mock: Any,
 ) -> None:
-    """A URL is the first one only if it began the request.
-
-    The server's redirect from ``/o`` to ``/o`` leads to the URL that the last
-    redirect had, but not to the one that the caller gave.
-    """
+    """A redirect from ``/o`` to ``/o`` does not change the URL named."""
     api = _download_api(requests_mock)
     requests_mock.get(
         "https://files.test/o",
@@ -2126,5 +1896,5 @@ def test_http_error_of_a_url_that_redirected_to_itself_leaves_out_its_query(
         api.get("dl/")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://files.test/o"
+        "403 Client Error: None for GET https://api.test/dl/"
     )

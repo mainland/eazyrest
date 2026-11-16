@@ -143,12 +143,16 @@ describe them further.
   the URL that they quote, so code that compared a message with a base URL such
   as `http://user:pass@host/` must compare it without them. The `repr()` of a
   `Page`, and of an object known only by its URL, leaves them out too. A
-  message quotes the URL that a followed redirect reached by its origin and
-  path, as `https://files.example.com/o`, and not with its query or fragment,
-  so code that looked in it for a query parameter must read `response.url`. The
-  path can hold a session ID, which the message then quotes, and an exception
-  that requests itself raises, such as `requests.ConnectionError`, quotes the
-  URL of that host with its path and query.
+  message names a request by the URL that eazyrest was asked to send, such as
+  the one that you passed to `get()` or a next-page link, and quotes no part of
+  a URL that a response supplied. After a followed redirect it names the URL
+  that was asked for, and not the one that the redirect reached, and a refused
+  redirect no longer names the origin that it was refused for, so code that
+  looked in a message for either must read the error's `response`, whose `url`
+  and `Location` header hold them. The `repr()` of a `Page` shows the URL that
+  it was asked for. An exception that requests itself raises, such as
+  `requests.ConnectionError`, quotes the URL of that host with its path and
+  query.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
   arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
   authentication handler that reads the body, such as
@@ -695,46 +699,35 @@ that can break code written for 0.9.0, followed by what to do about it.
   `PaginationError`, `ResponseShapeError`, and `LimitExceeded`, leaves out the
   user and password of the URL in its message, `args`, and `repr()`, as
   `http://host/` for `http://user:pass@host/`. The URL's query is still quoted,
-  except in a URL that the server supplied or that a followed redirect reached,
-  which the next entries describe. The error's `request` and `response` keep
-  the real URL.
-- An error that names the URL of a response that a followed redirect reached,
-  such as an `APIError` for a failed download, a `LimitExceeded`, a
-  `ResponseShapeError`, or the `RedirectError` of a redirect from it, quotes
-  its origin and path alone, as `https://files.example.com/o`, built from the
-  parts that requests reads, so it holds no user, password, query, or fragment,
-  such as the signature of a download URL. The URL that the caller gave keeps
-  its query. The path can hold a session ID, which the message then quotes. An
-  exception that requests itself raises, such as `requests.ConnectionError`,
-  quotes the URL of that host as requests does, with its path and query. The
-  error's `response` holds the whole URL. A response that a response hook
-  returned for another URL, or whose `url` it changed, is quoted in the same
-  way, so that every message of one request agrees.
-- A `RedirectError` that refuses a redirect to another origin quotes the origin
-  of a reading of the target that is not allowed, as
-  `https://files.example.com` or `http://host:8080`, and nothing else. It never
-  names an origin that the request allows, and it holds no user, password,
-  path, query, or fragment of the target, such as the signature of a download
-  URL. It names a target that is not an HTTP or HTTPS URL, such as
-  `mailto:user:pass@host/x` or `ftp://user:pass@host/x`, by its scheme alone,
-  as `a location whose scheme is mailto:`. The error's `response` holds the
-  header.
+  as the URL that eazyrest was asked to send, which is the one that the caller
+  gave or a page links to. The error's `request` and `response` keep the real
+  URL.
+- No error quotes a part of a URL that a response supplied, such as the
+  signature of a download URL. An `APIError` for a failed download, a
+  `LimitExceeded`, a `ResponseShapeError`, and a `RedirectError` name the
+  request by the URL that eazyrest was asked to send, also when a followed
+  redirect or a response hook led to another URL. The error's `response` holds
+  the URL that was reached. An exception that requests itself raises, such as
+  `requests.ConnectionError`, quotes the URL of that host as requests does,
+  with its path and query.
+- A `RedirectError` that refuses a redirect to another origin names the
+  request, says that the redirect leads to another origin, and quotes no part
+  of the target, not its origin, user, password, path, query, or fragment. The
+  error's `response` holds the header.
 - A `PaginationError` that refuses a redirect from a next-page request to
-  another origin quotes the target in the same way. A target that requests
-  cannot prepare raises the API's `RedirectError`, which quotes none of it, and
-  not a `PaginationError` that quoted it. The error names the request that was
-  redirected by its URL as the link gave it, with its query, but by its origin
-  and path if an earlier redirect reached it. The `repr()` of a `Page` that a
-  followed redirect reached shows its origin and path alone.
+  another origin names the request by its link, with its query, and quotes no
+  part of the target. A target that requests cannot prepare raises the API's
+  `RedirectError`, which quotes none of it, and not a `PaginationError` that
+  quoted it.
 - A `PaginationError` for a next-page link or a `Link` header link that
   requests cannot prepare or send quotes none of the link, and has no
   `__cause__` or `__context__`, since the error that rejected the link, such as
   one for a port that is not a number, can quote it. This holds also with
   `allow_other_origins=True`. A link to another origin, or to a page already
-  read, is quoted by its origin alone, as for a redirect, and never by its
-  user, password, path, query, or fragment. `Page.next_url` and
-  `Page.previous_url` hold the whole link. A link that is not an HTTP or HTTPS
-  URL is named by its scheme alone, as `a location whose scheme is mailto:`.
+  read, is quoted as requests prepares it, without its user and password.
+  `Page.next_url` and `Page.previous_url` hold the whole link. A link that is
+  not an HTTP or HTTPS URL is not quoted, since its text can read as a user and
+  password.
 - Response limits also cover intermediate retry bodies and retry delays with
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and

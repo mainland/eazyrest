@@ -505,27 +505,24 @@ The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
 the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
 `NotFound`), `RedirectError`, `PaginationError`, `ResponseShapeError`, and
-`LimitExceeded` for a size or time limit name the URLs involved. A URL that you
-gave, such as the one that you pass to `get()`, appears with its query string,
-so a query parameter's value can appear. Send a secret in a header or the body,
-not in the query. A message leaves out a user and password in such a URL, so
-`http://user:pass@host/x?a=b` appears as `http://host/x?a=b` in the message,
-`args`, and `repr()`, but the error's `request` and `response` keep the real
-URL. A request for a next-page link names the link in the same way, since its
-query holds the position of the page. Any other URL that the server chose is
-quoted from the parts that requests reads from it, and not from its text. A
-redirect or a next-page link that is refused is quoted by its origin alone, as
-`http://host`, whatever it holds. A URL that a followed redirect reached, such
-as a signed download URL, is quoted by its origin and path, as
-`https://files.example.com/o`, and so is a response that a response hook
-returned for another URL or whose `url` it changed. These quote no user,
-password, query, or fragment, but the path can hold a session ID, which the
-message then quotes. The `repr()` of a `Page`, and of an object known only by
-its URL, leaves out a user and password too, and that of a page that a followed
-redirect reached shows its origin and path alone. An exception that requests
-itself raises, such as `requests.ConnectionError`, quotes the URL as requests
-does, with its path and query, also for the host that a redirect reached. A
-Pydantic error says where and why a value is invalid, as in
+`LimitExceeded` for a size or time limit name the request involved by its
+method and the URL that eazyrest was asked to send. That is the URL that you
+pass to `get()`, an object's URL, or a next-page link, resolved against
+`base_url`. It appears with its query string, so a query parameter's value can
+appear. Send a secret in a header or the body, not in the query. A message
+leaves out a user and password in such a URL, so `http://user:pass@host/x?a=b`
+appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
+error's `request` and `response` keep the real URL. No message quotes any part
+of a URL that a response supplied: a `Location`, the URL that a followed
+redirect reached, such as a signed download URL, or a URL that a response hook
+chose. A message about such a URL says what happened, as that a request "was
+redirected to another origin", and the URL stays on the error's `response`. The
+`repr()` of a `Page` shows the URL that it was asked for, and not the one that
+a redirect chose, and the `repr()` of an object known only by its URL leaves
+out a user and password too. An exception that requests itself raises, such as
+`requests.ConnectionError`, quotes the URL as requests does, with its path and
+query, also for the host that a redirect reached. A Pydantic error says where
+and why a value is invalid, as in
 `Asset.rating: Input should be greater than 0`, without the input. A mapping
 key that the input chose appears as `[key]`, and a value that Pydantic would
 quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
@@ -1450,24 +1447,22 @@ that requests cannot prepare or send raises `PaginationError`, whose message
 quotes none of the link, since the server chose it, and which has no
 `__cause__` or `__context__`, since the error that rejected the link can quote
 it. This holds also with `allow_other_origins=True`, and for the link to a
-previous page. The error for a link to another origin quotes the origin that
-requests reads from it and nothing else, as `https://other.example` or
-`http://host:8080`, never its user, password, path, query, or fragment, since a
-link can carry a credential in its query. The same holds for a link to a page
+previous page. The error for a link to another origin quotes the link as
+requests prepares it, without its user and password, since the link is the URL
+that eazyrest was asked to send, and so does the error for a link to a page
 already read. The whole link is on `Page.next_url` or `Page.previous_url`. A
-link that is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is
-named by its scheme alone, as `a location whose scheme is mailto:`.
+link that is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is not
+quoted, since its text can read as a user and password.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed, and reads the target as the check of any other
-redirect does, so the error quotes its origin in the same way. It names the
-request by its URL as the link gave it, with its query, unless a redirect from
-the link reached the request, which it names by origin and path. A target that
-requests cannot prepare raises `RedirectError`, which quotes none of it.
-Existing session response hooks still run. With `allow_other_origins=True`, a
-redirect is checked as for every other request: it must lead to the origin of
-the page request or to one of the API's `redirect_origins`. A query's client
-that does not follow redirects, because of
+redirect does. The error names the request by its URL as the link gave it, with
+its query, and says only that the redirect leads to a different origin. A
+target that requests cannot prepare raises `RedirectError`, which quotes none
+of it. Existing session response hooks still run. With
+`allow_other_origins=True`, a redirect is checked as for every other request:
+it must lead to the origin of the page request or to one of the API's
+`redirect_origins`. A query's client that does not follow redirects, because of
 `request_options={"allow_redirects": False}`, skips the check, since nothing is
 followed, and raises `RedirectError` for a redirect from a next-page request,
 whichever origin it names.
@@ -1743,16 +1738,12 @@ destination that requests would send, with the target joined onto the request's
 URL and percent-encoded as requests does. The other is the raw target joined by
 `urljoin()`, which another client could read as a different host, as it can for
 a backslash before an `@`. The redirect is refused unless both readings name an
-allowed origin. The error quotes the origin of a reading that is not allowed,
-the destination's or else the joined target's, alone, as
-`https://files.example.com`, and never its user, password, path, query, or
-fragment, since a signed download URL carries its credential in the query. The
-error's `response` holds the whole header. A target that is not an HTTP or
-HTTPS URL, such as `ftp://user:pass@host/x` or `mailto:user:pass@host`, has no
-origin, and its text can read as a user and password, so the error names its
-scheme alone, as `a location whose scheme is mailto:`. For an API that
-redirects to another server on purpose, such as a download host, list that
-origin in `redirect_origins`:
+allowed origin. The error names the request, says that the redirect leads to
+another origin, and quotes no part of the target, since a signed download URL
+carries its credential in the query. The error's `response` holds the whole
+header, so read the origin to allow from it. For an API that redirects to
+another server on purpose, such as a download host, list that origin in
+`redirect_origins`:
 
 ```python
 api = API("https://api.example.com/")

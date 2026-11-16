@@ -73,7 +73,7 @@ from ._errors import (
     PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
-    _first_url,
+    _asked_url,
     _redact_url,
 )
 from ._protocols import Client, Response
@@ -334,7 +334,7 @@ class _ModelPageSource(_PageSource[Any]):
         if raw._source is not None:
             page._source = self
             page._allow_other_origins = raw._allow_other_origins
-        page._sent_url = _first_url(resp)
+        page._asked_url = _asked_url(resp)
         return page
 
 
