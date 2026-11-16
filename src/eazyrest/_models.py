@@ -2986,6 +2986,125 @@ def _check_key_not_hyperlinked(
         raise error
 
 
+def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
+    """Return the refusal of a primary key that is not a leaf or a relation.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+
+    Returns:
+        A ``TypeError`` that a conversion reports as a plain one, as decorating
+        the class does, not as the conversion of a value.
+    """
+    error = TypeError(
+        f"{cls.__name__}.{field} is the primary key, and a primary key must "
+        "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
+        "or an enum, or a relation without Hyperlinked() to a model whose "
+        "key is one. It cannot be a collection, a mapping, a tuple, a "
+        "TypedDict, a NamedTuple, a dataclass, a type that Pydantic "
+        "converts, a union, or a relation to a model keyed by a relation. To "
+        "key the model by another model, declare the key as a relation to "
+        "that model, or as the type of that model's key."
+    )
+    setattr(error, _DECLARATION_ERROR, True)
+    return error
+
+
+def _is_one_value_class(base: object) -> bool:
+    """Return whether a type that converts as itself holds one value.
+
+    Args:
+        base: The type of a ``BaseType``, which may be a ``Literal``.
+
+    Returns:
+        ``False`` for ``Any``, ``object``, and a collection class other than
+        ``str`` and ``bytes``, whose JSON may be an array or a mapping.
+    """
+    if base is Any or base is object:
+        return False
+    return not (
+        isinstance(base, type)
+        and issubclass(base, Collection)
+        and not issubclass(base, str | bytes)
+    )
+
+
+def _is_leaf_key(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> bool:
+    """Return whether a primary key's type converts as one value.
+
+    A leaf is a type that an entry of the conversion table converts, or a type
+    that converts as itself, looking through ``T | None`` and ``NewType``. A
+    class that holds many values, such as ``list``, and ``Any`` are not leaves,
+    since their JSON can be a mapping or an array, whose spelling is not
+    unique.
+
+    Args:
+        analyzed: Analyzed type of a primary key field.
+        table: Conversion table of the model that declares the key.
+
+    Returns:
+        Whether the key's type is a leaf.
+    """
+    while _class_entry(analyzed, table) is None:
+        match analyzed:
+            case OptionalType(inner) | NewTypeType(_, inner):
+                analyzed = inner
+            case BaseType(base):
+                return _is_one_value_class(base)
+            case _:
+                return False
+    return True
+
+
+def _check_key_is_leaf_or_relation(
+    cls: type[JSONObject],
+    field: str,
+    analyzed: AnalyzedType,
+    *,
+    strict: bool = False,
+) -> None:
+    """Refuse a primary key that is neither a leaf nor a relation to one.
+
+    A key is a leaf, or a relation that is not ``Hyperlinked()`` to a model
+    whose own key is a leaf. A chain of relations is refused, and so is a
+    cycle, which is a chain that never ends.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+        analyzed: Analyzed type of the field.
+        strict: Whether a name that is not defined in the related model's key
+            raises, as it does when the key is first used. Otherwise the check
+            waits for that use.
+
+    Raises:
+        TypeError: If the key is neither.
+        Exception: If ``strict`` and the related model's key type cannot be
+            resolved, whatever resolving it raises.
+    """
+    if _is_leaf_key(analyzed, _table_of(cls)):
+        return
+    related = _related_key_type(analyzed)
+    if related is not None:
+        prop = _pk_property_of(related.model_type)
+        if prop is not None:
+            try:
+                inner = analyze_type(prop._resolve_type())
+            except _ModelInContainerError:
+                pass
+            except Exception:
+                if strict:
+                    raise
+                return
+            else:
+                if _is_leaf_key(inner, _table_of(related.model_type)):
+                    return
+    raise _key_type_error(cls, field)
+
+
 def _key_holds_relation_error(cls: type[JSONObject], field: str) -> TypeError:
     """Return the refusal of a primary key that holds related objects.
 
@@ -3152,21 +3271,18 @@ def _check_key_not_cyclic(
 
 
 def _refuse_invalid_key(cls: type[JSONObject]) -> None:
-    """Refuse a key that is a hyperlinked or cyclic relation, or holds one.
+    """Refuse a key that is not a leaf or a relation to a model keyed by one.
 
-    A key whose annotation names a class that is not defined yet is checked
-    when the key's type is first used, which is the first read or write of the
-    key or the object's ``url``.
+    A key whose annotation, or the related model's key annotation, names a
+    class that is not defined yet is checked when the key's type is first used,
+    which is the first read or write of the key or the object's ``url``.
 
     Args:
         cls: Decorated model class.
 
     Raises:
         TypeError: If the model's primary key is a ``Hyperlinked()`` relation,
-            or a relation whose chain of key relations returns to a model in
-            it, or holds relations inside a collection, a mapping, a tuple, a
-            ``TypedDict``, a ``NamedTuple``, or a dataclass, as ``list[User]``
-            does.
+            or is neither a leaf nor a relation to a model keyed by a leaf.
     """
     prop = _pk_property_of(cls)
     if prop is None:
@@ -3174,12 +3290,13 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
     try:
         analyzed = analyze_type(prop._resolve_type())
     except _ModelInContainerError as err:
-        raise _key_holds_relation_error(cls, prop.field) from err
+        raise _key_type_error(cls, prop.field) from err
     except Exception:  # noqa: BLE001
         # An unresolved reference, or a type that is refused when the field is
         # first used, which says why.
         return
     _check_key_not_hyperlinked(cls, prop.field, analyzed)
+    _check_key_is_leaf_or_relation(cls, prop.field, analyzed)
     _check_key_holds_no_relation(cls, prop.field, analyzed)
     _check_key_not_cyclic(cls, prop.field, analyzed, {cls.__name__: cls})
 
@@ -4420,7 +4537,8 @@ class JSONProperty:
         """Resolve and cache recursive type metadata.
 
         Raises:
-            TypeError: If the type is refused, such as a primary key that is a
+            TypeError: If the type is refused, such as a primary key that is
+                not one value or a relation to a model keyed by one, or is a
                 ``Hyperlinked()`` relation, or a set of them. A type that names
                 a class defined later is refused here, when it is first used.
             NameError: If a field's annotation names a class that is not
@@ -4434,10 +4552,13 @@ class JSONProperty:
             analyzed = analyze_type(self.ty)
         except _ModelInContainerError as err:
             if self.is_primary_key:
-                raise _key_holds_relation_error(self.cls, self.field) from err
+                raise _key_type_error(self.cls, self.field) from err
             raise
         if self.is_primary_key:
             _check_key_not_hyperlinked(self.cls, self.field, analyzed)
+            _check_key_is_leaf_or_relation(
+                self.cls, self.field, analyzed, strict=True
+            )
             _check_key_holds_no_relation(
                 self.cls, self.field, analyzed, strict=True
             )

@@ -144,8 +144,8 @@ resource, and these laws follow:
   read through a `Hyperlinked()` relation has, or its class overrides `url`.
   Keys that spell one value alike, such as `2026-01-01T00:00:00Z` and
   `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key type that
-  compares by identity, or that cannot be hashed, such as a `list`, still gives
-  equal objects when the encoded keys are equal.
+  compares by identity, or that cannot be hashed, still gives equal objects
+  when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
   their values. `User(id=1.0)` and `User(id=True)` do not equal `User(id=1)`,
   and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each pair names
@@ -196,9 +196,9 @@ and none asks the related object again.
   moves, and the hash with it, when the change is sent. A second change begins
   from the key that the first one set.
 - Reading `profile.pk` decodes the copied key afresh each time, so a change
-  made in place to the value that it returns, as to a key that is a `list` or
-  an object, changes a copy. It is not kept and `save()` does not send it,
-  whether the profile has loaded or not. Change the key by assigning the
+  made in place to the value that it returns, as to a key that is an object
+  with a conversion, changes a copy. It is not kept and `save()` does not send
+  it, whether the profile has loaded or not. Change the key by assigning the
   relation, as above, or by assigning `profile.pk`.
 - Reading `profile.user` does not give the key's owner. After an assignment it
   gives the assigned object. When the profile embeds its user, it gives the
@@ -226,48 +226,48 @@ out before such a change, and put it back after. A pending change, a change
 made to the key in place, a refresh, and a load or a write that spells the same
 key another way do not change the hash.
 
-### Key cycles
+### What a key may be
 
-A key that is a relation must lead to a model whose key is not. A model keyed
-by itself, or two models keyed by each other, raises `TypeError` when it is
-decorated, naming the models in the cycle. A key whose model is not defined yet
-when the class is decorated, or whose name is bound to another class later, as
-when a module rebinds the name or finishes a circular import, raises the same
-`TypeError` when the key is first used.
+A key is one value, or a relation to a model whose key is one value. A value is
+one if it converts as a whole, so that its JSON has one spelling for equality,
+`url`, and the hash to read. That is `int`, `str`, `bool`, `float`, `UUID`,
+`datetime`, `date`, `Decimal`, an enum, a `Literal`, and a class that a
+conversion of the model converts. The key may be one of these inside
+`T | None`, a `NewType`, or `Annotated` with metadata that is not Pydantic's. A
+relation is allowed unless it is `Hyperlinked()`.
 
-A key cannot hold related objects inside a collection, as `list[User]` does, or
-inside a mapping, a fixed-length tuple, a `TypedDict`, a `NamedTuple`, or a
-dataclass, since equality and `url` read the key's JSON without building the
-objects. Declaring one raises `TypeError` when the class is decorated, or when
-the key is first used if it names a class that is not defined yet. A `NewType`
-is looked through. A class that a conversion converts is not looked into, since
-the conversion replaces its structure. A key whose type Pydantic converts is
-checked when the key is first used, not when the class is decorated. Key the
-model by a relation to the model instead, or by the type of that model's key.
+Any other key raises `TypeError` when the class is decorated, naming the field.
+That includes a collection such as `list[int]`, a mapping, a fixed-length
+tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a conversion, a union
+of more than one type besides `None`, `Any`, a type that Pydantic converts, and
+`Annotated` with Pydantic metadata. A mapping is refused because two mappings
+with the same items in another order are one key but have different spellings.
+A relation to a model keyed by a relation is refused as well, so a chain of key
+relations is, and so is a cycle, such as a model keyed by itself or two models
+keyed by each other. To key a model by another model, declare the key as a
+relation to that model, or as the type of that model's key.
 
-While a name in a key's type is not defined yet, the key cannot be read, and
-`==` is `False` for an object of the model. That holds wherever the name
-appears: in the key's own annotation, in the value of a type alias, in a
-`TypedDict`, `NamedTuple`, or dataclass that the key names, in a field of a
-model that Pydantic converts, or in the key of a model that a key relation
-leads to. A name is not defined yet when a class is not, or when a module does
-not have the attribute yet, as in a circular import. Every other use of the key
-raises the error that resolving the name raised. That is `url`, `hash()`,
-`update_from_json()`, reading a relation to the model, and a prefetch of one,
-which raises before it sends its bulk request. The error is a `NameError` for a
-class that is not defined, an `AttributeError` for an attribute of a module,
-and, for a form or a model that Pydantic converts whose annotations cannot be
-resolved, or a string in a type alias's value that cannot be resolved, a
-`TypeError` that says so, which `url` raises as a `FieldConversionError`. None
-of that is kept on the object or the class, so once the class is defined the
-object has the `url`, the hash, and the equalities of a new object with the
-same key.
+A name in the key's annotation, or in the key of the related model, may not be
+defined yet when the class is decorated. The class is then checked when its key
+is first used. A name is not defined yet when a class is not, when a name is
+bound to another class later, as when a module finishes a circular import, or
+when a module does not have the attribute yet. Until it is defined, the key
+cannot be read, and `==` is `False` for an object of the model. Every other use
+of the key raises the error that resolving the name raised. That is `url`,
+`hash()`, `update_from_json()`, reading a relation to the model, and a prefetch
+of one, which raises before it sends its bulk request. The error is a
+`NameError` for a class that is not defined and an `AttributeError` for an
+attribute of a module, and a string in a type alias's value that cannot be
+resolved raises a `TypeError` that says so. None of that is kept on the object
+or the class, so once the class is defined the object has the `url`, the hash,
+and the equalities of a new object with the same key. Then a key that is
+refused raises its `TypeError`.
 
 A field that is not the key raises a `NameError` when its annotation, or a type
 alias in it, names the class that is not defined yet. It raises a
 `FieldConversionError` when the name is in a `TypedDict`, `NamedTuple`,
 dataclass, or Pydantic model that the field names, or in a string in a type
-alias's value, as for the key.
+alias's value.
 
 ### Differences from Django
 
@@ -297,28 +297,28 @@ without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
 loads, and the constructor raises `ValueError` for a key that is not a UUID.
 The value is decoded from the saved key, as a loaded object's is, so a change
-made to it in place, as to a key that is a `list`, is sent by `save()` as a
-change of the key, to the URL of the saved key. That does not hold for a key
-that is a relation, whose `pk` reads a new value each time. A key that is a
-relation takes an object of the related model or a subclass, and any other
-model object raises `FieldConversionError`, as does a model object given for a
-key that is not a relation. The model holds the related object's key, not the
-object, so the related object must have its key without a request: it holds the
-key, as `User(id=1)` does, or its JSON has the key field. A related object that
-is known only by its URL, as one named by a `Hyperlinked()` relation is until
-it loads, raises `FieldConversionError`, whose message says to load or save it
-first. So does one whose own key is a relation that is not known. Once such an
-object has loaded, it is accepted if its JSON has the key. If its JSON lacks
-the key field, loading again cannot help, and the message says that the key is
-missing from its JSON. If it holds the key as `null`, the message says that the
-key is `None`. A related object without a key, such as `User()`, raises
-`FieldConversionError` too, as a relation write does. The constructor and the
-`pk` setter therefore never send a request, and neither do `repr()` and
-`update_from_json()` of such a model. Reading the field returns a new related
-object that holds the key, not the object that was given, though it equals that
-object, also after `refresh()`. An object constructed from `json=` starts with
-that payload already loaded. It keeps a deep copy of the payload, as
-`update_from_json()` does, so changing the payload or its nested values
+made to it in place, as to a key that is an object with a conversion, is sent
+by `save()` as a change of the key, to the URL of the saved key. That does not
+hold for a key that is a relation, whose `pk` reads a new value each time. A
+key that is a relation takes an object of the related model or a subclass, and
+any other model object raises `FieldConversionError`, as does a model object
+given for a key that is not a relation. The model holds the related object's
+key, not the object, so the related object must have its key without a request:
+it holds the key, as `User(id=1)` does, or its JSON has the key field. A
+related object that is known only by its URL, as one named by a `Hyperlinked()`
+relation is until it loads, raises `FieldConversionError`, whose message says
+to load or save it first. So does one whose own key is a relation that is not
+known. Once such an object has loaded, it is accepted if its JSON has the key.
+If its JSON lacks the key field, loading again cannot help, and the message
+says that the key is missing from its JSON. If it holds the key as `null`, the
+message says that the key is `None`. A related object without a key, such as
+`User()`, raises `FieldConversionError` too, as a relation write does. The
+constructor and the `pk` setter therefore never send a request, and neither do
+`repr()` and `update_from_json()` of such a model. Reading the field returns a
+new related object that holds the key, not the object that was given, though it
+equals that object, also after `refresh()`. An object constructed from `json=`
+starts with that payload already loaded. It keeps a deep copy of the payload,
+as `update_from_json()` does, so changing the payload or its nested values
 afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that

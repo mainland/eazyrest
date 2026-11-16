@@ -222,20 +222,20 @@ describe them further.
   yet when the class is decorated raises the same `TypeError`, not
   `FieldConversionError`, when the key is first used, also when the model is an
   item of another model's collection field.
-- A model whose primary key is a relation that leads back to a model in its own
-  chain of keys, such as a model keyed by itself or two models keyed by each
-  other, raises `TypeError` when it is decorated, naming the models in the
-  cycle, where `v1.0.0a5` defined it. Such a key never gives a key that is not
-  a relation. A key whose model is not defined yet when the class is decorated
-  raises the same `TypeError` when the key is first used. End the chain at a
-  model whose key is not a relation.
-- A model whose primary key holds related objects inside a collection, such as
-  `list[User]`, or inside a mapping, a fixed-length tuple, a `TypedDict`, a
-  `NamedTuple`, or a dataclass, raises `TypeError` when it is decorated, naming
-  the field, where `v1.0.0a5` defined it. A key whose type names a class that
-  is not defined yet raises the same `TypeError` when the key is first used. A
-  class that a conversion converts is not looked into. Declare the key as a
-  relation to the model, or as the type of that model's key.
+- A model whose primary key is neither one value nor a relation to a model
+  keyed by one raises `TypeError` when it is decorated, naming the field, where
+  `v1.0.0a5` defined it. One value is `int`, `str`, `bool`, `float`, `UUID`,
+  `datetime`, `date`, `Decimal`, an enum, a `Literal`, or a class that a
+  conversion converts, also inside `T | None` or a `NewType`. A collection such
+  as `list[int]`, a mapping, a fixed-length tuple, a `TypedDict`, a
+  `NamedTuple`, a dataclass without a conversion, a union of more than one type
+  besides `None`, `Any`, and a type that Pydantic converts are refused, and so
+  is a key that holds related objects, as `list[User]` does. So is a relation
+  to a model keyed by a relation, which makes a chain of keys, and a cycle of
+  them, such as a model keyed by itself. A key whose type names a class that is
+  not defined yet raises the same `TypeError` when the key is first used.
+  Declare the key as one value, or as a relation to a model keyed by one. To
+  key a model by another model, use a relation to it, or the type of its key.
 - A field whose type is a set of `Hyperlinked()` relations, as
   `set[Annotated[User, Hyperlinked()]]`, also as a `frozenset`, `Set`, or
   `MutableSet`, and inside an optional, raises `TypeError` when the class is

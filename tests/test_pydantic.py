@@ -39,6 +39,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    StringConstraints,
     TypeAdapter,
     with_config,
 )
@@ -3544,202 +3545,51 @@ def test_a_container_of_a_generic_argument_is_checked() -> None:
         _ = held.value
 
 
-@pytest.mark.parametrize("kind", ["model", "typed-dict"])
-def test_an_object_used_before_its_pydantic_key_resolves_has_its_key_after(
-    monkeypatch: pytest.MonkeyPatch, kind: str
-) -> None:
-    """An object used while Pydantic cannot check its key reads it after.
-
-    The key is a Pydantic model, or a ``TypedDict`` configured for Pydantic,
-    whose field names a class that is defined later. Until then ``url`` and
-    ``hash()`` raise and ``==`` is ``False``, and none of that is kept. Once
-    the class is defined, the object has the ``url`` and the hash of a new
-    object with the same key, and equals it.
-
-    Args:
-        monkeypatch: Defines the class as a global, after the objects are used.
-        kind: Whether the key is a Pydantic model or a ``TypedDict``.
-    """
-
-    class PartKeyModel(BaseModel):
-        model_config = ConfigDict(frozen=True)
-
-        n: LaterPart
-
-    @with_config(ConfigDict(extra="allow"))
-    class PartKeyRecord(TypedDict):
-        n: LaterPart
-
-    key_type = PartKeyModel if kind == "model" else PartKeyRecord
-    crate: Any = json_object(
-        type(
-            "PartCrate",
-            (PydanticBase,),
-            {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
-        )
-    )
-    payload = {"id": {"n": {"x": 1}}}
-    used = crate(json=payload)
-    twin = crate(json=payload)
-
-    with pytest.raises(FieldConversionError, match="annotations cannot be"):
-        used.url  # noqa: B018
-    assert used != twin
-    with pytest.raises(TypeError, match="cannot be hashed"):
-        hash(used)
-    assert "_canonical" not in vars(used)
-
-    @with_config(ConfigDict(extra="allow"))
-    class LaterPart(TypedDict):
-        x: int
-
-    monkeypatch.setitem(globals(), "LaterPart", LaterPart)
-
-    fresh = crate(json=payload)
-    assert used.url == fresh.url
-    assert used == fresh
-    assert used == twin
-    assert hash(used) == hash(fresh)
-    assert len({used, twin, fresh}) == 1
-
-
-@pytest.mark.parametrize("alias", ["statement", "string"])
-def test_a_pydantic_key_with_an_alias_of_a_later_class_has_its_key_after(
-    monkeypatch: pytest.MonkeyPatch, alias: str
-) -> None:
-    """A named alias in a Pydantic key is unresolved until its class exists.
-
-    The key is a ``TypedDict`` configured for Pydantic, whose field has a named
-    alias for a class that is defined later. A ``type`` statement's alias
-    raises the ``NameError`` of the undefined name, and the backport's alias
-    holds a string that names nothing yet, which raises a ``TypeError``. In
-    both, ``==`` is ``False`` and nothing is kept, so afterwards the object has
-    the key of a new object.
-
-    Args:
-        monkeypatch: Defines the class as a global, after the objects are used.
-        alias: Whether the alias is a ``type`` statement's or the backport's.
-    """
-    namespace: dict[str, Any] = {}
-    if alias == "statement":
-        if sys.version_info < (3, 12):
-            pytest.skip("The type statement is new in 3.12.")
-        exec("type PendingPydKey = LaterPydKey", namespace)  # noqa: S102
-        pending = namespace["PendingPydKey"]
-        problem: type[Exception] = NameError
-    else:
-        later_name: Any = "LaterPydKey"
-        PendingPydKey = TypeAliasType("PendingPydKey", later_name)
-        pending = PendingPydKey
-        problem = TypeError
-    record = with_config(ConfigDict(extra="allow"))(
-        TypedDict("PydKey", {"n": pending})  # type: ignore[operator]
-    )
-    crate: Any = json_object(
-        type(
-            "AliasCrate",
-            (PydanticBase,),
-            {"__annotations__": {"id": record}, "class_url": "/crates/"},
-        )
-    )
-    payload = {"id": {"n": {"x": 1}}}
-    used = crate(json=payload)
-    twin = crate(json=payload)
-
-    with pytest.raises(problem):
-        used.url  # noqa: B018
-    assert used != twin
-    with pytest.raises(problem):
-        hash(used)
-    assert "_canonical" not in vars(used)
-
-    later = with_config(ConfigDict(extra="allow"))(
-        TypedDict("LaterPydKey", {"x": int})  # type: ignore[operator]
-    )
-    namespace["LaterPydKey"] = later
-    monkeypatch.setitem(globals(), "LaterPydKey", later)
-
-    fresh = crate(json=payload)
-    assert used.url == fresh.url
-    assert used == fresh
-    assert used == twin
-    assert hash(used) == hash(fresh)
-
-
 @pytest.mark.parametrize(
-    "shape",
-    ["typed-dict", "named-tuple", "dataclass", "list", "mapping", "tuple"],
+    "key_type",
+    [
+        pytest.param(Annotated[int, Field(gt=0)], id="annotated-field"),
+        pytest.param(
+            Annotated[str, StringConstraints(min_length=1)],
+            id="annotated-constraints",
+        ),
+        pytest.param(Point, id="model"),
+        pytest.param(Spec, id="typed-dict"),
+        pytest.param(list[Point], id="list-of-models"),
+    ],
 )
-def test_an_object_used_before_a_model_in_its_key_resolves_has_its_key(
-    monkeypatch: pytest.MonkeyPatch, shape: str
+def test_a_primary_key_that_pydantic_converts_is_refused(
+    key_type: Any,
 ) -> None:
-    """A model that Pydantic cannot check yet, inside a key, is unresolved.
+    """A key of a type that Pydantic converts is refused when it is declared.
 
-    The key holds a Pydantic model whose field names a class that is defined
-    later, inside a ``TypedDict``, a ``NamedTuple``, a dataclass, a list, a
-    mapping, or a fixed-length tuple. Until the class is defined, ``url`` and
-    ``hash()`` raise and ``==`` is ``False``, and nothing is kept on the object
-    or on the class. Once it is, the object has the ``url`` and the hash of a
-    new object with the same key, and equals it.
+    A key is one value that eazyrest converts, so a model's key is declared as
+    that value, and a Pydantic model or constraint belongs on another field.
 
     Args:
-        monkeypatch: Defines the class as a global, after the objects are used.
-        shape: The structure that holds the model.
+        key_type: Declared type of the primary key.
     """
+    with pytest.raises(TypeError, match=r"Crate\.id is the primary key"):
+        json_object(
+            type(
+                "Crate",
+                (PydanticBase,),
+                {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+            )
+        )
 
-    class NestedKeyModel(BaseModel):
-        model_config = ConfigDict(frozen=True, extra="allow")
 
-        n: LaterNested
-
-    held = {"n": {"x": 1}}
-    keys: dict[str, tuple[Any, Any]] = {
-        "typed-dict": (
-            TypedDict("NestedKeyRecord", {"p": NestedKeyModel}),  # type: ignore[operator]
-            {"p": held},
-        ),
-        "named-tuple": (
-            NamedTuple("NestedKeyPair", [("p", NestedKeyModel)]),
-            [held],
-        ),
-        "dataclass": (
-            dataclasses.make_dataclass(
-                "NestedKeyEntry", [("p", NestedKeyModel)]
-            ),
-            {"p": held},
-        ),
-        "list": (list[NestedKeyModel], [held]),
-        "mapping": (dict[str, NestedKeyModel], {"a": held}),
-        "tuple": (tuple[NestedKeyModel, int], [held, 1]),
-    }
-    key_type, value = keys[shape]
+def test_a_key_annotated_with_other_metadata_is_kept() -> None:
+    """``Annotated`` metadata that is not Pydantic's leaves the key a leaf."""
     crate: Any = json_object(
         type(
-            "NestedCrate",
+            "Crate",
             (PydanticBase,),
-            {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+            {
+                "__annotations__": {"id": Annotated[int, "a note"]},
+                "class_url": "/crates/",
+            },
         )
     )
-    used = crate(json={"id": value})
-    twin = crate(json={"id": value})
 
-    with pytest.raises(FieldConversionError, match="annotations cannot be"):
-        used.url  # noqa: B018
-    assert used != twin
-    with pytest.raises(TypeError, match="cannot be hashed"):
-        hash(used)
-    assert "_canonical" not in vars(used)
-    assert "analyzed_type" not in vars(crate._pk)
-
-    @with_config(ConfigDict(extra="allow"))
-    class LaterNested(TypedDict):
-        x: int
-
-    monkeypatch.setitem(globals(), "LaterNested", LaterNested)
-
-    fresh = crate(json={"id": value})
-    assert used.url == fresh.url
-    assert used == fresh
-    assert used == twin
-    assert hash(used) == hash(fresh)
-    assert len({used, twin, fresh}) == 1
+    assert crate(json={"id": 1}).url == "/crates/1/"

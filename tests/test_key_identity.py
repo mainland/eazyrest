@@ -40,7 +40,6 @@ from test_eazyrest import (
     Cell,
     Grid,
     GridProfile,
-    NamedListKeyed,
     PriceKeyed,
     TimeKeyed,
     User,
@@ -80,11 +79,6 @@ def _change_cell(key: Cell) -> Any:
     return key.value
 
 
-def _change_list(key: list[int]) -> Any:
-    key.append(9)
-    return tuple(key)
-
-
 def _day(n: int) -> datetime.datetime:
     return datetime.datetime(2026, 1, n, tzinfo=UTC)
 
@@ -122,16 +116,6 @@ KINDS: dict[str, Kind] = {
             f"2026-01-0{n}T00:00:00" + ("Z" if v == "plain" else "+00:00")
         ),
         lambda b: datetime.datetime.fromisoformat(b).day,
-    ),
-    "list": Kind(
-        NamedListKeyed,
-        "id",
-        "name",
-        ((1,), (2,), (1, 2)),
-        list,
-        lambda n, v: list(n),
-        tuple,
-        _change_list,
     ),
     "grid": Kind(
         GridProfile,
