@@ -171,6 +171,24 @@ def python_value(field: str, value: Any) -> Any:
     return copy.deepcopy(value)
 
 
+def working_json(obj: JSONObject) -> dict[str, Any] | None:
+    """Return the JSON of an object that has loaded, with its pending updates.
+
+    The object is not loaded to answer. A field that an update has queued is in
+    the working JSON, so reading it does not load the object.
+
+    Args:
+        obj: Object to read.
+
+    Returns:
+        The server's JSON with the pending updates laid over it, and no
+        write-only field, or ``None`` if the object has not loaded.
+    """
+    if vars(obj).get("_json") is None:
+        return None
+    return obj._working_json()
+
+
 FORM_INTEGERS = frozenset({"id", "count", "owner_id"})
 """Form fields whose text the server reads as an integer."""
 
@@ -675,7 +693,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if self.poisoned:
             return
 
-        state = vars(self.obj).get("_json")
+        state = working_json(self.obj)
         partial = vars(self.obj).get("_json_is_partial", False)
         if state is None or (partial and field not in state):
             self.detect_in_place_changes()
@@ -806,7 +824,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
             not self.poisoned
             and vars(self.obj).get("_json_is_partial", False)
             and any(
-                field not in vars(self.obj)["_json"] for field in self.FIELDS
+                field not in (working_json(self.obj) or {})
+                for field in self.FIELDS
             )
         )
     )
@@ -822,7 +841,8 @@ class ObjectStateMachine(RuleBasedStateMachine):
             name: New name to give the related object before the load, or
                 ``None`` to leave it unchanged.
         """
-        state = vars(self.obj)["_json"]
+        state = working_json(self.obj)
+        assert state is not None
         field = next(field for field in self.FIELDS if field not in state)
         owner = None
         if "owner" in state:
@@ -836,7 +856,9 @@ class ObjectStateMachine(RuleBasedStateMachine):
         if owner is None:
             return
         kept = self.obj._field_cache.get("owner") is owner
-        assert kept == (vars(self.obj)["_json"].get("owner") == owner_json)
+        after = working_json(self.obj)
+        assert after is not None
+        assert kept == (after.get("owner") == owner_json)
 
     @invariant()
     def dirty_owner_keeps_its_change(self) -> None:
@@ -886,7 +908,7 @@ class ObjectStateMachine(RuleBasedStateMachine):
             owner: Key of the related object to assign.
         """
         self.detect_before_load("owner")
-        state = vars(self.obj).get("_json")
+        state = working_json(self.obj)
         unchanged = self.same_assignment(
             "owner", state is not None and state.get("owner") == owner
         )
@@ -1256,15 +1278,16 @@ class ObjectStateMachine(RuleBasedStateMachine):
 
     @invariant()
     def json_matches_model(self) -> None:
-        """The object's JSON agrees with the model and has no write-only value.
+        """The object's working JSON agrees with the model and hides secrets.
 
-        The JSON is read without loading the object, so a partial object may
+        The working JSON is the server's JSON with the pending updates laid
+        over it. It is read without loading the object, so a partial object may
         lack fields. A related object may be nested or a key, so only the plain
         fields are compared.
         """
         if not hasattr(self, "obj"):
             return
-        state = vars(self.obj).get("_json")
+        state = working_json(self.obj)
         if state is None:
             return
         assert "secret" not in state
@@ -1575,8 +1598,8 @@ class LinkedStateMachine(RuleBasedStateMachine):
 
     @precondition(
         lambda self: (
-            vars(self.note).get("_json") is not None
-            and "title" not in vars(self.note)["_json"]
+            working_json(self.note) is not None
+            and "title" not in (working_json(self.note) or {})
         )
     )
     @rule(
@@ -1646,11 +1669,15 @@ class LinkedStateMachine(RuleBasedStateMachine):
 
     @invariant()
     def json_matches_model(self) -> None:
-        """The note's JSON holds the URL string that the model expects."""
+        """The note's working JSON holds the URL string that the model expects.
+
+        The working JSON is the server's JSON with the pending updates laid
+        over it.
+        """
         assert not self.violations
         if not hasattr(self, "note"):
             return
-        state = vars(self.note).get("_json")
+        state = working_json(self.note)
         if state is None or "author" not in state:
             assert self.author_json is None or state is not None
             return

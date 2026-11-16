@@ -4356,10 +4356,8 @@ class JSONProperty:
                 "cannot be read"
             )
 
-        json = obj._json
-        if json is not None and self.json_field in json:
-            raw = json[self.json_field]
-        else:
+        raw = obj._working_value(self.json_field)
+        if raw is _MISSING:
             # The field is not in loaded JSON. The key is read like any other
             # field, which loads the object when it can load, except that an
             # object that has recorded its key reads it from there without a
@@ -4372,14 +4370,13 @@ class JSONProperty:
                 if is_key and obj._url_override is None:
                     # Loading would need a URL, which needs the key.
                     return None
-                json = obj._json_having(self.json_field)
-                if self.json_field not in json:
+                raw = obj._json_having(self.json_field)
+                if raw is _MISSING:
                     if is_key:
                         return None
                     raise _missing_field_error(
                         obj, self.field, self.json_field
                     )
-                raw = json[self.json_field]
 
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
@@ -4439,7 +4436,7 @@ class JSONProperty:
         if self.write_only:
             with _converting(type(obj), self.field):
                 encoded = obj._to_json(value, self.analyzed_type)
-            obj._update_write_only_field(self.json_field, _copy_json(encoded))
+            obj._update_json_field(self.json_field, _copy_json(encoded))
             return
 
         if self._is_key_of(obj):
@@ -4450,7 +4447,7 @@ class JSONProperty:
             raise AttributeError(
                 f"{type(obj).__name__}.{self.field} is read-only"
             )
-        json = obj._json_with_field(self.json_field, self.field)
+        stored = obj._json_with_field(self.json_field, self.field)
         with _converting(type(obj), self.field):
             new_value = obj._to_json(value, self.analyzed_type)
             # Build the collection that the field keeps before anything is sent
@@ -4463,13 +4460,12 @@ class JSONProperty:
             if isinstance(kept, AbstractSet):
                 new_value = obj._to_json(kept, self.analyzed_type)
 
-        # A pending update is not on the server, even though the JSON holds it.
-        # In eager mode, assigning the same value must send it.
+        # A pending update is not on the server, even though the working JSON
+        # holds it. In eager mode, assigning the same value must send it.
         unsent = (
             obj.write_mode == "eager"
             and self.json_field in obj._pending_updates
         )
-        stored = json[self.json_field]
         if unsent or not self._same_as_stored(stored, new_value):
             # Store a copy, so that changing the assigned value in place later
             # cannot match the stored JSON and suppress the next update.
@@ -4482,7 +4478,7 @@ class JSONProperty:
 
         # An eager write's response can name other related objects, which
         # then replace the assigned ones, as after save().
-        final = (obj._json or {}).get(self.json_field, _MISSING)
+        final = obj._working_value(self.json_field)
         if not self._same_as_stored(final, new_value):
             return
 
@@ -4699,7 +4695,12 @@ class JSONObject:
     """Whether field assignment is saved eagerly or lazily."""
 
     _pending_updates: dict[str, Any]
-    """JSON field updates queued for the next ``save()``."""
+    """JSON field updates queued for the next ``save()``.
+
+    This is the only place that a pending value is kept. ``_json`` does not
+    hold it, and a field read and ``json`` lay it over ``_json``. It holds the
+    value of a write-only field too, which no read shows.
+    """
 
     _field_cache: dict[str, Any]
     """Converted field values cached by Python attribute name."""
@@ -4715,7 +4716,11 @@ class JSONObject:
     """Prefetched related objects keyed by field name and primary key."""
 
     _json: Any
-    """Object's JSON representation."""
+    """The JSON that the server sent, or ``None`` before the object loads.
+
+    It holds no pending update and no write-only field. A field read and
+    ``json`` see the pending updates laid over it.
+    """
 
     _json_is_partial: bool
     """Whether ``_json`` holds only some of the object's fields."""
@@ -5601,7 +5606,7 @@ class JSONObject:
             self._write_options = previous
 
     def _update_json_field(self, json_field: str, value: Any) -> None:
-        """Apply a JSON field update using the configured write mode.
+        """Send or queue a JSON field update, as the write mode says.
 
         Args:
             json_field: Name of the backing JSON field.
@@ -5618,25 +5623,6 @@ class JSONObject:
             return
 
         self._queue_update(json_field, value)
-
-    def _update_write_only_field(self, json_field: str, value: Any) -> None:
-        """Send or queue a write-only field's value, as the write mode says.
-
-        Args:
-            json_field: JSON key of the write-only field.
-            value: JSON-serializable field value.
-        """
-        if self.write_mode == "eager":
-            self._queue_in_place_changes()
-            payload = dict(self._pending_updates)
-            payload[json_field] = value
-            resp = self._request_api().patch(
-                self.url, json=self._to_wire(payload), **self._write_options
-            )
-            self._apply_patch_response(resp, payload)
-            return
-
-        self._pending_updates[json_field] = value
 
     @classmethod
     def _to_wire(cls, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -5790,16 +5776,16 @@ class JSONObject:
         return canonical
 
     def _queue_update(self, json_field: str, value: Any) -> None:
-        """Apply a JSON field update locally and queue it for ``save()``.
+        """Queue a JSON field update for ``save()``.
+
+        The update is kept only in the pending updates, where a field read and
+        ``json`` find it laid over the server's JSON. The value of a write-only
+        field is queued the same way, and no read shows it.
 
         Args:
             json_field: Name of the backing JSON field.
             value: JSON-serializable field value.
         """
-        # An object that has not loaded has no JSON to change, and the update
-        # that waits here is laid over the JSON when it loads.
-        if self._json is not None:
-            self._json[json_field] = value
         self._pending_updates[json_field] = value
 
     def _changes_in_place(self) -> list[tuple[str, JSONProperty, Any]]:
@@ -5901,11 +5887,14 @@ class JSONObject:
                 key = self._pk_json_field
                 if key not in json and self._saved_key_json is not None:
                     json[key] = _copy_json(self._saved_key_json)
-                self._replace_json(json)
+                self._replace_json(json, clear_pending=True)
                 self._json_is_partial = True
+            else:
+                self._pending_updates.clear()
         else:
-            self._replace_json(self.merge_response(resp, self.json, sent))
-        self._pending_updates.clear()
+            self._replace_json(
+                self.merge_response(resp, self.json, sent), clear_pending=True
+            )
 
     def _refuse_other_key(self, key: Any, *, adopt: bool) -> None:
         """Refuse server state that names another key than the saved one.
@@ -5944,8 +5933,10 @@ class JSONObject:
             f"{type(self).__name__} object, whose key cannot change"
         )
 
-    def _replace_json(self, json: dict[str, Any]) -> None:
-        """Replace this object's JSON after a write or a load.
+    def _replace_json(
+        self, json: dict[str, Any], *, clear_pending: bool = False
+    ) -> None:
+        """Replace the server's JSON that this object keeps.
 
         The object records the key of the JSON as its saved key, if that has
         the key field. No pending update holds the key, since the key of an
@@ -5953,19 +5944,27 @@ class JSONObject:
         the server's. A key that is known never changes, so JSON that names
         another key is refused before anything changes.
 
-        Cached values stay valid for the fields whose JSON is unchanged, so
-        only the others are dropped. In particular, a related object assigned
-        before ``save()`` stays the field's value, and so does a related
-        object with unsaved changes when a load does not change it.
+        Cached values stay valid for the fields whose working value is
+        unchanged, the pending updates laid over the server's JSON, so only the
+        others are dropped. In particular, a related object assigned before
+        ``save()`` stays the field's value, and so does a related object with
+        unsaved changes when a load does not change it.
 
         Args:
-            json: The object's new JSON.
+            json: The JSON that the server sent, or that a write's response
+                made of the object's JSON.
+            clear_pending: Whether the write that produced ``json`` took the
+                pending updates, so they are dropped with the old JSON. The
+                comparison of the working JSON before and after needs them gone
+                between the two reads. Otherwise a pending value that a write's
+                response normalized would still show over the response, and the
+                field's cached value would stay stale.
 
         Raises:
             ResponseShapeError: If the server's JSON names another key than the
                 saved key. The object is unchanged.
         """
-        before = self._json if self._json is not None else {}
+        before = self._working_json()
         json = self._readable_json(json)
         if _pk_property_of(type(self)) is not None:
             key: str = type(self)._pk.json_field
@@ -5973,12 +5972,15 @@ class JSONObject:
                 self._refuse_other_key(json[key], adopt=True)
                 self._record_saved_key(json[key])
         self._json = json
+        if clear_pending:
+            self._pending_updates.clear()
+        after = self._working_json()
 
         for field in getattr(self, "_json_fields", ()):
             json_field = getattr(type(self), field).json_field
             if not _json_equal(
                 before.get(json_field, _MISSING),
-                json.get(json_field, _MISSING),
+                after.get(json_field, _MISSING),
             ):
                 self._forget_fields([field])
 
@@ -6444,16 +6446,18 @@ class JSONObject:
 
     @property
     def json(self) -> Any:
-        """Return and cache this object's JSON representation.
+        """Return this object's JSON, with its pending updates.
 
-        After ``update_from_json()`` on an object that was not loaded, this is
-        the partial payload received so far.
+        The server's JSON, loaded if the object has not loaded, with the
+        pending updates laid over it and no write-only field. After
+        ``update_from_json()`` on an object that was not loaded, the server's
+        JSON is the partial payload received so far.
 
-        The mapping is the object's own state, not a copy, so treat it as
-        read-only. Changing it, or a value inside it, bypasses change
-        tracking, so ``save()`` may send nothing or the wrong fields. Copy it
-        with ``copy.deepcopy()`` before changing it, and assign fields to
-        change the object.
+        The mapping is new on each call, so changing it does not change the
+        object. Its values are the object's own, so changing one in place
+        bypasses change tracking, and ``save()`` may send nothing or the wrong
+        fields. Copy it with ``copy.deepcopy()`` before changing a value, and
+        assign fields to change the object.
 
         Returns:
             JSON payload representing this object.
@@ -6461,10 +6465,54 @@ class JSONObject:
         if self._json is None:
             self._load_json()
 
-        return self._json
+        return self._working_json()
+
+    def _working_json(self) -> dict[str, Any]:
+        """Return the server's JSON with the pending updates laid over it.
+
+        Returns:
+            A new mapping, without write-only fields, whose values are the
+            object's own. It is empty for an object that has not loaded.
+        """
+        if self._json is None:
+            return {}
+
+        json = dict(self._json)
+        if self._pending_updates:
+            hidden = self._write_only_keys()
+            json.update(
+                (key, value)
+                for key, value in self._pending_updates.items()
+                if key not in hidden
+            )
+        return json
+
+    def _working_value(self, json_field: str) -> Any:
+        """Return a field's pending value, or else its value in server JSON.
+
+        Unlike ``json``, this does not hide a write-only field.
+
+        Args:
+            json_field: JSON key to look for.
+
+        Returns:
+            The pending value, if there is one, otherwise the server's value.
+            ``_MISSING`` if neither has the field, or the object has not
+            loaded.
+        """
+        if self._json is None:
+            return _MISSING
+
+        if json_field in self._pending_updates:
+            return self._pending_updates[json_field]
+
+        return self._json.get(json_field, _MISSING)
 
     def _load_json(self) -> None:
-        """Load this object's JSON from the API, keeping pending updates.
+        """Load the server's JSON for this object, keeping pending updates.
+
+        The pending updates stay where they are, and the working JSON still
+        shows them over the loaded JSON.
 
         Raises:
             ResponseShapeError: If the response does not hold a JSON object, or
@@ -6487,32 +6535,27 @@ class JSONObject:
             elif self._saved_key_json is not None:
                 json[pk_json_field] = _copy_json(self._saved_key_json)
 
-        # Unsaved lazy updates still take precedence over server state. The
-        # object never keeps a write-only field's value.
-        write_only = self._write_only_keys()
-        json.update(
-            (key, value)
-            for key, value in self._pending_updates.items()
-            if key not in write_only
-        )
         # Keep the values of fields that the load left unchanged, such as a
         # related object with unsaved changes of its own.
         self._replace_json(json)
         self._json_is_partial = False
 
     def _json_having(self, json_field: str) -> Any:
-        """Return this object's JSON, loaded when it may lack a field.
+        """Return a field's working value, loading when it may be missing.
 
         Args:
             json_field: JSON key to look for.
 
         Returns:
-            JSON payload, which still lacks ``json_field`` if the full object
-            does, or if the object cannot load.
+            The field's value in the working JSON, which is ``_MISSING`` if the
+            full object lacks it, or if the object cannot load.
         """
-        json = self.json
+        if self._json is None:
+            self._load_json()
+
+        value = self._working_value(json_field)
         if (
-            json_field not in json
+            value is _MISSING
             and self._json_is_partial
             and _pk_property_of(type(self)) is not None
         ):
@@ -6520,28 +6563,28 @@ class JSONObject:
             # the server has this field, so load the full object. An object
             # without a key never loads, because it has no URL.
             self._load_json()
-            json = self.json
+            value = self._working_value(json_field)
 
-        return json
+        return value
 
     def _json_with_field(self, json_field: str, field: str) -> Any:
-        """Return this object's JSON after checking that it has a field.
+        """Return a field's working value after checking that it has one.
 
         Args:
             json_field: JSON key to look for.
             field: Python attribute name used in the error message.
 
         Returns:
-            JSON payload containing ``json_field``.
+            The field's value in the working JSON.
 
         Raises:
             AttributeError: If the loaded JSON does not contain ``json_field``.
         """
-        json = self._json_having(json_field)
-        if json_field not in json:
+        value = self._json_having(json_field)
+        if value is _MISSING:
             raise _missing_field_error(self, field, json_field)
 
-        return json
+        return value
 
     @classmethod
     def _encode_fields(

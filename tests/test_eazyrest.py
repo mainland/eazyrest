@@ -5935,6 +5935,75 @@ def test_pending_write_only_field_is_not_kept_by_a_load(
     assert login._pending_updates == {"password": "hunter2"}
 
 
+def test_json_shows_a_pending_value_over_the_servers() -> None:
+    """``json`` and a field read show a pending value over the server's."""
+    todo = Todo(json={"id": 1, "userId": 2, "title": "a", "completed": False})
+
+    todo.title = "b"
+
+    assert todo.json["title"] == "b"
+    assert todo.title == "b"
+    assert todo._json is not None
+    assert todo._json["title"] == "a"
+    assert todo._pending_updates == {"title": "b"}
+
+
+def test_json_holds_no_pending_write_only_field(requests_mock: Any) -> None:
+    """A write-only value that is pending is not in ``json``."""
+    requests_mock.get("https://example.com/v1/logins/1/", json=LOGIN_JSON)
+    login = Login(id=1)
+
+    login.password = "hunter2"
+    login.name = "grace"
+
+    assert "password" not in login.json
+    assert login.json == {**LOGIN_JSON, "name": "grace"}
+    assert login._pending_updates == {"password": "hunter2", "name": "grace"}
+
+
+def test_json_returns_a_new_mapping_on_each_call() -> None:
+    """Two calls of ``json`` are equal and distinct, and a change is local."""
+    todo = Todo(json={"id": 1, "userId": 2, "title": "a", "completed": False})
+    todo.title = "b"
+
+    first = todo.json
+    second = todo.json
+    assert first == second
+    assert first is not second
+
+    first["title"] = "changed"
+    first["extra"] = 1
+
+    assert todo.json == second
+    assert todo.title == "b"
+    assert todo._pending_updates == {"title": "b"}
+
+
+def test_a_load_of_a_partial_object_keeps_a_pending_value(
+    requests_mock: Any,
+) -> None:
+    """A pending value survives the load, in ``json`` and in a field read."""
+    requests_mock.get(
+        "https://example.com/v1/todos/1/",
+        json={"id": 1, "userId": 2, "title": "server", "completed": False},
+    )
+    patch = requests_mock.patch(
+        "https://example.com/v1/todos/1/", status_code=204
+    )
+    todo = Todo(id=1)
+    todo.update_from_json({"id": 1, "title": "partial"})
+    todo.title = "local"
+
+    assert todo.completed is False
+
+    assert todo.title == "local"
+    assert todo.json["title"] == "local"
+    assert todo._json is not None
+    assert todo._json["title"] == "server"
+    todo.save()
+    assert patch.last_request.json() == {"title": "local"}
+
+
 @pytest.mark.parametrize(
     ("options", "match"),
     [

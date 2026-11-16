@@ -358,10 +358,13 @@ same exceptions as one, such as `requests.HTTPError` or
 `hasattr()` also loads the object, and it propagates request errors instead of
 returning `False`.
 
-`json` returns the object's own payload, not a copy, so treat it as read-only.
-Changing it, or a value inside it, bypasses change tracking, and `save()` may
-then send nothing or the wrong fields. Assign fields to change an object, and
-copy the payload with `copy.deepcopy()` before changing it for another purpose.
+`json` returns a new mapping on each call, with the object's pending changes
+laid over the server's payload. Changing the mapping does not change the
+object. Its values are the object's own, not copies, so do not change a value
+in it in place. That bypasses change tracking, and `save()` may then send
+nothing or the wrong fields. Assign fields to change an object, and copy the
+payload with `copy.deepcopy()` before changing a value in it for another
+purpose.
 
 An assignment converts the value for its field but does not otherwise check its
 type, unless the field's type is one that Pydantic validates. A value that

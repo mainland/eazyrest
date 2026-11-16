@@ -372,6 +372,12 @@ describe them further.
 - eazyrest requires Python 3.11 or later. Python 3.10 is no longer supported.
   The package no longer depends on `typing_extensions`, which only the
   `pydantic` extra needs.
+- `json` returns a new mapping on each call, with the object's pending updates
+  laid over the server's JSON and no write-only field, where `v1.0.0a5`
+  returned the object's own mapping. Changing the mapping no longer changes the
+  object. Code that changed it to change the object must assign fields. Its
+  values are still the object's own, so a value in it must not be changed in
+  place.
 
 ### Migrating from 0.9.0
 
@@ -437,6 +443,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   up with `get()` or `filter()`, which still work on such a model, and to add
   one, post to the endpoint with the API and build the object from the
   response's JSON with `json=`.
+- `json` returns a new mapping on each call, with the object's pending updates
+  laid over the server's JSON and no write-only field, where 0.9.0 returned the
+  object's own mapping. Changing the mapping no longer changes the object. Code
+  that changed it to change the object must assign fields. Its values are still
+  the object's own, so a value in it must not be changed in place.
 - `delete()` takes request options in `request_options=`, as `save()` and
   `create()` do, rather than as positional and keyword arguments for
   `API.delete()`. Replace `obj.delete(headers=h)` with
