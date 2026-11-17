@@ -70,6 +70,7 @@ from ._models import (
     _is_type_alias,
     _resolve_alias_value,
     _resolve_annotation,
+    _resolve_in_module,
     _seal,
     lenient_issubclass,
 )
@@ -737,12 +738,7 @@ def _extra_items(cls: Any) -> Any:
         return None
     if isinstance(extra, (str, typing.ForwardRef)):
         # Resolve it as an annotation of the TypedDict's module.
-        namespace = {
-            "__annotations__": {"extra": extra},
-            "__module__": cls.__module__,
-        }
-        holder = type("_ExtraItems", (), namespace)
-        return get_type_hints(holder, include_extras=True)["extra"]
+        return _resolve_in_module(extra, cls.__module__, "_ExtraItems")
     return extra
 
 

@@ -922,16 +922,8 @@ def _resolve_alias_value(alias: Any) -> Any:
     if not _has_forward_refs(value):
         return value
 
-    holder = type(
-        alias.__name__,
-        (),
-        {
-            "__module__": alias.__module__,
-            "__annotations__": {"value": value},
-        },
-    )
     try:
-        return typing.get_type_hints(holder, include_extras=True)["value"]
+        return _resolve_in_module(value, alias.__module__, alias.__name__)
     except Exception as error:
         raise _UnresolvedAliasError(
             f"Type alias {alias.__name__} names a type by a string that "
@@ -1376,6 +1368,45 @@ def _annotation_owner(cls: type[Any], name: str) -> type[Any]:
     return next(base for base in cls.__mro__ if name in _annotations(base))
 
 
+def _resolve_in_module(
+    value: Any,
+    module: str,
+    holder_name: str,
+    localns: Mapping[str, Any] | None = None,
+) -> Any:
+    """Resolve a value as the annotation of a class in a module.
+
+    A string in ``value``, at any depth, names a type as it does in an
+    annotation: first in ``localns`` if given, then in the module's names. This
+    is the one place that builds the class for ``get_type_hints()``, so every
+    resolution reads names alike.
+
+    Args:
+        value: Annotation, or any value that holds strings that name types.
+        module: Name of the module whose names the strings use.
+        holder_name: Name of the class that holds the annotation, which an
+            error from resolving may quote.
+        localns: Names that take precedence over the module's, or ``None`` for
+            none.
+
+    Returns:
+        ``value``, with its ``Annotated`` metadata and each string replaced by
+        the type that it names.
+
+    Raises:
+        Exception: If a string names something undefined, whatever resolving it
+            raises.
+    """
+    holder = type(
+        holder_name,
+        (),
+        {"__module__": module, "__annotations__": {"value": value}},
+    )
+    return typing.get_type_hints(holder, localns=localns, include_extras=True)[
+        "value"
+    ]
+
+
 def _resolve_annotation(
     owner: type[Any], name: str, hidden: Container[str] = ()
 ) -> Any:
@@ -1408,14 +1439,6 @@ def _resolve_annotation(
         Exception: If the annotation names something undefined, whatever
             resolving it raises.
     """
-    holder = type(
-        owner.__name__,
-        (),
-        {
-            "__module__": owner.__module__,
-            "__annotations__": {name: _annotations(owner)[name]},
-        },
-    )
     module = sys.modules.get(owner.__module__)
     module_names = vars(module) if module is not None else {}
     localns = {
@@ -1424,9 +1447,9 @@ def _resolve_annotation(
         if key not in hidden and key not in module_names
     }
     localns[owner.__name__] = owner
-    return typing.get_type_hints(holder, localns=localns, include_extras=True)[
-        name
-    ]
+    return _resolve_in_module(
+        _annotations(owner)[name], owner.__module__, owner.__name__, localns
+    )
 
 
 def _structure_member(hint: Any, container: Any) -> AnalyzedType:
