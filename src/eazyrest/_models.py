@@ -3340,7 +3340,9 @@ def _check_api_attribute(
 
     The attribute resolves each object's own API, from ``api=`` or the
     registry, so a value assigned to it on a class replaces that, and every
-    ``api=`` is ignored.
+    ``api=`` is ignored. The message names ``register_api()`` on the class that
+    owns the attribute when that class is a model, and otherwise on ``cls``,
+    since a plain mixin has no ``register_api()``.
 
     Args:
         cls: Model class.
@@ -3355,10 +3357,18 @@ def _check_api_attribute(
         if "api" in (own := vars(base)) and not isinstance(
             own["api"], APIDescriptor
         ):
-            raise error(
+            assigned = (
                 f"{base.__name__}.api was assigned, which would make every "
-                f"api= ignored. Use {base.__name__}.register_api(api) "
-                "instead."
+                "api= ignored."
+            )
+            if issubclass(base, JSONObject):
+                raise error(
+                    f"{assigned} Use {base.__name__}.register_api(api) "
+                    "instead."
+                )
+            raise error(
+                f"{assigned} Remove it, and use {cls.__name__}."
+                "register_api(api) instead."
             )
 
 

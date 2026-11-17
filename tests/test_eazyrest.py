@@ -10562,6 +10562,56 @@ def test_an_assigned_api_is_refused(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
+def test_an_api_assigned_on_a_mixin_names_the_models_register_api(
+    requests_mock: Any,
+) -> None:
+    """The advice for a mixin's ``api`` is the model's ``register_api()``.
+
+    A plain mixin has no ``register_api()``, so the message names the model
+    that is being used.
+    """
+
+    class Mixin:
+        pass
+
+    @json_object
+    class Base(Mixin, JSONObject):
+        class_url = "/bases/"
+
+        id: int
+
+    Base.register_api(API("https://good.example.com"))
+    Mixin.api = API("https://other.example.com")  # type: ignore[attr-defined]
+
+    with pytest.raises(UsageError) as info:
+        Base(json={"id": 1})
+    assert "Mixin.api was assigned" in str(info.value)
+    assert "Base.register_api(api)" in str(info.value)
+    assert "Mixin.register_api" not in str(info.value)
+    assert requests_mock.call_count == 0
+
+
+def test_a_mixin_defining_api_is_refused_naming_the_model_register_api() -> (
+    None
+):
+    """A mixin whose body defines ``api`` is refused when the model is defined.
+
+    The message names the model's ``register_api()``, not the mixin's.
+    """
+
+    class Mixin:
+        api = API("https://service.example.com")
+
+    with pytest.raises(TypeError) as info:
+
+        class Base(Mixin, JSONObject):
+            pass
+
+    assert "Mixin.api was assigned" in str(info.value)
+    assert "Base.register_api(api)" in str(info.value)
+    assert "Mixin.register_api" not in str(info.value)
+
+
 def test_an_api_assigned_none_is_refused(requests_mock: Any) -> None:
     """``None`` assigned to a class's ``api`` is an assignment like any API."""
 
