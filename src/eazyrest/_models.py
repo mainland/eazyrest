@@ -1164,7 +1164,36 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         return NamedTupleType(ty)
     if _is_dataclass(ty):
         return DataclassType(ty)
+    _check_is_type(ty, ty_origin)
     return BaseType(ty)
+
+
+def _check_is_type(ty: Any, ty_origin: Any) -> None:
+    """Refuse an annotation that is not a type, which would pass JSON through.
+
+    A function, a module, an instance, a value, a special form such as
+    ``LiteralString``, ``Never``, ``Self``, or ``Final``, and a ``TypeVar``
+    name no type that eazyrest converts. Python can also evaluate a field's
+    annotation to a method of the class, when a method shares the name of the
+    annotation's type. A bare ``None`` passes, since it stands for ``NoneType``
+    inside a parameterized type, and so does ``Literal[...]``.
+
+    Args:
+        ty: Declared type, which eazyrest would otherwise pass through.
+        ty_origin: ``typing.get_origin(ty)``.
+
+    Raises:
+        TypeError: If ``ty`` is not a class, ``None``, or ``Literal[...]``.
+    """
+    if isinstance(ty, type) or ty is None or ty_origin is Literal:
+        return
+    raise TypeError(
+        f"{ty!r} is not a type, so eazyrest cannot convert a field that it "
+        "annotates, whose JSON would pass through unconverted. Annotate a "
+        "class, such as int or datetime.datetime, or Any to keep any JSON. "
+        "A method or an attribute of the class that has the type's name can "
+        "hide it, so annotate such a type by a name that is not shadowed."
+    )
 
 
 def _is_named_tuple(ty: Any) -> bool:

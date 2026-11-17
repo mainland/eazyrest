@@ -7,6 +7,7 @@ import dataclasses
 import datetime
 import enum
 import sys
+import typing
 import uuid
 from collections.abc import (
     Collection,
@@ -439,6 +440,44 @@ def test_a_type_alias_naming_a_class_defined_later_is_decorated() -> None:
     namespace["LaterItem"] = int
 
     assert obj.items == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        typing.LiteralString,
+        typing.Never,
+        typing.NoReturn,
+        typing.Self,
+        typing.Final,
+        typing.Literal,
+        typing.TypeVar("T"),
+        typing.ParamSpec("P"),
+        len,
+        datetime,
+        3,
+    ],
+    ids=repr,
+)
+def test_an_annotation_that_is_not_a_type_is_refused_when_decorated(
+    annotation: Any,
+) -> None:
+    """A special form, a type variable, or a value as a field type raises.
+
+    Its JSON would otherwise pass through as it is. The message names the
+    field.
+
+    Args:
+        annotation: The field's annotation.
+    """
+    namespace = {
+        "__annotations__": {"id": int, "value": annotation},
+        "class_url": "/refused/",
+        "__module__": __name__,
+    }
+
+    with pytest.raises(TypeError, match=r"^Refused\.value: .*not a type"):
+        json_object(type("Refused", (StructureBase,), namespace))
 
 
 def test_structure_schemas() -> None:

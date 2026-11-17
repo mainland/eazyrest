@@ -759,6 +759,15 @@ as `dict[str, Any]`. The field's own type raises `TypeError` when the class is
 decorated. A member of a `TypedDict`, `NamedTuple`, or dataclass raises
 `FieldConversionError` when the field is first used.
 
+An annotation that is not a type also raises `TypeError` when the class is
+decorated, since its JSON would pass through unconverted. That covers a
+function, a module, a value, a bare special form such as `LiteralString`,
+`Never`, `Self`, or `Final`, and a `TypeVar`. `Literal[...]` is a type. On
+Python 3.14 and later, a method with the name of a field's type, as a method
+`date` beside a field `created: date`, makes the annotation evaluate to the
+method, and the class is refused for the same reason. Annotate the type by a
+name that the class does not shadow, such as `datetime.date`.
+
 A field's value is cached when it is first read, so later reads return the same
 value. If you change that value in place, `save()` sends the change, as it does
 for an assignment, except for the key, whose change is refused:

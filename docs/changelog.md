@@ -312,6 +312,13 @@ describe them further.
   releases raised `FieldConversionError` when the field was first used. A name
   that is not defined yet, and a member of a `TypedDict`, dataclass,
   `NamedTuple`, or Pydantic type, still raise when the field is first used.
+- A field annotated with something that is not a type, such as a function, a
+  module, a value, a bare `LiteralString`, `Never`, `Self`, `Final`, or a
+  `TypeVar`, raises `TypeError` when the class is decorated, naming the field,
+  where `v1.0.0a5` passed its JSON through unconverted. `Literal[...]` is
+  unchanged. On Python 3.14 and later, a method that has the name of a field's
+  type, as `date` does beside `created: date`, hides the type, so such a class
+  is refused too. Annotate the type by a name that the class does not shadow.
 - `refresh()` raises `ValueError` for an object built without a key, such as
   `Todo()`, and for one whose key is empty, `.`, or `..`, where `v1.0.0a5`
   reset it without an error. It raises before it discards anything.
