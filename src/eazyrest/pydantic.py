@@ -65,12 +65,11 @@ from ._conversion import (
 )
 from ._models import (
     JSONObject,
-    _annotation_owner,
+    _dataclass_field_annotation,
     _hints_of,
     _is_named_tuple,
     _is_type_alias,
     _resolve_alias_value,
-    _resolve_annotation,
     _resolve_in_module,
     _seal,
     lenient_issubclass,
@@ -701,9 +700,8 @@ def _field_hint(cls: Any, name: str) -> Any:
     Raises:
         TypeError: If the annotation cannot be resolved.
     """
-    fields = {field.name for field in dataclasses.fields(cls)}
     try:
-        return _resolve_annotation(_annotation_owner(cls, name), name, fields)
+        return _dataclass_field_annotation(cls, name)
     except Exception as err:
         raise _unresolved(cls, err) from err
 

@@ -694,13 +694,10 @@ class DataclassType:
                 holds a model.
         """
         cls = self.dataclass_type
-        names = {field.name for field in dataclasses.fields(cls)}
 
         def hint(name: str) -> Any:
             try:
-                return _resolve_annotation(
-                    _annotation_owner(cls, name), name, names
-                )
+                return _dataclass_field_annotation(cls, name)
             except Exception as err:
                 raise TypeError(
                     f"The annotations of {cls.__name__} cannot be resolved: "
@@ -1450,6 +1447,29 @@ def _resolve_annotation(
     return _resolve_in_module(
         _annotations(owner)[name], owner.__module__, owner.__name__, localns
     )
+
+
+def _dataclass_field_annotation(cls: type[Any], name: str) -> Any:
+    """Resolve the annotation of one field of a dataclass.
+
+    Only this annotation is evaluated, so that a class variable whose
+    annotation names a type that exists only for type checkers does not matter.
+    The class's field attributes, such as defaults, do not hide the types that
+    annotations name.
+
+    Args:
+        cls: Dataclass.
+        name: Name of one of its fields.
+
+    Returns:
+        The field's annotation, resolved, with its ``Annotated`` metadata.
+
+    Raises:
+        Exception: If the annotation names something undefined, whatever
+            resolving it raises.
+    """
+    names = {field.name for field in dataclasses.fields(cls)}
+    return _resolve_annotation(_annotation_owner(cls, name), name, names)
 
 
 def _structure_member(hint: Any, container: Any) -> AnalyzedType:
