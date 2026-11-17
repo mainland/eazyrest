@@ -11496,3 +11496,53 @@ def test_a_dataclass_whose_field_names_a_checker_only_type_still_raises() -> (
         FieldConversionError, match="annotations of _FieldForCheckers"
     ):
         tally.entry  # noqa: B018
+
+
+_ShadowedDate = datetime.date
+
+
+@dataclasses.dataclass
+class _ShadowedDateEntry:
+    """A dataclass whose class variable has the name of a module's type."""
+
+    when: _ShadowedDate
+    _ShadowedDate: ClassVar[type] = datetime.datetime
+
+
+def test_a_method_does_not_shadow_a_module_type_in_a_model_field() -> None:
+    """A string annotation names the module's type, not a method of the class.
+
+    The method has the name of a type that the module imports, and the field's
+    annotation is a string that uses that name.
+    """
+
+    @json_object
+    class Visit(ModelBase):
+        class_url = "/visits/"
+
+        id: int
+        created: _ShadowedDate
+
+        def _ShadowedDate(self) -> str:
+            return "not a type"
+
+    visit = Visit(json={"id": 1, "created": "2026-11-17"})
+
+    assert visit.created == datetime.date(2026, 11, 17)
+
+
+def test_a_class_variable_does_not_shadow_a_module_type_in_a_dataclass() -> (
+    None
+):
+    """A dataclass member's string annotation names the module's type."""
+
+    @json_object
+    class Visit(ModelBase):
+        class_url = "/visits/"
+
+        id: int
+        entry: _ShadowedDateEntry
+
+    visit = Visit(json={"id": 1, "entry": {"when": "2026-11-17"}})
+
+    assert type(visit.entry.when) is datetime.date

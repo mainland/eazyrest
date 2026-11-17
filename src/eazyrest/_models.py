@@ -1324,10 +1324,16 @@ def _resolve_annotation(
 
     Only this annotation is evaluated. Another one, such as a ``ClassVar`` or
     an excluded field, may name a type that exists only for type checkers, and
-    it must not make this one unresolvable. Names resolve in the owner's
-    module, then in the owner's own namespace without ``hidden``, which lets a
-    class defined inside a function name itself and its attributes, and then
-    the owner's own name.
+    it must not make this one unresolvable.
+
+    A name resolves to the owner itself if it is the owner's own name, so that
+    a class can name itself whatever its module binds the name to. Otherwise it
+    resolves in the owner's module, and only then in the owner's namespace
+    without ``hidden``, which lets a class defined inside a function name
+    others from that function. This is the order of ``get_type_hints()`` on a
+    class and of the ``TypedDict`` and ``NamedTuple`` path, so an attribute of
+    the class that is not a field, such as a method named ``date``, does not
+    shadow the module's ``date`` in a string annotation.
 
     Args:
         owner: Class that declares the annotation.
@@ -1351,8 +1357,12 @@ def _resolve_annotation(
             "__annotations__": {name: _annotations(owner)[name]},
         },
     )
+    module = sys.modules.get(owner.__module__)
+    module_names = vars(module) if module is not None else {}
     localns = {
-        key: value for key, value in vars(owner).items() if key not in hidden
+        key: value
+        for key, value in vars(owner).items()
+        if key not in hidden and key not in module_names
     }
     localns[owner.__name__] = owner
     return typing.get_type_hints(holder, localns=localns, include_extras=True)[
