@@ -55,7 +55,7 @@ from pydantic_core import (
     PydanticUndefined,
     core_schema,
 )
-from typing_extensions import get_type_hints, is_typeddict
+from typing_extensions import is_typeddict
 
 from ._conversion import (
     _current_conversion,
@@ -66,6 +66,7 @@ from ._conversion import (
 from ._models import (
     JSONObject,
     _annotation_owner,
+    _hints_of,
     _is_named_tuple,
     _is_type_alias,
     _resolve_alias_value,
@@ -672,11 +673,17 @@ def _field_types(cls: Any) -> list[Any]:
         return field_hints
 
     try:
-        hints = get_type_hints(cls, include_extras=True)
-        extra = _extra_items(cls) if is_typeddict(cls) else None
-    except Exception as err:
-        raise _unresolved(cls, err) from err
+        hints = _hints_of(cls)
+    except TypeError as err:
+        # The error that resolving raised, without the message that conversion
+        # wraps it in.
+        cause = err.__cause__ or err
+        raise _unresolved(cls, cause) from cause
     if is_typeddict(cls):
+        try:
+            extra = _extra_items(cls)
+        except Exception as err:
+            raise _unresolved(cls, err) from err
         return [*hints.values(), *([extra] if extra is not None else [])]
     return [hints[name] for name in cls._fields if name in hints]
 
@@ -701,7 +708,7 @@ def _field_hint(cls: Any, name: str) -> Any:
         raise _unresolved(cls, err) from err
 
 
-def _unresolved(cls: Any, err: Exception) -> TypeError:
+def _unresolved(cls: Any, err: BaseException) -> TypeError:
     """Return the error for a class whose field types cannot be resolved.
 
     Args:
