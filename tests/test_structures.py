@@ -31,6 +31,7 @@ import pytest
 import requests_mock
 
 from eazyrest import API, FieldConversionError, JSONObject, json_object
+from eazyrest._models import DataclassType, NamedTupleType, analyze_type
 
 BASE = "https://structures.example.com/"
 ItemT = TypeVar("ItemT")
@@ -753,3 +754,45 @@ def test_items_of_a_set_changed_in_place_are_saved(annotation: Any) -> None:
 
     assert patch.last_request.json() == {"counters": [{"n": 2}]}
     assert tally.json["counters"] == [{"n": 2}]
+
+
+class NamesNothingTuple(NamedTuple):
+    """Named tuple whose annotation names nothing."""
+
+    value: Nowhere  # type: ignore[name-defined]  # noqa: F821
+
+
+@dataclasses.dataclass
+class NamesNothingDataclass:
+    """Dataclass whose annotation names nothing."""
+
+    value: Nowhere  # type: ignore[name-defined]  # noqa: F821
+
+
+@pytest.mark.parametrize(
+    ("ty", "name"),
+    [
+        (NamesNothingTuple, "NamesNothingTuple"),
+        (NamesNothingDataclass, "NamesNothingDataclass"),
+    ],
+)
+def test_a_structure_annotation_naming_nothing_reports_the_annotations(
+    ty: Any, name: str
+) -> None:
+    """The error is a ``TypeError`` that names the class and the name.
+
+    Args:
+        ty: Class whose annotation names nothing.
+        name: Its name.
+    """
+    analyzed = analyze_type(ty)
+    assert isinstance(analyzed, NamedTupleType | DataclassType)
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"^The annotations of {name} cannot be resolved: "
+            r"name 'Nowhere' is not defined$"
+        ),
+    ):
+        _ = analyzed.fields

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import types
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import (
     Any,
     Generic,
@@ -627,3 +628,63 @@ def test_errors_do_not_show_keys_that_the_input_chose() -> None:
         assert "secret" not in str(caught.value)
         assert "inner" not in str(caught.value)
         assert "[key]" in str(caught.value)
+
+
+_STAMPED_SOURCE = """
+import datetime
+from typing_extensions import TypedDict
+
+Stamp = datetime.datetime
+
+class Stamped(TypedDict):
+    when: "Stamp"
+"""
+
+
+def test_a_key_inherited_from_another_module_resolves_in_that_module(
+    module_from_source: Callable[[str, str], types.ModuleType],
+) -> None:
+    """A string key annotation names a type in the module that declares it.
+
+    The subclass's module does not define ``Stamp``, so the key converts only
+    if its annotation resolves in the base's module.
+    """
+    base = module_from_source("stamped_base", _STAMPED_SOURCE).Stamped
+
+    class Child(base):  # type: ignore[valid-type,misc]
+        count: int
+
+    holder: Any = json_object(
+        type(
+            "Holder",
+            (TypedBase,),
+            {
+                "__annotations__": {"id": int, "value": Child},
+                "class_url": "/holders/",
+            },
+        )
+    )
+
+    value = holder(
+        json={"id": 1, "value": {"when": "2024-01-01T00:00:00Z", "count": 1}}
+    ).value
+
+    assert value == {
+        "when": datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC),
+        "count": 1,
+    }
+
+
+def test_a_typed_dict_key_naming_nothing_reports_the_annotations() -> None:
+    """The error names the class and carries the undefined name."""
+    analyzed = analyze_type(Unresolved)
+    assert isinstance(analyzed, TypedDictType)
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"^The annotations of Unresolved cannot be resolved: "
+            r"name 'Nowhere' is not defined$"
+        ),
+    ):
+        _ = analyzed.keys

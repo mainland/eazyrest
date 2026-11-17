@@ -11563,3 +11563,25 @@ def test_a_class_variable_does_not_shadow_a_module_type_in_a_dataclass() -> (
     visit = Visit(json={"id": 1, "entry": {"when": "2026-11-17"}})
 
     assert type(visit.entry.when) is datetime.date
+
+
+def test_unknown_name_in_quoted_alias_reports_the_alias_and_module() -> None:
+    """The error names the alias and the module where its string was read."""
+    model: Any = json_object(
+        type(
+            "Aliased",
+            (ModelBase,),
+            {
+                "__annotations__": {"id": int, "value": QuotedMissing},
+                "class_url": "/aliased/",
+            },
+        )
+    )
+
+    with pytest.raises(FieldConversionError) as refused:
+        _ = model(json={"id": 1, "value": ["bad"]}).value
+
+    assert (
+        "Type alias QuotedMissing names a type by a string that cannot be "
+        f"resolved in module {__name__}"
+    ) in str(refused.value)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import http.server
+import sys
 import threading
+import types
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -89,3 +91,27 @@ def digest_redirect_server() -> Iterator[Callable[[str], str]]:
     for server in servers:
         server.shutdown()
         server.server_close()
+
+
+@pytest.fixture
+def module_from_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[str, str], types.ModuleType]:
+    """Return a function that makes a module from source and registers it.
+
+    The source is compiled without the test's ``__future__`` imports, so that
+    an annotation is a string only if the source quotes it.
+
+    Returns:
+        Function that takes a module name and its source and returns the
+        module, which ``sys.modules`` holds for the test.
+    """
+
+    def make(name: str, source: str) -> types.ModuleType:
+        module = types.ModuleType(name)
+        monkeypatch.setitem(sys.modules, name, module)
+        code = compile(source, name, "exec", dont_inherit=True)
+        exec(code, module.__dict__)  # noqa: S102
+        return module
+
+    return make

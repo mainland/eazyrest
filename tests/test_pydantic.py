@@ -10,9 +10,10 @@ import gc
 import importlib
 import subprocess
 import sys
+import types
 import uuid
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import (
     Annotated,
@@ -3608,3 +3609,140 @@ def test_a_key_annotated_with_other_metadata_is_kept() -> None:
     )
 
     assert crate(json={"id": 1}).url == "/crates/1/"
+
+
+_DROPPING_SOURCE = """
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
+
+@with_config(ConfigDict(extra="ignore"))
+class Dropping(TypedDict):
+    v: int
+
+@with_config(ConfigDict(extra="allow"))
+class Base(TypedDict):
+    inner: "Dropping"
+"""
+
+
+def test_an_inherited_key_that_drops_keys_is_found_in_its_module(
+    module_from_source: Callable[[str, str], types.ModuleType],
+    requests_mock: Any,
+) -> None:
+    """The check resolves an inherited key where its base declares it.
+
+    The subclass's module does not define ``Dropping``, so the check finds it
+    only if it resolves the key's string in the base's module.
+    """
+    base = module_from_source("dropping_base", _DROPPING_SOURCE).Base
+
+    @with_config(ConfigDict(extra="allow"))
+    class Child(base):  # type: ignore[valid-type,misc]
+        count: int
+
+    holder = _wrapped_in(Child)(
+        json={"id": 1, "value": {"inner": {"inner": {"v": 1, "x": 2}}}}
+    )
+
+    with pytest.raises(FieldConversionError, match="Dropping would drop"):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+@with_config(ConfigDict(extra="allow"))
+class NamesNothingExtras(TypedDict, extra_items="Nowhere"):  # type: ignore[call-arg]  # noqa: F821
+    """``TypedDict`` whose extra items, named by a string, name nothing."""
+
+    name: str
+
+
+def test_extra_items_naming_nothing_are_refused(requests_mock: Any) -> None:
+    """The check cannot resolve the extra items, so it refuses the class."""
+    holder = _wrapped_in(NamesNothingExtras)(
+        json={"id": 1, "value": {"inner": {"name": "a"}}}
+    )
+
+    with pytest.raises(
+        FieldConversionError,
+        match=(
+            r"The fields of NamesNothingExtras cannot be checked for the keys "
+            r"that it would drop, because their annotations cannot be "
+            r"resolved: name 'Nowhere' is not defined"
+        ),
+    ):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+QuotedDropping = TypeAliasType(
+    "QuotedDropping",
+    types.GenericAlias(list, ("IgnoringInner",)),  # type: ignore[valid-type]
+)
+QuotedNowhere = TypeAliasType(
+    "QuotedNowhere",
+    types.GenericAlias(list, ("Nowhere",)),  # type: ignore[valid-type]
+)
+
+
+def test_a_string_in_an_alias_is_resolved_for_the_check(
+    requests_mock: Any,
+) -> None:
+    """The check finds a type that drops keys behind a quoted alias."""
+    holder = _wrapped_in(QuotedDropping)(
+        json={"id": 1, "value": {"inner": [{"v": 1, "x": 2}]}}
+    )
+
+    with pytest.raises(FieldConversionError, match="IgnoringInner would drop"):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_string_in_an_alias_naming_nothing_is_refused(
+    requests_mock: Any,
+) -> None:
+    """The error names the alias and the module of the string."""
+    holder = _wrapped_in(QuotedNowhere)(json={"id": 1, "value": {"inner": []}})
+
+    with pytest.raises(
+        FieldConversionError,
+        match=(
+            r"Type alias QuotedNowhere names a type by a string that cannot "
+            rf"be resolved in module {__name__}"
+        ),
+    ):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_dataclass_field_naming_nothing_is_refused_by_the_check(
+    requests_mock: Any,
+) -> None:
+    """The check cannot resolve a field's annotation, so it refuses the class.
+
+    The message gives the class and the undefined name.
+    """
+
+    @with_config(ConfigDict(extra="forbid"))
+    @dataclasses.dataclass
+    class Unresolved:
+        inner: Missing  # type: ignore[name-defined]  # noqa: F821
+
+    holder = _wrapped_in(Unresolved)(
+        json={"id": 1, "value": {"inner": {"inner": {}}}}
+    )
+
+    with pytest.raises(
+        FieldConversionError,
+        match=(
+            r"The fields of Unresolved cannot be checked for the keys that "
+            r"it would drop, because their annotations cannot be resolved: "
+            r"name 'Missing' is not defined"
+        ),
+    ):
+        _ = holder.value
+
+    assert requests_mock.call_count == 0
