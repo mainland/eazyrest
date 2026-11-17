@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextvars
 import math
 import re
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -163,18 +163,22 @@ def _json_depth(value: object) -> int:
         The number of nested arrays and objects on the deepest path, so 0 for
         a scalar and 1 for a flat array.
     """
+    # The stack holds one iterator per open array or object, so memory grows
+    # with the nesting depth, not with the number of values at each level.
+    stack: list[Iterator[object]] = [iter((value,))]
     depth = 0
-    pending = [(value, 1)]
-    while pending:
-        node, level = pending.pop()
-        if isinstance(node, dict):
-            children: list[object] = list(node.values())
-        elif isinstance(node, list):
-            children = node
+    while stack:
+        for child in stack[-1]:
+            if isinstance(child, dict):
+                stack.append(iter(child.values()))
+            elif isinstance(child, list):
+                stack.append(iter(child))
+            else:
+                continue
+            depth = max(depth, len(stack) - 1)
+            break
         else:
-            continue
-        depth = max(depth, level)
-        pending.extend((child, level + 1) for child in children)
+            stack.pop()
     return depth
 
 

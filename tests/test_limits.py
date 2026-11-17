@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import gzip
 import http.server
+import json
 import socket
 import threading
 import time
@@ -13,6 +14,8 @@ from typing import Any
 
 import pytest
 import requests
+from hypothesis import given
+from hypothesis import strategies as st
 from urllib3.util import Retry, Timeout
 
 from eazyrest import (
@@ -252,6 +255,71 @@ def test_json_within_depth_is_read(requests_mock: Any) -> None:
 
     assert Box(id=1).id == 1
     assert Box(id=1).contents is not None
+
+
+_JSON_TREES = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.text(max_size=3),
+    lambda children: (
+        st.lists(children, max_size=4)
+        | st.dictionaries(st.text(max_size=3), children, max_size=4)
+    ),
+    max_leaves=20,
+)
+
+
+def _expected_depth(value: Any) -> int:
+    """Return the nesting depth of a JSON value by its recursive definition.
+
+    Args:
+        value: Decoded JSON value.
+
+    Returns:
+        0 for a scalar, and one more than the deepest child for an array or
+        object, so 1 for an empty one.
+    """
+    if isinstance(value, dict):
+        children = list(value.values())
+    elif isinstance(value, list):
+        children = value
+    else:
+        return 0
+    return 1 + max(map(_expected_depth, children), default=0)
+
+
+def _json_response(value: Any) -> requests.Response:
+    """Return a response whose body is the JSON text of a value.
+
+    Args:
+        value: Value to encode.
+
+    Returns:
+        A successful response.
+    """
+    resp = requests.Response()
+    resp.status_code = 200
+    resp.url = "https://example.com/v1/values/"
+    resp.request = requests.Request("GET", resp.url).prepare()
+    resp._content = json.dumps(value).encode()
+    return resp
+
+
+@given(value=_JSON_TREES)
+def test_json_depth_limit_is_exact_for_any_json(value: Any) -> None:
+    """A limit equal to a value's depth accepts it, and one less refuses it.
+
+    Args:
+        value: Decoded JSON of any shape.
+    """
+    depth = _expected_depth(value)
+    api = API("https://example.com/v1/")
+    api.max_json_depth = depth
+
+    assert api.json(_json_response(value)) == value
+
+    if depth >= 1:
+        api.max_json_depth = depth - 1
+        with pytest.raises(LimitExceeded, match="max_json_depth"):
+            api.json(_json_response(value))
 
 
 def test_endless_pages_raise(requests_mock: Any) -> None:
