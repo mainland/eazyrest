@@ -11337,3 +11337,80 @@ def test_a_related_object_without_a_key_is_not_written(
         MaybeTodo.create(user=User())
 
     assert requests_mock.call_count == 0
+
+
+class _KeyUser:
+    """A class for a key annotation that names a class as a type."""
+
+
+@pytest.mark.parametrize(
+    "form",
+    [typing.Final[int], type[_KeyUser], Callable[[int], int]],
+    ids=["final", "type-of-class", "callable"],
+)
+def test_a_key_type_that_cannot_convert_is_refused_when_decorated(
+    form: Any,
+) -> None:
+    """A key whose annotation resolves and cannot convert names the field.
+
+    The refusal is the key's declaration, a plain ``TypeError``, raised when
+    the class is decorated, not a ``url`` that cannot be built or a key that
+    cannot be hashed once the object exists.
+
+    Args:
+        form: The type of the model's key field.
+    """
+    with pytest.raises(TypeError, match=r"Box\.id is the primary key") as e:
+        _box_keyed_by(form)
+    assert not isinstance(e.value, FieldConversionError)
+    assert isinstance(e.value.__cause__, TypeError)
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement is new in 3.12."
+)
+def test_a_key_alias_of_a_later_class_decorates_and_is_checked_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key alias that names a class defined later is not refused early.
+
+    The class is not defined when the model is decorated, so the model
+    decorates. Once the class is defined and is not one value, first use
+    refuses the key.
+
+    Args:
+        monkeypatch: Defines the class as a global, after the model is
+            decorated.
+    """
+    namespace: dict[str, Any] = {}
+    exec("type PendingLaterKey = LaterAliasedKey", namespace)  # noqa: S102
+    box = _box_keyed_by(namespace["PendingLaterKey"])
+    monkeypatch.setitem(namespace, "LaterAliasedKey", list[int])
+
+    with pytest.raises(TypeError, match=r"Box\.id is the primary key"):
+        box(json={"id": [1]}).url  # noqa: B018
+
+
+def test_a_key_alias_of_a_string_naming_nothing_yet_is_checked_on_first_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key alias whose string names nothing yet decorates, then resolves.
+
+    Args:
+        monkeypatch: Defines the name as a global, after the model is
+            decorated.
+    """
+    PendingStringKey = TypeAliasType(
+        "PendingStringKey",
+        "LaterStringKey",  # type: ignore[name-defined]  # noqa: F821
+    )
+    box = _box_keyed_by(PendingStringKey)
+    obj = box(json={"id": 1})
+
+    with pytest.raises(TypeError, match="cannot be resolved"):
+        obj.url  # noqa: B018
+    assert "analyzed_type" not in vars(box._pk)
+
+    monkeypatch.setitem(globals(), "LaterStringKey", int)
+
+    assert obj.url == box(json={"id": 1}).url

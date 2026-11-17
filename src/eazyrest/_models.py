@@ -899,7 +899,8 @@ def _resolve_alias_value(alias: Any) -> Any:
         names.
 
     Raises:
-        TypeError: If a string reference names nothing in the alias's module.
+        _UnresolvedAliasError: If a string reference names nothing in the
+            alias's module, which a ``TypeError`` reports.
         Exception: If evaluating the alias's value raises, as for a name that
             is not defined yet, whatever that raises.
     """
@@ -918,7 +919,7 @@ def _resolve_alias_value(alias: Any) -> Any:
     try:
         return typing.get_type_hints(holder, include_extras=True)["value"]
     except Exception as error:
-        raise TypeError(
+        raise _UnresolvedAliasError(
             f"Type alias {alias.__name__} names a type by a string that "
             f"cannot be resolved in module {alias.__module__}"
         ) from error
@@ -975,6 +976,10 @@ def _expand_aliases(
 
 class _KeylessFieldTypeError(TypeError):
     """A model without a primary-key field is the type of a field."""
+
+
+class _UnresolvedAliasError(TypeError):
+    """A type alias names a type by a string that does not resolve yet."""
 
 
 def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
@@ -2946,6 +2951,26 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
     return error
 
 
+def _refuses_key_type(error: TypeError) -> bool:
+    """Return whether a ``TypeError`` from analyzing a key refuses its type.
+
+    A name that is not defined yet is no refusal. It waits for the key's first
+    use. A refusal that already says why, such as a model without a key, keeps
+    its own message.
+
+    Args:
+        error: Error that ``analyze_type()`` raised for a key's type.
+
+    Returns:
+        Whether the key's type cannot convert, as opposed to one that cannot
+        resolve yet or one that has its own error.
+    """
+    return not (
+        isinstance(error, _KeylessFieldTypeError | _UnresolvedAliasError)
+        or getattr(error, _DECLARATION_ERROR, False)
+    )
+
+
 def _is_one_value_class(base: object) -> bool:
     """Return whether a type that converts as itself holds one value.
 
@@ -3055,12 +3080,18 @@ def _refuse_invalid_key(cls: type[JSONObject]) -> None:
     if prop is None:
         return
     try:
-        analyzed = analyze_type(prop._resolve_type())
-    except _ModelInContainerError as err:
-        raise _key_type_error(cls, prop.field) from err
+        resolved = prop._resolve_type()
     except Exception:  # noqa: BLE001
-        # An unresolved reference, or a type that is refused when the field is
-        # first used, which says why.
+        # A reference that is not defined yet.
+        return
+    try:
+        analyzed = analyze_type(resolved)
+    except TypeError as err:
+        if _refuses_key_type(err):
+            raise _key_type_error(cls, prop.field) from err
+        return
+    except Exception:  # noqa: BLE001
+        # A name in a type alias that is not defined yet.
         return
     _check_key_not_hyperlinked(cls, prop.field, analyzed)
     _check_key_is_leaf_or_relation(cls, prop.field, analyzed)
@@ -4315,8 +4346,8 @@ class JSONProperty:
         """
         try:
             analyzed = analyze_type(self.ty)
-        except _ModelInContainerError as err:
-            if self.is_primary_key:
+        except TypeError as err:
+            if self.is_primary_key and _refuses_key_type(err):
                 raise _key_type_error(self.cls, self.field) from err
             raise
         if self.is_primary_key:
