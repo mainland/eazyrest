@@ -2802,29 +2802,6 @@ def _refuse_keyless_request(cls: type[JSONObject], verb: str) -> None:
         )
 
 
-def _refuse_keyless_field_types(properties: Iterable[JSONProperty]) -> None:
-    """Refuse a field whose type is a model without a key, if it resolves.
-
-    A field whose annotation names a class that is not defined yet is checked
-    when it is first used.
-
-    Args:
-        properties: The fields that a class declares.
-
-    Raises:
-        TypeError: If a field's type is a model without a primary-key field.
-    """
-    for prop in properties:
-        try:
-            analyze_type(prop._resolve_type())
-        except _KeylessFieldTypeError:
-            raise
-        except Exception:  # noqa: BLE001, S112
-            # An unresolved reference, or a type that is refused when the field
-            # is first used, which says why.
-            continue
-
-
 def _holds_hyperlinked_set(analyzed: AnalyzedType) -> bool:
     """Return whether a type is a set of ``Hyperlinked()`` relations.
 
@@ -2873,28 +2850,6 @@ def _check_not_hyperlinked_set(
         # the class does, not as the conversion of a value.
         setattr(error, _DECLARATION_ERROR, True)
         raise error
-
-
-def _refuse_hyperlinked_sets(properties: Iterable[JSONProperty]) -> None:
-    """Refuse a field that is a set of ``Hyperlinked()`` relations.
-
-    A field whose annotation names a class that is not defined yet is checked
-    when it is first used.
-
-    Args:
-        properties: The fields that a class declares.
-
-    Raises:
-        TypeError: If a field is a set of ``Hyperlinked()`` relations.
-    """
-    for prop in properties:
-        try:
-            analyzed = analyze_type(prop._resolve_type())
-        except Exception:  # noqa: BLE001, S112
-            # An unresolved reference, or a type that is refused when the field
-            # is first used, which says why.
-            continue
-        _check_not_hyperlinked_set(prop.cls, prop.field, analyzed)
 
 
 def _check_key_not_hyperlinked(
@@ -3062,39 +3017,75 @@ def _check_key_is_leaf_or_relation(
     raise _key_type_error(cls, field)
 
 
-def _refuse_invalid_key(cls: type[JSONObject]) -> None:
-    """Refuse a key that is not a leaf or a relation to a model keyed by one.
-
-    A key whose annotation, or the related model's key annotation, names a
-    class that is not defined yet is checked when the key's type is first used,
-    which is the first read or write of the key or the object's ``url``.
+def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
+    """Resolve, analyze, and check a field's type: the one compilation path.
 
     Args:
-        cls: Decorated model class.
+        prop: The field.
+        strict: Whether a name that is not defined in a related model's key
+            raises, as it does when the field is first used. Otherwise the key
+            check waits for that use.
+
+    Returns:
+        The field's analyzed type.
 
     Raises:
-        TypeError: If the model's primary key is a ``Hyperlinked()`` relation,
-            or is neither a leaf nor a relation to a model keyed by a leaf.
+        TypeError: If the type is refused, such as a model without a key, a
+            primary key that is not one value or a relation to a model keyed by
+            one, a ``Hyperlinked()`` primary key, or a set of ``Hyperlinked()``
+            relations.
+        Exception: If the annotation cannot be resolved, as for a class that is
+            not defined yet, whatever resolving it raises.
     """
-    prop = _pk_property_of(cls)
-    if prop is None:
-        return
-    try:
-        resolved = prop._resolve_type()
-    except Exception:  # noqa: BLE001
-        # A reference that is not defined yet.
-        return
+    resolved = prop._resolve_type()
     try:
         analyzed = analyze_type(resolved)
     except TypeError as err:
-        if _refuses_key_type(err):
-            raise _key_type_error(cls, prop.field) from err
-        return
-    except Exception:  # noqa: BLE001
-        # A name in a type alias that is not defined yet.
-        return
-    _check_key_not_hyperlinked(cls, prop.field, analyzed)
-    _check_key_is_leaf_or_relation(cls, prop.field, analyzed)
+        if prop.is_primary_key and _refuses_key_type(err):
+            raise _key_type_error(prop.cls, prop.field) from err
+        raise
+    if prop.is_primary_key:
+        _check_key_not_hyperlinked(prop.cls, prop.field, analyzed)
+        _check_key_is_leaf_or_relation(
+            prop.cls, prop.field, analyzed, strict=strict
+        )
+    _check_not_hyperlinked_set(prop.cls, prop.field, analyzed)
+    return analyzed
+
+
+def _refuse_declared_types(
+    cls: type[JSONObject], declared: Iterable[JSONProperty]
+) -> None:
+    """Refuse at decoration what first use would refuse as a declaration.
+
+    Each declared field and the primary key are compiled once. A field whose
+    annotation names a class that is not defined yet, and a type that is
+    refused when the field is first used, which says why, wait for that use.
+
+    Args:
+        cls: Decorated model class.
+        declared: The fields that the class declares.
+
+    Raises:
+        TypeError: If a field's type is a model without a primary-key field, or
+            a refusal of the declaration: a set of ``Hyperlinked()`` relations,
+            or a primary key that is a ``Hyperlinked()`` relation, is not one
+            value, or is neither a leaf nor a relation to a model keyed by one.
+            The first field in declaration order raises, and then the primary
+            key.
+    """
+    props = [*declared]
+    pk = _pk_property_of(cls)
+    if pk is not None and pk not in props:
+        props.append(pk)
+    for prop in props:
+        try:
+            _field_type(prop, strict=False)
+        except _KeylessFieldTypeError:
+            raise
+        except Exception as err:
+            if getattr(err, _DECLARATION_ERROR, False):
+                raise
 
 
 def _check_api_attribute(
@@ -3482,9 +3473,7 @@ def json_object(
 
         # pylint: disable=protected-access
         cls._json_fields = frozenset(fields)
-        _refuse_keyless_field_types(declared)
-        _refuse_hyperlinked_sets(declared)
-        _refuse_invalid_key(cls)
+        _refuse_declared_types(cls, declared)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
@@ -4270,25 +4259,8 @@ class JSONProperty:
         # A model without a key field has none.
         return getattr(type(obj), "_pk", None) is self
 
-    @cached_property
-    def ty(self) -> Any:
-        """Resolve and return the field type for this property.
-
-        Returns:
-            Resolved Python type for the owning class attribute.
-        """
-        return self._resolve_type()
-
-    def _resolve_type(
-        self, extra_names: Mapping[str, Any] | None = None
-    ) -> Any:
+    def _resolve_type(self) -> Any:
         """Resolve the field type without caching it.
-
-        Args:
-            extra_names: Classes to resolve names to, which take precedence
-                over the module's globals. A class that is being decorated is
-                not yet one of those, so the caller names it only where the
-                module's own resolution fails.
 
         Returns:
             Resolved Python type for the owning class attribute.
@@ -4321,7 +4293,6 @@ class JSONProperty:
             for name, value in vars(self.cls).items()
             if not isinstance(value, JSONProperty)
         }
-        localns.update(extra_names or {})
         localns[self.cls.__name__] = self.cls
         # Keep Annotated metadata, which analyze_type() interprets.
         return typing.get_type_hints(
@@ -4344,19 +4315,7 @@ class JSONProperty:
                 whatever resolving it raises. It is cached only once it
                 resolves.
         """
-        try:
-            analyzed = analyze_type(self.ty)
-        except TypeError as err:
-            if self.is_primary_key and _refuses_key_type(err):
-                raise _key_type_error(self.cls, self.field) from err
-            raise
-        if self.is_primary_key:
-            _check_key_not_hyperlinked(self.cls, self.field, analyzed)
-            _check_key_is_leaf_or_relation(
-                self.cls, self.field, analyzed, strict=True
-            )
-        _check_not_hyperlinked_set(self.cls, self.field, analyzed)
-        return analyzed
+        return _field_type(self, strict=True)
 
     def __get__(
         self,

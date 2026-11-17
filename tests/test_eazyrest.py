@@ -1098,9 +1098,9 @@ def test_annotated_field_types_convert_like_their_types(
     assert isinstance(timeline.owner, User)
     assert timeline.owner.id == 2
     assert timeline.starts_at == [start]
-    assert typing.get_args(vars(AnnotatedTimeline)["starts_at"].ty)[1:] == (
-        "all",
-    )
+    assert typing.get_args(
+        vars(AnnotatedTimeline)["starts_at"]._resolve_type()
+    )[1:] == ("all",)
 
     timeline.owner = None
     timeline.starts_at = [start]
@@ -11414,3 +11414,32 @@ def test_a_key_alias_of_a_string_naming_nothing_yet_is_checked_on_first_use(
     monkeypatch.setitem(globals(), "LaterStringKey", int)
 
     assert obj.url == box(json={"id": 1}).url
+
+
+def test_decorating_a_model_resolves_each_field_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Decoration resolves each declared annotation once, the key included.
+
+    Args:
+        monkeypatch: Counts the calls that resolve an annotation.
+    """
+    resolve = typing.get_type_hints
+    calls: list[Any] = []
+
+    def counting(obj: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(obj)
+        return resolve(obj, *args, **kwargs)
+
+    monkeypatch.setattr(typing, "get_type_hints", counting)
+
+    @json_object
+    class Ledger(ModelBase):
+        class_url = "/ledgers/"
+
+        id: int
+        title: str
+        opened: datetime.date
+
+    assert len(calls) == 3
+    assert Ledger(json={"id": 1, "title": "a", "opened": "2024-04-01"}).title
