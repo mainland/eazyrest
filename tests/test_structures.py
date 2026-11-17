@@ -259,46 +259,128 @@ def test_structure_writes_refuse_values_of_other_types() -> None:
     }
 
 
-def test_union_of_converting_members_is_refused_when_used() -> None:
-    """A union passes through only if every member does, even when null."""
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        str | datetime.datetime,
+        Shade | int,
+        str | datetime.datetime | None,
+        # A Literal with an enum member reads the member, so it converts too.
+        Literal[Shade.DARK] | int,
+        list[str | datetime.datetime],
+        dict[str, str | datetime.datetime],
+        tuple[int, str | datetime.datetime],
+    ],
+    ids=repr,
+)
+def test_union_of_converting_members_is_refused_when_decorated(
+    annotation: Any,
+) -> None:
+    """A union passes through only if every member does, even when null.
+
+    The class is refused when it is decorated, and the message names the field,
+    also for a union inside an optional, a collection, a mapping, or a
+    fixed-length tuple.
+
+    Args:
+        annotation: The field's annotation.
+    """
+    namespace = {
+        "__annotations__": {"id": int, "value": annotation},
+        "class_url": "/mixed/",
+        "__module__": __name__,
+    }
+
+    with pytest.raises(TypeError, match=r"^Mixed\.value: ") as refused:
+        json_object(type("Mixed", (StructureBase,), namespace))
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert "do not all pass through" in str(refused.value)
+
+
+_WHEN = datetime.datetime(2026, 11, 7, 1, 2, 3, tzinfo=datetime.UTC)
+_WHEN_JSON = "2026-11-07T01:02:03+00:00"
+_OPTIONAL = typing.Optional[datetime.datetime]  # noqa: UP045
+_UNION = typing.Union[None, datetime.datetime]  # noqa: UP007
+
+
+@pytest.mark.parametrize(
+    ("annotation", "value", "expected"),
+    [
+        (_OPTIONAL, _WHEN_JSON, _WHEN),
+        (datetime.datetime | None, _WHEN_JSON, _WHEN),
+        (_UNION, _WHEN_JSON, _WHEN),
+        (
+            list[datetime.datetime] | None,
+            [_WHEN_JSON],
+            [_WHEN],
+        ),
+    ],
+    ids=["Optional", "pipe", "Union", "list"],
+)
+def test_an_optional_type_is_not_a_refused_union(
+    annotation: Any, value: Any, expected: Any
+) -> None:
+    """``T | None`` in any spelling is an optional, which converts ``T``.
+
+    Args:
+        annotation: The field's annotation.
+        value: JSON value that the field reads.
+        expected: The converted value.
+    """
+    namespace = {
+        "__annotations__": {"id": int, "value": annotation},
+        "class_url": "/optionals/",
+        "__module__": __name__,
+    }
+    model: Any = json_object(type("Optional_", (StructureBase,), namespace))
+
+    assert model(json={"id": 1, "value": value}).value == expected
+    assert model(json={"id": 1, "value": None}).value is None
+
+
+def test_union_of_members_that_pass_through_is_decorated() -> None:
+    """A union whose members all pass through unchanged converts."""
 
     @json_object
-    class Mixed(StructureBase):
-        class_url = "/mixed/"
+    class Plain(StructureBase):
+        class_url = "/plain/"
 
         id: int
-        when: str | datetime.datetime
-        shade: Shade | int
-        maybe: str | datetime.datetime | None
-        dark: Literal[Shade.DARK] | int
-        plain: Literal["dark", 1] | None
+        either: int | str
+        literal: Literal["dark", 1] | None
 
-    item = Mixed(
-        json={
-            "id": 1,
-            "when": "2026-11-07",
-            "shade": "dark",
-            "maybe": None,
-            "dark": "dark",
-            "plain": "dark",
-        }
+    item = Plain(json={"id": 1, "either": "a", "literal": "dark"})
+
+    assert item.either == "a"
+    assert item.literal == "dark"
+
+
+class _MixedMembers(TypedDict):
+    """A ``TypedDict`` whose members are unions that convert."""
+
+    when: str | datetime.datetime
+    maybe: str | datetime.datetime | None
+
+
+def test_union_in_a_typed_dict_is_refused_when_used() -> None:
+    """A structure's members are checked when the field is first used."""
+
+    @json_object
+    class Holder(StructureBase):
+        class_url = "/holders/"
+
+        id: int
+        record: _MixedMembers
+
+    item = Holder(
+        json={"id": 1, "record": {"when": "2026-11-07", "maybe": None}}
     )
 
     with pytest.raises(FieldConversionError, match="do not all pass through"):
-        _ = item.when
+        _ = item.record
     with pytest.raises(FieldConversionError, match="do not all pass through"):
-        _ = item.shade
-    # A null value does not hide the refusal, on a read or a write.
-    with pytest.raises(FieldConversionError, match="do not all pass through"):
-        _ = item.maybe
-    with pytest.raises(FieldConversionError, match="do not all pass through"):
-        item.maybe = None
-    # A Literal with an enum member reads the member, so it converts too.
-    with pytest.raises(FieldConversionError, match="do not all pass through"):
-        _ = item.dark
-    with pytest.raises(FieldConversionError, match="do not all pass through"):
-        item.dark = Shade.DARK
-    assert item.plain == "dark"
+        item.record = {"when": "2026-11-07", "maybe": None}
 
 
 @pytest.mark.parametrize(

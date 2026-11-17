@@ -1308,6 +1308,36 @@ def _check_optional_union(
         _check_union(analyzed, table)
 
 
+def _check_field_unions(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> None:
+    """Check each union in a field's own type, as reading the field would.
+
+    The walk goes through optionals, unions, collections, mappings, and
+    fixed-length tuples. It does not enter a structure or a model, whose
+    members are checked when the field is first used.
+
+    Args:
+        analyzed: Analyzed type of a field.
+        table: Conversion table of the model that declares the field.
+
+    Raises:
+        TypeError: If a union has a member that converts.
+    """
+    match analyzed:
+        case UnionType():
+            _check_union(analyzed, table)
+        case OptionalType(inner):
+            _check_field_unions(inner, table)
+        case CollectionType(_, item):
+            _check_field_unions(item, table)
+        case MappingType(value):
+            _check_field_unions(value, table)
+        case FixedTupleType(items):
+            for item in items:
+                _check_field_unions(item, table)
+
+
 def _hints_of(cls: type[Any]) -> dict[str, Any]:
     """Resolve the annotations of a class whose fields eazyrest converts.
 
@@ -3191,7 +3221,8 @@ def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
     by their message. Whatever resolving the annotation raises waits for the
     field's first use, and so does a type alias that names something not
     defined yet. Any other ``TypeError`` from analyzing the resolved annotation
-    is a refusal.
+    is a refusal. So is a union in the field's own type with a member that the
+    model's conversion table converts, which reading the field would refuse.
 
     Args:
         cls: Decorated model class.
@@ -3207,7 +3238,8 @@ def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
     try:
         resolved = prop._resolve_type()
         resolving = False
-        _analyze_field(prop, resolved, strict=False)
+        analyzed = _analyze_field(prop, resolved, strict=False)
+        _check_field_unions(analyzed, _table_of(cls))
     except Exception as err:
         if (
             resolving

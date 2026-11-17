@@ -743,9 +743,13 @@ adds fields raises `FieldConversionError`, because writing it would drop them.
 A union reads and writes its JSON value as it is when every member does, as
 `int | str`'s members do. A union with a member that converts, such as
 `str | datetime.datetime`, or with a `Literal` that holds an enum member, which
-reads as the member, raises `FieldConversionError` when the field is first
-used, because a JSON value does not say which member it is. Annotate such a
-union for Pydantic, with a discriminator if needed.
+reads as the member, raises `TypeError` when the class is decorated, because a
+JSON value does not say which member it is. That holds for a union in the
+field's own type, also inside an optional, a collection, a mapping, or a
+fixed-length tuple, and the model's conversions decide which members convert.
+In a `TypedDict`, `NamedTuple`, or dataclass, it raises `FieldConversionError`
+when the field is first used. Annotate such a union for Pydantic, with a
+discriminator if needed.
 
 Some annotations raise because eazyrest cannot read them as their types. A
 mapping whose keys are not strings is one, because JSON object keys are

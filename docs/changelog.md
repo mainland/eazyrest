@@ -312,6 +312,13 @@ describe them further.
   releases raised `FieldConversionError` when the field was first used. A name
   that is not defined yet, and a member of a `TypedDict`, dataclass,
   `NamedTuple`, or Pydantic type, still raise when the field is first used.
+- A field whose own type is a union with a member that converts, such as
+  `str | datetime.datetime`, also inside an optional, a collection, a mapping,
+  or a fixed-length tuple, raises `TypeError` when the class is decorated,
+  naming the field, where `v1.0.0a5` raised `FieldConversionError` when the
+  field was first used. The model's `conversions` decide which members convert.
+  A union inside a `TypedDict`, dataclass, or `NamedTuple` still raises when
+  the field is first used.
 - A field annotated with something that is not a type, such as a function, a
   module, a value, a bare `LiteralString`, `Never`, `Self`, `Final`, or a
   `TypeVar`, raises `TypeError` when the class is decorated, naming the field,
@@ -553,16 +560,15 @@ that can break code written for 0.9.0, followed by what to do about it.
 - A mapping whose keys are not strings, a model inside a mapping or a
   fixed-length tuple, and any parameterized type whose items eazyrest does not
   convert, such as `Counter[str]`, raise `TypeError` when the class is defined,
-  naming the field, because eazyrest cannot read them as their types. A union
-  with a member that converts, such as `str | datetime`, raises
-  `FieldConversionError` when the field is first used. So does any of these
-  inside a `TypedDict`, `NamedTuple`, or dataclass, and a model inside one of
-  those. Annotate them for Pydantic, or annotate their JSON form, such as
-  `dict[str, Any]`. Pydantic does not convert eazyrest models either, so
-  annotate a model inside one of these with its primary key type, such as
-  `int`. `MutableSequence`, `Collection`, `Set`, `MutableSet`, `deque`, and
-  `MutableMapping` fields convert their items, where 0.9.0 returned them
-  unchanged.
+  naming the field, because eazyrest cannot read them as their types. So does a
+  union with a member that converts, such as `str | datetime`. Inside a
+  `TypedDict`, `NamedTuple`, or dataclass, any of these, and a model, raise
+  `FieldConversionError` when the field is first used. Annotate them for
+  Pydantic, or annotate their JSON form, such as `dict[str, Any]`. Pydantic
+  does not convert eazyrest models either, so annotate a model inside one of
+  these with its primary key type, such as `int`. `MutableSequence`,
+  `Collection`, `Set`, `MutableSet`, `deque`, and `MutableMapping` fields
+  convert their items, where 0.9.0 returned them unchanged.
 - Assigning a value that is not JSON to a field, such as an `IPv4Address`
   without a conversion, or a float that is not finite, raises
   `FieldConversionError` naming the field, rather than failing when the request
