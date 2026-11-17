@@ -23,6 +23,7 @@ import uuid
 from collections.abc import (
     Callable,
     Collection,
+    Container,
     Generator,
     Iterable,
     Iterator,
@@ -692,11 +693,24 @@ class DataclassType:
             TypeError: If an annotation cannot be resolved or converted, or
                 holds a model.
         """
-        hints = _hints_of(self.dataclass_type)
+        cls = self.dataclass_type
+        names = {field.name for field in dataclasses.fields(cls)}
+
+        def hint(name: str) -> Any:
+            try:
+                return _resolve_annotation(
+                    _annotation_owner(cls, name), name, names
+                )
+            except Exception as err:
+                raise TypeError(
+                    f"The annotations of {cls.__name__} cannot be resolved: "
+                    f"{err}"
+                ) from err
+
         return tuple(
             (
                 field.name,
-                _structure_member(hints[field.name], self.dataclass_type),
+                _structure_member(hint(field.name), cls),
                 field.default is dataclasses.MISSING
                 and field.default_factory is dataclasses.MISSING,
             )
@@ -1288,6 +1302,62 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
         raise TypeError(
             f"The annotations of {cls.__name__} cannot be resolved: {err}"
         ) from err
+
+
+def _annotation_owner(cls: type[Any], name: str) -> type[Any]:
+    """Return the class in a class's MRO that annotates a name.
+
+    Args:
+        cls: Class whose annotation is wanted.
+        name: Name that a class in its MRO annotates.
+
+    Returns:
+        The first class in ``cls``'s MRO that annotates ``name`` itself.
+    """
+    return next(base for base in cls.__mro__ if name in _annotations(base))
+
+
+def _resolve_annotation(
+    owner: type[Any], name: str, hidden: Container[str] = ()
+) -> Any:
+    """Resolve one annotation of a class, with its ``Annotated`` metadata.
+
+    Only this annotation is evaluated. Another one, such as a ``ClassVar`` or
+    an excluded field, may name a type that exists only for type checkers, and
+    it must not make this one unresolvable. Names resolve in the owner's
+    module, then in the owner's own namespace without ``hidden``, which lets a
+    class defined inside a function name itself and its attributes, and then
+    the owner's own name.
+
+    Args:
+        owner: Class that declares the annotation.
+        name: Name that it annotates.
+        hidden: Names of the owner's attributes that must not resolve, such as
+            the descriptors or defaults of its fields, which could hide the
+            types that annotations name.
+
+    Returns:
+        The annotation, resolved.
+
+    Raises:
+        Exception: If the annotation names something undefined, whatever
+            resolving it raises.
+    """
+    holder = type(
+        owner.__name__,
+        (),
+        {
+            "__module__": owner.__module__,
+            "__annotations__": {name: _annotations(owner)[name]},
+        },
+    )
+    localns = {
+        key: value for key, value in vars(owner).items() if key not in hidden
+    }
+    localns[owner.__name__] = owner
+    return typing.get_type_hints(holder, localns=localns, include_extras=True)[
+        name
+    ]
 
 
 def _structure_member(hint: Any, container: Any) -> AnalyzedType:
@@ -4269,35 +4339,16 @@ class JSONProperty:
             Exception: If the annotation names something undefined, as a
                 reference to a class defined later does until it is.
         """
-        # Evaluate only this field's annotation. Another annotation, such as a
-        # ClassVar or an excluded field, may name a type that exists only for
-        # type checkers, and it must not make this field unreadable.
-        holder = type(
-            self.cls.__name__,
-            (),
-            {
-                "__module__": self.cls.__module__,
-                "__annotations__": {
-                    self.field: _annotations(self.cls)[self.field]
-                },
-            },
-        )
-        # A class defined inside a function is absent from its module's
-        # globals. Keep its own namespace when resolving self-references, but
-        # without the fields, which json_object() put there as descriptors.
-        # In a plain class a field without a default is absent from the
-        # namespace, so a string annotation such as "date" in ``date: date``
-        # names the module's date, not the field.
-        localns = {
-            name: value
+        # json_object() put the fields in the class namespace as descriptors.
+        # In a plain class a field without a default is absent from it, so a
+        # string annotation such as "date" in ``date: date`` names the module's
+        # date, not the field.
+        hidden = {
+            name
             for name, value in vars(self.cls).items()
-            if not isinstance(value, JSONProperty)
+            if isinstance(value, JSONProperty)
         }
-        localns[self.cls.__name__] = self.cls
-        # Keep Annotated metadata, which analyze_type() interprets.
-        return typing.get_type_hints(
-            holder, localns=localns, include_extras=True
-        )[self.field]
+        return _resolve_annotation(self.cls, self.field, hidden)
 
     @cached_property
     def analyzed_type(self) -> AnalyzedType:

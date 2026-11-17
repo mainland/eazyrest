@@ -11443,3 +11443,56 @@ def test_decorating_a_model_resolves_each_field_once(
 
     assert len(calls) == 3
     assert Ledger(json={"id": 1, "title": "a", "opened": "2024-04-01"}).title
+
+
+@dataclasses.dataclass
+class _ClassVarForCheckers:
+    """A dataclass whose class variable names a type unbound at run time."""
+
+    count: int
+    ratio: ClassVar[Fraction]
+
+
+@dataclasses.dataclass
+class _FieldForCheckers:
+    """A dataclass whose field names a type unbound at run time."""
+
+    count: int
+    ratio: Fraction
+
+
+def test_a_dataclass_with_a_checker_only_class_variable_type_converts() -> (
+    None
+):
+    """Only a field's annotation must resolve, not a class variable's."""
+
+    @json_object
+    class Tally(ModelBase):
+        class_url = "/tallies/"
+
+        id: int
+        entry: _ClassVarForCheckers
+
+    tally = Tally(json={"id": 1, "entry": {"count": 2}})
+
+    assert tally.entry == _ClassVarForCheckers(count=2)
+
+
+def test_a_dataclass_whose_field_names_a_checker_only_type_still_raises() -> (
+    None
+):
+    """A field's annotation that cannot resolve is an error on first use."""
+
+    @json_object
+    class Tally(ModelBase):
+        class_url = "/tallies/"
+
+        id: int
+        entry: _FieldForCheckers
+
+    tally = Tally(json={"id": 1, "entry": {"count": 2, "ratio": "1"}})
+
+    with pytest.raises(
+        FieldConversionError, match="annotations of _FieldForCheckers"
+    ):
+        tally.entry  # noqa: B018

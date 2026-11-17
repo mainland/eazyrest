@@ -65,10 +65,11 @@ from ._conversion import (
 )
 from ._models import (
     JSONObject,
-    _annotations,
+    _annotation_owner,
     _is_named_tuple,
     _is_type_alias,
     _resolve_alias_value,
+    _resolve_annotation,
     _seal,
     lenient_issubclass,
 )
@@ -692,27 +693,9 @@ def _field_hint(cls: Any, name: str) -> Any:
     Raises:
         TypeError: If the annotation cannot be resolved.
     """
-    owner = next(base for base in cls.__mro__ if name in _annotations(base))
-    holder = type(
-        owner.__name__,
-        (),
-        {
-            "__module__": owner.__module__,
-            "__annotations__": {name: _annotations(owner)[name]},
-        },
-    )
-    # A class defined inside a function is absent from its module's globals.
-    # Its namespace resolves its own name, without the defaults of its
-    # fields, which could hide the types that their annotations name.
     fields = {field.name for field in dataclasses.fields(cls)}
-    localns = {
-        key: value for key, value in vars(owner).items() if key not in fields
-    }
-    localns[owner.__name__] = owner
     try:
-        return get_type_hints(holder, localns=localns, include_extras=True)[
-            name
-        ]
+        return _resolve_annotation(_annotation_owner(cls, name), name, fields)
     except Exception as err:
         raise _unresolved(cls, err) from err
 
