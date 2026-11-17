@@ -3097,11 +3097,14 @@ def _check_key_is_leaf_or_relation(
     raise _key_type_error(cls, field)
 
 
-def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
-    """Resolve, analyze, and check a field's type: the one compilation path.
+def _analyze_field(
+    prop: JSONProperty, resolved: Any, *, strict: bool
+) -> AnalyzedType:
+    """Analyze and check the resolved type of a field.
 
     Args:
         prop: The field.
+        resolved: The field's annotation, resolved.
         strict: Whether a name that is not defined in a related model's key
             raises, as it does when the field is first used. Otherwise the key
             check waits for that use.
@@ -3114,10 +3117,9 @@ def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
             primary key that is not one value or a relation to a model keyed by
             one, a ``Hyperlinked()`` primary key, or a set of ``Hyperlinked()``
             relations.
-        Exception: If the annotation cannot be resolved, as for a class that is
-            not defined yet, whatever resolving it raises.
+        Exception: If a name in a type alias or a related model's key type is
+            not defined yet, whatever evaluating it raises.
     """
-    resolved = prop._resolve_type()
     try:
         analyzed = analyze_type(resolved)
     except TypeError as err:
@@ -3133,39 +3135,98 @@ def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
     return analyzed
 
 
+def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
+    """Resolve, analyze, and check a field's type: the one compilation path.
+
+    Args:
+        prop: The field.
+        strict: Whether a name that is not defined in a related model's key
+            raises, as it does when the field is first used. Otherwise the key
+            check waits for that use.
+
+    Returns:
+        The field's analyzed type.
+
+    Raises:
+        TypeError: If the type is refused, as ``_analyze_field()`` describes.
+        Exception: If the annotation cannot be resolved, as for a class that is
+            not defined yet, whatever resolving it raises.
+    """
+    return _analyze_field(prop, prop._resolve_type(), strict=strict)
+
+
+def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
+    """Refuse one field whose own type eazyrest does not convert.
+
+    The kinds of error are told apart by where they arise and their type, never
+    by their message. Whatever resolving the annotation raises waits for the
+    field's first use, and so does a type alias that names something not
+    defined yet. Any other ``TypeError`` from analyzing the resolved annotation
+    is a refusal.
+
+    Args:
+        cls: Decorated model class.
+        prop: The field.
+
+    Raises:
+        TypeError: If the field's type is refused. Its message is
+            ``Model.field: `` and the reason, which is its cause. A refusal
+            already marked as a declaration error, and a keyless model, are
+            raised as they are.
+    """
+    resolving = True
+    try:
+        resolved = prop._resolve_type()
+        resolving = False
+        _analyze_field(prop, resolved, strict=False)
+    except Exception as err:
+        if (
+            resolving
+            or not isinstance(err, TypeError)
+            or isinstance(err, _UnresolvedAliasError)
+        ):
+            return
+        if isinstance(err, _KeylessFieldTypeError) or getattr(
+            err, _DECLARATION_ERROR, False
+        ):
+            raise
+        refusal = TypeError(f"{cls.__name__}.{prop.field}: {err}")
+        setattr(refusal, _DECLARATION_ERROR, True)
+        raise refusal from err
+
+
 def _refuse_declared_types(
     cls: type[JSONObject], declared: Iterable[JSONProperty]
 ) -> None:
-    """Refuse at decoration what first use would refuse as a declaration.
+    """Refuse at decoration a field whose own type eazyrest does not convert.
 
-    Each declared field and the primary key are compiled once. A field whose
-    annotation names a class that is not defined yet, and a type that is
-    refused when the field is first used, which says why, wait for that use.
+    Each declared field and the primary key are resolved and analyzed once. A
+    field whose annotation cannot be resolved yet, or whose type alias names a
+    class that is not defined yet, waits for the field's first use. So does a
+    member of a ``TypedDict``, a dataclass, a ``NamedTuple``, or a Pydantic
+    type, which is analyzed when it is first needed. Any other ``TypeError``
+    from analyzing the resolved type is a refusal, whose message names the
+    field and whose cause is the reason.
 
     Args:
         cls: Decorated model class.
         declared: The fields that the class declares.
 
     Raises:
-        TypeError: If a field's type is a model without a primary-key field, or
-            a refusal of the declaration: a set of ``Hyperlinked()`` relations,
-            or a primary key that is a ``Hyperlinked()`` relation, is not one
-            value, or is neither a leaf nor a relation to a model keyed by one.
-            The first field in declaration order raises, and then the primary
-            key.
+        TypeError: If a field's type is refused, such as ``Counter[str]``, a
+            union of a scalar and a list, a mapping whose keys are not strings,
+            a model without a primary-key field, a set of ``Hyperlinked()``
+            relations, or a primary key that is a ``Hyperlinked()`` relation,
+            is not one value, or is neither a leaf nor a relation to a model
+            keyed by one. The first field in declaration order raises, and then
+            the primary key.
     """
     props = [*declared]
     pk = _pk_property_of(cls)
     if pk is not None and pk not in props:
         props.append(pk)
     for prop in props:
-        try:
-            _field_type(prop, strict=False)
-        except _KeylessFieldTypeError:
-            raise
-        except Exception as err:
-            if getattr(err, _DECLARATION_ERROR, False):
-                raise
+        _refuse_declared_type(cls, prop)
 
 
 def _check_api_attribute(

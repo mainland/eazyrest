@@ -65,13 +65,15 @@ describe them further.
   object. Types whose JSON would read as another type, such as a mapping whose
   keys are not strings, a model inside a mapping, or a union with a member that
   is not a JSON scalar, such as `list[str] | str` or
-  `dict[str, Any] | list[Any]`, raise `FieldConversionError`, also for a `null`
-  value. Annotate such a union `Any`, or for Pydantic. A dataclass field reads
-  an instance, where `v1.0.0a5` read a `dict`, and refuses a key that the
-  dataclass lacks and a `dict` assigned to it. A `NamedTuple` with defaults
-  refuses a shorter array. A parameterized generic `TypedDict`, and a
-  parameterized type whose items eazyrest does not convert, such as
-  `Counter[str]`, raise.
+  `dict[str, Any] | list[Any]`, raise `TypeError` when the class is defined,
+  naming the field, or `FieldConversionError` when the field is first used if
+  they are members of a `TypedDict`, dataclass, or `NamedTuple`. Annotate such
+  a union `Any`, or for Pydantic. A dataclass field reads an instance, where
+  `v1.0.0a5` read a `dict`, and refuses a key that the dataclass lacks and a
+  `dict` assigned to it. A `NamedTuple` with defaults refuses a shorter array.
+  A parameterized generic `TypedDict`, and a parameterized type whose items
+  eazyrest does not convert, such as `Counter[str]`, raise `TypeError` when the
+  class is defined.
 - A plain `TypedDict`, dataclass, or `NamedTuple` whose field's annotation
   names a type that is imported only under `TYPE_CHECKING` raises
   `FieldConversionError` when the field is first used, where `v1.0.0a5` passed
@@ -303,6 +305,13 @@ describe them further.
   no hash, so a set of them could not be read. Declare a `list` or a `tuple`.
   Assigning to a set field raises before it sends or queues anything, when the
   field cannot keep the assigned objects.
+- A field whose annotation resolves and whose own type eazyrest does not
+  convert, such as `Counter[str]`, `int | list[int]`, a type alias that refers
+  to itself, or `Hyperlinked()` on a type that is not a relation, raises
+  `TypeError` when the class is decorated, naming the field, where earlier
+  releases raised `FieldConversionError` when the field was first used. A name
+  that is not defined yet, and a member of a `TypedDict`, dataclass,
+  `NamedTuple`, or Pydantic type, still raise when the field is first used.
 - `refresh()` raises `ValueError` for an object built without a key, such as
   `Todo()`, and for one whose key is empty, `.`, or `..`, where `v1.0.0a5`
   reset it without an error. It raises before it discards anything.
@@ -534,12 +543,14 @@ that can break code written for 0.9.0, followed by what to do about it.
   types say, so annotate a tuple of any length as `tuple[T, ...]`. A union
   converts only if each of its members passes through unchanged, as
   `int | str`'s do.
-- A mapping whose keys are not strings, a union with a member that converts,
-  such as `str | datetime`, a model inside a `TypedDict`, a mapping, a
-  fixed-length tuple, a `NamedTuple`, or a dataclass, and any parameterized
-  type whose items eazyrest does not convert, such as `Counter[str]`, raise
-  `FieldConversionError`, because eazyrest cannot read them as their types.
-  Annotate them for Pydantic, or annotate their JSON form, such as
+- A mapping whose keys are not strings, a model inside a mapping or a
+  fixed-length tuple, and any parameterized type whose items eazyrest does not
+  convert, such as `Counter[str]`, raise `TypeError` when the class is defined,
+  naming the field, because eazyrest cannot read them as their types. A union
+  with a member that converts, such as `str | datetime`, raises
+  `FieldConversionError` when the field is first used. So does any of these
+  inside a `TypedDict`, `NamedTuple`, or dataclass, and a model inside one of
+  those. Annotate them for Pydantic, or annotate their JSON form, such as
   `dict[str, Any]`. Pydantic does not convert eazyrest models either, so
   annotate a model inside one of these with its primary key type, such as
   `int`. `MutableSequence`, `Collection`, `Set`, `MutableSet`, `deque`, and

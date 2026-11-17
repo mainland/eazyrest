@@ -2744,32 +2744,47 @@ def test_new_types_convert_as_their_supertype_inside_pydantic() -> None:
 PydanticStamps = NewType("PydanticStamps", list["datetime.datetime"])
 
 
-@json_object
-class QuotedStamped(PydanticBase):
-    """Model whose fields hold a ``NewType`` with a quoted supertype."""
-
-    class_url = "/quoted-stamped/"
-
-    id: int
-    plain: PydanticStamps
-    annotated: Annotated[PydanticStamps, Field()]
-
-
-@pytest.mark.parametrize("field", ["plain", "annotated"])
-def test_pydantic_refuses_a_string_in_a_new_types_supertype(
-    field: str,
-) -> None:
+def test_pydantic_refuses_a_string_in_a_new_types_supertype() -> None:
     """Pydantic does not resolve the string in the wrong module instead.
 
-    The field raises ``TypeError``, naming the field and the ``NewType``, where
-    Pydantic alone would convert the list by its own rules.
+    The class is refused when it is decorated, with a ``TypeError`` that names
+    the field and the ``NewType``, where Pydantic alone would convert the list
+    by its own rules.
     """
-    stamped = QuotedStamped(json={"id": 1, field: ["2026-01-02T03:04:05Z"]})
+    with pytest.raises(TypeError, match=r"^QuotedStamped\.plain: ") as refused:
+
+        @json_object
+        class QuotedStamped(PydanticBase):
+            class_url = "/quoted-stamped/"
+
+            id: int
+            plain: PydanticStamps
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert "Write the type itself" in str(refused.value)
+    assert "PydanticStamps" in str(refused.value)
+
+
+def test_pydantic_refuses_an_annotated_new_type_with_a_string_when_used() -> (
+    None
+):
+    """A field that Pydantic converts raises when it is first used."""
+
+    @json_object
+    class QuotedStamped(PydanticBase):
+        class_url = "/quoted-stamped/"
+
+        id: int
+        annotated: Annotated[PydanticStamps, Field()]
+
+    stamped = QuotedStamped(
+        json={"id": 1, "annotated": ["2026-01-02T03:04:05Z"]}
+    )
 
     with pytest.raises(
-        FieldConversionError, match=rf"^QuotedStamped\.{field}: "
+        FieldConversionError, match=r"^QuotedStamped\.annotated: "
     ) as refused:
-        _ = getattr(stamped, field)
+        _ = stamped.annotated
 
     assert isinstance(refused.value, TypeError)
     assert "Write the type itself" in str(refused.value)

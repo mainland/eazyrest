@@ -4013,25 +4013,32 @@ def test_named_type_aliases_convert_as_their_types() -> None:
 def test_unsupported_type_aliases_raise(statement: str, match: str) -> None:
     """A self-referring alias, or a generic one without arguments, raises.
 
+    The class is refused when it is decorated.
+
     Args:
         statement: ``type`` statement that defines ``Alias``.
         match: Pattern that the error message should match.
     """
     namespace: dict[str, Any] = {}
     exec(statement, namespace)  # noqa: S102
-    model: Any = json_object(
-        type(
-            "Aliased",
-            (ModelBase,),
-            {
-                "__annotations__": {"id": int, "value": namespace["Alias"]},
-                "class_url": "/aliased/",
-            },
-        )
-    )
 
-    with pytest.raises(FieldConversionError, match=match):
-        _ = model(json={"id": 1, "value": [1]}).value
+    with pytest.raises(TypeError, match=match) as refused:
+        json_object(
+            type(
+                "Aliased",
+                (ModelBase,),
+                {
+                    "__annotations__": {
+                        "id": int,
+                        "value": namespace["Alias"],
+                    },
+                    "class_url": "/aliased/",
+                },
+            )
+        )
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert str(refused.value).startswith("Aliased.value: ")
 
 
 def test_quoted_reference_in_alias_resolves_in_its_module() -> None:
@@ -4053,32 +4060,42 @@ def test_quoted_reference_in_alias_resolves_in_its_module() -> None:
     assert quoted.dates == [datetime.datetime(2024, 1, 1, tzinfo=datetime.UTC)]
 
 
-@pytest.mark.parametrize(
-    ("alias", "match"),
-    [
-        (QuotedRecursive, "refers to itself"),
-        (QuotedMissing, "cannot be resolved"),
-    ],
-)
-def test_unresolvable_quoted_alias_raises(alias: Any, match: str) -> None:
-    """A quoted self-reference or unknown name raises rather than passing.
+def test_recursive_quoted_alias_is_refused_when_decorated() -> None:
+    """A quoted self-reference in an alias raises when the class is decorated.
 
-    Args:
-        alias: Named alias whose value holds the quoted reference.
-        match: Pattern that the error message should match.
+    The message names the field, and the reason says that the alias refers to
+    itself.
     """
+    with pytest.raises(TypeError, match="refers to itself") as refused:
+        json_object(
+            type(
+                "Aliased",
+                (ModelBase,),
+                {
+                    "__annotations__": {"id": int, "value": QuotedRecursive},
+                    "class_url": "/aliased/",
+                },
+            )
+        )
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert str(refused.value).startswith("Aliased.value: ")
+
+
+def test_unknown_name_in_quoted_alias_raises_when_first_used() -> None:
+    """A quoted name that nothing defines raises when the field is used."""
     model: Any = json_object(
         type(
             "Aliased",
             (ModelBase,),
             {
-                "__annotations__": {"id": int, "value": alias},
+                "__annotations__": {"id": int, "value": QuotedMissing},
                 "class_url": "/aliased/",
             },
         )
     )
 
-    with pytest.raises(FieldConversionError, match=match):
+    with pytest.raises(FieldConversionError, match="cannot be resolved"):
         _ = model(json={"id": 1, "value": ["bad"]}).value
 
 
@@ -10051,14 +10068,14 @@ def test_hyperlinked_prefetch_accepts_a_subclass_of_the_model(
 
 def test_hyperlinked_applies_only_to_related_types() -> None:
     """``Hyperlinked()`` on a type without a related model raises."""
+    with pytest.raises(TypeError, match="related model") as refused:
 
-    @json_object
-    class Wrong(ModelBase):
-        id: int
-        name: Annotated[str, Hyperlinked()]
+        @json_object
+        class Wrong(ModelBase):
+            id: int
+            name: Annotated[str, Hyperlinked()]
 
-    with pytest.raises(FieldConversionError, match="related model"):
-        _ = Wrong(json={"id": 1, "name": "x"}).name
+    assert str(refused.value).startswith("Wrong.name: ")
 
 
 def test_hyperlinked_field_takes_urls_and_objects_only(

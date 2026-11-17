@@ -6,6 +6,7 @@ import collections
 import dataclasses
 import datetime
 import enum
+import sys
 import uuid
 from collections.abc import (
     Collection,
@@ -15,7 +16,15 @@ from collections.abc import (
     MutableSet,
 )
 from collections.abc import Set as AbstractSet
-from typing import Any, Generic, Literal, NamedTuple, NewType, TypeVar
+from typing import (
+    Any,
+    Generic,
+    Literal,
+    NamedTuple,
+    NewType,
+    TypedDict,
+    TypeVar,
+)
 
 import pytest
 import requests_mock
@@ -305,6 +314,8 @@ def test_union_of_converting_members_is_refused_when_used() -> None:
 def test_types_that_cannot_convert_are_refused(annotation: Any) -> None:
     """A union with a structure, a model in a tuple, and a generic dataclass.
 
+    The class is refused when it is decorated, and the message names the field.
+
     So is any other parameterized type that eazyrest does not convert,
     whose items would otherwise pass through unconverted.
 
@@ -316,10 +327,118 @@ def test_types_that_cannot_convert_are_refused(annotation: Any) -> None:
         "class_url": "/refused/",
         "__module__": __name__,
     }
-    refused: Any = json_object(type("Refused", (StructureBase,), namespace))
 
-    with pytest.raises(FieldConversionError):
-        _ = refused(json={"id": 1, "value": [1]}).value
+    with pytest.raises(TypeError) as refused:
+        json_object(type("Refused", (StructureBase,), namespace))
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert str(refused.value).startswith("Refused.value: ")
+
+
+def test_a_field_that_cannot_convert_is_refused_naming_the_field() -> None:
+    """A ``Counter[str]`` field raises ``TypeError`` when it is decorated.
+
+    The message names the model and the field, and the reason is the cause.
+    """
+    with pytest.raises(TypeError, match=r"^Tally\.counts: ") as refused:
+
+        @json_object
+        class Tally(StructureBase):
+            class_url = "/tallies/"
+
+            id: int
+            counts: collections.Counter[str]
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert isinstance(refused.value.__cause__, TypeError)
+
+
+def test_a_field_naming_a_class_defined_later_is_decorated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name that is not defined yet does not refuse the class.
+
+    The field raises the undefined name when it is first used, and converts
+    once the class exists.
+
+    Args:
+        monkeypatch: Defines the class as a global, after decoration.
+    """
+
+    @json_object
+    class Entry(StructureBase):
+        class_url = "/entries/"
+
+        id: int
+        owner: LaterOwner
+
+    entry = Entry(json={"id": 1, "owner": 2})
+    with pytest.raises(NameError, match="LaterOwner"):
+        _ = entry.owner
+
+    LaterOwner = NewType("LaterOwner", int)
+
+    monkeypatch.setitem(globals(), "LaterOwner", LaterOwner)
+
+    assert entry.owner == 2
+
+
+class _Counted(TypedDict):
+    """A ``TypedDict`` whose member eazyrest does not convert."""
+
+    counts: collections.Counter[str]
+
+
+def test_a_typed_dict_member_that_cannot_convert_is_refused_when_used() -> (
+    None
+):
+    """A structure's members are analyzed when the field is first used.
+
+    So the class is decorated, and the field raises ``FieldConversionError``.
+    """
+
+    @json_object
+    class Census(StructureBase):
+        class_url = "/censuses/"
+
+        id: int
+        counted: _Counted
+
+    census = Census(json={"id": 1, "counted": {"counts": {"a": 1}}})
+
+    with pytest.raises(FieldConversionError, match=r"^Census\.counted: "):
+        _ = census.counted
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12), reason="The type statement needs Python 3.12"
+)
+def test_a_type_alias_naming_a_class_defined_later_is_decorated() -> None:
+    """A type alias whose value is not evaluable yet does not refuse the class.
+
+    The field raises the undefined name when it is first used, and converts
+    once the class exists.
+    """
+    namespace: dict[str, Any] = {}
+    exec("type Pending = list[LaterItem]", namespace)  # noqa: S102
+
+    pending: Any = json_object(
+        type(
+            "Pending",
+            (StructureBase,),
+            {
+                "__annotations__": {"id": int, "items": namespace["Pending"]},
+                "class_url": "/pending/",
+            },
+        )
+    )
+    obj = pending(json={"id": 1, "items": [1, 2]})
+    with pytest.raises(NameError, match="LaterItem"):
+        _ = obj.items
+
+    namespace["LaterItem"] = int
+
+    assert obj.items == [1, 2]
 
 
 def test_structure_schemas() -> None:

@@ -283,6 +283,16 @@ alias in it, names the class that is not defined yet. It raises a
 dataclass, or Pydantic model that the field names, or in a string in a type
 alias's value.
 
+A field whose annotation resolves, and whose own type eazyrest does not
+convert, raises `TypeError` when the class is decorated. The message is
+`Model.field:` and the reason, which is also the error's `__cause__`. Such
+types are `Counter[str]`, `int | list[int]`, a mapping whose keys are not
+strings, a model inside a mapping or a fixed-length tuple, a type alias that
+refers to itself, and `Hyperlinked()` on a type that is not a relation. A
+member of a `TypedDict`, dataclass, `NamedTuple`, or Pydantic type is analyzed
+when the field is first used, so that a structure can name itself, and raises
+`FieldConversionError` then.
+
 ### Differences from Django
 
 Django models also compare and hash by primary key. A model keyed by a
@@ -602,10 +612,10 @@ annotated as a set or frozenset, an optional one, or a `NewType` of either. A
 set nested in a list, tuple, or mapping field is compared in the server's
 order. A set inside a Pydantic-converted field is written by Pydantic, in
 iteration order. Any other parameterized type, such as `Counter[str]`, raises
-`FieldConversionError` when the field is first used, because its items would
-otherwise pass through unconverted. Annotate a tuple of any length as
-`tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of exactly one
-item, and a bare `tuple` is a tuple of any length whose items read as they are:
+`TypeError` when the class is decorated, because its items would otherwise pass
+through unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As
+Python's types say, `tuple[T]` is a tuple of exactly one item, and a bare
+`tuple` is a tuple of any length whose items read as they are:
 
 ```python
 import datetime
@@ -737,15 +747,17 @@ reads as the member, raises `FieldConversionError` when the field is first
 used, because a JSON value does not say which member it is. Annotate such a
 union for Pydantic, with a discriminator if needed.
 
-Some annotations raise `FieldConversionError` when the field is first used,
-because eazyrest cannot read them as their types. A mapping whose keys are not
-strings is one, because JSON object keys are strings. So is a model inside a
-`TypedDict`, a mapping, a fixed-length tuple, a `NamedTuple`, or a dataclass,
-because eazyrest does not convert related objects there yet, so annotate such a
-key or field with the model's primary key type, such as `int`. So are a
-`TypedDict` that is closed or has extra items (PEP 728), and a generic
-`TypedDict`, `NamedTuple`, or dataclass with type arguments. Annotate such a
-type for Pydantic, or annotate its JSON form, such as `dict[str, Any]`.
+Some annotations raise because eazyrest cannot read them as their types. A
+mapping whose keys are not strings is one, because JSON object keys are
+strings. So is a model inside a `TypedDict`, a mapping, a fixed-length tuple, a
+`NamedTuple`, or a dataclass, because eazyrest does not convert related objects
+there yet, so annotate such a key or field with the model's primary key type,
+such as `int`. So are a `TypedDict` that is closed or has extra items (PEP
+728), and a generic `TypedDict`, `NamedTuple`, or dataclass with type
+arguments. Annotate such a type for Pydantic, or annotate its JSON form, such
+as `dict[str, Any]`. The field's own type raises `TypeError` when the class is
+decorated. A member of a `TypedDict`, `NamedTuple`, or dataclass raises
+`FieldConversionError` when the field is first used.
 
 A field's value is cached when it is first read, so later reads return the same
 value. If you change that value in place, `save()` sends the change, as it does
@@ -2063,9 +2075,11 @@ An HTTP error status raises whatever `API.raise_for_response()` raises,
 for an error body, and a transport failure raises the exception of the HTTP
 library that sent the request. For `API`, that is the requests exception that
 describes the failure, such as `requests.ConnectionError`. Invalid decorator
-options raise `TypeError` or `ValueError` when the class is defined. Field
-annotations resolve lazily, so an invalid conversion declaration can raise
-`FieldConversionError` at first use.
+options raise `TypeError` or `ValueError` when the class is defined, and so
+does a field whose own type eazyrest does not convert. A field annotation that
+names a class not defined yet, and a member of a structure, resolve lazily, so
+an invalid conversion declaration there can raise `FieldConversionError` at
+first use.
 
 ## Threads
 

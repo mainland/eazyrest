@@ -1000,19 +1000,18 @@ def test_named_type_aliases_convert_as_their_expansions(
 
     Named aliases, generic aliases, and aliases inside other types expand
     before conversion. A field that reaches a recursive alias cannot be
-    converted, and raises when it is first read.
+    converted, and its class is refused when it is decorated.
 
     Args:
         pair: Type as written with aliases and as expanded.
         value: JSON value of the field.
     """
-    aliased = _field_model(pair.aliased)
-
     if pair.recursive:
-        with pytest.raises(FieldConversionError, match="refers to itself"):
-            _ = aliased(json={"id": 1, "value": value}).value
+        with pytest.raises(TypeError, match="refers to itself"):
+            _field_model(pair.aliased)
         return
 
+    aliased = _field_model(pair.aliased)
     expanded = _field_model(pair.expanded)
     assert _read_outcome(aliased, value) == _read_outcome(expanded, value)
 

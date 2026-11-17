@@ -1196,18 +1196,6 @@ Described = NewType("Described", Annotated[int, "a note, not a name"])
 Chosen = NewType("Chosen", Literal["a", "b"])  # type: ignore[valid-newtype]
 
 
-@json_object
-class QuotedModel(JSONObject):
-    """Model whose fields hold a ``NewType`` with a string in its supertype."""
-
-    class_url = "/quoted/"
-
-    id: int
-    stamps: QuotedStamps
-    chained: ChainedStamps
-    several: list[QuotedStamps]
-
-
 @pytest.mark.parametrize("field", ["stamps", "chained", "several"])
 def test_a_new_type_with_a_string_in_its_supertype_is_refused(
     field: str,
@@ -1215,17 +1203,27 @@ def test_a_new_type_with_a_string_in_its_supertype_is_refused(
     """A string in a ``NewType``'s supertype raises ``TypeError``.
 
     Python never resolves such a string, so it would stay a string in the type
-    that is converted. The message names the field and tells the user to write
-    the type itself.
+    that is converted. The class is refused when it is decorated. The message
+    names the field and tells the user to write the type itself.
     """
-    quoted = QuotedModel(json={"id": 1, field: ["2026-01-02T03:04:05Z"]})
+    annotations = {
+        "id": int,
+        "stamps": QuotedStamps,
+        "chained": ChainedStamps,
+        "several": list[QuotedStamps],
+    }
+    declared = {"id": annotations["id"], field: annotations[field]}
 
-    with pytest.raises(
-        FieldConversionError, match=f"^QuotedModel.{field}: "
-    ) as refused:
-        _ = getattr(quoted, field)
+    with pytest.raises(TypeError, match=f"^QuotedModel.{field}: ") as refused:
+        json_object(
+            type(
+                "QuotedModel",
+                (JSONObject,),
+                {"__annotations__": declared, "class_url": "/quoted/"},
+            )
+        )
 
-    assert isinstance(refused.value, TypeError)
+    assert not isinstance(refused.value, FieldConversionError)
     assert "Write the type itself" in str(refused.value)
     assert "QuotedStamps" in str(refused.value)
 
