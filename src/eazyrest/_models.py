@@ -20,6 +20,7 @@ import sys
 import types
 import typing
 import uuid
+import weakref
 from collections.abc import (
     Callable,
     Collection,
@@ -164,6 +165,59 @@ def _passes_through(err: Exception) -> bool:
     return isinstance(err, EazyrestError) and not isinstance(
         err, FieldConversionError
     )
+
+
+_USABLE_CLASSES: weakref.WeakSet[type] = weakref.WeakSet()
+"""Classes that passed ``_require_decorated()``, so it checks each once."""
+
+
+def _require_decorated(cls: type) -> None:
+    """Refuse a model class that sets conversions and is not decorated.
+
+    An undecorated subclass of a decorated model keeps the descriptors of its
+    base, whose types were checked against the base's conversions. What a
+    field's type may be depends on the conversions of the model that owns it,
+    so a subclass that sets its own ``conversions`` must be decorated, which
+    checks the inherited fields against them. ``__init_subclass__`` runs before
+    the decorator, so the class is refused when it is first used, not when it
+    is defined.
+
+    Args:
+        cls: Model class that an operation uses.
+
+    Raises:
+        TypeError: If ``cls`` is not decorated, has a decorated ancestor, and
+            sets ``conversions`` itself or inherits them from a class that is
+            not an ancestor of that decorated class, such as a mixin.
+    """
+    if cls in _USABLE_CLASSES:
+        return
+    decorated = next(
+        (base for base in cls.__mro__ if "_json_fields" in vars(base)), None
+    )
+    if decorated is None or decorated is cls:
+        # With no decorated ancestor no field was checked against another
+        # table, and a decorated class checked its own.
+        _USABLE_CLASSES.add(cls)
+        return
+    # Every class that contributes to the table but not to the decorated
+    # ancestor's, whether it comes before the ancestor in the MRO or after it.
+    undecorated = [
+        base for base in cls.__mro__ if base not in decorated.__mro__
+    ]
+    for base in undecorated:
+        if "conversions" in vars(base):
+            error = TypeError(
+                f"{cls.__name__} is not decorated, and "
+                f"{base.__name__} sets conversions, which the fields that "
+                f"{cls.__name__} inherits were not checked against. Decorate "
+                f"{cls.__name__} with @json_object."
+            )
+            # A conversion reports the error as a plain TypeError, as
+            # decorating the class would, not as the conversion of a value.
+            setattr(error, _DECLARATION_ERROR, True)
+            raise error
+    _USABLE_CLASSES.add(cls)
 
 
 @contextlib.contextmanager
@@ -5354,6 +5408,7 @@ class JSONObject:
                 ``json=``.
         """
         # A class's api can be assigned after the class is defined.
+        _require_decorated(type(self))
         _check_api_attribute(type(self), UsageError)
         if kwargs:
             _refuse_keyless_assignment(type(self))
@@ -7485,6 +7540,7 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
+        _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
         options = _request_options(request_options)
         payload = cls._encode_fields(
@@ -7769,6 +7825,7 @@ class JSONObject:
             NameError: If a field's annotation names a type that cannot be
                 resolved, as when the field is read.
         """
+        _require_decorated(cls)
         if mode not in ("read", "write"):
             raise ValueError(f"mode must be 'read' or 'write', got {mode!r}")
 
@@ -8262,6 +8319,7 @@ class JSONObject:
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
         """
+        _require_decorated(cls)
         options = _query_request_options(request_options)
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
@@ -8326,6 +8384,7 @@ class JSONObject:
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
         """
+        _require_decorated(cls)
         return cls.filter(
             prefetch=prefetch, api=api, request_options=request_options
         )
@@ -8382,6 +8441,7 @@ class JSONObject:
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
         """
+        _require_decorated(cls)
         options = _query_request_options(request_options)
         query = _query_params(params, kwargs)
         if url is not None and query:
@@ -8461,6 +8521,7 @@ class JSONObject:
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
         """
+        _require_decorated(cls)
         query = _query_params(params, kwargs)
         results = iter(
             cls.filter(
@@ -8552,6 +8613,7 @@ class JSONObject:
                 query and a creation.
             RedirectError: If a response is a redirect that was not followed.
         """
+        _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
         # Check the options for both requests before sending either.
         _query_request_options(request_options)

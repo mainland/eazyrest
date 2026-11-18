@@ -310,49 +310,176 @@ _Coded.register_api(API(BASE))
 class _Converting(_Coded):
     """Subclass, not decorated, that converts the ``NewType``.
 
-    Its inherited fields were checked against its base's conversions, so the
-    union that its conversions make one that converts is refused by the
-    conversion of a value.
+    Its inherited fields were checked against its base's conversions, not its
+    own, so every use of it is refused.
     """
 
     conversions: ClassVar[dict[Any, Conversion]] = {_Code: _CODE_CONVERSION}
 
 
-@pytest.mark.parametrize("value", [1, "a", None])
-def test_an_undecorated_subclass_refuses_a_union_it_converts_on_read(
-    value: Any,
+class _Further(_Converting):
+    """Undecorated subclass of a class that sets conversions."""
+
+
+_REFUSAL = (
+    r"_Converting is not decorated.*Decorate _Converting with @json_object"
+)
+
+
+_USES: dict[str, Callable[[Any], Any]] = {
+    "init": lambda model: model(json={"id": 1}),
+    "init-with-fields": lambda model: model(id=1, value=None),
+    "filter": lambda model: list(model.filter(value=1)),
+    "all": lambda model: list(model.all()),
+    "get": lambda model: model.get(id=1),
+    "get-page": lambda model: model.get_page(value=1),
+    "get-or-create": lambda model: model.get_or_create(id=1),
+    "create": lambda model: model.create(id=1, value=None),
+    "json-schema": lambda model: model.json_schema(),
+}
+
+
+@pytest.mark.parametrize("use", _USES)
+def test_an_undecorated_subclass_that_sets_conversions_refuses_every_use(
+    use: str, requests_mock: Any
 ) -> None:
-    """Reading any value of the inherited union raises, null included.
+    """Making an instance, a query, a write, and a schema raise TypeError.
+
+    Whatever the value, null included, and before any request is sent.
 
     Args:
-        value: JSON of the field.
-    """
-    obj = _Converting(json={"id": 1, "seen": value})
-
-    with pytest.raises(
-        FieldConversionError, match=r"_Converting\.seen.*do not all pass"
-    ):
-        _ = obj.seen
-
-
-@pytest.mark.parametrize("value", [1, "a", None])
-def test_an_undecorated_subclass_refuses_a_union_it_converts_on_write(
-    value: Any, requests_mock: Any
-) -> None:
-    """Writing any value of the inherited union raises, null included.
-
-    Nothing is sent.
-
-    Args:
-        value: Value of the field.
+        use: Name of the operation.
         requests_mock: Mock of the transport.
     """
-    with pytest.raises(
-        FieldConversionError, match=r"_Converting\.value.*do not all pass"
-    ):
-        _Converting.create(id=1, value=value)
+    with pytest.raises(TypeError, match=_REFUSAL):
+        _USES[use](_Converting)
 
     assert not requests_mock.called
+
+
+@pytest.mark.parametrize("use", ["init", "filter", "json-schema"])
+def test_a_subclass_of_an_undecorated_one_that_sets_conversions_is_refused(
+    use: str,
+) -> None:
+    """The refusal names the class in use and the one that sets conversions.
+
+    Args:
+        use: Name of the operation.
+    """
+    with pytest.raises(
+        TypeError, match=r"_Further is not decorated.*_Converting sets"
+    ):
+        _USES[use](_Further)
+
+
+class _PlainMixin:
+    """Class that is not a model and sets conversions."""
+
+    conversions: ClassVar[dict[Any, Conversion]] = {_Code: _CODE_CONVERSION}
+
+
+class _ModelMixin(JSONObject):
+    """Undecorated model class that sets conversions."""
+
+    conversions: ClassVar[dict[Any, Conversion]] = {_Code: _CODE_CONVERSION}
+
+
+class _AfterPlain(_Coded, _PlainMixin):  # type: ignore[misc]
+    """Undecorated, with a mixin that sets conversions after the base."""
+
+
+class _AfterModel(_Coded, _ModelMixin):
+    """Undecorated, with a model mixin that sets conversions after the base."""
+
+
+class _BeforePlain(_PlainMixin, _Coded):  # type: ignore[misc]
+    """Undecorated, with a mixin that sets conversions before the base."""
+
+
+@pytest.mark.parametrize("model", [_AfterPlain, _AfterModel, _BeforePlain])
+@pytest.mark.parametrize("use", ["init", "filter", "json-schema"])
+def test_an_undecorated_class_with_a_conversions_mixin_is_refused(
+    model: Any, use: str
+) -> None:
+    """A mixin changes the table wherever it stands in the bases.
+
+    Args:
+        model: Undecorated class with a mixin that sets conversions.
+        use: Name of the operation.
+    """
+    with pytest.raises(
+        TypeError,
+        match=rf"{model.__name__} is not decorated.*Mixin sets conversions",
+    ):
+        _USES[use](model)
+
+
+def test_the_refusal_is_not_a_field_conversion_error() -> None:
+    """The class is wrong, not a field's value, so the error is a TypeError."""
+    with pytest.raises(TypeError) as excinfo:
+        _Converting(json={"id": 1})
+
+    assert not isinstance(excinfo.value, FieldConversionError)
+
+
+@dataclasses.dataclass
+class _Other:
+    """Class of an application that a decorated subclass converts."""
+
+    text: str
+
+
+@json_object
+class _Decorated(_Coded):
+    """Decorated subclass that sets conversions."""
+
+    conversions: ClassVar[dict[Any, Conversion]] = {
+        _Other: Conversion(
+            decode=lambda value, _: _Other(value),
+            encode=lambda value, _: value.text,
+        )
+    }
+
+
+def test_a_decorated_subclass_that_sets_conversions_is_used() -> None:
+    """Decorating checks the inherited fields against the subclass's table."""
+    obj = _Decorated(json={"id": 1, "value": "a"})
+
+    assert obj.value == "a"
+    assert _Decorated.json_schema()["type"] == "object"
+
+
+def test_an_undecorated_subclass_without_conversions_is_used() -> None:
+    """A subclass that keeps its base's conversions needs no decorator."""
+
+    class Mixed(_Coded):
+        """Undecorated subclass that sets no conversions."""
+
+    assert Mixed(json={"id": 1, "value": "a"}).value == "a"
+
+
+def test_a_conversions_mixin_without_a_decorated_ancestor_is_not_refused() -> (
+    None
+):
+    """Only a class that inherits decorated fields can contradict them."""
+
+    class Mixin(JSONObject):
+        """Base class that sets conversions, as a model's base class does."""
+
+        conversions: ClassVar[dict[Any, Conversion]] = {
+            _Code: _CODE_CONVERSION
+        }
+
+    @json_object
+    class Child(Mixin):
+        """Decorated model of the base class."""
+
+        class_url = "/children/"
+
+        id: int
+        code: _Code
+
+    assert Child(json={"id": 1, "code": "a"}).code == "a"
 
 
 def test_a_base_still_passes_the_union_through() -> None:

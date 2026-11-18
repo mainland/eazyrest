@@ -367,7 +367,9 @@ describe them further.
   decorated, naming the field, where `v1.0.0a5` raised `FieldConversionError`
   when the field was first used. The model's `conversions` decide which members
   convert, so a subclass whose `conversions` make an inherited field's union
-  one that converts is refused when the subclass is decorated. A union inside a
+  one that converts is refused when the subclass is decorated. A subclass that
+  sets `conversions` and is not decorated raises `TypeError` when it is first
+  used, naming the class and saying to decorate it. A union inside a
   `TypedDict`, dataclass, or `NamedTuple` still raises when the field is first
   used.
 - A field typed by a dataclass with an init-only field, of type

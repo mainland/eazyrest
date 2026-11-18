@@ -112,6 +112,17 @@ when it is defined. Put shared fields on one decorated base class instead.
 Undecorated base classes, which declare no fields, can be mixed in freely, for
 example to share hooks such as `collection_items()`.
 
+A subclass of a decorated model that sets its own `conversions` must be
+decorated too. The fields that it inherits were checked against its base's
+conversions, and what a field's type may be depends on the conversions of the
+model that owns it, so decorating the subclass checks them against its own. An
+undecorated subclass that sets `conversions`, or inherits from one that does,
+raises `TypeError` the first time it is used, naming the class and saying to
+decorate it. Making an instance, a query, `create()`, and `json_schema()` all
+use it. The error cannot come when the class is defined, because the decorator
+runs after the class exists. A base class that sets `conversions` and has no
+decorated ancestor, as a model's own base class usually does, is not refused.
+
 Use `read_only=` for returned values that ordinary writes must omit, such as
 computed values and file URLs. These fields remain readable and usable in
 queries, but assigning them or passing their ordinary values to `create()`
