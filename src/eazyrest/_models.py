@@ -3260,13 +3260,23 @@ def _analyze_field(
         The field's analyzed type.
 
     Raises:
-        TypeError: If the type is refused, such as a model without a key, a
-            primary key that is not one value or a relation to a model keyed by
-            one, a ``Hyperlinked()`` primary key, or a set of ``Hyperlinked()``
+        TypeError: If the annotation is ``None`` as a whole, or the type is
+            refused, such as a model without a key, a primary key that is not
+            one value or a relation to a model keyed by one, a
+            ``Hyperlinked()`` primary key, or a set of ``Hyperlinked()``
             relations.
         Exception: If a name in a type alias or a related model's key type is
             not defined yet, whatever evaluating it raises.
     """
+    if resolved is None or resolved is type(None):
+        raise TypeError(
+            "its annotation is None, so eazyrest cannot convert it. A field "
+            "whose name is the name of its type, as in date: date = None, "
+            "shadows the type in the class body, where the default has "
+            "already replaced it. Rename the field with field_map=, or "
+            "annotate the type by a name that is not shadowed, such as "
+            "datetime.date."
+        )
     try:
         analyzed = analyze_type(resolved)
     except TypeError as err:

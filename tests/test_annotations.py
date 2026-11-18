@@ -108,6 +108,25 @@ def test_a_method_that_shadows_a_field_type_is_refused_when_decorated() -> (
             created: date  # type: ignore[valid-type]
 
 
+def test_a_field_that_shadows_its_own_type_with_none_is_refused() -> None:
+    """A field named like its type, with a default of ``None``, is refused.
+
+    The default replaces the type in the class body, so the annotation
+    evaluates to ``None``, and the field would otherwise read its JSON
+    unconverted. The message names the shadowing.
+    """
+    date = datetime.date
+
+    with pytest.raises(TypeError, match=r"^Booking\.date: .*shadows"):
+
+        @json_object
+        class Booking(JSONObject):
+            class_url = "/bookings/"
+
+            id: int
+            date: date = None  # type: ignore[valid-type]
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 14),
     reason="Python 3.14 is the first version to defer annotations",

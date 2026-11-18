@@ -772,6 +772,12 @@ Python 3.14 and later, a method with the name of a field's type, as a method
 method, and the class is refused for the same reason. Annotate the type by a
 name that the class does not shadow, such as `datetime.date`.
 
+A field whose annotation is `None` as a whole is refused the same way. It
+happens when a field is named like its type and has the default `None`, as in
+`date: date = None`, because the default replaces the type in the class body.
+Annotate the type as `datetime.date | None`, or rename the field with
+`field_map=`.
+
 A field's value is cached when it is first read, so later reads return the same
 value. If you change that value in place, `save()` sends the change, as it does
 for an assignment, except for the key, whose change is refused:

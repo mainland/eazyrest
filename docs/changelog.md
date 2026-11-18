@@ -326,6 +326,9 @@ describe them further.
   unchanged. On Python 3.14 and later, a method that has the name of a field's
   type, as `date` does beside `created: date`, hides the type, so such a class
   is refused too. Annotate the type by a name that the class does not shadow.
+- A field whose annotation is `None` as a whole, as `date: date = None` gives,
+  raises `TypeError` when the class is decorated, naming the shadowing of the
+  type by the field, where `v1.0.0a5` read its JSON unconverted.
 - `refresh()` raises `ValueError` for an object built without a key, such as
   `Todo()`, and for one whose key is empty, `.`, or `..`, where `v1.0.0a5`
   reset it without an error. It raises before it discards anything.
