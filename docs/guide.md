@@ -160,7 +160,10 @@ cannot be renamed through the object either:
   giving it sends nothing. That is an object with no key and no URL of its own,
   including one built from JSON that lacks the key or holds `null`. An object
   read from a hyperlink already names a resource and learns its key at its
-  first load, so assigning it a key raises `AttributeError` too.
+  first load, so assigning it a key raises `AttributeError` too. So does
+  assigning one to an object of a class that overrides `url`, which has a URL
+  of its own, unless the key is given as the object is built, as in
+  `Slot(id=3)` for a class that formats its URL from the key.
 
 A program that must rename a resource, on a server that allows it, sends the
 write with the raw API and builds the object again from the response:

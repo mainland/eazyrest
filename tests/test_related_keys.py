@@ -82,6 +82,28 @@ class Me(RelatedBase):
         return "/me/"
 
 
+@json_object
+class Slot(RelatedBase):
+    """Model whose class formats its URL from its key."""
+
+    id: int
+
+    @property
+    def url(self) -> str:
+        """Return a URL built from the key."""
+        return f"/slots/{self.pk}/detail/"
+
+
+@json_object
+class Booking(RelatedBase):
+    """Model that relates to a slot."""
+
+    class_url = "/bookings/"
+
+    id: int
+    slot: Slot
+
+
 class Color(enum.Enum):
     """Enum that a key may be."""
 
@@ -326,6 +348,33 @@ def test_a_key_relation_still_reads_an_embedded_object_from_its_json() -> None:
 
     assert account.pk == 5
     assert account == Account(user=User(id=5))
+
+
+def test_a_class_that_overrides_url_refuses_an_assigned_key() -> None:
+    """Its next load could name another key, which the object would refuse."""
+    me = Me()
+
+    with pytest.raises(AttributeError, match="learns its key"):
+        me.id = 7
+
+    assert me.pk is None
+
+
+def test_a_class_that_overrides_url_refuses_a_key_that_cannot_be_built() -> (
+    None
+):
+    """The key is built first, so the error names what is wrong with it."""
+    with pytest.raises(FieldConversionError, match=r"Me\.id"):
+        Me().id = "7"  # type: ignore[assignment]
+
+
+def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
+    """A URL that is formatted from the key needs the key given at once."""
+    slot = Slot(id=3)
+    booking = Booking(json={"id": 1, "slot": 4})
+
+    assert slot.url == "/slots/3/detail/"
+    assert booking.slot.url == "/slots/4/detail/"
 
 
 def test_a_key_that_does_not_decode_is_refused_naming_the_relation(

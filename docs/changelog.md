@@ -560,8 +560,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   takes the key that it is given, as before, and so does one built from JSON
   that lacks the key or holds `null`, which `v1.0.0a5` queued as a change that
   `save()` could not send. An object read from a hyperlink learns its key at
-  its first load, so assigning it a key raises `AttributeError`. To rename a
-  resource on a server that allows it, send the write with the raw API, as
+  its first load, so assigning it a key raises `AttributeError`, and so does
+  assigning one to an object of a class that overrides `url`, unless the key is
+  given as the object is built, where `v1.0.0a5` accepted it and the next load
+  could name another key and raise `ResponseShapeError`. To rename a resource
+  on a server that allows it, send the write with the raw API, as
   `api.patch(obj.url, json={"id": 2})`, and build the object again from the
   response. A known key is also kept when the server names another one. A load,
   a write's response, and `update_from_json()` raise `ResponseShapeError`, a

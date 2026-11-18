@@ -5227,8 +5227,8 @@ class JSONProperty:
 
         An object that names no resource yet, with no key and no URL of its
         own, takes the key and sends nothing. An object whose key is known, or
-        that is read from a hyperlink and so names a resource, keeps its key.
-        Assigning the same key does nothing.
+        that has its own URL and so names a resource, keeps its key. Assigning
+        the same key does nothing.
 
         Args:
             obj: Object whose key is assigned.
@@ -5236,8 +5236,9 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the object already names a resource and the
-                value names another key, or any key for an object read from a
-                hyperlink that has not learned its key.
+                value names another key, or any key for an object that has its
+                own URL, as one read from a hyperlink has, or one of a class
+                that overrides ``url``, and has not learned its key.
             FieldConversionError: If the value cannot be converted to the key's
                 JSON value, is of another JSON type than a key of type ``int``
                 or ``str`` has, is not written as a string or an integer, or a
@@ -5282,11 +5283,13 @@ class JSONProperty:
                 f"{name}.{self.field} cannot be assigned another value. Name "
                 f"another object as {name}({self.field}=...)"
             )
-        if obj._url_override is not None:
+        if obj._key_is_unknown() and not obj._is_being_built:
             raise AttributeError(
-                f"A {name} object that was read from a hyperlink learns its "
-                f"key when it loads, so {name}.{self.field} cannot be "
-                f"assigned. Name another object as {name}({self.field}=...)"
+                f"A {name} object that has its own URL, as one read from a "
+                "hyperlink does and one of a class that overrides url does, "
+                f"learns its key when it loads, so {name}.{self.field} cannot "
+                f"be assigned. Name another object as "
+                f"{name}({self.field}=...)"
             )
 
         obj._record_saved_key(encoded)
@@ -5464,6 +5467,13 @@ class JSONObject:
     _url_override: str | None = None
     """The URL of an object that a hyperlinked relation named, if any."""
 
+    _is_being_built: bool = False
+    """Whether the constructor is assigning the object's field values.
+
+    A class that overrides ``url`` may be given its key as it is built, as one
+    that formats its URL from the key is, but not afterward.
+    """
+
     _write_options: Mapping[str, Any] = MappingProxyType({})
     """Request options of the enclosing ``write_options()`` block, if any."""
 
@@ -5602,8 +5612,12 @@ class JSONObject:
             if self._json is not None and pk_property.json_field in self._json:
                 self._record_saved_key(self._json[pk_property.json_field])
 
-        for name in sorted(kwargs, key=lambda name: name not in pk_names):
-            setattr(self, name, kwargs[name])
+        self._is_being_built = True
+        try:
+            for name in sorted(kwargs, key=lambda name: name not in pk_names):
+                setattr(self, name, kwargs[name])
+        finally:
+            self._is_being_built = False
 
     def __eq__(self, other: object) -> bool:
         """Return whether another object is this object's resource.
@@ -5872,6 +5886,7 @@ class JSONObject:
             return related
 
         related = ty(api=api, write_mode=self.write_mode)
+        related._is_being_built = True
         try:
             ty._pk._set_key(related, arg)
         except FieldConversionError as err:
@@ -5882,6 +5897,8 @@ class JSONObject:
             raise FieldConversionError(
                 type(self), field, cast(Exception, err.__cause__)
             ) from err.__cause__
+        finally:
+            related._is_being_built = False
         if field is not None and field in self._prefetched_related:
             canonical = related._canonical_key()
             if canonical is not None:
