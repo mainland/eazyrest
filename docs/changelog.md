@@ -459,7 +459,8 @@ describe them further.
   object. Declare a conversion for the class, such as a `bytes` conversion to
   and from base64, or key the model by a listed type.
 - `repr()` of an object keyed by a relation shows the related object's key. It
-  showed the whole related object when the JSON embedded it, with its fields.
+  showed the whole related object when the JSON embedded it, with its fields. A
+  key that is not a string or an integer, such as a list, is shown as `...`.
 - A relation builds the key of a related object that the program gives it with
   the related model's key constructor, as it builds one that it reads. An
   assignment, `save()`, `create()`, a query, and a lookup such as `owner__in`

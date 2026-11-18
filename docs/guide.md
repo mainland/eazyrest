@@ -429,7 +429,8 @@ pending, so a later `save()` sends them again.
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it. For a key that is a relation, it shows the related object's key,
 even when the JSON embeds the related object, so a log of the object holds none
-of the related object's fields.
+of the related object's fields. A key that is not a string or an integer, such
+as a list, is shown as `...`.
 
 Call `refresh()` to discard cached JSON, converted field values, prefetched
 related objects, and pending lazy updates. The next field read reloads the

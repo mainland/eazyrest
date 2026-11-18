@@ -377,6 +377,52 @@ def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
     assert booking.slot.url == "/slots/4/detail/"
 
 
+@pytest.mark.parametrize(
+    "json",
+    [
+        pytest.param({"user": [{"id": 1, "token": "s3cr3t"}]}, id="list"),
+        pytest.param(
+            {"user": {"id": {"token": "s3cr3t"}}}, id="mapping-of-mapping"
+        ),
+        pytest.param(
+            {"user": {"id": [{"token": "s3cr3t"}]}}, id="list-in-map"
+        ),
+    ],
+)
+def test_repr_of_a_key_relation_hides_a_key_that_is_not_a_scalar(
+    json: Any,
+) -> None:
+    """A log of the object holds none of the related object's fields."""
+    shown = repr(Account(json=json))
+
+    assert shown == "<Account user=...>"
+    assert "s3cr3t" not in shown
+
+
+def test_repr_of_a_key_relation_shows_a_string_or_an_integer_key() -> None:
+    """The reduced key is shown, as it is for an embedded object."""
+    assert repr(Account(json={"user": {"id": 5, "x": 1}})) == (
+        "<Account user=5>"
+    )
+    assert repr(Account(json={"user": 5})) == "<Account user=5>"
+
+
+def test_repr_of_a_key_relation_to_an_undefined_model_hides_the_value() -> (
+    None
+):
+    """A key that cannot be reduced yet is not shown as it is."""
+
+    @json_object(pk="later")
+    class Waiting(RelatedBase):
+        """Model keyed by a relation to a model that is not defined."""
+
+        later: Later  # type: ignore[name-defined]  # noqa: F821
+
+    shown = repr(Waiting(json={"later": {"id": 1, "token": "s3cr3t"}}))
+
+    assert shown == "<Waiting later=...>"
+
+
 def test_a_key_that_does_not_decode_is_refused_naming_the_relation(
     requests_mock: Any,
 ) -> None:
@@ -470,3 +516,15 @@ def test_a_singleton_that_has_not_loaded_says_to_load_or_save_it(
         Holder.create(id=2, me=Me())
 
     assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("key", [True, 1.5, [1, "s3cr3t"]])
+def test_repr_hides_a_key_that_is_not_a_string_or_an_integer(key: Any) -> None:
+    """Neither a relation's key nor a model's own shows another JSON value."""
+    assert repr(Account(json={"user": key})) == "<Account user=...>"
+    assert repr(User(json={"id": key})) == "<User id=...>"
+
+
+def test_repr_shows_a_missing_key_as_none() -> None:
+    """A key that the JSON does not give is not hidden."""
+    assert repr(User(json={"id": None})) == "<User id=None>"
