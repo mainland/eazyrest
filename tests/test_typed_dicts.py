@@ -91,6 +91,20 @@ class Extra(TypedDict, extra_items=int):  # type: ignore[call-arg]
     name: str
 
 
+class ClosedChild(Closed):
+    """Subclass of a closed mapping, which PEP 728 closes too."""
+
+
+class ExtraChild(Extra):
+    """Subclass of a mapping with extra items, which keeps them."""
+
+    extra: int
+
+
+class ClosedGrandchild(ClosedChild):
+    """Subclass of a subclass of a closed mapping."""
+
+
 class Point(NamedTuple):
     """Named tuple, whose JSON form is a list."""
 
@@ -375,11 +389,14 @@ def test_types_read_as_another_type_are_refused(ty: Any, message: str) -> None:
         analyze_type(ty)
 
 
-@pytest.mark.parametrize("ty", [Closed, Extra])
+@pytest.mark.parametrize(
+    "ty", [Closed, Extra, ClosedChild, ExtraChild, ClosedGrandchild]
+)
 def test_closed_typed_dicts_are_refused_when_converted(ty: Any) -> None:
     """A closed ``TypedDict``, or one with extra items, raises on first use.
 
-    It does not raise when analyzed, because a conversion may replace it.
+    So does a subclass of one, which inherits what its base declares. It does
+    not raise when analyzed, because a conversion may replace it.
 
     Args:
         ty: ``TypedDict`` class.

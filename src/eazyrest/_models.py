@@ -1702,6 +1702,33 @@ _NO_EXTRA_ITEMS: tuple[Any, ...] = (
 """Values of ``__extra_items__`` for a ``TypedDict`` without extra items."""
 
 
+def _has_extra_items_rule(ty: type[Any]) -> bool:
+    """Return whether a ``TypedDict`` is closed or has extra items.
+
+    PEP 728 inherits both from a superclass, but the class attributes
+    ``__closed__`` and ``__extra_items__`` reflect only what the class itself
+    passed. So a subclass of a closed ``TypedDict`` is closed, though its own
+    attributes say it is not.
+
+    Args:
+        ty: ``TypedDict`` class.
+
+    Returns:
+        Whether ``ty`` or a ``TypedDict`` that it inherits from is closed or
+        has extra items.
+    """
+    if getattr(ty, "__closed__", None) or not any(
+        getattr(ty, "__extra_items__", None) is marker
+        for marker in _NO_EXTRA_ITEMS
+    ):
+        return True
+    for base in getattr(ty, "__orig_bases__", ()):
+        base = typing.get_origin(base) or base
+        if _is_typed_dict(base) and _has_extra_items_rule(base):
+            return True
+    return False
+
+
 def _key_qualifiers() -> frozenset[Any]:
     """Return the qualifiers that a ``TypedDict`` key's annotation may have.
 
@@ -1760,13 +1787,11 @@ def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
         The analyzed type of each declared key.
 
     Raises:
-        TypeError: If ``ty`` is closed or has extra items (PEP 728), or if an
-            annotation cannot be resolved or converted, or holds a model.
+        TypeError: If ``ty`` is closed or has extra items (PEP 728), also by
+            inheritance, or if an annotation cannot be resolved or converted,
+            or holds a model.
     """
-    if getattr(ty, "__closed__", None) or not any(
-        getattr(ty, "__extra_items__", None) is marker
-        for marker in _NO_EXTRA_ITEMS
-    ):
+    if _has_extra_items_rule(ty):
         raise TypeError(
             f"{ty.__name__} is closed or declares extra items, which eazyrest "
             "does not convert yet. Remove closed= and extra_items=, or give "

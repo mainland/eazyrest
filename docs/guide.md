@@ -770,15 +770,15 @@ mapping whose keys are not strings is one, because JSON object keys are
 strings. So is a model inside a `TypedDict`, a mapping, a fixed-length tuple, a
 `NamedTuple`, or a dataclass, because eazyrest does not convert related objects
 there yet, so annotate such a key or field with the model's primary key type,
-such as `int`. So are a `TypedDict` that is closed or has extra items (PEP
-728), and a generic `TypedDict`, `NamedTuple`, or dataclass with type
-arguments. Annotate its JSON form, such as `dict[str, Any]`. The field's own
-type raises `TypeError` when the class is decorated, except a `TypedDict` that
-is closed or has extra items. Such a field raises `FieldConversionError` when
-it is first used, also inside an optional or a collection, since a conversion
-of the `TypedDict` may replace the check. A member of a `TypedDict`,
-`NamedTuple`, or dataclass raises `FieldConversionError` when the field is
-first used.
+such as `int`. So are a `TypedDict` that is closed or has extra items (PEP 728)
+or a subclass of one, and a generic `TypedDict`, `NamedTuple`, or dataclass
+with type arguments. Annotate its JSON form, such as `dict[str, Any]`. The
+field's own type raises `TypeError` when the class is decorated, except a
+`TypedDict` that is closed or has extra items. Such a field raises
+`FieldConversionError` when it is first used, also inside an optional or a
+collection, since a conversion of the `TypedDict` may replace the check. A
+member of a `TypedDict`, `NamedTuple`, or dataclass raises
+`FieldConversionError` when the field is first used.
 
 A dataclass with an init-only field, of type `dataclasses.InitVar`, is refused
 the same way when a field's type names it, because the dataclass does not keep
