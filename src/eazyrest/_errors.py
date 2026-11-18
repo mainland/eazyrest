@@ -343,18 +343,10 @@ _request_budget: contextvars.ContextVar[_Budget | None] = (
 class _PageLimit:
     """The origins that the redirects of one page request may reach."""
 
-    url: str
-    """The URL of the page request that the limit applies to."""
     origins: Collection[tuple[str, str | None, int | None]]
     """The origins that a redirect of that request may reach."""
     refusal: Callable[[], Exception]
     """Return the error to raise for a redirect outside ``origins``."""
-
-
-_page_limit: contextvars.ContextVar[_PageLimit | None] = (
-    contextvars.ContextVar("_page_limit", default=None)
-)
-"""Limit that ``API._send()`` applies to requests for its URL."""
 
 
 def _asked_url(resp: Response) -> str | None:

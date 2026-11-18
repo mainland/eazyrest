@@ -1275,16 +1275,17 @@ When the query has `request_options=`, `api` is a view of the API, not an
 `API`. Each request that a hook sends through it merges the call's options over
 the query's and goes through the API's own `get()`, `post()`, `put()`,
 `patch()`, or `delete()`, so a subclass of `API` that counts requests or
-refreshes a token in those methods sees every request of the query, and keeps
-its state on itself. The view adds its options and nothing else, so a hook that
-sends `allow_redirects=False` reads the 3xx response itself, as it does in a
-query without options. Reading any other attribute of the view, such as
-`api.session` or a helper that your subclass defines, reads the API's, but a
-helper that sends requests through its own `self` does not send the query's
-options. Assigning an attribute of the view raises `AttributeError`. Use it to
-send requests, not to configure, close, or compare the API, and do not check
-`isinstance(api, API)`, which is false for the view. A query without options
-passes its API itself.
+refreshes a token in those methods sees every request that a hook sends through
+the view, and keeps its state on itself. It does not see a request for a page,
+which pagination sends directly with the query's options. The view adds its
+options and nothing else, so a hook that sends `allow_redirects=False` reads
+the 3xx response itself, as it does in a query without options. Reading any
+other attribute of the view, such as `api.session` or a helper that your
+subclass defines, reads the API's, but a helper that sends requests through its
+own `self` does not send the query's options. Assigning an attribute of the
+view raises `AttributeError`. Use it to send requests, not to configure, close,
+or compare the API, and do not check `isinstance(api, API)`, which is false for
+the view. A query without options passes its API itself.
 
 Every hook may receive more keyword arguments in later 1.x releases, to tell it
 more about the query or the write: those that take `api`, which are
@@ -1436,10 +1437,18 @@ it must lead to the origin of the page request or to one of the API's
 followed, and raises `RedirectError` for a redirect from a next-page request,
 whichever origin it names.
 
-The redirect checks, those of next-page requests included, apply to requests
-that go through the API's request methods. An override of `get()` or another
-request method keeps them only if it calls the API's method, as `super().get()`
-does. One that sends through the session directly skips them.
+The redirect checks apply to requests that go through the API's request
+methods. An override of `get()` or another request method keeps them only if it
+calls the API's method, as `super().get()` does. One that sends through the
+session directly skips them.
+
+A next-page request does not go through `get()`. Pagination sends it itself,
+with the session's headers, authentication, and hooks, the query's
+`request_options=`, and the API's limits, and checks the next-page link's
+origin and every redirect as above. An override of `get()` therefore sees no
+page request, and cannot rewrite its URL, count it, or add a credential to it.
+Do that in the session's configuration, in its authentication handler, or in a
+session hook, which see a page request as they see any other.
 
 A class that overrides `collection_items_from_response()` for a `Link` header
 API can return `follow_link_headers()` from it. It resolves links and checks

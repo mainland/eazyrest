@@ -1882,10 +1882,10 @@ def test_response_that_no_api_request_returned_is_named_by_its_own_url(
     assert _response_name(resp) == f"GET {named}"
 
 
-def test_page_redirect_is_not_checked_by_a_client_that_skips_the_api_methods(
+def test_page_redirect_is_checked_however_the_subclasss_get_sends(
     requests_mock: Any,
 ) -> None:
-    """A get() that sends through the session skips every redirect check."""
+    """A get() that sends through the session does not exempt a page."""
 
     class Direct(API):
         def get(self, uri: str, *args: Any, **kwargs: Any) -> Any:
@@ -1901,14 +1901,15 @@ def test_page_redirect_is_not_checked_by_a_client_that_skips_the_api_methods(
         "https://other.test/z", json={"results": [{"id": 1}]}
     )
 
-    items = list(
-        follow_next_links(
-            api, {"next": "https://api.test/p?cursor=KEPT", "results": []}
+    with pytest.raises(PaginationError, match="different origin"):
+        list(
+            follow_next_links(
+                api,
+                {"next": "https://api.test/p?cursor=KEPT", "results": []},
+            )
         )
-    )
 
-    assert items == [{"id": 1}]
-    assert other.called
+    assert not other.called
 
 
 def test_http_error_of_a_url_that_redirected_to_itself_names_the_url_asked_for(

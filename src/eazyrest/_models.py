@@ -84,6 +84,7 @@ from .api import (
     _check_final_response,
     _merge_request_options,
     _origin,
+    _permitted_origins,
     _registered_api,
     _takes_kwargs,
 )
@@ -2721,7 +2722,7 @@ def _checked_hyperlink(api: _AnyAPI, url: str) -> str:
         ValueError: If the URL's origin is neither the API's nor one of its
             ``redirect_origins``. The message does not quote the URL.
     """
-    allowed = {_origin(api.base_url), *map(_origin, api.redirect_origins)}
+    allowed = _permitted_origins(api.base_url, api.redirect_origins)
     # urljoin() also rejects some URLs, such as one whose host is "[bad]", with
     # a message that quotes part of the URL.
     try:
@@ -8190,9 +8191,7 @@ class JSONObject:
                 "the query has no collection to read",
             )
         else:
-            resp = _request_page(
-                client, client.resolve_url(url), allow_other_origins=False
-            )
+            resp = _request_page(client, url, allow_other_origins=False)
         return cast("Page[Self]", source.page(resp))
 
     @classmethod

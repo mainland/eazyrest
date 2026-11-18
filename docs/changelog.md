@@ -42,10 +42,17 @@ describe them further.
   read through it as before. A page that a hook builds with `Page(...)` and no
   source ends `filter()` after its items.
 - The redirect checks apply to requests that go through the API's request
-  methods, and a request that a subclass sends another way skips them. A
-  subclass whose `get()` sends through the session directly no longer has the
-  redirects of its next-page requests checked. Call `super().get()` to keep the
-  checks.
+  methods, and a request that a subclass sends another way skips them.
+- A request for a next page does not go through `API.get()`, so an override of
+  `get()` no longer sees it. `v1.0.0a5` sent it through `get()`, so a subclass
+  could count it, rewrite its URL, or add a credential there. Pagination now
+  sends the request itself, with the session's headers, authentication, and
+  hooks, the `request_options=` of a scoped query, and the API's limits, and
+  checks the page's origin and each redirect as before. Move what such an
+  override did to the session's configuration, its authentication handler, or a
+  session hook. A subclass that sent a next-page request through the session
+  directly now has the redirects of that request checked, and its session
+  response hooks run.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as
@@ -216,7 +223,8 @@ describe them further.
   a subclass that counted requests or refreshed a token in its own `get()` lost
   the requests of a scoped query. The view sends every request through the
   API's own `get()`, `post()`, `put()`, `patch()`, or `delete()` with the
-  query's options, so the subclass sees them. It is not an `API`, so
+  query's options, so the subclass sees them, though not a request for a page,
+  which pagination sends directly. It is not an `API`, so
   `isinstance(api, API)` is false and a hook that checks it, or that casts
   `api` and assigns an attribute, changes: reading an attribute outside
   `Client`, such as `api.session` or a helper of your subclass, reads the

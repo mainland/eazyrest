@@ -1952,7 +1952,7 @@ def test_query_request_options_reach_later_pages(requests_mock: Any) -> None:
 def test_scoped_query_sends_every_request_through_its_api(
     requests_mock: Any,
 ) -> None:
-    """A subclass of ``API`` sees each page, and a hook's own request."""
+    """A hook's own request goes through ``get()``, and a page does not."""
 
     class Counting(API):
         """An API that counts the requests that reach ``get()``."""
@@ -1995,7 +1995,7 @@ def test_scoped_query_sends_every_request_through_its_api(
     )
 
     assert [item.id for item in items] == [1, 2]
-    assert api.calls == 3
+    assert api.calls == 2
     assert extra.last_request.headers["X-Trace"] == "t"
     assert requests_mock.last_request.headers["X-Trace"] == "t"
 
@@ -3188,7 +3188,7 @@ class _ForwardingAPI(API):
 def test_page_through_a_scoped_view_limits_redirects_to_the_api_origin(
     requests_mock: Any,
 ) -> None:
-    """A subclass's ``get()`` still sees a page request that is limited.
+    """A page request through a scoped view is limited to the API's origin.
 
     A page's redirect may reach the API's origin alone, though
     ``redirect_origins`` allows another for a request that is not a page's.
@@ -3208,52 +3208,6 @@ def test_page_through_a_scoped_view_limits_redirects_to_the_api_origin(
         list(follow_next_links(view, first_page))
 
     assert not target.called
-
-
-def test_request_sent_before_a_page_request_is_not_limited_to_its_origins(
-    requests_mock: Any,
-) -> None:
-    """A request that a ``get()`` override sends first follows its redirects.
-
-    Such a request may be a token refresh. It is checked against
-    ``redirect_origins`` as any request is, not against the page's origins.
-    """
-
-    class Refreshing(_ForwardingAPI):
-        """API that requests a token before it requests a page."""
-
-        def get(
-            self, uri: str, *args: Any, **kwargs: Any
-        ) -> requests.Response:
-            """Request a token, then the page.
-
-            Args:
-                uri: Relative or absolute request URI.
-                *args: Positional arguments for the request.
-                **kwargs: Keyword arguments for the request.
-
-            Returns:
-                The page's response.
-            """
-            if uri.endswith("/p"):
-                super().get("/token")
-            return super().get(uri, *args, **kwargs)
-
-    api = Refreshing("https://api.test/")
-    api.redirect_origins = ["https://auth.test"]
-    requests_mock.get(
-        "https://api.test/token",
-        status_code=302,
-        headers={"Location": "https://auth.test/token"},
-    )
-    token = requests_mock.get("https://auth.test/token", json={})
-    requests_mock.get("https://api.test/p", json={"results": [{"id": 1}]})
-    first_page = {"next": "https://api.test/p", "results": []}
-
-    items = list(follow_next_links(api, first_page))
-
-    assert items == [{"id": 1}]
-    assert token.called
 
 
 def test_other_origin_page_redirects_follow_the_apis_allowed_origins(
@@ -3322,41 +3276,21 @@ def test_refused_page_redirect_runs_session_hooks_once_per_response(
     assert calls == [302]
 
 
-def test_page_limit_applies_to_each_request_for_the_page_url(
+def test_page_origin_limit_applies_to_every_redirect_hop(
     requests_mock: Any,
 ) -> None:
-    """A retry of the page's request is limited as the first attempt was."""
-
-    class Retrying(_ForwardingAPI):
-        """API whose ``get()`` sends the request again."""
-
-        def get(
-            self, uri: str, *args: Any, **kwargs: Any
-        ) -> requests.Response:
-            """Send the request twice and return the second response.
-
-            Args:
-                uri: Relative or absolute request URI.
-                *args: Positional arguments for the request.
-                **kwargs: Keyword arguments for the request.
-
-            Returns:
-                The second response.
-            """
-            super().get(uri, *args, **kwargs)
-            return super().get(uri, *args, **kwargs)
-
-    api = Retrying("https://api.test/")
+    """A page's second redirect may not leave the API's origin either."""
+    api = API("https://api.test/")
     api.redirect_origins = ["https://other.test"]
     requests_mock.get(
         "https://api.test/p",
-        [
-            {"json": {"results": []}},
-            {
-                "status_code": 302,
-                "headers": {"Location": "https://other.test/x"},
-            },
-        ],
+        status_code=302,
+        headers={"Location": "https://api.test/q"},
+    )
+    requests_mock.get(
+        "https://api.test/q",
+        status_code=302,
+        headers={"Location": "https://other.test/x"},
     )
     target = requests_mock.get("https://other.test/x", json={"results": []})
 
@@ -3431,3 +3365,193 @@ def test_pagination_module_reads_no_session_attribute() -> None:
     ]
 
     assert reads == []
+
+
+class _CountingAPI(API):
+    """API that counts the requests that reach its ``get()``."""
+
+    gets = 0
+    """Requests so far, kept on the instance by ``get()``."""
+
+    def get(self, uri: str, *args: Any, **kwargs: Any) -> requests.Response:
+        """Count the request and forward it.
+
+        Args:
+            uri: Relative or absolute request URI.
+            *args: Positional arguments for the request.
+            **kwargs: Keyword arguments for the request.
+
+        Returns:
+            The response.
+        """
+        self.gets += 1
+        return super().get(uri, *args, **kwargs)
+
+
+def test_override_of_get_is_not_called_for_a_page_request(
+    requests_mock: Any,
+) -> None:
+    """Pagination sends a page request without ``get()``."""
+    api = _CountingAPI("https://api.test/")
+    requests_mock.get("https://api.test/two", json={"results": [2]})
+
+    items = list(
+        follow_next_links(api, {"next": "/two", "results": [1]}, url="/one")
+    )
+
+    assert items == [1, 2]
+    assert api.gets == 0
+
+
+def test_override_of_get_sees_a_query_request_but_no_page_request(
+    requests_mock: Any,
+) -> None:
+    """A model's first request goes through ``get()``, a next page does not."""
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+    api = _CountingAPI("https://api.test/")
+    requests_mock.get(
+        "https://api.test/probes/",
+        json={"results": [{"id": 1}], "next": "/probes/?page=2"},
+    )
+    requests_mock.get(
+        "https://api.test/probes/?page=2",
+        json={"results": [{"id": 2}], "next": None},
+    )
+
+    items = list(Probe.filter(api=api))
+
+    assert [item.id for item in items] == [1, 2]
+    assert api.gets == 1
+
+
+@pytest.mark.parametrize("rewrite", ["?x=1", "/", "extra/"])
+def test_page_redirect_limit_holds_for_each_redirect_whatever_get_does(
+    requests_mock: Any, rewrite: str
+) -> None:
+    """A page redirect to another origin is refused, though the API allows it.
+
+    An override of ``get()`` that rewrites the URL of a request does not loosen
+    the limit, since pagination does not send the page through it.
+
+    Args:
+        requests_mock: Mock transport.
+        rewrite: Text that the override adds to the URL.
+    """
+
+    class Rewriting(API):
+        """API whose ``get()`` rewrites each request's URL."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            """Forward the request with a changed URL.
+
+            Args:
+                uri: Relative or absolute request URI.
+                *args: Positional arguments for the request.
+                **kwargs: Keyword arguments for the request.
+
+            Returns:
+                The response.
+            """
+            return super().get(f"{uri}{rewrite}", *args, **kwargs)
+
+    api = Rewriting("https://api.test/")
+    api.redirect_origins = ["https://other.test"]
+    requests_mock.get("https://api.test/p", json={"results": [], "next": "/q"})
+    requests_mock.get(
+        "https://api.test/q",
+        status_code=302,
+        headers={"Location": "https://api.test/r"},
+    )
+    requests_mock.get(
+        "https://api.test/r",
+        status_code=302,
+        headers={"Location": "https://other.test/x"},
+    )
+    target = requests_mock.get("https://other.test/x", json={"results": []})
+
+    with pytest.raises(PaginationError, match="different origin"):
+        list(follow_next_links(api, {"next": "/q", "results": []}))
+
+    assert not target.called
+
+
+def test_session_response_hook_sees_a_page_through_a_direct_session_override(
+    requests_mock: Any,
+) -> None:
+    """A session hook runs for a page that a direct-session ``get()`` skips."""
+
+    class Direct(API):
+        """API whose ``get()`` sends through the session."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            """Send the request through the session.
+
+            Args:
+                uri: Relative or absolute request URI.
+                *args: Positional arguments for the request.
+                **kwargs: Keyword arguments for the request.
+
+            Returns:
+                The response.
+            """
+            return self.session.get(uri, *args, **kwargs)
+
+    api = Direct("https://api.test/")
+    statuses: list[int] = []
+    api.session.hooks["response"] = [
+        lambda resp, **kwargs: statuses.append(resp.status_code)
+    ]
+    requests_mock.get(
+        "https://api.test/two", json={"next": None, "results": [2]}
+    )
+
+    items = list(follow_next_links(api, {"next": "/two", "results": [1]}))
+
+    assert items == [1, 2]
+    assert statuses == [200]
+
+
+def test_scoped_view_request_options_reach_a_page_request(
+    requests_mock: Any,
+) -> None:
+    """A page request carries the options of the query's view."""
+
+    class Dropping(API):
+        """API whose ``get()`` forwards no option."""
+
+        def get(
+            self, uri: str, *args: Any, **kwargs: Any
+        ) -> requests.Response:
+            """Send the request without the options it was given.
+
+            Args:
+                uri: Relative or absolute request URI.
+                *args: Positional arguments for the request.
+                **kwargs: Keyword arguments for the request.
+
+            Returns:
+                The response.
+            """
+            return super().get(uri)
+
+    api = Dropping("https://api.test/")
+    requests_mock.get(
+        "https://api.test/two", json={"next": None, "results": [2]}
+    )
+    view = api._scoped({"headers": {"Accept-Language": "en"}, "timeout": 7})
+
+    items = list(follow_next_links(view, {"next": "/two", "results": [1]}))
+
+    assert items == [1, 2]
+    assert requests_mock.last_request.headers["Accept-Language"] == "en"
+    assert requests_mock.last_request.timeout == 7

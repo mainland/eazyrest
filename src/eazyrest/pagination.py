@@ -15,18 +15,17 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _asked_url,
-    _page_limit,
-    _PageLimit,
     _redact_url,
 )
 from ._protocols import Client, Response
 from ._results import Results
-from ._urls import _ServerURL
 from .api import (
+    _UNPARSABLE_PAGE_URL,
     _as_api,
-    _as_client,
+    _as_sender,
     _check_final_response,
     _origin,
+    _page_url_subject,
 )
 
 __all__ = [
@@ -70,9 +69,6 @@ def _link(resp: Response, rels: frozenset[str]) -> str | None:
             return url
 
     return None
-
-
-_UNPARSABLE_PAGE_URL = "A page URL cannot be parsed, so nothing was sent."
 
 
 def _page_link(page: Mapping[str, Any], key: str, base: str) -> str | None:
@@ -161,43 +157,13 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
     return results
 
 
-def _page_url_subject(
-    prepared: _ServerURL | None, label: str, from_server: bool
-) -> str:
-    """Name a page URL in a message.
-
-    Args:
-        prepared: The URL as requests prepares it, or ``None`` if requests
-            cannot.
-        label: What the message calls the URL, such as ``"Page URL"``.
-        from_server: Whether a response supplied the link, as a next-page link,
-            and eazyrest refuses to send it or stops on it. A link that the
-            caller gave is the URL that eazyrest was asked to send.
-
-    Returns:
-        ``label`` with the URL's origin if ``from_server``, built from the
-        parts of its reading so that it holds no user, password, or query.
-        Otherwise ``label`` with the URL as requests prepares it, without its
-        user and password. For a URL that is not HTTP or HTTPS, whose text can
-        read as a user and password, ``label`` says only that. For a URL that
-        requests cannot prepare, ``label`` alone.
-    """
-    if prepared is None:
-        return label
-    if not prepared.is_http:
-        return f"{label}, which is not an HTTP or HTTPS URL,"
-    if from_server:
-        return f"{label} {prepared.origin_text!r}"
-    return f"{label} {_redact_url(prepared.url)!r}"
-
-
 def _check_page_origin(
     api: Client, url: str, from_server: bool = False
 ) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
-    The URL is read once, as requests prepares it, and the origin and the
-    message both come from that reading.
+    The check is the one that the request makes before it sends, so a link that
+    cannot be requested is refused before it counts as a page.
 
     Args:
         api: Client that would request the page.
@@ -213,16 +179,10 @@ def _check_page_origin(
             says only that the URL is not an HTTP or HTTPS URL if it is not.
             The page's link is on ``Page.next_url``.
     """
-    prepared = _as_api(api)._read_server_url(url)
-    if prepared is None:
-        raise PaginationError(_UNPARSABLE_PAGE_URL)
-    if prepared.origin != _origin(api.base_url):
-        subject = _page_url_subject(prepared, "Page URL", from_server)
-        raise PaginationError(
-            f"{subject} has a different origin from the API's base URL "
-            f"{_redact_url(api.base_url)!r}. "
-            "Pass allow_other_origins=True to follow it."
-        )
+    sender, _ = _as_sender(api)
+    sender._check_page_destination(
+        url, {_origin(sender.base_url)}, from_server
+    )
 
 
 def _request_page(
@@ -233,13 +193,14 @@ def _request_page(
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
-    The API's guard checks the redirects, as for any request. Unless
-    ``allow_other_origins`` is set, this function gives the guard the API's
-    origin as the only one that the page's redirects may reach.
+    The request goes to the API's private sender and not to ``get()``, with the
+    options of a scoped view. Unless ``allow_other_origins`` is set, the page
+    and its redirects may reach the API's origin alone. Otherwise the page may
+    have any origin, and its redirects follow the rule of any other request.
 
     Args:
         api: Client that sends the request.
-        url: Absolute URL of the page.
+        url: URL of the page, absolute or relative to the API's base URL.
         allow_other_origins: Whether the page and its redirects may have an
             origin other than the API's base URL. A redirect must still lead
             to an origin that the API allows.
@@ -258,47 +219,11 @@ def _request_page(
             response is a redirect that was not followed.
         requests.RequestException: If the request fails, as for any request.
     """
-    api = _as_client(api)
-    api_origin = _origin(api.base_url)
-    if not allow_other_origins:
-        _check_page_origin(api, url, from_server)
-    # Prepare the link as requests will, before anything is sent, so that an
-    # error that requests raises for the link, which can quote it, is not the
-    # request's. An error from the request itself, or from a session hook,
-    # keeps its own type.
-    prepared = _as_api(api)._read_server_url(url)
-    if prepared is None or not prepared.sendable:
-        raise PaginationError(
-            "A page URL cannot be requested, so nothing was sent."
-        )
-    # The page link as requests sends it, which is what the message names.
-    asked = _redact_url(prepared.url)
-
-    def refusal() -> Exception:
-        """Return the error for a redirect to another origin.
-
-        Returns:
-            An error whose message names the request by its link and quotes no
-            part of the redirect's target.
-        """
-        return PaginationError(
-            f"Page request {asked!r} was redirected to a different origin "
-            f"from the API's base URL {_redact_url(api.base_url)!r}. "
-            "Pass allow_other_origins=True to follow it."
-        )
-
-    params = _as_api(api)._repeated_params(url)
-    # Without allow_other_origins, the API's guard limits this request's
-    # redirects to the API's origin. The limit reaches the request through
-    # api.get(), which a subclass may override, and applies to every request
-    # for this URL during the call, such as a retry, and to no other.
-    token = _page_limit.set(
-        None if allow_other_origins else _PageLimit(url, {api_origin}, refusal)
+    sender, options = _as_sender(api)
+    own = None if allow_other_origins else {_origin(sender.base_url)}
+    resp = sender._send_page(
+        url, options, from_server=from_server, initial=own, redirects=own
     )
-    try:
-        resp = api.get(url, params=params)
-    finally:
-        _page_limit.reset(token)
     return _check_final_response(resp, "the page has no response to read")
 
 
