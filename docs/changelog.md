@@ -314,11 +314,13 @@ describe them further.
   `NamedTuple`, or Pydantic type, still raise when the field is first used.
 - A field whose own type is a union with a member that converts, such as
   `str | datetime.datetime`, also inside an optional, a collection, a mapping,
-  or a fixed-length tuple, raises `TypeError` when the class is decorated,
-  naming the field, where `v1.0.0a5` raised `FieldConversionError` when the
-  field was first used. The model's `conversions` decide which members convert.
-  A union inside a `TypedDict`, dataclass, or `NamedTuple` still raises when
-  the field is first used.
+  a fixed-length tuple, or a `NewType`, raises `TypeError` when the class is
+  decorated, naming the field, where `v1.0.0a5` raised `FieldConversionError`
+  when the field was first used. The model's `conversions` decide which members
+  convert, so a subclass whose `conversions` make an inherited field's union
+  one that converts is refused when the subclass is decorated. A union inside a
+  `TypedDict`, dataclass, or `NamedTuple` still raises when the field is first
+  used.
 - A field annotated with something that is not a type, such as a function, a
   module, a value, a bare `LiteralString`, `Never`, `Self`, `Final`, or a
   `TypeVar`, raises `TypeError` when the class is decorated, naming the field,

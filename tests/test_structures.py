@@ -30,7 +30,13 @@ from typing import (
 import pytest
 import requests_mock
 
-from eazyrest import API, FieldConversionError, JSONObject, json_object
+from eazyrest import (
+    API,
+    Conversion,
+    FieldConversionError,
+    JSONObject,
+    json_object,
+)
 from eazyrest._models import DataclassType, NamedTupleType, analyze_type
 
 BASE = "https://structures.example.com/"
@@ -294,6 +300,82 @@ def test_union_of_converting_members_is_refused_when_decorated(
 
     with pytest.raises(TypeError, match=r"^Mixed\.value: ") as refused:
         json_object(type("Mixed", (StructureBase,), namespace))
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert "do not all pass through" in str(refused.value)
+
+
+class _Code(str):
+    """String class that a subclass's conversions convert."""
+
+
+_CODE_CONVERSION = Conversion(
+    decode=lambda value, _: _Code(value), encode=lambda value, _: str(value)
+)
+
+
+def test_inherited_union_is_refused_when_a_subclass_converts_it() -> None:
+    """A subclass's conversions can make an inherited union one that converts.
+
+    The base passes ``_Code`` through, and the subclass converts it, so the
+    subclass is refused when it is decorated, as it would be if it declared the
+    field itself.
+    """
+
+    @json_object
+    class Base(StructureBase):
+        class_url = "/bases/"
+
+        id: int
+        value: int | _Code
+
+    namespace = {
+        "conversions": {_Code: _CODE_CONVERSION},
+        "__module__": __name__,
+    }
+    with pytest.raises(TypeError, match=r"^Sub\.value: ") as refused:
+        json_object(type("Sub", (Base,), namespace))
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert "do not all pass through" in str(refused.value)
+
+
+def test_inherited_union_is_kept_when_a_subclass_converts_other_types() -> (
+    None
+):
+    """A subclass that converts other types keeps an inherited union."""
+
+    @json_object
+    class Base(StructureBase):
+        class_url = "/bases/"
+
+        id: int
+        value: int | str
+
+    namespace = {
+        "conversions": {_Code: _CODE_CONVERSION},
+        "__module__": __name__,
+    }
+    sub: Any = json_object(type("Sub", (Base,), namespace))
+
+    assert sub(json={"id": 1, "value": "a"}).value == "a"
+
+
+_WhenName = NewType(  # type: ignore[valid-newtype]
+    "_WhenName", str | datetime.datetime
+)
+
+
+def test_union_inside_a_new_type_is_refused_when_decorated() -> None:
+    """A ``NewType`` of a union with a converting member is refused."""
+    with pytest.raises(TypeError, match=r"^Named\.value: ") as refused:
+
+        @json_object
+        class Named(StructureBase):
+            class_url = "/named/"
+
+            id: int
+            value: _WhenName
 
     assert not isinstance(refused.value, FieldConversionError)
     assert "do not all pass through" in str(refused.value)

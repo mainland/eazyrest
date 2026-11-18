@@ -1324,9 +1324,9 @@ def _check_field_unions(
 ) -> None:
     """Check each union in a field's own type, as reading the field would.
 
-    The walk goes through optionals, unions, collections, mappings, and
-    fixed-length tuples. It does not enter a structure or a model, whose
-    members are checked when the field is first used.
+    The walk goes through optionals, unions, collections, mappings,
+    fixed-length tuples, and ``NewType``. It does not enter a structure or a
+    model, whose members are checked when the field is first used.
 
     Args:
         analyzed: Analyzed type of a field.
@@ -1347,6 +1347,8 @@ def _check_field_unions(
         case FixedTupleType(items):
             for item in items:
                 _check_field_unions(item, table)
+        case NewTypeType(_, inner):
+            _check_field_unions(inner, table)
 
 
 def _hints_of(cls: type[Any]) -> dict[str, Any]:
@@ -3312,7 +3314,9 @@ def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
     return _analyze_field(prop, prop._resolve_type(), strict=strict)
 
 
-def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
+def _refuse_declared_type(
+    cls: type[JSONObject], prop: JSONProperty, *, inherited: bool = False
+) -> None:
     """Refuse one field whose own type eazyrest does not convert.
 
     The kinds of error are told apart by where they arise and their type, never
@@ -3325,6 +3329,9 @@ def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
     Args:
         cls: Decorated model class.
         prop: The field.
+        inherited: Whether a base class declares the field. Only its unions are
+            checked, against ``cls``'s table, since the base has checked the
+            rest.
 
     Raises:
         TypeError: If the field's type is refused. Its message is
@@ -3336,7 +3343,10 @@ def _refuse_declared_type(cls: type[JSONObject], prop: JSONProperty) -> None:
     try:
         resolved = prop._resolve_type()
         resolving = False
-        analyzed = _analyze_field(prop, resolved, strict=False)
+        if inherited:
+            analyzed = analyze_type(resolved)
+        else:
+            analyzed = _analyze_field(prop, resolved, strict=False)
         _check_field_unions(analyzed, _table_of(cls))
     except Exception as err:
         if (
@@ -3365,7 +3375,9 @@ def _refuse_declared_types(
     member of a ``TypedDict``, a dataclass, a ``NamedTuple``, or a Pydantic
     type, which is analyzed when it is first needed. Any other ``TypeError``
     from analyzing the resolved type is a refusal, whose message names the
-    field and whose cause is the reason.
+    field and whose cause is the reason. A field that a base declares is
+    checked again for a union, when the class's conversions differ from the
+    base's.
 
     Args:
         cls: Decorated model class.
@@ -3386,6 +3398,35 @@ def _refuse_declared_types(
         props.append(pk)
     for prop in props:
         _refuse_declared_type(cls, prop)
+    for prop in _inherited_fields_with_new_table(cls, props):
+        _refuse_declared_type(cls, prop, inherited=True)
+
+
+def _inherited_fields_with_new_table(
+    cls: type[JSONObject], checked: Iterable[JSONProperty]
+) -> list[JSONProperty]:
+    """Return the inherited fields that a class's conversions may change.
+
+    A union is refused when a member has a conversion, so a subclass whose
+    table differs from its base's can make an inherited field's union one that
+    eazyrest cannot convert.
+
+    Args:
+        cls: Decorated model class.
+        checked: The fields that were checked as the class's own.
+
+    Returns:
+        The fields that a base declares, in name order, whose declaring class
+        has a conversion table that differs from ``cls``'s.
+    """
+    table = _table_of(cls)
+    own = {prop.field for prop in checked}
+    props = []
+    for name in sorted(cls._json_fields - own):
+        prop = inspect.getattr_static(cls, name, None)
+        if isinstance(prop, JSONProperty) and _table_of(prop.cls) != table:
+            props.append(prop)
+    return props
 
 
 def _check_api_attribute(
