@@ -1139,11 +1139,17 @@ generator, a `deque`, a `range`, or a set, counts as a collection, and is read
 once, whether or not the name is a field's. A field's conversion encodes each
 item. The exception is a value that the field's conversion takes as a whole,
 such as a model for a relation field or an instance of a class that
-`conversions` registers, which is one value even if it is iterable. A
-collection must be finite, because eazyrest reads all of it before it sends the
-request, so an endless generator never returns. Use the API's own null filter,
-such as `parent__isnull=True` in django-filter, to match objects whose field is
-null.
+`conversions` registers, which is one value even if it is iterable. Such a
+value is refused if the conversion writes it as a list, as for a `NamedTuple`
+or fixed-length tuple field, because requests would send the list as separate
+values, which a server cannot tell from a filter on several values. No value
+can be sent under the field's own name. To filter on such a field, encode the
+value as the API expects and pass it under a name that names no field, such as
+a lookup on the field's JSON key like `point__exact="1,2"`, which is sent
+unchanged. A collection must be finite, because eazyrest reads all of it before
+it sends the request, so an endless generator never returns. Use the API's own
+null filter, such as `parent__isnull=True` in django-filter, to match objects
+whose field is null.
 
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. Its keyword arguments are sent in

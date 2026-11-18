@@ -7194,12 +7194,12 @@ class JSONObject:
     def _query_items(cls, name: str, value: Any) -> tuple[list[Any], bool]:
         """Return the operands of a query parameter, each encoded.
 
-        A value that the field's conversion takes as a whole is one operand.
-        Otherwise an iterable that is not a string, bytes, or a mapping is read
-        once and gives an operand for each of its items, which the item
-        conversion of a collection field, or the field's conversion, encodes. A
-        parameter that names no field is not converted, except that a model is
-        its primary key.
+        A value that the field's conversion takes as a whole is one operand,
+        even if the conversion writes it as a list. Otherwise an iterable that
+        is not a string, bytes, or a mapping is read once and gives an operand
+        for each of its items, which the item conversion of a collection field,
+        or the field's conversion, encodes. A parameter that names no field is
+        not converted, except that a model is its primary key.
 
         Args:
             name: Name of the parameter.
@@ -7235,10 +7235,7 @@ class JSONObject:
 
         with guard:
             if cls._is_whole_query_value(name, value):
-                encoded = convert(value)
-                if isinstance(encoded, list):
-                    return encoded, True
-                return [encoded], False
+                return [convert(value)], False
             if (
                 value is None
                 or isinstance(value, (str, bytes, Mapping))
@@ -7270,8 +7267,10 @@ class JSONObject:
         Raises:
             ValueError: If the value is a mapping or ``None``, an empty
                 collection, or holds ``None`` or another collection, which
-                requests would omit, flatten, or send as its keys, so the query
-                would ignore or change its constraint.
+                requests would omit, flatten, or send as its keys, or is one
+                value that its field's conversion writes as a list, which
+                requests would send as separate values, so the query would
+                ignore or change its constraint.
         """
         operands, repeated = cls._query_items(name, value)
         problem = None
@@ -7279,6 +7278,12 @@ class JSONObject:
             problem = "is None, and requests omits it"
         elif not repeated and isinstance(operands[0], Mapping):
             problem = "is a mapping, and requests sends only its keys"
+        elif not repeated and isinstance(operands[0], list):
+            problem = (
+                "is one value that the field's conversion writes as a list, "
+                "which requests would send as separate values, and a server "
+                "cannot tell those from a filter on several values"
+            )
         elif not operands:
             problem = "is an empty collection, and requests omits it"
         elif any(operand is None for operand in operands):

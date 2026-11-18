@@ -4407,6 +4407,99 @@ def test_get_or_create_does_not_read_an_iterable_that_a_conversion_encodes(
     assert post.last_request.json() == {"id": 1, "code": "code"}
 
 
+class QueryPoint(typing.NamedTuple):
+    """A ``NamedTuple`` that a field holds as a whole value."""
+
+    x: int
+    y: int
+
+
+class QueryPair:
+    """Class whose registered conversion writes a list."""
+
+
+@json_object
+class Placed(ModelBase):
+    """Model with fields whose conversions write a list."""
+
+    class_url = "/placed/"
+    conversions: ClassVar[dict[type, Conversion]] = {
+        QueryPair: Conversion(
+            decode=lambda value, cls: QueryPair(),
+            encode=lambda value, cls: [1, 2],
+        )
+    }
+
+    id: int
+    point: QueryPoint
+    fixed: tuple[int, int]
+    pair: QueryPair
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("point", QueryPoint(1, 2)),
+        ("fixed", (1, 2)),
+        ("pair", QueryPair()),
+    ],
+)
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+def test_query_refuses_a_whole_value_that_its_conversion_writes_as_a_list(
+    requests_mock: Any, name: str, value: Any, method: str
+) -> None:
+    """A value written as a list would repeat the parameter, so it is refused.
+
+    Args:
+        name: Name of a field whose conversion writes a list.
+        value: Whole value for the field.
+        method: Name of the query method.
+    """
+    requests_mock.get("https://example.com/v1/placed/", json=[])
+    requests_mock.post("https://example.com/v1/placed/", json={"id": 1})
+
+    with pytest.raises(
+        ValueError, match="one value that the field's conversion writes"
+    ):
+        getattr(Placed, method)(**{name: value})
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("name", ["point", "fixed"])
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+def test_query_refuses_a_list_for_a_field_whose_conversion_writes_a_list(
+    requests_mock: Any, name: str, method: str
+) -> None:
+    """No value goes under such a field's own name, not even a list.
+
+    Args:
+        name: Name of a ``NamedTuple`` or fixed-length tuple field.
+        method: Name of the query method.
+    """
+    requests_mock.get("https://example.com/v1/placed/", json=[])
+    requests_mock.post("https://example.com/v1/placed/", json={"id": 1})
+
+    with pytest.raises(ValueError, match="cannot be sent"):
+        getattr(Placed, method)(**{name: [1, 2]})
+
+    assert requests_mock.call_count == 0
+
+
+def test_query_sends_a_lookup_on_the_key_of_such_a_field_unchanged(
+    requests_mock: Any,
+) -> None:
+    """A name that names no field is sent as given, as its ``str()``."""
+    lookup = requests_mock.get("https://example.com/v1/placed/", json=[])
+
+    list(Placed.filter(point__exact="1,2", fixed__exact="3,4"))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "point__exact": ["1,2"],
+        "fixed__exact": ["3,4"],
+    }
+
+
 def test_query_sends_the_key_of_each_model_for_a_relation_field(
     requests_mock: Any,
 ) -> None:

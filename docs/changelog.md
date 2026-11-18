@@ -496,8 +496,9 @@ describe them further.
   where it raised `FieldConversionError`, and a collection of models for a
   relation field sends each primary key. An instance of a class that the
   field's conversion registers is one value, not its items, even if the class
-  is iterable. A query argument must be finite, because the whole of it is read
-  before the request is sent.
+  is iterable, and is refused if the conversion writes it as a list, where
+  before it repeated the parameter with each item. A query argument must be
+  finite, because the whole of it is read before the request is sent.
 
 ### Migrating from 0.9.0
 
