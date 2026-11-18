@@ -60,10 +60,15 @@ describe them further.
   `eazyrest.pydantic` module, with its types `Datetime`, `Date`, `Time`,
   `Duration`, `UUID`, and `Decimal`, are gone, and a field converts by its
   declaration and its model's conversions alone, whether or not Pydantic is
-  installed. Metadata inside `Annotated`, such as `Field()`, changes nothing,
-  so a field annotated `Annotated[int, Field(gt=0)]` is an `int` that is not
-  checked. A native `TypedDict` keeps the keys that it does not declare, where
-  a Pydantic model dropped them, and a dataclass refuses them. Validation
+  installed. A field whose type is a Pydantic model, a class derived from
+  `BaseModel` or `RootModel`, or whose class has a Pydantic config, as
+  `pydantic.with_config()` gives one, raises `TypeError` when the class is
+  decorated, naming the class, unless an entry of the model's conversions
+  converts that class. The same holds for such a class inside the type.
+  Metadata inside `Annotated`, such as `Field()`, is not detected and changes
+  nothing, so a field annotated `Annotated[int, Field(gt=0)]` is an `int` that
+  is not checked. A native `TypedDict` keeps the keys that it does not declare,
+  where a Pydantic model dropped them, and a dataclass refuses them. Validation
   belongs to the application: check a value before it is assigned, or in the
   `decode` and `encode` of a conversion, which report a bad value by raising
   `TypeError` or `ValueError`. To give a type its wire format, register a
@@ -307,13 +312,14 @@ describe them further.
   conversion converts, also inside `T | None` or a `NewType`. A collection such
   as `list[int]`, a mapping, a fixed-length tuple, a `TypedDict`, a
   `NamedTuple`, a dataclass without a conversion, a union of more than one type
-  besides `None` and `Any` are refused, and so is a key that holds related
-  objects, as `list[User]` does. So is a relation to a model keyed by a
-  relation, which makes a chain of keys, and a cycle of them, such as a model
-  keyed by itself. A key whose type names a class that is not defined yet
-  raises the same `TypeError` when the key is first used. Declare the key as
-  one value, or as a relation to a model keyed by one. To key a model by
-  another model, use a relation to it, or the type of its key.
+  besides `None`, `Any`, and a class that Pydantic configures are refused, and
+  so is a key that holds related objects, as `list[User]` does. So is a
+  relation to a model keyed by a relation, which makes a chain of keys, and a
+  cycle of them, such as a model keyed by itself. A key whose type names a
+  class that is not defined yet raises the same `TypeError` when the key is
+  first used. Declare the key as one value, or as a relation to a model keyed
+  by one. To key a model by another model, use a relation to it, or the type of
+  its key.
 - A field whose type is a set of `Hyperlinked()` relations, as
   `set[Annotated[User, Hyperlinked()]]`, also as a `frozenset`, `Set`, or
   `MutableSet`, and inside an optional, raises `TypeError` when the class is

@@ -253,13 +253,13 @@ conversion of the model converts. The key may be one of these inside
 Any other key raises `TypeError` when the class is decorated, naming the field.
 That includes a collection such as `list[int]`, a mapping, a fixed-length
 tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a conversion, a union
-of more than one type besides `None` and `Any`. A mapping is refused because
-two mappings with the same items in another order are one key but have
-different spellings. A relation to a model keyed by a relation is refused as
-well, so a chain of key relations is, and so is a cycle, such as a model keyed
-by itself or two models keyed by each other. To key a model by another model,
-declare the key as a relation to that model, or as the type of that model's
-key.
+of more than one type besides `None`, `Any`, and a class that Pydantic
+configures. A mapping is refused because two mappings with the same items in
+another order are one key but have different spellings. A relation to a model
+keyed by a relation is refused as well, so a chain of key relations is, and so
+is a cycle, such as a model keyed by itself or two models keyed by each other.
+To key a model by another model, declare the key as a relation to that model,
+or as the type of that model's key.
 
 A name in the key's annotation, or in the key of the related model, may not be
 defined yet when the class is decorated. The class is then checked when its key
@@ -877,11 +877,50 @@ converts exactly that `TypedDict`, because a `TypedDict` that extends it does
 not have it in its MRO, and its `encode` is called for any mapping, because a
 `TypedDict` has no instances.
 
-eazyrest does not apply Pydantic. Metadata inside `Annotated`, such as
-`pydantic.Field()`, changes nothing, like the metadata of any other library. A
-type that is made only of such metadata, such as `pydantic.Base64Bytes`, is its
-underlying type, here `bytes`, which eazyrest does not convert. To read and
-write bytes that the server sends as base64, register a conversion for `bytes`:
+eazyrest does not apply Pydantic. A field whose type is a Pydantic model, a
+class derived from `BaseModel` or `RootModel`, raises `TypeError` when the
+class is decorated, and so does one whose class has a Pydantic config, as
+`pydantic.with_config()` gives a `TypedDict` or a dataclass. The message names
+the class. The refusal also applies to such a class inside the field's type, as
+the item of a list or a key of a `TypedDict`. A member that cannot be analyzed
+until the field is first used raises `FieldConversionError` then. Without the
+refusal, the field would read its JSON without the validation that its
+declaration implies. An entry for the class, as above, makes the field convert
+by the entry, which can call Pydantic itself:
+
+```python
+from pydantic import BaseModel
+
+from eazyrest import Conversion, JSONObject, json_object
+
+
+class Point(BaseModel):
+    x: float
+    y: float
+
+
+class ModelObject(JSONObject):
+    conversions = {
+        Point: Conversion(
+            decode=lambda value, cls: cls.model_validate(value),
+            encode=lambda value, cls: value.model_dump(mode="json"),
+        ),
+    }
+
+
+@json_object
+class Marker(ModelObject):
+    class_url = "/markers/"
+
+    id: int
+    anchor: Point
+```
+
+Metadata inside `Annotated`, such as `pydantic.Field()`, is not detected, and
+changes nothing, like the metadata of any other library. A type that is made
+only of such metadata, such as `pydantic.Base64Bytes`, is its underlying type,
+here `bytes`, which eazyrest does not convert. To read and write bytes that the
+server sends as base64, register a conversion for `bytes`:
 
 ```python
 import base64
