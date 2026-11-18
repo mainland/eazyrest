@@ -191,8 +191,15 @@ server names the resource, and these laws follow:
   differently. A registered conversion decides its own wire type, so a
   `NewType` of `int` whose conversion writes a string is a string key. A
   related object that a read builds from the server's JSON is checked the same
-  way, and the error names the relation field, as in `Post.owner`. Give the key
-  in its field's type, as the server returns it.
+  way, and the error names the relation field, as in `Post.owner`. A related
+  object that the program gives to a relation is checked the same way, whether
+  it is assigned, saved, given to `create()`, or used in a query or a lookup
+  such as `owner__in`, and so is one that `save(full=True)` reads from the
+  object's own JSON. The relation's model builds its key, so an object whose
+  key that model would not read raises `FieldConversionError` naming the
+  relation field before any request, as does one of a subclass that redeclares
+  the key field with another type. Give the key in its field's type, as the
+  server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
@@ -361,26 +368,28 @@ made to it in place, as to a key that is an object with a conversion, is
 detected and refused, as [Equality by key](#equality-by-key) says. That does
 not hold for a key that is a relation, whose `pk` reads a new value each time.
 A key that is a relation takes an object of the related model or of a subclass
-that keeps the related model's key, and any other model object raises
-`FieldConversionError`, as does a model object given for a key that is not a
-relation. The model holds the related object's key, not the object, so the
-related object must have its key without a request: it holds the key, as
-`User(id=1)` does, or its JSON has the key field. A related object that is
-known only by its URL, as one named by a `Hyperlinked()` relation is until it
-loads, raises `FieldConversionError`, whose message says to load or save it
-first. So does one whose own key is a relation that is not known. Once such an
-object has loaded, it is accepted if its JSON has the key. If its JSON lacks
-the key field, loading again cannot help, and the message says that the key is
-missing from its JSON. If it holds the key as `null`, the message says that the
-key is `None`. A related object without a key, such as `User()`, raises
-`FieldConversionError` too, as a relation write does. The constructor and the
-`pk` setter therefore never send a request, and neither do `repr()` and
-`update_from_json()` of such a model. Reading the field returns a new related
-object that holds the key, not the object that was given, though it equals that
-object, also after `refresh()`. An object constructed from `json=` starts with
-that payload already loaded. It keeps a deep copy of the payload, as
-`update_from_json()` does, so changing the payload or its nested values
-afterward does not change the object.
+that keeps the related model's key, or the related object's key, and any other
+model object raises `FieldConversionError`, as does a model object given for a
+key that is not a relation. So does a mapping, which the model's own JSON may
+embed as the related object but a program does not give, and a related object
+whose key the related model would not read. The model holds the related
+object's key, not the object, so the related object must have its key without a
+request: it holds the key, as `User(id=1)` does, or its JSON has the key field.
+A related object that is known only by its URL, as one named by a
+`Hyperlinked()` relation is until it loads, raises `FieldConversionError`,
+whose message says to load or save it first. So does one whose own key is a
+relation that is not known. Once such an object has loaded, it is accepted if
+its JSON has the key. If its JSON lacks the key field, loading again cannot
+help, and the message says that the key is missing from its JSON. If it holds
+the key as `null`, the message says that the key is `None`. A related object
+without a key, such as `User()`, raises `FieldConversionError` too, as a
+relation write does. The constructor and the `pk` setter therefore never send a
+request, and neither do `repr()` and `update_from_json()` of such a model.
+Reading the field returns a new related object that holds the key, not the
+object that was given, though it equals that object, also after `refresh()`. An
+object constructed from `json=` starts with that payload already loaded. It
+keeps a deep copy of the payload, as `update_from_json()` does, so changing the
+payload or its nested values afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.

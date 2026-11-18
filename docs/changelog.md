@@ -460,6 +460,18 @@ describe them further.
   and from base64, or key the model by a listed type.
 - `repr()` of an object keyed by a relation shows the related object's key. It
   showed the whole related object when the JSON embedded it, with its fields.
+- A relation builds the key of a related object that the program gives it with
+  the related model's key constructor, as it builds one that it reads. An
+  assignment, `save()`, `create()`, a query, and a lookup such as `owner__in`
+  refuse an object whose key that model would not read, with
+  `FieldConversionError` naming the relation field, where `v1.0.0a5` wrote the
+  key's JSON as it was, which could be `true`, a list, or a mapping that a
+  server may read as an embedded object. A `save(full=True)` that reads an
+  embedded key of another JSON type from the object's own JSON raises the same
+  error before the `PUT`, where it sent the key. A subclass that redeclares the
+  key field with another type is refused as well, and a key that is a relation
+  refuses a mapping given as the related object, where it read the mapping as
+  an embedded object.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an

@@ -249,6 +249,31 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
+@contextlib.contextmanager
+def _of_the_relation() -> Generator[None, None, None]:
+    """Report a conversion error of a related object as the relation's own.
+
+    Reading a related object's key or URL names the related model's key field
+    in a ``FieldConversionError``. The program wrote the relation's field, so
+    the error is raised again as its cause, which the conversion of the
+    relation's field names.
+
+    Yields:
+        ``None``, while the related object is read.
+
+    Raises:
+        TypeError: The cause of a ``FieldConversionError`` that is a
+            ``TypeError``.
+        ValueError: The cause of one that is a ``ValueError``.
+    """
+    try:
+        yield
+    except FieldConversionError as err:
+        if err.__cause__ is None:
+            raise
+        raise err.__cause__ from None
+
+
 def _analyzed_in_use(model: type, descriptor: JSONProperty) -> AnalyzedType:
     """Return a field's analyzed type, refusing it as a conversion would.
 
@@ -2129,6 +2154,28 @@ def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
     return analyzed_type if isinstance(analyzed_type, RelatedType) else None
 
 
+def _held_key_json(obj: JSONObject) -> Any:
+    """Return the JSON of the primary key that an object holds.
+
+    The JSON takes precedence over the recorded saved key, as ``_held_key()``
+    reads them.
+
+    Args:
+        obj: Model object.
+
+    Returns:
+        The JSON of the key field, which may be ``None``, and is ``None`` if
+        the model has no key field or the object holds no key.
+    """
+    prop = _pk_property_of(type(obj))
+    if prop is None:
+        return None
+    json = obj._json
+    if json is not None and prop.json_field in json:
+        return json[prop.json_field]
+    return obj._saved_key_json
+
+
 def _held_key(obj: JSONObject) -> Any:
     """Return the primary key that an object holds, without a request.
 
@@ -2156,13 +2203,7 @@ def _held_key(obj: JSONObject) -> Any:
         Exception: If the key's type cannot be resolved yet, whatever resolving
             it raises, as a ``NameError`` does for a class that is not defined.
     """
-    prop = _pk_property_of(type(obj))
-    if prop is None:
-        return None
-    json = obj._json
-    if json is not None and prop.json_field in json:
-        return _decode_key(obj, json[prop.json_field])
-    return _decode_key(obj, obj._saved_key_json)
+    return _decode_key(obj, _held_key_json(obj))
 
 
 def _reduce_key(
@@ -2508,6 +2549,55 @@ def _known_key(obj: JSONObject) -> Any:
         f"The {cls.__name__} object's primary key is None, so it cannot be "
         "the key of another model"
     )
+
+
+def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
+    """Return the wire value of a related object's key, as a relation reads it.
+
+    The key is built by the key constructor of the relation's model, as every
+    key is, so a related object whose key that model would not read is refused
+    here and not written. A subclass that redeclares the key field is read by
+    the relation's model too.
+
+    Args:
+        value: Related object, of ``model_type`` or a subclass that keeps its
+            key field. Reading its ``pk`` loads it if it is known only by its
+            URL.
+        model_type: Model that the relation's field names.
+
+    Returns:
+        The key's wire value, a string or an integer.
+
+    Raises:
+        ValueError: If the object has no key, or ``model_type`` writes none for
+            it.
+        TypeError: If ``model_type`` cannot build the key from the object's.
+        UsageError: If a related model had ``api`` assigned after the class was
+            defined.
+        Exception: Whatever loading the object, or a custom conversion, raises.
+    """
+    name = type(value).__name__
+    with _of_the_relation():
+        key = value.pk
+    if key is None:
+        if _key_problem(value) == "unloaded" and (
+            value._url_override is not None or _url_is_overridden(type(value))
+        ):
+            # Loading may give the key, which the object's own URL allows.
+            _known_key(value)
+        # Writing None would clear the relation.
+        raise ValueError(
+            f"The {name} object's primary key is None, so it cannot be "
+            "written as a relation"
+        )
+    named = _build_key(object.__new__(model_type), _held_key_json(value))
+    if named is None:
+        raise ValueError(
+            f"The {name} object's primary key is not one that "
+            f"{model_type.__name__} writes, so it cannot be written as a "
+            "relation"
+        )
+    return named[0]
 
 
 def _url_is_overridden(cls: type[JSONObject]) -> bool:
@@ -4612,7 +4702,8 @@ def _each_item(
 
     Raises:
         TypeError: If converting an item raises a ``TypeError``. A refusal of a
-            model's declaration is raised as it is, without the position.
+            model's declaration is raised as it is, without the position, and
+            so is a ``FieldConversionError``, which names its field.
         ValueError: If converting an item raises a ``ValueError`` that is
             not a ``TypeError``.
     """
@@ -4622,6 +4713,9 @@ def _each_item(
         # The except clauses read index.
         for index, item in enumerate(items):  # noqa: B007
             converted.append(convert(item))
+    except FieldConversionError:
+        # It names its field, and a second conversion would name it again.
+        raise
     except TypeError as err:
         if _passes_through(err):
             raise
@@ -5160,10 +5254,16 @@ class JSONProperty:
         conversion = self.analyzed_type
         with _converting(type(obj), self.field):
             related = _related_key_type(conversion)
+            if related is not None and isinstance(value, Mapping):
+                raise TypeError(
+                    "A relation takes a related object or its key, not a "
+                    "mapping"
+                )
             if isinstance(value, JSONObject) and related is not None:
                 _check_related_class(value, related.model_type)
                 _check_related_key(value, related.model_type)
-                value = _known_key(value)
+                _known_key(value)
+                value = _related_wire_key(value, related.model_type)
             value = obj._key_as_read_from_json(value)
             encoded = obj._to_json(value, conversion)
             named = _build_key(obj, encoded)
@@ -5679,7 +5779,7 @@ class JSONObject:
                 self._prefetched_related.pop(field, None)
 
     def _check_embedded_key(
-        self, arg: dict[str, Any], ty: type[JSONObject], field: str | None
+        self, arg: dict[str, Any], ty: type[JSONObject], field: str
     ) -> None:
         """Refuse an embedded related object whose key is not a key.
 
@@ -5698,7 +5798,7 @@ class JSONObject:
                 than the related model's key, or does not convert.
         """
         prop = _pk_property_of(ty)
-        if field is None or prop is None or prop.json_field not in arg:
+        if prop is None or prop.json_field not in arg:
             return
         try:
             _resolve_key(ty)
@@ -5747,6 +5847,8 @@ class JSONObject:
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
+            # An embedded object is read as the value of a field.
+            assert field is not None
             self._check_embedded_key(arg, ty, field)
             return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
@@ -6042,7 +6144,8 @@ class JSONObject:
             case RelatedType(model_type, hyperlinked=True):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
-                    return value.absolute_url
+                    with _of_the_relation():
+                        return value.absolute_url
                 if isinstance(value, str):
                     return value
                 raise TypeError(
@@ -6053,14 +6156,7 @@ class JSONObject:
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
                     _check_related_key(value, model_type)
-                    model_type = type(value)
-                    if value.pk is None:
-                        # Writing None would clear the relation.
-                        raise ValueError(
-                            f"The {model_type.__name__} object's primary key "
-                            "is None, so it cannot be written as a relation"
-                        )
-                    value = value.pk
+                    return _related_wire_key(value, model_type)
 
                 return model_type._to_json(value, model_type._pk.analyzed_type)
             case BaseType(base_type):
@@ -6817,7 +6913,9 @@ class JSONObject:
             conversion = _analyzed_in_use(type(self), descriptor)
             with _converting(type(self), field):
                 payload[descriptor.json_field] = self._to_json(
-                    self._from_json(json[descriptor.json_field], conversion),
+                    self._from_json(
+                        json[descriptor.json_field], conversion, field=field
+                    ),
                     conversion,
                 )
         write_only = self._write_only_keys()
@@ -7387,6 +7485,29 @@ class JSONObject:
         return found is not None and _encodes(value, found)
 
     @classmethod
+    def _lookup_relation(cls, name: str) -> tuple[str, type[Any]] | None:
+        """Return the relation that a lookup parameter filters on.
+
+        Args:
+            name: Name of a parameter that is no field, such as ``owner__in``.
+
+        Returns:
+            The name of the field before the first ``__``, and the model of its
+            relation, or ``None`` if the name has no ``__`` or the field is not
+            a relation, or a collection of relations, that is written by key.
+        """
+        field, separator, _ = name.partition("__")
+        descriptor = getattr(cls, field, None)
+        if not separator or not isinstance(descriptor, JSONProperty):
+            return None
+        analyzed = _unwrap_optional_type(_analyzed_in_use(cls, descriptor))
+        if isinstance(analyzed, CollectionType):
+            analyzed = _unwrap_optional_type(analyzed.item_type)
+        if isinstance(analyzed, RelatedType) and not analyzed.hyperlinked:
+            return field, analyzed.model_type
+        return None
+
+    @classmethod
     def _query_items(cls, name: str, value: Any) -> tuple[list[Any], bool]:
         """Return the operands of a query parameter, each encoded.
 
@@ -7423,9 +7544,19 @@ class JSONObject:
             collection = None
 
             def convert(item: Any) -> Any:
-                if isinstance(item, JSONObject):
-                    return cls._to_json(item, RelatedType(type(item)))
-                return item
+                if not isinstance(item, JSONObject):
+                    return item
+                # A lookup on a relation writes the key as the relation does,
+                # and names it in an error. Another model object is its own
+                # key.
+                relation = cls._lookup_relation(name)
+                if relation is None:
+                    return _related_wire_key(item, type(item))
+                field, model = relation
+                with _converting(cls, field):
+                    return _related_wire_key(
+                        item, model if isinstance(item, model) else type(item)
+                    )
 
             guard = contextlib.nullcontext()
 
