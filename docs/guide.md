@@ -212,10 +212,10 @@ The profile's `pk`, `url`, `refresh()`, `update_from_json()`, `==`, and
   with a conversion, changes a copy. It is neither kept nor refused, and
   `save()` does not send it, whether the profile has loaded or not.
 - Reading `profile.user` does not give the key's owner. After an assignment it
-  gives the assigned object. When the profile embeds its user, it gives the
-  object built from the embedded JSON, with its other fields. When the profile
-  shares a prefetched user, it gives that object. Otherwise it gives an object
-  built from the key.
+  gives a new object that holds the key. When the profile embeds its user, it
+  gives the object built from the embedded JSON, with its other fields. When
+  the profile shares a prefetched user, it gives that object. Otherwise it
+  gives an object built from the key.
 
 ### When the hash changes
 
