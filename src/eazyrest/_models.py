@@ -194,6 +194,28 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
+def _analyzed_in_use(model: type, descriptor: JSONProperty) -> AnalyzedType:
+    """Return a field's analyzed type, refusing it as a conversion would.
+
+    A refusal that waits for the field's first use, such as a member that names
+    a class defined later, raises here as it does when a value is read, so that
+    every operation that uses the field raises the same error.
+
+    Args:
+        model: Model class that owns the field.
+        descriptor: The field.
+
+    Returns:
+        The field's analyzed type.
+
+    Raises:
+        FieldConversionError: If the field's type is refused when it is first
+            used.
+    """
+    with _converting(model, descriptor.field):
+        return descriptor.analyzed_type
+
+
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
     """Describe a lookup for an error message, as in ``Todo matching title``.
 
@@ -6618,7 +6640,7 @@ class JSONObject:
                 or descriptor.json_field not in json
             ):
                 continue
-            conversion = descriptor.analyzed_type
+            conversion = _analyzed_in_use(type(self), descriptor)
             with _converting(type(self), field):
                 payload[descriptor.json_field] = self._to_json(
                     self._from_json(json[descriptor.json_field], conversion),
@@ -7135,7 +7157,7 @@ class JSONObject:
             The field's ``CollectionType``, inside any optional or ``NewType``,
             or ``None`` for a field that does not convert as a collection.
         """
-        analyzed = descriptor.analyzed_type
+        analyzed = _analyzed_in_use(cls, descriptor)
         while True:
             analyzed = _unwrap_optional_type(analyzed)
             # A NewType is analyzed as one only around a structure, and no
@@ -7167,7 +7189,7 @@ class JSONObject:
             return False
         collection = cls._query_collection(descriptor)
         conversion = _unwrap_optional_type(
-            descriptor.analyzed_type
+            _analyzed_in_use(cls, descriptor)
             if collection is None
             else collection.item_type
         )
@@ -7214,7 +7236,7 @@ class JSONObject:
         if isinstance(descriptor, JSONProperty):
             collection = cls._query_collection(descriptor)
             conversion = _query_type(
-                descriptor.analyzed_type
+                _analyzed_in_use(cls, descriptor)
                 if collection is None
                 else collection.item_type
             )
@@ -7824,7 +7846,9 @@ class JSONObject:
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 
-        analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
+        analyzed_type = _unwrap_optional_type(
+            _analyzed_in_use(cls, descriptor)
+        )
         collection_type = None
         if isinstance(analyzed_type, CollectionType):
             collection_type = analyzed_type.collection_type

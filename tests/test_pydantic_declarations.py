@@ -183,6 +183,7 @@ def _model(hint: Any, conversions: dict[Any, Conversion] | None = None) -> Any:
     """
     body: dict[str, Any] = {
         "__module__": __name__,
+        "class_url": "/holders/",
         "__annotations__": {"id": int, "value": hint},
     }
     if conversions is not None:
@@ -387,6 +388,32 @@ def test_a_late_member_is_refused_though_no_value_uses_it() -> None:
             _ = obj.value
     finally:
         del globals()["LaterPoint"]
+
+
+def test_a_query_refuses_a_late_pydantic_member_as_a_read_does(
+    requests_mock: Any,
+) -> None:
+    """A query by a field with a member that resolves to Pydantic raises.
+
+    The error is a ``FieldConversionError`` naming the field, and nothing is
+    sent.
+    """
+
+    @dataclasses.dataclass
+    class Waiting:
+        inner: "LaterPoint"  # type: ignore[name-defined]  # noqa: F821
+
+    model = _model(Waiting)
+    globals()["LaterPoint"] = Point
+    try:
+        with pytest.raises(
+            FieldConversionError, match=r"Holder\.value.*Point is configured"
+        ):
+            list(model.filter(value=1))
+    finally:
+        del globals()["LaterPoint"]
+
+    assert not requests_mock.called
 
 
 class _CountingMeta(type):
