@@ -244,9 +244,11 @@ that its payload names if its saved key is absent or `null`.
 
 A key is one value, or a relation to a model whose key is one value. A value is
 one if it converts as a whole, so that its JSON has one spelling for equality,
-`url`, and the hash to read. That is `int`, `str`, `bool`, `float`, `UUID`,
-`datetime`, `date`, `Decimal`, an enum, a `Literal`, and a class that a
-conversion of the model converts. The key may be one of these inside
+`url`, and the hash to read. That is `int`, `str`, `bool`, `float`, a subclass
+of one of these, an enum, a `Literal`, and a class that a conversion of the
+model converts. The conversions include eazyrest's own, for `UUID`, `datetime`,
+`date`, `time`, `timedelta`, and `Decimal`, and any that the model declares,
+such as one for `bytes` to and from base64. The key may be one of these inside
 `T | None`, a `NewType`, or `Annotated`. A relation is allowed unless it is
 `Hyperlinked()`.
 
@@ -254,13 +256,16 @@ Any other key raises `TypeError` when the class is decorated, naming the field.
 That includes a collection such as `list[int]`, a mapping, a fixed-length
 tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a conversion, a union
 of more than one type besides `None`, `Any`, and a class that Pydantic
-configures, or `Annotated` with Pydantic metadata. A mapping is refused because
-two mappings with the same items in another order are one key but have
-different spellings. A relation to a model keyed by a relation is refused as
-well, so a chain of key relations is, and so is a cycle, such as a model keyed
-by itself or two models keyed by each other. To key a model by another model,
-declare the key as a relation to that model, or as the type of that model's
-key.
+configures, or `Annotated` with Pydantic metadata. It also includes a class
+that is not listed and that no conversion of the model converts, such as
+`complex`, `None`, `pathlib.Path`, and a bare `bytes`, because eazyrest would
+read the server's JSON as it is, which may be an array or a mapping, or could
+not write it. A mapping is refused because two mappings with the same items in
+another order are one key but have different spellings. A relation to a model
+keyed by a relation is refused as well, so a chain of key relations is, and so
+is a cycle, such as a model keyed by itself or two models keyed by each other.
+To key a model by another model, declare the key as a relation to that model,
+or as the type of that model's key.
 
 A name in the key's annotation, or in the key of the related model, may not be
 defined yet when the class is decorated. The class is then checked when its key

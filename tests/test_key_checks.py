@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+import decimal
+import enum
+import pathlib
+import uuid
+from typing import Annotated, Any, Literal, NewType
 
 import pytest
 
 from eazyrest import (
     API,
     Client,
+    Conversion,
     FieldConversionError,
     JSONObject,
     json_object,
@@ -131,3 +136,94 @@ def test_relation_accepts_a_subclass_that_keeps_the_key() -> None:
     order.account = Plain(json={"id": 7, "legacy_id": 1})
 
     assert order.pk == 1
+
+
+def _declare_key(key_type: Any, **extra: Any) -> Any:
+    """Decorate a model whose key has a type, and return the model."""
+    namespace = {
+        "__annotations__": {"id": key_type},
+        "class_url": "/things/",
+        **extra,
+    }
+    return json_object(type("Thing", (KeyBase,), namespace))
+
+
+class Color(enum.Enum):
+    """Enum that keys a model."""
+
+    RED = "red"
+
+
+Serial = NewType("Serial", int)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        pytest.param(complex, id="complex"),
+        pytest.param(pathlib.Path, id="path"),
+        pytest.param(bytes, id="bytes"),
+        pytest.param(bytes | None, id="optional-bytes"),
+        pytest.param(object, id="object"),
+        pytest.param(Any, id="any"),
+    ],
+)
+def test_a_key_class_that_nothing_converts_is_refused(key_type: Any) -> None:
+    """A class that is neither listed nor converted cannot be a key."""
+    with pytest.raises(
+        TypeError, match=r"Thing\.id is the primary key.*must be one value"
+    ):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize("key_type", [None, type(None)])
+def test_a_key_annotated_as_none_is_refused(key_type: Any) -> None:
+    """A key whose annotation is None names no type to convert."""
+    with pytest.raises(TypeError, match=r"Thing\.id: its annotation is None"):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        int,
+        str,
+        bool,
+        float,
+        uuid.UUID,
+        decimal.Decimal,
+        Color,
+        Literal["a", "b"],
+        Serial,
+        Annotated[int | None, "note"],
+        str | None,
+    ],
+)
+def test_a_listed_key_class_decorates(key_type: Any) -> None:
+    """The classes that the guide lists as keys decorate."""
+    _declare_key(key_type)
+
+
+@pytest.mark.parametrize("key_type", [str | bytes, bytes | str])
+def test_a_key_that_is_a_union_with_bytes_is_refused(key_type: Any) -> None:
+    """A union of two classes is not one value."""
+    with pytest.raises(TypeError, match=r"Thing\.id is the primary key"):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize("key_type", [bytes, pathlib.Path, complex])
+def test_a_key_class_that_a_conversion_converts_decorates(
+    key_type: Any,
+) -> None:
+    """A conversion of the model's table makes any class a key."""
+    model = _declare_key(
+        key_type,
+        conversions={
+            key_type: Conversion(
+                decode=lambda value, _: key_type(value),
+                encode=lambda value, _: str(value),
+            )
+        },
+    )
+
+    assert issubclass(model, JSONObject)

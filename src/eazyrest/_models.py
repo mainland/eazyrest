@@ -3216,12 +3216,12 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
     error = TypeError(
         f"{cls.__name__}.{field} is the primary key, and a primary key must "
         "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
-        "or an enum, or a relation without Hyperlinked() to a model whose "
-        "key is one. It cannot be a collection, a mapping, a tuple, a "
-        "TypedDict, a NamedTuple, a dataclass, a union, or a relation to a "
-        "model keyed by a relation. To key the model by another model, "
-        "declare the key as a relation to that model, or as the type of that "
-        "model's key."
+        "an enum, or a class that a conversion of the model converts, or a "
+        "relation without Hyperlinked() to a model whose key is one. It "
+        "cannot be a collection, a mapping, a tuple, a TypedDict, a "
+        "NamedTuple, a dataclass, a union, or a relation to a model keyed by "
+        "a relation. To key the model by another model, declare the key as a "
+        "relation to that model, or as the type of that model's key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3252,23 +3252,25 @@ def _refuses_key_type(error: TypeError) -> bool:
     )
 
 
-def _is_one_value_class(base: object) -> bool:
-    """Return whether a type that converts as itself holds one value.
+def _is_plain_key_class(base: object) -> bool:
+    """Return whether a type that converts as itself is a key type.
 
     Args:
-        base: The type of a ``BaseType``, which may be a ``Literal``.
+        base: The type of a ``BaseType``, which may be a ``Literal`` or a
+            ``NewType``.
 
     Returns:
-        ``False`` for ``Any``, ``object``, and a collection class other than
-        ``str`` and ``bytes``, whose JSON may be an array or a mapping.
+        ``True`` for ``int``, ``str``, ``float``, ``bool``, a subclass of one,
+        and a ``Literal``. Any other class reads the server's JSON as it is
+        unless a conversion converts it. That JSON may be an array or a
+        mapping, or cannot be written as JSON, so the key would have more than
+        one spelling or none.
     """
-    if base is Any or base is object:
-        return False
-    return not (
-        isinstance(base, type)
-        and issubclass(base, Collection)
-        and not issubclass(base, str | bytes)
-    )
+    while hasattr(base, "__supertype__"):
+        base = base.__supertype__
+    if typing.get_origin(base) is Literal:
+        return True
+    return isinstance(base, type) and issubclass(base, int | float | str)
 
 
 def _is_leaf_key(
@@ -3294,7 +3296,10 @@ def _is_leaf_key(
             case OptionalType(inner) | NewTypeType(_, inner):
                 analyzed = inner
             case BaseType(base):
-                return _is_one_value_class(base)
+                if _conversion_of(base, table) is not None:
+                    return True
+                _refuse_pydantic_class(base)
+                return _is_plain_key_class(base)
             case _:
                 return False
     return True

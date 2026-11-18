@@ -421,6 +421,13 @@ describe them further.
   `TypeError` for such an object that `bulk_get_by_pks()` returns. They used to
   write the subclass's key, which names another resource of the related model.
   Give the relation an object of the related model's own key.
+- A primary key whose class is not one that the guide lists and that no
+  conversion of the model converts raises `TypeError` when the class is
+  decorated, naming the field, as the guide says. That includes `complex`,
+  `None`, `pathlib.Path`, and a bare `bytes`. Such a key read the server's JSON
+  as it was, so a key that was an array or a mapping gave two URLs for one
+  object. Declare a conversion for the class, such as a `bytes` conversion to
+  and from base64, or key the model by a listed type.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise
