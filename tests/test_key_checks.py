@@ -189,8 +189,6 @@ def test_a_key_annotated_as_none_is_refused(key_type: Any) -> None:
     [
         int,
         str,
-        bool,
-        float,
         uuid.UUID,
         decimal.Decimal,
         Color,

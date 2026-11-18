@@ -7521,8 +7521,6 @@ def _decode_token(value: str, cls: type[_Token]) -> _Token:
     [
         pytest.param(int, 1, id="int"),
         pytest.param(str, "a", id="str"),
-        pytest.param(bool, True, id="bool"),
-        pytest.param(float, 1.5, id="float"),
         pytest.param(
             uuid.UUID, "12345678-1234-5678-1234-567812345678", id="uuid"
         ),
@@ -8306,26 +8304,6 @@ class TextKeyed(ModelBase):
 
 
 @json_object
-class RatioKeyed(ModelBase):
-    """Model whose key is a ``float``."""
-
-    class_url = "/ratio-keyed/"
-
-    id: float
-    name: str
-
-
-@json_object
-class FlagKeyed(ModelBase):
-    """Model whose key is a ``bool``."""
-
-    class_url = "/flag-keyed/"
-
-    id: bool
-    name: str
-
-
-@json_object
 class ChoiceKeyed(ModelBase):
     """Model whose key is one of two strings."""
 
@@ -8354,10 +8332,6 @@ class WrappedKeyed(ModelBase):
         (User, None),
         (TextKeyed, 1),
         (TextKeyed, True),
-        (RatioKeyed, 1),
-        (RatioKeyed, "1.5"),
-        (FlagKeyed, 1),
-        (FlagKeyed, "true"),
         (ChoiceKeyed, 1),
         (ChoiceKeyed, True),
         (WrappedKeyed, "1"),
@@ -8368,11 +8342,10 @@ def test_a_key_of_another_json_type_is_refused_where_it_is_given(
 ) -> None:
     """A key that is a leaf type has one JSON type, which a given key must be.
 
-    ``bool`` is not an ``int`` key and ``int`` is not a ``float`` key, because
-    each encodes differently. The constructor and the first assignment refuse
-    the value, whether the key is a plain type, a ``Literal``, or wrapped as an
-    optional, a ``NewType``, or ``Annotated``, and the object has no key
-    afterward.
+    ``bool`` is not an ``int`` key, because the two encode differently. The
+    constructor and the first assignment refuse the value, whether the key is a
+    plain type, a ``Literal``, or wrapped as an optional, a ``NewType``, or
+    ``Annotated``, and the object has no key afterward.
 
     Args:
         model: Model with a key of a leaf type.
@@ -8400,8 +8373,6 @@ def test_a_key_of_another_json_type_is_refused_where_it_is_given(
     [
         (User, 1),
         (TextKeyed, "a"),
-        (RatioKeyed, 1.5),
-        (FlagKeyed, True),
         (ChoiceKeyed, "a"),
         (WrappedKeyed, 1),
     ],
@@ -9192,8 +9163,8 @@ class RouteBase(JSONObject):
 
     conversions: ClassVar[dict[type, Conversion]] = {
         Route: Conversion(
-            decode=lambda value, cls: cls(value),
-            encode=lambda route, cls: route.parts,
+            decode=lambda value, cls: cls(value.split("/")),
+            encode=lambda route, cls: "/".join(route.parts),
         )
     }
 
@@ -9242,9 +9213,9 @@ def test_a_key_that_a_conversion_aliases_is_refused_when_it_changes(
         requests_mock: Mocks the load and the write.
         write_mode: Whether the change is sent at once or waits for ``save()``.
     """
-    get = requests_mock.get(requests_mock_ANY, json={"id": ["a"], "name": "A"})
+    get = requests_mock.get(requests_mock_ANY, json={"id": "a", "name": "A"})
     patch = requests_mock.patch(
-        requests_mock_ANY, json={"id": ["a", "b"], "name": "renamed"}
+        requests_mock_ANY, json={"id": "a/b", "name": "renamed"}
     )
     Stop.register_api(test_api)
     stop = Stop(id=Route(["a"]), write_mode=write_mode)
@@ -9252,7 +9223,7 @@ def test_a_key_that_a_conversion_aliases_is_refused_when_it_changes(
 
     stop.pk.parts.append("b")
 
-    assert stop.url == "/stops/%5B%27a%27%5D/"
+    assert stop.url == "/stops/a/"
     assert stop == twin
     assert hash(stop) == hash(twin)
     assert stop.pk.parts == ["a", "b"]
@@ -9268,7 +9239,7 @@ def test_a_key_that_a_conversion_aliases_is_refused_when_it_changes(
 
     assert get.call_count == 0
     assert patch.call_count == 0
-    assert stop.url == "/stops/%5B%27a%27%5D/"
+    assert stop.url == "/stops/a/"
     assert hash(stop) == hash(twin)
 
 
@@ -9293,7 +9264,7 @@ def test_a_relation_key_that_a_conversion_aliases_keeps_the_saved_key(
 
     note.pk.parts.append("b")
 
-    assert note.url == url == "/stop-notes/%5B%27a%27%5D/"
+    assert note.url == url == "/stop-notes/a/"
     assert hash(note) == before == hash(twin)
     assert note == twin
 
@@ -9305,14 +9276,14 @@ def test_an_embedded_key_that_a_conversion_aliases_is_not_shared() -> None:
     embedded ``Stop`` through ``note.stop`` must not change the key that the
     note is read from.
     """
-    note = StopNote(json={"stop": {"id": ["a"], "name": "A"}, "note": "n"})
-    twin = StopNote(json={"stop": {"id": ["a"], "name": "A"}, "note": "n"})
+    note = StopNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
+    twin = StopNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
     before = hash(note)
 
     note.stop.pk.parts.append("b")
 
-    assert note.json["stop"]["id"] == ["a"]
-    assert note.url == "/stop-notes/%5B%27a%27%5D/"
+    assert note.json["stop"]["id"] == "a"
+    assert note.url == "/stop-notes/a/"
     assert note == twin
     assert hash(note) == before
 
@@ -9325,11 +9296,11 @@ def test_a_change_to_the_key_of_a_related_object_leaves_its_parents_json() -> (
     The ``Route`` conversion keeps the list that it decodes, so the parent
     gives the related object a copy.
     """
-    holder = StopHolder(json={"id": 1, "stop": {"id": ["a"], "name": "A"}})
+    holder = StopHolder(json={"id": 1, "stop": {"id": "a", "name": "A"}})
 
     holder.stop.pk.parts.append("b")
 
-    assert holder.json["stop"] == {"id": ["a"], "name": "A"}
+    assert holder.json["stop"] == {"id": "a", "name": "A"}
 
 
 @dataclasses.dataclass
@@ -9344,8 +9315,8 @@ class TrailBase(JSONObject):
 
     conversions: ClassVar[dict[type, Conversion]] = {
         Trail: Conversion(
-            decode=lambda value, cls: Trail(value),
-            encode=lambda trail, cls: trail.parts,
+            decode=lambda value, cls: Trail(value.split("/")),
+            encode=lambda trail, cls: "/".join(trail.parts),
         )
     }
 
@@ -9390,16 +9361,16 @@ def test_a_change_to_a_key_that_a_class_entry_decodes_leaves_the_parents() -> (
     related object's key leaves the JSON of a parent that embeds the object,
     and the key that a model keyed by the parent copies.
     """
-    holder = TrailHolder(json={"id": 1, "stop": {"id": ["a"], "name": "A"}})
-    note = TrailNote(json={"stop": {"id": ["a"], "name": "A"}, "note": "n"})
+    holder = TrailHolder(json={"id": 1, "stop": {"id": "a", "name": "A"}})
+    note = TrailNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
 
     holder.stop.pk.parts.append("b")
     note.stop.pk.parts.append("b")
 
-    assert holder.json["stop"] == {"id": ["a"], "name": "A"}
-    assert note.json["stop"] == {"id": ["a"], "name": "A"}
+    assert holder.json["stop"] == {"id": "a", "name": "A"}
+    assert note.json["stop"] == {"id": "a", "name": "A"}
     assert note.pk == Trail(["a"])
-    assert note.url == "/trail-notes/%5B%27a%27%5D/"
+    assert note.url == "/trail-notes/a/"
 
 
 def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:

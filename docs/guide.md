@@ -160,8 +160,9 @@ user = User(json=user.api.json(response))
 ```
 
 The canonical key is the saved key's JSON, decoded and encoded again by the
-key's field type, and written as text. So it is the key as the server names the
-resource, and these laws follow:
+key's field type, and written as text. A key's wire value is a string, or an
+integer that is not a `bool`, whatever codec writes it. So it is the key as the
+server names the resource, and these laws follow:
 
 - Equal objects have the same `url`, unless one has its own URL, as an object
   read through a `Hyperlinked()` relation has, or its class overrides `url`.
@@ -171,15 +172,16 @@ resource, and these laws follow:
   hashed, still gives equal objects when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
   their values, and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each
-  pair names different URLs. A key whose type is `int`, `str`, `float`, or
-  `bool`, or a `Literal` of such values, has one JSON type, and a value of
-  another type raises `FieldConversionError` where it is given, as
-  `"not-a-uuid"` does for a `UUID` key. So `User(id="1")`, `User(id=1.0)`, and
-  `User(id=True)` raise for an `int` key, because a `bool` is not an `int` and
-  an `int` is not a `float`, since each encodes differently. A related object
-  that a read builds from the server's JSON is checked the same way, and the
-  error names the relation field, as in `Post.owner`. Give the key in its
-  field's type, as the server returns it.
+  pair names different URLs. A key whose type is `int` or `str`, or a `Literal`
+  of such values, has one JSON type, and a value of another type raises
+  `FieldConversionError` where it is given, as `"not-a-uuid"` does for a `UUID`
+  key. So `User(id="1")`, `User(id=1.0)`, and `User(id=True)` raise for an
+  `int` key, because a `bool` is not an `int`, since the two encode
+  differently. A registered conversion decides its own wire type, so a
+  `NewType` of `int` whose conversion writes a string is a string key. A
+  related object that a read builds from the server's JSON is checked the same
+  way, and the error names the relation field, as in `Post.owner`. Give the key
+  in its field's type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
@@ -244,28 +246,34 @@ that its payload names if its saved key is absent or `null`.
 
 A key is one value, or a relation to a model whose key is one value. A value is
 one if it converts as a whole, so that its JSON has one spelling for equality,
-`url`, and the hash to read. That is `int`, `str`, `bool`, `float`, a subclass
-of one of these, an enum, a `Literal`, and a class that a conversion of the
-model converts. The conversions include eazyrest's own, for `UUID`, `datetime`,
-`date`, `time`, `timedelta`, and `Decimal`, and any that the model declares,
-such as one for `bytes` to and from base64. The key may be one of these inside
-`T | None`, a `NewType`, or `Annotated`. A relation is allowed unless it is
-`Hyperlinked()`.
+`url`, and the hash to read. That is `int`, `str`, a subclass of one of these
+that is not a `bool`, an enum, a `Literal` of strings and integers, and a class
+that a conversion of the model converts. The conversions include eazyrest's
+own, for `UUID`, `datetime`, `date`, `time`, `timedelta`, and `Decimal`, and
+any that the model declares, such as one for `bytes` to and from base64. The
+key may be one of these inside `T | None`, a `NewType`, or `Annotated`. A
+relation is allowed unless it is `Hyperlinked()`. However the key is converted,
+the value that it is written as must be a string or an integer that is not a
+`bool`. A conversion that writes a number with a fraction, a `bool`, a list, or
+a mapping makes a key that is refused where it is given or read, as a key of
+another JSON type is.
 
 Any other key raises `TypeError` when the class is decorated, naming the field.
-That includes a collection such as `list[int]`, a mapping, a fixed-length
-tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a conversion, a union
-of more than one type besides `None`, `Any`, and a class that Pydantic
-configures, or `Annotated` with Pydantic metadata. It also includes a class
-that is not listed and that no conversion of the model converts, such as
-`complex`, `None`, `pathlib.Path`, and a bare `bytes`, because eazyrest would
-read the server's JSON as it is, which may be an array or a mapping, or could
-not write it. A mapping is refused because two mappings with the same items in
-another order are one key but have different spellings. A relation to a model
-keyed by a relation is refused as well, so a chain of key relations is, and so
-is a cycle, such as a model keyed by itself or two models keyed by each other.
-To key a model by another model, declare the key as a relation to that model,
-or as the type of that model's key.
+That includes `float` and `bool`, alone or as a `NewType`, optional, or
+`Literal` member, because a number has more than one spelling and a `bool` is
+not an integer. It includes a collection such as `list[int]`, a mapping, a
+fixed-length tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a
+conversion, a union of more than one type besides `None`, `Any`, and a class
+that Pydantic configures, or `Annotated` with Pydantic metadata. It also
+includes a class that is not listed and that no conversion of the model
+converts, such as `complex`, `None`, `pathlib.Path`, and a bare `bytes`,
+because eazyrest would read the server's JSON as it is, which may be an array
+or a mapping, or could not write it. A mapping is refused because two mappings
+with the same items in another order are one key but have different spellings.
+A relation to a model keyed by a relation is refused as well, so a chain of key
+relations is, and so is a cycle, such as a model keyed by itself or two models
+keyed by each other. To key a model by another model, declare the key as a
+relation to that model, or as the type of that model's key.
 
 A name in the key's annotation, or in the key of the related model, may not be
 defined yet when the class is decorated. The class is then checked when its key
@@ -455,8 +463,9 @@ api.trailing_slash = False
 ```
 
 `url` converts the primary key to its JSON value before percent-encoding it, so
-an enum key uses its value and a key always forms one path segment. For
-example, the key `a/b` becomes `a%2Fb`.
+an enum key uses its value and a key always forms one path segment. A string
+key is its own text, and an integer key is written in decimal. For example, the
+key `a/b` becomes `a%2Fb`.
 
 The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
 raises `ValueError` because those keys could address the collection or another

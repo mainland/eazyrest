@@ -2056,23 +2056,96 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
     return host._from_json(value, conversion)
 
 
-def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
-    """Return the canonical key that the JSON of a key field names.
+def _native_key_kinds(
+    owner: type[JSONObject], conversion: AnalyzedType
+) -> frozenset[str] | None:
+    """Return the JSON types that a key of a native codec may be given as.
 
-    The key is reduced to the related model's key if it is a relation, decoded
-    and encoded again by that field's type, and written as JSON text with
-    sorted keys and fixed separators.
+    A key whose type is ``int`` or ``str``, or a ``Literal`` of such values,
+    inside ``T | None``, ``NewType``, and ``Annotated``, has one JSON type. A
+    value of another type would name another key than the server's spelling of
+    it, which a later load would refuse. A conversion that the model registers
+    for the key, or for a ``NewType`` or class inside it, decides its own wire
+    type instead.
+
+    Args:
+        owner: Model that owns the key field.
+        conversion: Analyzed type of the key field.
+
+    Returns:
+        The JSON types, or ``None`` if a registered conversion owns the key or
+        the type is not one of these.
+    """
+    table = _table_of(owner)
+    while _class_entry(conversion, table) is None and isinstance(
+        conversion, OptionalType | NewTypeType
+    ):
+        conversion = (
+            conversion.inner_type
+            if isinstance(conversion, OptionalType)
+            else conversion.inner
+        )
+    if _class_entry(conversion, table) is not None:
+        return None
+    if not isinstance(conversion, BaseType):
+        return None
+    base = conversion.base_type
+    if _conversion_of(base, table) is not None:
+        return None
+    while hasattr(base, "__supertype__"):
+        base = base.__supertype__
+    if typing.get_origin(base) is Literal:
+        return frozenset(
+            kind
+            for member in typing.get_args(base)
+            if (kind := _json_kind(_literal_json(member, table))) is not None
+        )
+    if base in (int, str):
+        return frozenset({base.__name__})
+    return None
+
+
+def _json_kind(value: Any) -> str | None:
+    """Return the JSON type of a key's wire value, or ``None`` for another.
+
+    Args:
+        value: A value that encoding gave.
+
+    Returns:
+        ``"int"`` or ``"str"``. A ``bool`` is not an ``int``, because it
+        encodes differently, and no other value is a key's wire value.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, str):
+        return "str"
+    return None
+
+
+def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
+    """Build a key from the JSON that names it, as every key is built.
+
+    The key is reduced to the related model's key if it is a relation. A key of
+    a native codec must have the JSON type of its field. The key is decoded and
+    encoded again by the field's codec, and the encoding must be a string or an
+    integer that is not a ``bool``, whatever codec wrote it. Every identity of
+    a key derives from the result: equality, the hash, the URL, the prefetch
+    table, and the test of a change in place.
 
     Args:
         obj: Model object, or any object of the model that owns the key field.
         key: The JSON of the key field.
 
     Returns:
-        The encoded key, and its JSON text, or ``None`` if the JSON names no
-        key.
+        The key's wire value, and its JSON text, or ``None`` if the JSON names
+        no key.
 
     Raises:
-        TypeError: If the key cannot be decoded or encoded.
+        TypeError: If the key cannot be decoded or encoded, or is not a string
+            or an integer as the field's codec writes it, or is of another JSON
+            type than a native codec reads.
         ValueError: If the key cannot be decoded or encoded.
         UsageError: If a related model had ``api`` assigned after the class was
             defined.
@@ -2083,83 +2156,27 @@ def _canonical_key_of(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
     if reduced is None:
         return None
     owner, conversion, value = reduced
+    kinds = _native_key_kinds(owner, conversion)
+    if kinds is not None and _json_kind(value) not in kinds:
+        raise TypeError(
+            f"The key must be a JSON {' or '.join(sorted(kinds))}, not a "
+            f"{type(value).__name__}"
+        )
     host = obj if owner is type(obj) else object.__new__(owner)
     decoded = host._from_json(value, conversion)
     encoded = owner._to_json(decoded, conversion)
     if encoded is None:
         return None
-    return encoded, json.dumps(encoded, sort_keys=True, separators=(",", ":"))
-
-
-def _json_kind(value: Any) -> str | None:
-    """Return the JSON type of a scalar, or ``None`` for any other value.
-
-    Args:
-        value: A value that encoding gave.
-
-    Returns:
-        ``"bool"``, ``"int"``, ``"float"``, or ``"str"``. A ``bool`` is not an
-        ``int``, and an ``int`` is not a ``float``, because each encodes
-        differently.
-    """
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, str):
-        return "str"
-    return None
-
-
-def _check_key_json_type(cls: type[JSONObject], key: Any) -> None:
-    """Refuse a key that is given as another JSON type than its field's.
-
-    A key whose type is ``int``, ``str``, ``float``, or ``bool``, or a
-    ``Literal`` of such values, inside ``T | None``, ``NewType``, and
-    ``Annotated``, has one JSON type. A value of another type would name
-    another key than the server's spelling of it, which a later load would
-    refuse. Any other key type converts the value it is given.
-
-    Args:
-        cls: Model whose key field holds ``key``.
-        key: The JSON of the key field, as the assignment encoded it.
-
-    Raises:
-        TypeError: If the key is a value of another JSON type.
-    """
-    reduced = _reduce_key(cls, key)
-    if reduced is None:
-        return
-    owner, conversion, value = reduced
-    while isinstance(conversion, OptionalType | NewTypeType):
-        conversion = (
-            conversion.inner_type
-            if isinstance(conversion, OptionalType)
-            else conversion.inner
-        )
-    if not isinstance(conversion, BaseType):
-        return
-    base = conversion.base_type
-    while hasattr(base, "__supertype__"):
-        base = base.__supertype__
-    if typing.get_origin(base) is Literal:
-        table = _table_of(owner)
-        kinds = {
-            kind
-            for member in typing.get_args(base)
-            if (kind := _json_kind(_literal_json(member, table))) is not None
-        }
-    elif base in (int, str, float, bool):
-        kinds = {base.__name__}
-    else:
-        return
-    if _json_kind(value) not in kinds:
+    if _json_kind(encoded) is None:
         raise TypeError(
-            f"The key must be a JSON {' or '.join(sorted(kinds))}, not a "
-            f"{type(value).__name__}"
+            "The key must be written as a JSON string or integer, not a "
+            f"{type(encoded).__name__}"
         )
+    # A subclass of str or int is the plain value, so the key has one spelling.
+    encoded = (
+        str.__str__(encoded) if isinstance(encoded, str) else int(encoded)
+    )
+    return encoded, json.dumps(encoded)
 
 
 def _key_problem(obj: JSONObject) -> str:
@@ -2207,7 +2224,7 @@ def _unhashable_key_message(obj: JSONObject) -> str:
     detail = ""
     if obj._saved_key_json is not None:
         try:
-            _canonical_key_of(obj, obj._saved_key_json)
+            _build_key(obj, obj._saved_key_json)
         except (TypeError, ValueError) as err:
             detail = f" ({err})"
     match _key_problem(obj):
@@ -3218,10 +3235,11 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
         "an enum, or a class that a conversion of the model converts, or a "
         "relation without Hyperlinked() to a model whose key is one. It "
-        "cannot be a collection, a mapping, a tuple, a TypedDict, a "
-        "NamedTuple, a dataclass, a union, or a relation to a model keyed by "
-        "a relation. To key the model by another model, declare the key as a "
-        "relation to that model, or as the type of that model's key."
+        "cannot be a float, a bool, a collection, a mapping, a tuple, a "
+        "TypedDict, a NamedTuple, a dataclass, a union, or a relation to a "
+        "model keyed by a relation. To key the model by another model, "
+        "declare the key as a relation to that model, or as the type of that "
+        "model's key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3252,25 +3270,35 @@ def _refuses_key_type(error: TypeError) -> bool:
     )
 
 
-def _is_plain_key_class(base: object) -> bool:
+def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
     """Return whether a type that converts as itself is a key type.
 
     Args:
         base: The type of a ``BaseType``, which may be a ``Literal`` or a
             ``NewType``.
+        table: Conversion table of the model that declares the key.
 
     Returns:
-        ``True`` for ``int``, ``str``, ``float``, ``bool``, a subclass of one,
-        and a ``Literal``. Any other class reads the server's JSON as it is
-        unless a conversion converts it. That JSON may be an array or a
-        mapping, or cannot be written as JSON, so the key would have more than
-        one spelling or none.
+        ``True`` for ``int``, ``str``, a subclass of one that is not a
+        ``bool``, and a ``Literal`` of strings and integers. Any other class
+        reads the server's JSON as it is unless a conversion converts it. That
+        JSON may be an array or a mapping, or cannot be written as JSON, so the
+        key would have more than one spelling or none. A ``float`` and a
+        ``bool`` are no keys, because a number has more than one spelling and a
+        ``bool`` is not an integer.
     """
     while hasattr(base, "__supertype__"):
         base = base.__supertype__
     if typing.get_origin(base) is Literal:
-        return True
-    return isinstance(base, type) and issubclass(base, int | float | str)
+        return all(
+            _json_kind(_literal_json(member, table)) is not None
+            for member in typing.get_args(base)
+        )
+    return (
+        isinstance(base, type)
+        and issubclass(base, int | str)
+        and not issubclass(base, bool)
+    )
 
 
 def _is_leaf_key(
@@ -3299,7 +3327,7 @@ def _is_leaf_key(
                 if _conversion_of(base, table) is not None:
                     return True
                 _refuse_pydantic_class(base)
-                return _is_plain_key_class(base)
+                return _is_plain_key_class(base, table)
             case _:
                 return False
     return True
@@ -4862,9 +4890,9 @@ class JSONProperty:
                 value names another key, or any key for an object read from a
                 hyperlink that has not learned its key.
             FieldConversionError: If the value cannot be converted to the key's
-                JSON value, is of another JSON type than a key of type ``int``,
-                ``str``, ``float``, or ``bool`` has, or a related object cannot
-                give its key.
+                JSON value, is of another JSON type than a key of type ``int``
+                or ``str`` has, is not written as a string or an integer, or a
+                related object cannot give its key.
         """
         # Convert the key as if it were read from JSON, so it has the same
         # type before and after the object loads. A related object passed as
@@ -4883,8 +4911,7 @@ class JSONProperty:
                 value = _known_key(value)
             value = obj._key_as_read_from_json(value)
             encoded = obj._to_json(value, conversion)
-            _check_key_json_type(type(obj), encoded)
-            named = _canonical_key_of(obj, encoded)
+            named = _build_key(obj, encoded)
 
         name = type(obj).__name__
         if obj._saved_key_json is not None:
@@ -4978,11 +5005,11 @@ class JSONObject:
 
     Once the key is known, the hash never changes. A spelling of one key that
     encodes alike, such as ``Z`` for ``+00:00``, is the same key and is taken.
-    A key of type ``int``, ``str``, ``float``, or ``bool`` refuses a value of
-    another JSON type where it is given, so ``User(id="1")`` raises
-    ``FieldConversionError`` for an ``int`` key. Server state that names
-    another key, from a load, a write's response, or ``update_from_json()``, is
-    refused with ``ResponseShapeError``.
+    A key of type ``int`` or ``str`` refuses a value of another JSON type where
+    it is given, so ``User(id="1")`` raises ``FieldConversionError`` for an
+    ``int`` key. Server state that names another key, from a load, a write's
+    response, or ``update_from_json()``, is refused with
+    ``ResponseShapeError``.
 
     Once the key is known, the program cannot change it. Assigning the key
     field, ``pk``, or a key relation a value that names another key raises
@@ -5395,6 +5422,37 @@ class JSONObject:
             if not keep_prefetched:
                 self._prefetched_related.pop(field, None)
 
+    def _check_embedded_key(
+        self, arg: dict[str, Any], ty: type[JSONObject], field: str | None
+    ) -> None:
+        """Refuse an embedded related object whose key is not a key.
+
+        The key goes through the constructor that builds every key. A key that
+        cannot be built is an error of the relation's field, not an unknown
+        identity, since the server's JSON for a relation names the related
+        object. A key whose type is not defined yet is not refused now.
+
+        Args:
+            arg: JSON of the embedded related object.
+            ty: Related model.
+            field: Name of the relation's field, which the error names.
+
+        Raises:
+            FieldConversionError: If the embedded key is of another JSON type
+                than the related model's key, or does not convert.
+        """
+        prop = _pk_property_of(ty)
+        if field is None or prop is None or prop.json_field not in arg:
+            return
+        try:
+            _resolve_key(ty)
+        except Exception as err:
+            if getattr(err, _DECLARATION_ERROR, False):
+                raise
+            return
+        with _converting(type(self), field):
+            _build_key(object.__new__(ty), arg[prop.json_field])
+
     def _create_related(
         self,
         arg: Any,
@@ -5433,6 +5491,7 @@ class JSONObject:
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
+            self._check_embedded_key(arg, ty, field)
             return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
@@ -6120,7 +6179,7 @@ class JSONObject:
                 # hashing raises while the key is unknown.
                 return None
         try:
-            canonical = _canonical_key_of(self, self._saved_key_json)
+            canonical = _build_key(self, self._saved_key_json)
         except (TypeError, ValueError) as err:
             if getattr(err, _DECLARATION_ERROR, False):
                 raise
@@ -6168,19 +6227,39 @@ class JSONObject:
                 encoded = self._to_json(
                     self._field_cache[field], descriptor.analyzed_type
                 )
-            if _json_equal(encoded, snapshot):
-                continue
             if descriptor._is_key_of(self):
-                # The key's encoding is its canonical form, so any change of
-                # the encoding names another key.
+                # A key is the same key if its canonical text is. Python
+                # equality is not the test, since it equates 1 with 1.0.
+                if self._key_text_of(encoded) == self._key_text_of(snapshot):
+                    continue
                 name = type(self).__name__
                 raise UsageError(
                     f"The key of a saved {name} object cannot change, but "
                     f"{name}.{field} was changed in place. Name another "
                     f"object as {name}({field}=...)"
                 )
+            if _json_equal(encoded, snapshot):
+                continue
             changed.append((field, descriptor, encoded))
         return changed
+
+    def _key_text_of(self, key: Any) -> str | None:
+        """Return the canonical text of the JSON of a key, if it is one.
+
+        Args:
+            key: The JSON of the key field.
+
+        Returns:
+            The key's canonical text, or ``None`` if the JSON is no key that
+            the field accepts.
+        """
+        try:
+            built = _build_key(self, key)
+        except (TypeError, ValueError) as err:
+            if getattr(err, _DECLARATION_ERROR, False):
+                raise
+            return None
+        return None if built is None else built[1]
 
     def _queue_changes(
         self, changed: list[tuple[str, JSONProperty, Any]]
@@ -6269,7 +6348,7 @@ class JSONObject:
         if saved is None and adopt:
             return
         try:
-            named = _canonical_key_of(self, key)
+            named = _build_key(self, key)
         except (TypeError, ValueError) as err:
             if getattr(err, _DECLARATION_ERROR, False):
                 raise
@@ -6732,7 +6811,7 @@ class JSONObject:
         if self._saved_key_json is not None:
             # Say why the key cannot be read, rather than that it is None.
             with _converting(type(self), type(self)._pk.field):
-                _canonical_key_of(self, self._saved_key_json)
+                _build_key(self, self._saved_key_json)
         return None
 
     @property
@@ -7172,6 +7251,7 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             )
         )
+        cls._check_created_key(payload)
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
@@ -7196,6 +7276,26 @@ class JSONObject:
         # payload nor the response holds is unknown rather than absent.
         obj._json_is_partial = not json_keys.issubset(obj._json)
         return obj
+
+    @classmethod
+    def _check_created_key(cls, payload: Mapping[str, Any]) -> None:
+        """Refuse a key that ``create()`` would send and the model refuses.
+
+        The key goes through the constructor that builds every key, so a key
+        that would raise where it is given raises here, before the request.
+
+        Args:
+            payload: The JSON that ``create()`` sends.
+
+        Raises:
+            FieldConversionError: If the key is not one that the key field
+                takes.
+        """
+        prop = _pk_property_of(cls)
+        if prop is None or payload.get(prop.json_field) is None:
+            return
+        with _converting(cls, prop.field):
+            _build_key(cls(), payload[prop.json_field])
 
     @classmethod
     def bulk_get_by_pks(

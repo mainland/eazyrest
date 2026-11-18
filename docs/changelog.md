@@ -430,6 +430,29 @@ describe them further.
   and from base64, or key the model by a listed type.
 - `repr()` of an object keyed by a relation shows the related object's key. It
   showed the whole related object when the JSON embedded it, with its fields.
+- A primary key's wire value is a string, or an integer that is not a `bool`. A
+  key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
+  `Literal` member, raises `TypeError` when the class is decorated, where
+  `v1.0.0a5` accepted it. A conversion that writes a key as anything else, such
+  as a number with a fraction, a `bool`, a list, or a mapping, gives a key that
+  is refused where it is given and unknown where a server sends it. Write such
+  a key as a string, or as an integer. A `NewType` of `int` whose conversion
+  writes a string is now a string key, so `Entry(id=N(3))` takes the key that
+  `Entry(json={"id": "3"})` does. A key of another JSON type than its field's,
+  which a server sends, is refused as a key that is given is. An embedded
+  related object whose key has another type, such as `"7"` for an `int` key,
+  raises `FieldConversionError` naming the relation field when it is read. A
+  key like that in the JSON of an object or of a collection item is no key, so
+  the object equals only itself, `hash()` raises `TypeError`, and `url` raises
+  `FieldConversionError`.
+- `create()` checks the key that it is given as the constructor does, before
+  the `POST`. A key of another JSON type, such as `"1"` for an `int` key, or
+  one that does not convert, such as `"not-a-uuid"` for a `UUID` key, raises
+  `FieldConversionError` and sends nothing. It used to send the key and keep it
+  as given.
+- A key that is changed in place is compared by its canonical text, so changing
+  the value of a mutable key from `1` to `1.0` raises `UsageError` from
+  `save()`. It used to send the write to the old URL.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise
