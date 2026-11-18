@@ -1825,6 +1825,36 @@ def test_error_of_a_response_whose_url_a_hook_rewrote_names_the_url_asked_for(
     _assert_no_signature(raised.value)
 
 
+def test_hook_error_after_a_redirect_names_the_url_asked_for(
+    requests_mock: Any,
+) -> None:
+    """A hook's error for a followed redirect does not quote its signed URL.
+
+    The hook runs while the request is in flight, before the response is
+    recorded as the answer to the URL asked for.
+    """
+    api = API("https://api.test/")
+
+    def decode(resp: requests.Response, **kwargs: Any) -> requests.Response:
+        if not resp.is_redirect:
+            api.json(resp)
+        return resp
+
+    api.session.hooks["response"] = [decode]
+    requests_mock.get(
+        "https://api.test/dl/",
+        status_code=302,
+        headers={"Location": f"https://api.test/blob{_SIGNED}"},
+    )
+    requests_mock.get(f"https://api.test/blob{_SIGNED}", text="not json")
+
+    with pytest.raises(ResponseShapeError) as raised:
+        api.get("dl/")
+
+    assert "GET https://api.test/dl/" in str(raised.value)
+    _assert_no_signature(raised.value)
+
+
 @pytest.mark.parametrize(
     ("url", "named"),
     [
