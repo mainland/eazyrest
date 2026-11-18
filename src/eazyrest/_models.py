@@ -3453,7 +3453,8 @@ def _check_key_is_leaf_or_relation(
     cycle, which is a chain that never ends.
 
     Args:
-        cls: Model class that declares the key.
+        cls: Model class whose key it is, which is the class that decorates or
+            uses an inherited key, not the base that declares it.
         field: Name of the primary-key field.
         analyzed: Analyzed type of the field.
         strict: Whether a name that is not defined in the related model's key
@@ -3483,13 +3484,20 @@ def _check_key_is_leaf_or_relation(
 
 
 def _analyze_field(
-    prop: JSONProperty, resolved: Any, *, strict: bool
+    prop: JSONProperty,
+    resolved: Any,
+    *,
+    owner: type[JSONObject],
+    strict: bool,
 ) -> AnalyzedType:
     """Analyze and check the resolved type of a field.
 
     Args:
         prop: The field.
         resolved: The field's annotation, resolved.
+        owner: The class whose conversions decide what a primary key may be,
+            which is the class that is decorated or in use, not the base that
+            declares an inherited key.
         strict: Whether a name that is not defined in a related model's key
             raises, as it does when the field is first used. Otherwise the key
             check waits for that use.
@@ -3522,9 +3530,9 @@ def _analyze_field(
             raise _key_type_error(prop.cls, prop.field) from err
         raise
     if prop.is_primary_key:
-        _check_key_not_hyperlinked(prop.cls, prop.field, analyzed)
+        _check_key_not_hyperlinked(owner, prop.field, analyzed)
         _check_key_is_leaf_or_relation(
-            prop.cls, prop.field, analyzed, strict=strict
+            owner, prop.field, analyzed, strict=strict
         )
     _check_not_hyperlinked_set(prop.cls, prop.field, analyzed)
     return analyzed
@@ -3547,7 +3555,9 @@ def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
         Exception: If the annotation cannot be resolved, as for a class that is
             not defined yet, whatever resolving it raises.
     """
-    return _analyze_field(prop, prop._resolve_type(), strict=strict)
+    return _analyze_field(
+        prop, prop._resolve_type(), owner=prop._owner, strict=strict
+    )
 
 
 def _refuse_declared_type(
@@ -3582,7 +3592,7 @@ def _refuse_declared_type(
         if inherited:
             analyzed = analyze_type(resolved)
         else:
-            analyzed = _analyze_field(prop, resolved, strict=False)
+            analyzed = _analyze_field(prop, resolved, owner=cls, strict=False)
         _check_field_unions(analyzed, _table_of(cls))
         _check_admitted(analyzed, _table_of(cls))
     except Exception as err:
@@ -3628,13 +3638,16 @@ def _refuse_declared_types(
             keyed by one. The first field in declaration order raises, and then
             the primary key.
     """
-    props = [*declared]
+    own = [*declared]
+    props = [*own]
     pk = _pk_property_of(cls)
     if pk is not None and pk not in props:
         props.append(pk)
     for prop in props:
         _refuse_declared_type(cls, prop)
-    for prop in _inherited_fields_with_new_table(cls, props):
+    # An inherited key is checked as the class's own above, and is bound like
+    # any other inherited field, so that its first use reads ``cls``'s table.
+    for prop in _inherited_fields_with_new_table(cls, own):
         _refuse_declared_type(cls, prop, inherited=True)
         bound = prop._owned_by(cls)
         setattr(cls, prop.field, bound)

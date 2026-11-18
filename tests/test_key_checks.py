@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import decimal
 import enum
 import pathlib
+import sys
 import uuid
 from typing import Annotated, Any, Literal, NewType
 
@@ -391,3 +393,47 @@ def test_a_key_of_a_string_and_an_integer_of_different_text_decorates(
 ) -> None:
     """Values that name different URLs make different keys."""
     _declare_key(key_type)
+
+
+@dataclasses.dataclass(frozen=True)
+class LateCode:
+    """Class of an application that a key names before it exists."""
+
+    value: str
+
+
+LATE_CODE = Conversion(
+    decode=lambda value, cls: cls(value),
+    encode=lambda value, cls: value.value,
+)
+
+
+def test_a_subclass_converts_an_inherited_key_that_names_a_late_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A subclass's conversions admit the key that it inherits."""
+    late = LateCode
+    monkeypatch.delattr(sys.modules[__name__], "LateCode")
+    base: Any = json_object(
+        type(
+            "LateBase",
+            (KeyBase,),
+            {
+                "__module__": __name__,
+                "class_url": "/late/",
+                "__annotations__": {"id": "LateCode"},
+            },
+        )
+    )
+    monkeypatch.setattr(sys.modules[__name__], "LateCode", late, raising=False)
+
+    sub: Any = json_object(
+        type(
+            "LateSub",
+            (base,),
+            {"__module__": __name__, "conversions": {late: LATE_CODE}},
+        )
+    )
+
+    assert sub(json={"id": "a"}).pk == late("a")
+    assert sub(json={"id": "a"}).url == "/late/a/"
