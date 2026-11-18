@@ -2038,8 +2038,7 @@ todos = Todo.filter(api=user_api, completed=False)
 Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, or else the
 related model's own API, and the collection hooks receive the query's client as
 `api`, so a hook such as `follow_next_links(api, payload)` reads later pages
-with it. While `filter()` calls a collection hook, `cls.api` is the query's API
-too.
+with it.
 
 A related object loads through the API registered for its own class, so models
 served by different APIs can refer to each other. If the parent object has an
