@@ -5316,8 +5316,11 @@ class JSONObject:
         """Return the class and primary key without sending a request.
 
         The key is shown as its JSON value, whether or not the object has
-        loaded, as in ``<User id=1>``. An object known only by its URL shows
-        the URL, without any user and password.
+        loaded, as in ``<User id=1>``. A key that is a relation shows the
+        related object's key, not the related object that the JSON may embed,
+        so a log of the object holds none of its fields. If that key cannot be
+        read yet, the value is shown as ``...``. An object known only by its
+        URL shows the URL, without any user and password.
 
         Returns:
             The class name and primary key in angle brackets, or the class name
@@ -5336,6 +5339,13 @@ class JSONObject:
 
         if value is None and self._url_override is not None:
             return f"<{name} url={_redact_url(self._url_override)!r}>"
+        if isinstance(value, dict):
+            try:
+                reduced = _reduce_key(type(self), value)
+            except Exception:  # noqa: BLE001
+                # Nothing that repr() shows may come from the related object.
+                return f"<{name} {pk_property.field}=...>"
+            value = None if reduced is None else reduced[2]
         return f"<{name} {pk_property.field}={value!r}>"
 
     def _set_prefetched_related(

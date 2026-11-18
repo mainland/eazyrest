@@ -428,6 +428,8 @@ describe them further.
   as it was, so a key that was an array or a mapping gave two URLs for one
   object. Declare a conversion for the class, such as a `bytes` conversion to
   and from base64, or key the model by a listed type.
+- `repr()` of an object keyed by a relation shows the related object's key. It
+  showed the whole related object when the JSON embedded it, with its fields.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

@@ -259,3 +259,37 @@ def test_update_from_json_keeps_the_key_of_a_singleton_that_has_one() -> None:
 
     with pytest.raises(ResponseShapeError):
         me.update_from_json({"id": 8, "name": "Grace"})
+
+
+@json_object
+class Item(KeyBase):
+    """Model keyed by an ``int``."""
+
+    class_url = "/items/"
+
+    id: int
+
+
+@json_object(pk="owner")
+class Profile(KeyBase):
+    """Model keyed by a relation."""
+
+    class_url = "/profiles/"
+
+    owner: Item
+    api_token: str
+
+
+def test_repr_of_a_model_keyed_by_a_relation_shows_the_related_key() -> None:
+    """The embedded related object's fields are not in ``repr()``."""
+    profile = Profile(
+        json={"owner": {"id": 2, "name": "Ada"}, "api_token": "secret"}
+    )
+
+    assert repr(profile) == "<Profile owner=2>"
+
+
+def test_repr_of_a_model_keyed_by_a_bare_relation_shows_the_key() -> None:
+    """A bare key is shown as it is."""
+    assert repr(Profile(json={"owner": 2})) == "<Profile owner=2>"
+    assert repr(Profile(owner=Item(id=2))) == "<Profile owner=2>"
