@@ -2674,61 +2674,6 @@ def _query_type(conversion: AnalyzedType) -> AnalyzedType:
     return conversion
 
 
-def _materialize_query_value(value: Any) -> Any:
-    """Return a query value with any collection read into a list.
-
-    requests iterates every value that is iterable and is not a string or
-    bytes, so an iterator, a ``deque``, a ``range``, or a dictionary view is a
-    collection to it, as a list is. Reading the collection once lets the value
-    be checked and then sent without iterating it again.
-
-    Args:
-        value: Query value, already encoded as JSON where it names a field.
-
-    Returns:
-        A list of the items of a collection that is not a mapping, and
-        ``value`` itself otherwise.
-    """
-    if _is_collection_value(value) and not isinstance(value, list):
-        return list(value)
-    return value
-
-
-def _unsendable_query_value(value: Any) -> str | None:
-    """Return why requests cannot send a value as a query parameter.
-
-    requests omits a parameter whose value is ``None`` or an empty collection,
-    and it omits a ``None`` item of a collection. It sends a mapping as its
-    keys, and it flattens a collection nested in another into the outer one's
-    items. A query that loses or changes a constraint this way matches objects
-    it should not.
-
-    Args:
-        value: Query value, as ``_materialize_query_value()`` returns it.
-
-    Returns:
-        A clause that completes "because its value", or ``None`` if requests
-        sends ``value`` intact.
-    """
-    if value is None:
-        return "is None, and requests omits it"
-    if isinstance(value, Mapping):
-        return "is a mapping, and requests sends only its keys"
-    if not _is_collection_value(value):
-        return None
-    if not value:
-        return "is an empty collection, and requests omits it"
-    if any(item is None for item in value):
-        return "contains None, and requests omits that item"
-    if any(
-        isinstance(item, Mapping) or _is_collection_value(item)
-        for item in value
-    ):
-        return "contains a collection, and requests flattens it"
-
-    return None
-
-
 def _copy_json(value: Any) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
 
@@ -7178,27 +7123,6 @@ class JSONObject:
         }
 
     @classmethod
-    def _is_single_collection_item(cls, name: str, value: Any) -> bool:
-        """Return whether a query value is one item of a collection field.
-
-        Args:
-            name: Name of the field the query value is for.
-            value: Query value.
-
-        Returns:
-            Whether ``name`` is a JSON-backed field of a collection type,
-            possibly optional, and ``value`` is neither ``None`` nor a
-            collection of items.
-        """
-        descriptor = getattr(cls, name, None)
-        return (
-            isinstance(descriptor, JSONProperty)
-            and cls._query_collection(descriptor) is not None
-            and value is not None
-            and not _is_collection_value(value)
-        )
-
-    @classmethod
     def _query_collection(
         cls, descriptor: JSONProperty
     ) -> CollectionType | None:
@@ -7223,76 +7147,193 @@ class JSONObject:
         return analyzed if isinstance(analyzed, CollectionType) else None
 
     @classmethod
+    def _is_whole_query_value(cls, name: str, value: Any) -> bool:
+        """Return whether a field's conversion takes a value as a whole.
+
+        A model for a related field, and an instance of a class that a
+        conversion of the field's type, or of its collection's items, encodes,
+        are one value even if they are iterable.
+
+        Args:
+            name: Name of the parameter.
+            value: Query value.
+
+        Returns:
+            Whether ``name`` is a JSON-backed field and its conversion takes
+            ``value`` as one value, not as a collection of values.
+        """
+        descriptor = getattr(cls, name, None)
+        if not isinstance(descriptor, JSONProperty):
+            return False
+        collection = cls._query_collection(descriptor)
+        conversion = _unwrap_optional_type(
+            descriptor.analyzed_type
+            if collection is None
+            else collection.item_type
+        )
+        if isinstance(conversion, RelatedType):
+            return isinstance(value, JSONObject)
+        if collection is None and isinstance(
+            conversion,
+            (
+                FixedTupleType,
+                NamedTupleType,
+                DataclassType,
+                TypedDictType,
+                MappingType,
+            ),
+        ):
+            # Its items are not each of the field's type.
+            return True
+        found = _class_entry(conversion, _table_of(cls))
+        if found is None and isinstance(conversion, BaseType):
+            found = _conversion_of(conversion.base_type, _table_of(cls))
+        return found is not None and _encodes(value, found)
+
+    @classmethod
+    def _query_items(cls, name: str, value: Any) -> tuple[list[Any], bool]:
+        """Return the operands of a query parameter, each encoded.
+
+        A value that the field's conversion takes as a whole is one operand.
+        Otherwise an iterable that is not a string, bytes, or a mapping is read
+        once and gives an operand for each of its items, which the item
+        conversion of a collection field, or the field's conversion, encodes. A
+        parameter that names no field is not converted, except that a model is
+        its primary key.
+
+        Args:
+            name: Name of the parameter.
+            value: Query value.
+
+        Returns:
+            The operands, and whether the value gave them as repeated ones.
+        """
+        descriptor = getattr(cls, name, None)
+        convert: Callable[[Any], Any]
+        guard: contextlib.AbstractContextManager[None]
+        if isinstance(descriptor, JSONProperty):
+            collection = cls._query_collection(descriptor)
+            conversion = _query_type(
+                descriptor.analyzed_type
+                if collection is None
+                else collection.item_type
+            )
+
+            def convert(item: Any) -> Any:
+                return _query_value(cls._to_json(item, conversion))
+
+            guard = _converting(cls, name)
+        else:
+            collection = None
+
+            def convert(item: Any) -> Any:
+                if isinstance(item, JSONObject):
+                    return cls._to_json(item, RelatedType(type(item)))
+                return item
+
+            guard = contextlib.nullcontext()
+
+        with guard:
+            if cls._is_whole_query_value(name, value):
+                encoded = convert(value)
+                if isinstance(encoded, list):
+                    return encoded, True
+                return [encoded], False
+            if (
+                value is None
+                or isinstance(value, (str, bytes, Mapping))
+                or not isinstance(value, Iterable)
+            ):
+                return [convert(value)], False
+            if isinstance(value, RelatedCollection):
+                # Reading the collection must not use up its single traversal.
+                value = value._related_objects()
+            items = _each_item(convert, value)
+            if collection is not None and _READ_AS[
+                collection.collection_type
+            ] in (set, frozenset):
+                items.sort(key=_json_order)
+            return items, True
+
+    @classmethod
+    def _query_operands(cls, name: str, value: Any) -> list[Any]:
+        """Return the operands that a query sends for a parameter.
+
+        Args:
+            name: Name of the parameter.
+            value: Query value.
+
+        Returns:
+            A nonempty list of scalars, which requests sends as one parameter
+            repeated.
+
+        Raises:
+            ValueError: If the value is a mapping or ``None``, an empty
+                collection, or holds ``None`` or another collection, which
+                requests would omit, flatten, or send as its keys, so the query
+                would ignore or change its constraint.
+        """
+        operands, repeated = cls._query_items(name, value)
+        problem = None
+        if not repeated and operands[0] is None:
+            problem = "is None, and requests omits it"
+        elif not repeated and isinstance(operands[0], Mapping):
+            problem = "is a mapping, and requests sends only its keys"
+        elif not operands:
+            problem = "is an empty collection, and requests omits it"
+        elif any(operand is None for operand in operands):
+            problem = "contains None, and requests omits that item"
+        elif any(
+            isinstance(operand, Mapping) or _is_collection_value(operand)
+            for operand in operands
+        ):
+            problem = "contains a collection, and requests flattens it"
+        if problem is not None:
+            raise ValueError(
+                f"Query parameter {name} for {cls.__name__} cannot be sent, "
+                f"because its value {problem}"
+            )
+        return operands
+
+    @classmethod
     def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
-        Unlike a field value, a query value for a collection field may be a
-        single item, which matches the objects whose collection holds it. A
-        boolean field value is sent as ``true`` or ``false``, as in JSON.
+        Each parameter becomes a list of operands, which requests sends as the
+        parameter repeated. A parameter named after a field is encoded by the
+        field's conversion, and a value for a collection field may be a single
+        item, which matches the objects whose collection holds it. A boolean
+        field value is sent as ``true`` or ``false``, as in JSON.
 
         Args:
             params: Query parameter values keyed as for ``_encode_fields()``.
 
         Returns:
-            Query parameters keyed by JSON key.
+            Operands by JSON key.
 
         Raises:
-            ValueError: If a parameter encodes to a value that requests would
-                not send intact, so the query would ignore or change its
-                constraint.
+            TypeError: If two parameters have the same JSON key.
+            ValueError: If a parameter has a value that requests would not send
+                intact, so the query would ignore or change its constraint.
         """
-        payload = cls._encode_fields(
-            {
-                name: value
-                for name, value in params.items()
-                if not cls._is_single_collection_item(name, value)
-            },
-            query=True,
-        )
+        payload: dict[str, Any] = {}
+        names: dict[str, str] = {}
         for name, value in params.items():
-            if cls._is_single_collection_item(name, value):
-                # A single value, such as a query for the objects whose
-                # collection holds it, converts as one item.
-                descriptor = getattr(cls, name)
-                collection = cls._query_collection(descriptor)
-                assert collection is not None
-                with _converting(cls, name):
-                    if descriptor.json_field in payload:
-                        raise TypeError(
-                            "Multiple fields use the JSON key "
-                            f"{descriptor.json_field}"
-                        )
-                    payload[descriptor.json_field] = cls._to_json(
-                        value, _query_type(collection.item_type)
-                    )
-
-        for name in params:
             descriptor = getattr(cls, name, None)
-            json_field = (
+            key = (
                 descriptor.json_field
                 if isinstance(descriptor, JSONProperty)
                 else name
             )
-            value = _materialize_query_value(payload[json_field])
-            if not isinstance(descriptor, JSONProperty):
-                if isinstance(value, JSONObject):
-                    value = cls._to_json(value, RelatedType(type(value)))
-                elif isinstance(value, list):
-                    value = [
-                        cls._to_json(item, RelatedType(type(item)))
-                        if isinstance(item, JSONObject)
-                        else item
-                        for item in value
-                    ]
-            problem = _unsendable_query_value(value)
-            if problem is not None:
-                raise ValueError(
-                    f"Query parameter {name} for {cls.__name__} cannot be "
-                    f"sent, because its value {problem}"
-                )
-            if isinstance(descriptor, JSONProperty):
-                value = _query_value(value)
-            payload[json_field] = value
+            if key in payload:
+                clash = TypeError(f"Multiple fields use the JSON key {key}")
+                for field in (names[key], name):
+                    if isinstance(getattr(cls, field, None), JSONProperty):
+                        with _converting(cls, field):
+                            raise clash
+                raise clash
+            names[key] = name
+            payload[key] = cls._query_operands(name, value)
 
         return payload
 
@@ -8381,7 +8422,8 @@ class JSONObject:
         ``defaults`` is sent only on creation and is allowed.
 
         A value that can be iterated only once, such as a generator, is read
-        once, before the lookup, and its items are used for both requests.
+        once, before the lookup, and its items are used for both requests. A
+        value that the field's conversion takes as a whole is not read.
 
         Args:
             defaults: Optional fields applied only when creating a new object.
@@ -8422,6 +8464,7 @@ class JSONObject:
             name: list(value)
             if isinstance(value, Iterable)
             and not isinstance(value, (Collection, str, bytes, Mapping))
+            and not cls._is_whole_query_value(name, value)
             else value
             for name, value in _query_params(params, kwargs).items()
         }

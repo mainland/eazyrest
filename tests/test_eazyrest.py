@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import (
     Callable,
     Iterable,
+    Iterator,
     Mapping,
     MutableSet,
     Sequence,
@@ -4261,6 +4262,161 @@ def test_query_sends_every_item_of_an_iterable(
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
         "userId": ["1", "2"],
         "id__in": ["1", "2"],
+    }
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: (n for n in [1, 2]),
+        lambda: deque([1, 2]),
+        lambda: range(1, 3),
+    ],
+)
+def test_query_sends_every_item_of_an_iterable_for_a_field(
+    requests_mock: Any, make: Any
+) -> None:
+    """An iterable for a field's name is repeated, encoded as the field is.
+
+    Args:
+        make: Callable that returns a fresh iterable of two items.
+    """
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(id=make(), title=(str(n) for n in make())))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "id": ["1", "2"],
+        "title": ["1", "2"],
+    }
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: {1, 2},
+        lambda: frozenset({1, 2}),
+        lambda: {1: "a", 2: "b"}.keys(),
+        lambda: {"a": 1, "b": 2}.values(),
+    ],
+)
+@pytest.mark.parametrize("name", ["id", "ordering"])
+def test_query_repeats_a_set_or_view_the_same_for_a_field_and_not(
+    requests_mock: Any, make: Any, name: str
+) -> None:
+    """A set or a dictionary view repeats a parameter, whether a field or not.
+
+    Args:
+        make: Callable that returns a fresh set or view of two integers.
+        name: Parameter name, a field or a name that is not a field.
+    """
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(**{name: make()}))
+
+    sent = parse_qs(urlparse(lookup.last_request.url).query)
+    assert sorted(sent[name]) == ["1", "2"]
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda: iter(()), "empty collection"),
+        (deque, "empty collection"),
+        (lambda: range(0), "empty collection"),
+        (lambda: None, "is None"),
+        (dict, "is a mapping"),
+        (lambda: {"a": 1}, "is a mapping"),
+        (lambda: iter([None]), "contains None"),
+        (lambda: [[1]], "contains a collection"),
+        (lambda: ({"a": 1},), "contains a collection"),
+    ],
+)
+@pytest.mark.parametrize("name", ["id", "title"])
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+def test_query_rejects_unsendable_values_for_a_field(
+    requests_mock: Any, make: Any, match: str, name: str, method: str
+) -> None:
+    """A field's parameter is refused as one that names no field is.
+
+    Args:
+        make: Callable that returns a fresh query value.
+        match: Pattern that the ``ValueError`` message should match.
+        name: Name of a field.
+        method: Name of the query method.
+    """
+    requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
+
+    with pytest.raises(ValueError, match=match):
+        getattr(Todo, method)(**{name: make()})
+
+    assert requests_mock.call_count == 0
+
+
+class QueryCode:
+    """Iterable class that a conversion encodes as one value."""
+
+    def __iter__(self) -> Iterator[int]:
+        """Return the iterator over two integers."""
+        yield 9
+        yield 10
+
+
+@json_object
+class Coded(ModelBase):
+    """Model with a field of an iterable class that has a conversion."""
+
+    class_url = "/coded/"
+    conversions: ClassVar[dict[type, Conversion]] = {
+        QueryCode: Conversion(
+            decode=lambda value, cls: QueryCode(),
+            encode=lambda value, cls: "code",
+        )
+    }
+
+    id: int
+    code: QueryCode
+
+
+def test_query_sends_an_iterable_that_a_conversion_encodes_as_one_value(
+    requests_mock: Any,
+) -> None:
+    """A registered iterable class is one operand, not its items."""
+    lookup = requests_mock.get("https://example.com/v1/coded/", json=[])
+
+    list(Coded.filter(code=QueryCode(), ordering=QueryCode()))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "code": ["code"],
+        "ordering": ["9", "10"],
+    }
+
+
+def test_get_or_create_does_not_read_an_iterable_that_a_conversion_encodes(
+    requests_mock: Any,
+) -> None:
+    """The lookup and the creation both use the value's conversion."""
+    lookup = requests_mock.get("https://example.com/v1/coded/", json=[])
+    post = requests_mock.post("https://example.com/v1/coded/", json={"id": 1})
+
+    Coded.get_or_create(id=1, code=QueryCode())
+
+    assert parse_qs(urlparse(lookup.last_request.url).query)["code"] == [
+        "code"
+    ]
+    assert post.last_request.json() == {"id": 1, "code": "code"}
+
+
+def test_query_sends_the_key_of_each_model_for_a_relation_field(
+    requests_mock: Any,
+) -> None:
+    """A collection of models for a relation repeats each primary key."""
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    list(Todo.filter(user=(User(id=pk) for pk in (2, 3))))
+
+    assert parse_qs(urlparse(lookup.last_request.url).query) == {
+        "userId": ["2", "3"]
     }
 
 

@@ -489,6 +489,15 @@ describe them further.
   object. Code that changed it to change the object must assign fields. Its
   values are still the object's own, so a value in it must not be changed in
   place.
+- A query argument is read the same way whether or not its name is a field's.
+  An iterable other than a string, bytes, or a mapping repeats the parameter,
+  and its items are encoded by the field's conversion. A generator, `deque`,
+  `range`, set, or dictionary view for a field's name now repeats the parameter
+  where it raised `FieldConversionError`, and a collection of models for a
+  relation field sends each primary key. An instance of a class that the
+  field's conversion registers is one value, not its items, even if the class
+  is iterable. A query argument must be finite, because the whole of it is read
+  before the request is sent.
 
 ### Migrating from 0.9.0
 
