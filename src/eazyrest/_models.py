@@ -6559,16 +6559,20 @@ class JSONObject:
     def _key_is_unknown(self) -> bool:
         """Return whether an object with its own URL does not know its key.
 
-        An object read from a hyperlink knows its key if it has recorded one,
-        and its URL does not say. A saved key of ``None`` is the same as none
-        recorded. Whether the object has loaded is not the question, so a key
-        that a ``refresh()`` kept stays known across another.
+        An object has its own URL if it was read from a hyperlink or its class
+        overrides ``url``. It knows its key if it has recorded one, and its URL
+        does not say. A saved key of ``None`` is the same as none recorded.
+        Whether the object has loaded is not the question, so a key that a
+        ``refresh()`` kept stays known across another.
 
         Returns:
             Whether the object has its own URL and its saved key is absent or
             ``None``.
         """
-        return self._url_override is not None and self._saved_key_json is None
+        has_own_url = self._url_override is not None or _url_is_overridden(
+            type(self)
+        )
+        return has_own_url and self._saved_key_json is None
 
     def _merge_json(self, payload: dict[str, Any]) -> None:
         """Merge authoritative JSON members into this object's JSON.
