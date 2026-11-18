@@ -5908,7 +5908,6 @@ class JSONObject:
                 )
 
             case UnionType():
-                _check_union(conversion, _table_of(type(self)))
                 return _copy_json(value)
 
             case CollectionType(collection_type, item_type):
@@ -6092,7 +6091,6 @@ class JSONObject:
                     for name, item_type, _ in conversion.fields
                 }
             case UnionType():
-                _check_union(conversion, _table_of(cls))
                 return _checked_json(value)
             case TypedDictType():
                 keys = conversion.keys
