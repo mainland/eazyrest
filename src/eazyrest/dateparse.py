@@ -9,7 +9,7 @@ import isodate
 __all__ = ["parse_datetime", "parse_duration"]
 
 # A number of seconds, such as "90", "-90", or "1.5".
-_SECONDS_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+_SECONDS_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
 
 # The format of str(datetime.timedelta) and Django's duration_string(), for
 # example "1 day, 2:03:04", "-1 day, 23:00:00", or "1 02:03:04.000005". Hours
@@ -17,15 +17,17 @@ _SECONDS_RE = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
 # Minutes after hours, and seconds, are less than 60, as both formats write
 # them.
 _CLOCK_RE = re.compile(
-    r"(?:(?P<days>-?\d+) (?:days?, )?)?"
-    r"(?:(?P<hours>\d+):(?=[0-5]\d:))?(?P<minutes>\d+):(?P<seconds>[0-5]\d)"
-    r"(?:\.(?P<microseconds>\d{1,6}))?"
+    r"(?:(?P<days>-?[0-9]+) (?:days?, )?)?"
+    r"(?:(?P<hours>[0-9]+):(?=[0-5][0-9]:))?"
+    r"(?P<minutes>[0-9]+):(?P<seconds>[0-5][0-9])"
+    r"(?:\.(?P<microseconds>[0-9]{1,6}))?"
 )
 
 # An optional sign followed by terms such as "1h", "30 m", or "1.5 hours,".
 _SIGN_RE = re.compile(r"(?P<sign>[+-]?)\s*")
 _TERM_RE = re.compile(
-    r"(?P<number>\d+(?:\.\d*)?|\.\d+)\s*(?P<unit>[a-z\u00b5\u03bc]+)\s*,?\s*",
+    r"(?P<number>[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*"
+    r"(?P<unit>[a-z\u00b5\u03bc]+)\s*,?\s*",
     re.IGNORECASE,
 )
 

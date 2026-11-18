@@ -173,6 +173,11 @@ def test_parse_duration_inverts_str(delta: datetime.timedelta) -> None:
         "1 hour and 30 minutes",
         "1:60",
         "1:60:00",
+        "\u0661h",
+        "\u0661\u0662",
+        "\u0661:\u0663\u0660",
+        "\u0661\u0662 days, 1:00:00",
+        "1:00:00.\u0661",
     ],
 )
 def test_parse_duration_rejects_unsupported_durations(text: str) -> None:
