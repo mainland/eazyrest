@@ -3407,6 +3407,50 @@ def test_type_checking_only_annotations_leave_other_fields_readable() -> None:
         _ = measurement.ratio
 
 
+@dataclasses.dataclass
+class Shadowing:
+    """Dataclass whose field is named like the builtin that types it."""
+
+    int: int = 0
+
+
+def test_a_dataclass_field_named_like_its_type_resolves_to_the_type() -> None:
+    """A field's default does not hide the type that its annotation names."""
+
+    @json_object
+    class Holder(ModelBase):
+        class_url = "/holders/"
+
+        id: int
+        shadowing: Shadowing
+
+    holder = Holder(json={"id": 1, "shadowing": {"int": 3}})
+
+    assert holder.shadowing == Shadowing(3)
+
+
+def test_an_error_resolving_an_annotation_waits_for_the_fields_use() -> None:
+    """A ``TypeError`` raised by an annotation's evaluation is not a refusal.
+
+    Decoration refuses a type that eazyrest does not convert. An annotation
+    that cannot be evaluated is not one, so the class is defined and the field
+    raises what the evaluation raised when it is first read.
+    """
+
+    @json_object
+    class Broken(ModelBase):
+        class_url = "/broken/"
+
+        id: int
+        value: 1 + None  # type: ignore[valid-type]
+
+    broken = Broken(json={"id": 1, "value": 2})
+
+    with pytest.raises(TypeError, match="unsupported operand"):
+        _ = broken.value
+    assert broken.id == 1
+
+
 def test_class_var_annotations_are_not_fields() -> None:
     """``ClassVar`` annotations declare class attributes, not fields."""
 
