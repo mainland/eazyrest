@@ -161,6 +161,21 @@ def test_an_operation_refuses_a_member_that_is_refused_at_first_use(
     assert not requests_mock.called
 
 
+@pytest.mark.parametrize("value", [[], [{"inner": 1}]], ids=["empty", "item"])
+def test_an_unanalyzable_member_is_refused_for_any_value(
+    value: list[Any],
+) -> None:
+    """A read of a list of such a structure raises, though it may be empty.
+
+    Args:
+        value: JSON of the field.
+    """
+    obj = _model(list[Missing])(json={"id": 1, "value": value})
+
+    with pytest.raises(FieldConversionError, match=r"Holder\.value"):
+        _ = obj.value
+
+
 class _Mixed(TypedDict):
     """``TypedDict`` with a union that has a converting member."""
 
