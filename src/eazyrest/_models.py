@@ -1039,9 +1039,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     converts the whole type.
 
     A named type alias, such as one that the ``type`` statement creates,
-    analyzes as the type it stands for. A ``TypedDict`` and a mapping with
-    string keys, such as ``dict[str, T]``, analyze as structure whose keys or
-    values eazyrest converts.
+    analyzes as the type it stands for, and so does a bare alias from
+    ``typing``, such as ``typing.List``, which analyzes as ``list``. A
+    ``TypedDict`` and a mapping with string keys, such as ``dict[str, T]``,
+    analyze as structure whose keys or values eazyrest converts.
 
     Args:
         ty: Declared field type.
@@ -1070,6 +1071,11 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     ty = _expand_aliases(ty)
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
+    if ty_origin is not None and not ty_args and not hasattr(ty, "__args__"):
+        # A bare alias from typing, such as typing.List, which stands for its
+        # origin, here list. A subscripted one has __args__, even tuple[()].
+        ty = ty_origin
+        ty_origin = None
 
     if ty_origin is Annotated:
         if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):

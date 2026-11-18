@@ -615,7 +615,9 @@ iteration order. Any other parameterized type, such as `Counter[str]`, raises
 `TypeError` when the class is decorated, because its items would otherwise pass
 through unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As
 Python's types say, `tuple[T]` is a tuple of exactly one item, and a bare
-`tuple` is a tuple of any length whose items read as they are:
+`tuple` is a tuple of any length whose items read as they are. A bare alias
+from `typing`, such as `typing.List` or `typing.Dict`, reads as its class,
+`list` or `dict`:
 
 ```python
 import datetime

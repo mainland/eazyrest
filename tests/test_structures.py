@@ -37,7 +37,12 @@ from eazyrest import (
     JSONObject,
     json_object,
 )
-from eazyrest._models import DataclassType, NamedTupleType, analyze_type
+from eazyrest._models import (
+    DataclassType,
+    FixedTupleType,
+    NamedTupleType,
+    analyze_type,
+)
 
 BASE = "https://structures.example.com/"
 ItemT = TypeVar("ItemT")
@@ -344,6 +349,51 @@ def test_dataclass_with_an_init_only_field_is_refused_when_decorated(
 
     assert not isinstance(refused.value, FieldConversionError)
     assert "init-only field scale" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    ("alias", "origin"),
+    [
+        (typing.List, list),  # noqa: UP006
+        (typing.Dict, dict),  # noqa: UP006
+        (typing.Tuple, tuple),  # noqa: UP006
+        (typing.Set, set),  # noqa: UP006
+        (typing.Type, type),  # noqa: UP006
+        (typing.Hashable, collections.abc.Hashable),
+        (typing.Sequence, collections.abc.Sequence),
+    ],
+    ids=repr,
+)
+def test_a_bare_typing_alias_converts_as_its_origin(
+    alias: Any, origin: type[Any]
+) -> None:
+    """``typing.List`` and the other bare aliases read as ``list`` and so on.
+
+    They are not parameterized, so refusing them as a parameterized type, or as
+    a mapping with keys that are not strings, names a defect that is not there.
+
+    Args:
+        alias: Bare alias from ``typing``.
+        origin: The class that it stands for.
+    """
+    assert analyze_type(alias) == analyze_type(origin)
+
+
+def test_a_bare_typing_alias_is_a_field_type() -> None:
+    """A field typed by ``typing.Dict`` reads its JSON object as it is."""
+    namespace = {
+        "__annotations__": {"id": int, "value": typing.Dict},  # noqa: UP006
+        "class_url": "/bare/",
+        "__module__": __name__,
+    }
+    model: Any = json_object(type("Bare", (StructureBase,), namespace))
+
+    assert model(json={"id": 1, "value": {"a": 1}}).value == {"a": 1}
+
+
+def test_an_empty_tuple_type_is_still_a_fixed_tuple() -> None:
+    """``tuple[()]`` has no arguments but is not a bare alias."""
+    assert analyze_type(tuple[()]) == FixedTupleType(())
 
 
 class _Code(str):
