@@ -138,6 +138,11 @@ describe them further.
   names a type that is imported only under `TYPE_CHECKING` raises
   `FieldConversionError` when the field is first used, where `v1.0.0a5` passed
   its JSON through. Import the type at run time.
+- A field whose type is a `TypedDict` that is closed or has extra items (PEP
+  728), or a subclass of one, which PEP 728 closes too, raises
+  `FieldConversionError` naming the field when the field is first used, also
+  inside an optional or a collection, where `v1.0.0a5` kept its JSON. Annotate
+  the JSON form, such as `dict[str, Any]`.
 - `tuple[T]` is a tuple of exactly one item, so a longer array raises
   `FieldConversionError`, where `v1.0.0a5` read an array of any length as a
   tuple. Annotate a tuple of any length as `tuple[T, ...]`. A bare `tuple`
