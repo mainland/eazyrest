@@ -987,8 +987,8 @@ class API:
 
     eazyrest's conversions recurse through nested values, so a deeper value
     raises ``LimitExceeded`` instead of exhausting Python's recursion limit.
-    ``None`` removes the limit, but Python's decoder still fails for JSON
-    nested more deeply than about a thousand levels.
+    ``None`` removes the limit, so JSON as deep as Python's decoder accepts
+    reaches the conversions, whose recursion it can exceed.
     """
 
     max_pages: int | None = 1000
