@@ -1744,6 +1744,52 @@ def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
+def _has_key_of(cls: type[Any], model_type: type[Any]) -> bool:
+    """Return whether a class is keyed by the field of a related model.
+
+    A subclass can choose another key field, so its objects name resources by a
+    key that the related model's relation does not hold.
+
+    Args:
+        cls: Class of an object that a relation holds.
+        model_type: Model that the relation's field names.
+
+    Returns:
+        Whether the key field of ``cls`` is the key field of ``model_type``.
+    """
+    key = _pk_property_of(cls)
+    related_key = _pk_property_of(model_type)
+    return (key is None and related_key is None) or (
+        key is not None
+        and related_key is not None
+        and key.field == related_key.field
+    )
+
+
+def _check_related_key(value: JSONObject, model_type: type[Any]) -> None:
+    """Refuse a related object whose class is keyed by another field.
+
+    Writing the key of such an object would name a resource of the related
+    model by a key that it does not have.
+
+    Args:
+        value: Object written as a relation whose class is ``model_type`` or a
+            subclass.
+        model_type: Model that the relation's field names.
+
+    Raises:
+        TypeError: If the key of ``value``'s class is not the key of
+            ``model_type``. The field's name is added where the conversion
+            runs.
+    """
+    if not _has_key_of(type(value), model_type):
+        raise TypeError(
+            f"A relation to {model_type.__name__} cannot take an object of "
+            f"{type(value).__name__}, which chose another primary key than "
+            f"{model_type.__name__}'s"
+        )
+
+
 def _check_prefetched_class(
     obj: Any,
     model_type: type[Any],
@@ -4828,6 +4874,7 @@ class JSONProperty:
             related = _related_key_type(conversion)
             if isinstance(value, JSONObject) and related is not None:
                 _check_related_class(value, related.model_type)
+                _check_related_key(value, related.model_type)
                 value = _known_key(value)
             value = obj._key_as_read_from_json(value)
             encoded = obj._to_json(value, conversion)
@@ -5680,6 +5727,7 @@ class JSONObject:
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
+                    _check_related_key(value, model_type)
                     model_type = type(value)
                     if value.pk is None:
                         # Writing None would clear the relation.
@@ -7647,6 +7695,13 @@ class JSONObject:
                 _check_prefetched_class(
                     obj, model_type, "bulk_get_by_pks", cls, field
                 )
+                if not _has_key_of(type(obj), model_type):
+                    raise TypeError(
+                        f"{model_type.__name__}.bulk_get_by_pks() returned an "
+                        f"object of {type(obj).__name__} for "
+                        f"{cls.__name__}.{field}, which is not keyed as "
+                        f"{model_type.__name__} is"
+                    )
             prefetched_related[field] = {
                 canonical[1]: obj
                 for obj in related_objects.values()

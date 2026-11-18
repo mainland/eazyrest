@@ -415,6 +415,12 @@ describe them further.
   subclass of it, naming the hook, the model, the field, and the class
   returned. A parent whose key matched such an object used to read it, an
   object of another model and resource.
+- A relation refuses an object of a subclass that chose another primary key
+  with `pk=`, with `FieldConversionError` naming the field, in an assignment,
+  `create()`, a query, and a key that is a relation. Prefetch raises
+  `TypeError` for such an object that `bulk_get_by_pks()` returns. They used to
+  write the subclass's key, which names another resource of the related model.
+  Give the relation an object of the related model's own key.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

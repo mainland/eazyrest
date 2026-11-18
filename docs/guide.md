@@ -330,26 +330,27 @@ The value is decoded from the saved key, as a loaded object's is, so a change
 made to it in place, as to a key that is an object with a conversion, is
 detected and refused, as [Equality by key](#equality-by-key) says. That does
 not hold for a key that is a relation, whose `pk` reads a new value each time.
-A key that is a relation takes an object of the related model or a subclass,
-and any other model object raises `FieldConversionError`, as does a model
-object given for a key that is not a relation. The model holds the related
-object's key, not the object, so the related object must have its key without a
-request: it holds the key, as `User(id=1)` does, or its JSON has the key field.
-A related object that is known only by its URL, as one named by a
-`Hyperlinked()` relation is until it loads, raises `FieldConversionError`,
-whose message says to load or save it first. So does one whose own key is a
-relation that is not known. Once such an object has loaded, it is accepted if
-its JSON has the key. If its JSON lacks the key field, loading again cannot
-help, and the message says that the key is missing from its JSON. If it holds
-the key as `null`, the message says that the key is `None`. A related object
-without a key, such as `User()`, raises `FieldConversionError` too, as a
-relation write does. The constructor and the `pk` setter therefore never send a
-request, and neither do `repr()` and `update_from_json()` of such a model.
-Reading the field returns a new related object that holds the key, not the
-object that was given, though it equals that object, also after `refresh()`. An
-object constructed from `json=` starts with that payload already loaded. It
-keeps a deep copy of the payload, as `update_from_json()` does, so changing the
-payload or its nested values afterward does not change the object.
+A key that is a relation takes an object of the related model or of a subclass
+that keeps the related model's key, and any other model object raises
+`FieldConversionError`, as does a model object given for a key that is not a
+relation. The model holds the related object's key, not the object, so the
+related object must have its key without a request: it holds the key, as
+`User(id=1)` does, or its JSON has the key field. A related object that is
+known only by its URL, as one named by a `Hyperlinked()` relation is until it
+loads, raises `FieldConversionError`, whose message says to load or save it
+first. So does one whose own key is a relation that is not known. Once such an
+object has loaded, it is accepted if its JSON has the key. If its JSON lacks
+the key field, loading again cannot help, and the message says that the key is
+missing from its JSON. If it holds the key as `null`, the message says that the
+key is `None`. A related object without a key, such as `User()`, raises
+`FieldConversionError` too, as a relation write does. The constructor and the
+`pk` setter therefore never send a request, and neither do `repr()` and
+`update_from_json()` of such a model. Reading the field returns a new related
+object that holds the key, not the object that was given, though it equals that
+object, also after `refresh()`. An object constructed from `json=` starts with
+that payload already loaded. It keeps a deep copy of the payload, as
+`update_from_json()` does, so changing the payload or its nested values
+afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -1199,9 +1200,9 @@ compared as `==` compares keys, so the dictionary's own keys do not matter. A
 key spelled another way that encodes differently, such as `1.00` for `1.0`, is
 another key, and its object loads on its own unless the method returned it. A
 returned object that has no key is ignored. One that is not an instance of the
-related model, or of a subclass of it, raises `TypeError` that names the hook,
-the model, the field, and the class returned, since a parent would otherwise
-read an object of another resource.
+related model, or of a subclass of it that keeps the related model's key,
+raises `TypeError` that names the hook, the model, the field, and the class
+returned, since a parent would otherwise read an object of another resource.
 
 A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
 its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`
