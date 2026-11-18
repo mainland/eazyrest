@@ -57,11 +57,12 @@ describe them further.
   read and wrote its JSON as it was. That covers `bytes` without a conversion,
   `Hashable`, `type`, `Callable`, a bare `set`, `frozenset`, `Mapping`, or
   `Sequence`, their aliases in `typing`, and any class that no entry of
-  `conversions` converts, at the field and inside a collection, a mapping, a
-  union, or a `TypedDict`, `NamedTuple`, or dataclass. Annotate the field `Any`
-  to keep its JSON, give a bare collection its items, as `set[Any]` or
-  `Mapping[str, Any]`, or register a `Conversion` for the class. A subclass's
-  `conversions` decide for the fields that it inherits.
+  `conversions` converts, a subclass of `str` or `int` among them, at the field
+  and inside a collection, a mapping, a union, or a `TypedDict`, `NamedTuple`,
+  or dataclass. A `NewType` of `str` or `int` serves for a key. Annotate the
+  field `Any` to keep its JSON, give a bare collection its items, as `set[Any]`
+  or `Mapping[str, Any]`, or register a `Conversion` for the class. A
+  subclass's `conversions` decide for the fields that it inherits.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

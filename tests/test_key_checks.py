@@ -291,3 +291,59 @@ def test_repr_of_a_model_keyed_by_a_bare_relation_shows_the_key() -> None:
     """A bare key is shown as it is."""
     assert repr(Profile(json={"owner": 2})) == "<Profile owner=2>"
     assert repr(Profile(owner=Item(id=2))) == "<Profile owner=2>"
+
+
+class Slug(str):
+    """Subclass of ``str``."""
+
+
+class Code(int):
+    """Subclass of ``int``."""
+
+
+@pytest.mark.parametrize("key_type", [Slug, Code, Slug | None])
+def test_a_key_of_a_str_or_int_subclass_is_refused_with_its_remedy(
+    key_type: Any,
+) -> None:
+    """A subclass reads back as a plain str or int, so it is no key."""
+    with pytest.raises(TypeError, match=r"Thing\.id.*NewType.*conversion"):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize("field_type", [Slug, Code, list[Slug], Slug | None])
+def test_a_field_of_a_str_or_int_subclass_is_refused_with_its_remedy(
+    field_type: Any,
+) -> None:
+    """A field of a subclass of str or int has no JSON form to read."""
+    namespace = {
+        "__annotations__": {"id": int, "value": field_type},
+        "class_url": "/things/",
+    }
+
+    with pytest.raises(
+        TypeError, match=r"Thing\.value.*register a Conversion"
+    ):
+        json_object(type("Thing", (KeyBase,), namespace))
+
+
+@pytest.mark.parametrize(
+    "key_type", [NewType("Handle", str), NewType("Number", int)]
+)
+def test_a_new_type_of_str_or_int_is_a_key(key_type: Any) -> None:
+    """A NewType is the way to a distinct key type without a conversion."""
+    _declare_key(key_type)
+
+
+def test_a_conversion_for_a_str_subclass_makes_it_a_key() -> None:
+    """A subclass of str is a key when a conversion of the model owns it."""
+    model = _declare_key(
+        Slug,
+        conversions={
+            Slug: Conversion(
+                decode=lambda value, cls: cls(value),
+                encode=lambda value, cls: str(value),
+            )
+        },
+    )
+
+    assert model(json={"id": "a"}).pk == Slug("a")

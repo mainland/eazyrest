@@ -3292,10 +3292,11 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         "an enum, or a class that a conversion of the model converts, or a "
         "relation without Hyperlinked() to a model whose key is one. It "
         "cannot be a float, a bool, a collection, a mapping, a tuple, a "
-        "TypedDict, a NamedTuple, a dataclass, a union, or a relation to a "
-        "model keyed by a relation. To key the model by another model, "
-        "declare the key as a relation to that model, or as the type of that "
-        "model's key."
+        "TypedDict, a NamedTuple, a dataclass, a union, a relation to a "
+        "model keyed by a relation, or a subclass of str or int, for which "
+        "use a NewType of str or int, or a conversion. To key the model by "
+        "another model, declare the key as a relation to that model, or as "
+        "the type of that model's key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3335,13 +3336,14 @@ def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
         table: Conversion table of the model that declares the key.
 
     Returns:
-        ``True`` for ``int``, ``str``, a subclass of one that is not a
-        ``bool``, and a ``Literal`` of strings and integers. Any other class
-        reads the server's JSON as it is unless a conversion converts it. That
-        JSON may be an array or a mapping, or cannot be written as JSON, so the
-        key would have more than one spelling or none. A ``float`` and a
-        ``bool`` are no keys, because a number has more than one spelling and a
-        ``bool`` is not an integer.
+        ``True`` for ``int``, ``str``, and a ``Literal`` of strings and
+        integers. A subclass of ``int`` or ``str`` is no key, since it would
+        read back as a plain ``int`` or ``str``. Any other class reads the
+        server's JSON as it is unless a conversion converts it. That JSON may
+        be an array or a mapping, or cannot be written as JSON, so the key
+        would have more than one spelling or none. A ``float`` and a ``bool``
+        are no keys, because a number has more than one spelling and a ``bool``
+        is not an integer.
     """
     while hasattr(base, "__supertype__"):
         base = base.__supertype__
@@ -3350,11 +3352,7 @@ def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
             _json_kind(_literal_json(member, table)) is not None
             for member in typing.get_args(base)
         )
-    return (
-        isinstance(base, type)
-        and issubclass(base, int | str)
-        and not issubclass(base, bool)
-    )
+    return base is int or base is str
 
 
 def _enum_values_are_keys(found: _Found) -> bool:
