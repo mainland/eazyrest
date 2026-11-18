@@ -9780,6 +9780,65 @@ def test_key_read_loads_partial_json_that_lacks_it(
             Order.filter(operator=operator)
 
 
+def test_write_only_write_to_an_unloaded_object_leaves_nothing_pending(
+    requests_mock: Any,
+) -> None:
+    """A write of only write-only fields answered by an empty body is spent.
+
+    The object never keeps a write-only value, so a later ``save()`` must not
+    send the password again.
+    """
+    patch = requests_mock.patch(OPERATOR_URL, json={})
+    operator = Operator(id=4)
+    operator.password = "secret"
+
+    operator.save()
+
+    assert patch.call_count == 1
+    assert operator._pending_updates == {}
+    operator.save()
+    assert patch.call_count == 1
+
+
+def test_a_load_that_omits_the_key_keeps_the_key_the_object_was_saved_under(
+    requests_mock: Any,
+) -> None:
+    """The object keeps its identity when its detail response lacks the key."""
+    requests_mock.get(OPERATOR_URL, json={"name": "Ada"})
+    operator = Operator(id=4)
+
+    assert operator.name == "Ada"
+
+    assert operator.pk == 4
+    assert operator.url == "/operators/4/"
+    assert repr(operator) == "<Operator id=4>"
+
+
+def test_giving_a_key_to_a_keyless_object_keeps_the_prefetched_related(
+    requests_mock: Any,
+) -> None:
+    """A key relation that gets its key reads the related object prefetched.
+
+    Parents of one batch share the prefetched related objects, so a parent
+    without a key reads the object that its batch fetched for the key it is
+    then given.
+    """
+    requests_mock.get(
+        "https://example.com/v1/profiles/",
+        json=[{"user": 2, "bio": "a"}, {"user": None, "bio": "b"}],
+    )
+    requests_mock.get(
+        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
+    )
+    first, second = UserProfile.filter(prefetch="user")
+
+    second.pk = User(id=2)
+
+    assert second.user is first.user
+    assert second.user.name == "Ada"
+    assert requests_mock.call_count == 2
+
+
 @pytest.mark.parametrize(
     "url",
     [

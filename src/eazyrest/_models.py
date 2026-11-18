@@ -5289,9 +5289,6 @@ class JSONObject:
             FieldConversionError: If a key is of another JSON type than the
                 related model's key. It names ``field`` when that is given.
         """
-        # If the argument is already an instance of ty, keep it as-is.
-        if isinstance(arg, ty):
-            return arg
         # A hyperlink is checked against the related model's API before the
         # object is built, so refuse an assigned ``api`` first.
         _check_api_attribute(ty, UsageError)
@@ -6107,14 +6104,9 @@ class JSONObject:
         if self._json is None and not sent:
             # Only write-only fields were sent, so the object need not load.
             # A body becomes its JSON so far, and a read of a field that the
-            # body lacks loads it. That load needs the object's URL, so the
-            # JSON keeps the key the object was saved under, as a load does,
-            # if the body lacks it.
+            # body lacks loads it.
             json = self._readable_json(self.merge_response(resp, {}, {}))
             if json:
-                key = self._pk_json_field
-                if key not in json and self._saved_key_json is not None:
-                    json[key] = _copy_json(self._saved_key_json)
                 self._replace_json(json, clear_pending=True)
                 self._json_is_partial = True
             else:
