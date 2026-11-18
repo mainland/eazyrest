@@ -12,6 +12,7 @@ import types
 import uuid
 from collections.abc import Callable, Mapping
 from typing import (
+    Annotated,
     Any,
     Generic,
     NamedTuple,
@@ -208,6 +209,24 @@ def test_typed_dict_keys_are_analyzed_without_qualifiers() -> None:
         "note": BaseType(str),
         "token": BaseType(uuid.UUID),
         "day": BaseType(datetime.date),
+    }
+
+
+class Qualified(TypedDict):
+    """Keys whose qualifier is inside ``Annotated``, and outside it."""
+
+    outside: NotRequired[Annotated[datetime.date, "text"]]
+    inside: Annotated[NotRequired[datetime.date], "text"]
+    nested: Annotated[ReadOnly[Required[datetime.date]], "a", "b"]
+
+
+def test_typed_dict_key_qualifier_is_removed_inside_annotated() -> None:
+    """A qualifier inside ``Annotated`` is removed as one outside it is."""
+    date = BaseType(datetime.date)
+    assert TypedDictType(Qualified).keys == {
+        "outside": date,
+        "inside": date,
+        "nested": date,
     }
 
 

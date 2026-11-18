@@ -1561,6 +1561,30 @@ def _key_qualifiers() -> frozenset[Any]:
 _KEY_QUALIFIERS = _key_qualifiers()
 
 
+def _without_key_qualifiers(hint: Any) -> Any:
+    """Remove a ``TypedDict`` key's qualifiers, inside ``Annotated`` too.
+
+    PEP 655 allows ``Annotated[NotRequired[T], ...]`` as well as
+    ``NotRequired[Annotated[T, ...]]``, and both mean the same key.
+
+    Args:
+        hint: The key's annotation.
+
+    Returns:
+        ``hint`` without ``Required``, ``NotRequired``, and ``ReadOnly``, with
+        the metadata of any ``Annotated`` kept.
+    """
+    origin = typing.get_origin(hint)
+    if origin in _KEY_QUALIFIERS:
+        return _without_key_qualifiers(typing.get_args(hint)[0])
+    if origin is Annotated:
+        inner, *metadata = typing.get_args(hint)
+        stripped = _without_key_qualifiers(inner)
+        if stripped is not inner:
+            return Annotated[(stripped, *metadata)]
+    return hint
+
+
 def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
     """Analyze the declared keys of a ``TypedDict``.
 
@@ -1588,8 +1612,7 @@ def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
         )
     keys: dict[str, AnalyzedType] = {}
     for key, hint in _hints_of(ty).items():
-        while typing.get_origin(hint) in _KEY_QUALIFIERS:
-            hint = typing.get_args(hint)[0]
+        hint = _without_key_qualifiers(hint)
         _check_no_alias(hint, ty, key)
         analyzed = analyze_type(hint)
         _check_no_models(analyzed, ty)
