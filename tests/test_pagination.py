@@ -2410,6 +2410,63 @@ def test_link_headers_page_reads_with_a_malformed_previous_link(
         page.previous_page()
 
 
+def test_get_page_refuses_a_hand_built_page_over_max_items(
+    requests_mock: Any,
+) -> None:
+    """The size check holds for a page that a ``collection_page()`` builds."""
+    api = API("https://api.test/")
+    api.max_items = 2
+    requests_mock.get(
+        "https://api.test/users/", json=[{"id": n} for n in range(5)]
+    )
+
+    @json_object
+    class User(JSONObject):
+        class_url = "/users/"
+
+        id: int
+
+        @classmethod
+        def collection_page(
+            cls, resp: Response, *, api: Client, **kwargs: Any
+        ) -> Page[Any]:
+            return Page(api.json(resp), url=resp.url)
+
+    User.register_api(api)
+
+    with pytest.raises(LimitExceeded, match="more than 2 items"):
+        User.get_page()
+
+
+def test_next_page_remembers_where_a_redirect_ended(
+    requests_mock: Any,
+) -> None:
+    """A link to the URL that a redirect reached is a cycle, read once."""
+    api = API("https://api.test/")
+    requests_mock.get(
+        "https://api.test/b",
+        status_code=302,
+        headers={"Location": "https://api.test/c"},
+    )
+    requests_mock.get(
+        "https://api.test/c",
+        json={"results": [{"id": 2}], "next": "https://api.test/c"},
+    )
+    requests_mock.get(
+        "https://api.test/a",
+        json={"results": [{"id": 1}], "next": "https://api.test/b"},
+    )
+    first = next_links_page(api, api.get("/a"))
+    second = first.next_page()
+    assert second is not None
+    reads = requests_mock.call_count
+
+    with pytest.raises(PaginationError, match="already read"):
+        second.next_page()
+
+    assert requests_mock.call_count == reads
+
+
 def test_get_page_prefetches_each_page(requests_mock: Any) -> None:
     """Prefetch applies to each page that navigation reads."""
     _serve_two_pages(requests_mock, "/owned-items/")
