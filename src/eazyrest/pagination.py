@@ -700,9 +700,6 @@ class Page(Generic[T]):
     next_url: str | None
     """Absolute URL of the next page, or ``None`` on the last page."""
 
-    previous_url: str | None
-    """Absolute URL of the previous page, or ``None`` on the first page."""
-
     def __init__(
         self,
         items: Iterable[T],
@@ -729,13 +726,41 @@ class Page(Generic[T]):
         self.url = url
         self.count = count
         self.next_url = next_url
-        self.previous_url = previous_url
+        self._previous_url = previous_url
+        self._previous_link: Callable[[], str | None] | None = None
         self._source: _PageSource[T] | None = None
         self._asked_url: str | None = None
         """URL that was asked for to read the page, if it was read."""
         self._allow_other_origins = False
         self._forward = _Trail(frozenset({url}), 1)
         self._backward = _Trail(frozenset({url}), 1)
+
+    @property
+    def previous_url(self) -> str | None:
+        """Absolute URL of the previous page, or ``None`` on the first page.
+
+        A page that a reader built resolves the link when it is first needed,
+        so a page whose previous link is malformed can be read and iterated,
+        and the link's error is raised here and by ``previous_page()``.
+        """
+        if self._previous_link is not None:
+            self._previous_url = self._previous_link()
+            self._previous_link = None
+        return self._previous_url
+
+    @previous_url.setter
+    def previous_url(self, url: str | None) -> None:
+        self._previous_link = None
+        self._previous_url = url
+
+    def _defer_previous(self, link: Callable[[], str | None]) -> None:
+        """Resolve the previous page's URL when it is first read.
+
+        Args:
+            link: Function that returns the URL, or raises the error that a
+                malformed link deserves.
+        """
+        self._previous_link = link
 
     def __iter__(self) -> Iterator[T]:
         """Iterate the page's items.
@@ -976,13 +1001,16 @@ def next_links_page(
         results = _page_results(payload, results_key)
         if results is None:
             return Page(payload, url=resp.url)
-        return Page(
+        page = Page(
             results,
             url=resp.url,
             count=_count_of(payload, count_key),
             next_url=_page_link(payload, next_key, resp.url),
-            previous_url=_page_link(payload, previous_key, resp.url),
         )
+        page._defer_previous(
+            lambda: _page_link(payload, previous_key, resp.url)
+        )
+        return page
 
     return _JSONPageSource(api, parse, allow_other_origins).page(resp)
 
@@ -1031,18 +1059,23 @@ def link_headers_page(
                 "Pages linked by Link headers must be JSON lists, "
                 f"got {type(payload).__name__}"
             )
-        links = {
-            name: (_resolve(resp.url, link) if link else None)
-            for name, link in (
-                ("next", _link(resp, frozenset({"next"}))),
-                ("previous", _link(resp, frozenset({"prev", "previous"}))),
-            )
-        }
-        return Page(
+        link = _link(resp, frozenset({"next"}))
+        page = Page(
             payload,
             url=resp.url,
-            next_url=links["next"],
-            previous_url=links["previous"],
+            next_url=_resolve(resp.url, link) if link else None,
         )
+
+        def previous() -> str | None:
+            """Resolve the previous page's link.
+
+            Returns:
+                The absolute URL, or ``None`` if the header has none.
+            """
+            link = _link(resp, frozenset({"prev", "previous"}))
+            return _resolve(resp.url, link) if link else None
+
+        page._defer_previous(previous)
+        return page
 
     return _JSONPageSource(api, parse, allow_other_origins).page(resp)

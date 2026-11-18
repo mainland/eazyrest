@@ -2346,6 +2346,70 @@ def test_get_page_reads_and_navigates_pages_of_objects(
     )
 
 
+_MALFORMED_PREVIOUS = [
+    (5, ResponseShapeError, "must be a URL"),
+    ("http://[bad", PaginationError, "cannot be parsed"),
+]
+
+
+@pytest.mark.parametrize(("previous", "error", "message"), _MALFORMED_PREVIOUS)
+def test_filter_reads_a_page_whose_previous_link_is_malformed(
+    requests_mock: Any, previous: Any, error: type[Exception], message: str
+) -> None:
+    """``filter()`` never follows ``previous``, so it does not check it.
+
+    ``previous_page()`` follows it, and refuses it.
+    """
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json={
+            "count": 1,
+            "results": [{"id": 1}],
+            "next": None,
+            "previous": previous,
+        },
+    )
+
+    assert [item.id for item in Item.filter()] == [1]
+    page = Item.get_page()
+    assert [item.id for item in page] == [1]
+    with pytest.raises(error, match=message):
+        page.previous_page()
+    with pytest.raises(error, match=message):
+        page.previous_url  # noqa: B018
+
+
+def test_filter_refuses_a_page_whose_next_link_is_malformed(
+    requests_mock: Any,
+) -> None:
+    """A malformed ``next`` still fails, as the link ``filter()`` follows."""
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json={"results": [{"id": 1}], "next": 5, "previous": None},
+    )
+
+    with pytest.raises(ResponseShapeError, match="must be a URL"):
+        list(Item.filter())
+
+
+def test_link_headers_page_reads_with_a_malformed_previous_link(
+    requests_mock: Any,
+) -> None:
+    """A previous link that cannot be parsed fails when it is first needed."""
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json=[{"id": 1}],
+        headers={"Link": '<http://[bad>; rel="prev"'},
+    )
+
+    page = link_headers_page(api, api.get("/items/"))
+
+    assert page.items == [{"id": 1}]
+    with pytest.raises(PaginationError, match="cannot be parsed"):
+        page.previous_page()
+
+
 def test_get_page_prefetches_each_page(requests_mock: Any) -> None:
     """Prefetch applies to each page that navigation reads."""
     _serve_two_pages(requests_mock, "/owned-items/")

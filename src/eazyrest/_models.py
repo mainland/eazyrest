@@ -341,8 +341,8 @@ class _ModelPageSource(_PageSource[Any]):
             url=raw.url,
             count=raw.count,
             next_url=raw.next_url,
-            previous_url=raw.previous_url,
         )
+        page._defer_previous(lambda: raw.previous_url)
         if raw._source is not None:
             page._source = self
             page._allow_other_origins = raw._allow_other_origins
