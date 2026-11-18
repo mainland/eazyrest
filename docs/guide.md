@@ -265,7 +265,9 @@ field of that type is refused, since it would read back as a plain `str` or
 instead. It includes `float` and `bool`, alone or as a `NewType`, optional, or
 `Literal` member, and an enum with a member whose value is not a string or an
 integer, such as a float, because a number has more than one spelling and a
-`bool` is not an integer. It includes a collection such as `list[int]`, a
+`bool` is not an integer. It includes a `Literal` or an enum whose values hold
+a string and an integer of one text, such as `"1"` and `1`, because both would
+name one URL as two keys. It includes a collection such as `list[int]`, a
 mapping, a fixed-length tuple, a `TypedDict`, a `NamedTuple`, a dataclass
 without a conversion, a union of more than one type besides `None`, `Any`, and
 a class that Pydantic configures, or `Annotated` with Pydantic metadata. It

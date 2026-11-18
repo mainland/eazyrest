@@ -457,11 +457,13 @@ describe them further.
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an
   integer, raises `TypeError` when the class is decorated, where `v1.0.0a5`
-  accepted it. A conversion that writes a key as anything else, such as a
-  number with a fraction, a `bool`, a list, or a mapping, gives a key that is
-  refused where it is given and unknown where a server sends it. Write such a
-  key as a string, or as an integer. A `NewType` of `int` whose conversion
-  writes a string is now a string key, so `Entry(id=N(3))` takes the key that
+  accepted it. So does a `Literal` or an enum whose values hold a string and an
+  integer of one text, such as `"1"` and `1`, which would be two keys with one
+  URL. A conversion that writes a key as anything else, such as a number with a
+  fraction, a `bool`, a list, or a mapping, gives a key that is refused where
+  it is given and unknown where a server sends it. Write such a key as a
+  string, or as an integer. A `NewType` of `int` whose conversion writes a
+  string is now a string key, so `Entry(id=N(3))` takes the key that
   `Entry(json={"id": "3"})` does. A key of another JSON type than its field's,
   which a server sends, is refused as a key that is given is. An embedded
   related object whose key has another type, such as `"7"` for an `int` key,

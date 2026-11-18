@@ -347,3 +347,47 @@ def test_a_conversion_for_a_str_subclass_makes_it_a_key() -> None:
     )
 
     assert model(json={"id": "a"}).pk == Slug("a")
+
+
+class MixedKeys(enum.Enum):
+    """Enum whose members' values are a string and an integer of one text."""
+
+    TEXT = "1"
+    NUMBER = 1
+
+
+class DistinctKeys(enum.Enum):
+    """Enum whose members' values differ in text."""
+
+    TEXT = "1"
+    NUMBER = 2
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        Literal["1", 1],
+        Literal[1, "1"],
+        Literal["a", "1", 1],
+        Literal["1", 1] | None,
+        MixedKeys,
+        MixedKeys | None,
+    ],
+)
+def test_a_key_of_a_string_and_an_integer_of_one_text_is_refused(
+    key_type: Any,
+) -> None:
+    """Both values would name one URL while being two unequal keys."""
+    with pytest.raises(TypeError, match=r"Thing\.id is the primary key"):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [Literal["1", 2], Literal["a", 1], Literal["01", "+1", 1], DistinctKeys],
+)
+def test_a_key_of_a_string_and_an_integer_of_different_text_decorates(
+    key_type: Any,
+) -> None:
+    """Values that name different URLs make different keys."""
+    _declare_key(key_type)

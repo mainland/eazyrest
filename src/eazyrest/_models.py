@@ -2235,6 +2235,27 @@ def _json_kind(value: Any) -> str | None:
     return None
 
 
+def _values_are_distinct_keys(values: Iterable[Any]) -> bool:
+    """Return whether a key type's wire values name different URLs.
+
+    ``url`` writes a string as it is and an integer as its digits, so ``"1"``
+    and ``1`` name one resource, while they are two keys that compare unequal.
+
+    Args:
+        values: The wire values that a key type can take.
+
+    Returns:
+        ``False`` if a string and an integer have the same text.
+    """
+    texts: dict[str, str] = {}
+    for value in values:
+        if (kind := _json_kind(value)) is None:
+            continue
+        if texts.setdefault(str(value), kind) != kind:
+            return False
+    return True
+
+
 def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
     """Build a key from the JSON that names it, as every key is built.
 
@@ -3293,10 +3314,11 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         "relation without Hyperlinked() to a model whose key is one. It "
         "cannot be a float, a bool, a collection, a mapping, a tuple, a "
         "TypedDict, a NamedTuple, a dataclass, a union, a relation to a "
-        "model keyed by a relation, or a subclass of str or int, for which "
-        "use a NewType of str or int, or a conversion. To key the model by "
-        "another model, declare the key as a relation to that model, or as "
-        "the type of that model's key."
+        "model keyed by a relation, a Literal or an enum with a string and an "
+        'integer of one text, such as "1" and 1, or a subclass of str or '
+        "int, for which use a NewType of str or int, or a conversion. To key "
+        "the model by another model, declare the key as a relation to that "
+        "model, or as the type of that model's key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3337,21 +3359,24 @@ def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
 
     Returns:
         ``True`` for ``int``, ``str``, and a ``Literal`` of strings and
-        integers. A subclass of ``int`` or ``str`` is no key, since it would
-        read back as a plain ``int`` or ``str``. Any other class reads the
-        server's JSON as it is unless a conversion converts it. That JSON may
-        be an array or a mapping, or cannot be written as JSON, so the key
-        would have more than one spelling or none. A ``float`` and a ``bool``
-        are no keys, because a number has more than one spelling and a ``bool``
-        is not an integer.
+        integers, none of a string and an integer having the same text, since
+        both would name one URL as two keys. A subclass of ``int`` or ``str``
+        is no key, since it would read back as a plain ``int`` or ``str``. Any
+        other class reads the server's JSON as it is unless a conversion
+        converts it. That JSON may be an array or a mapping, or cannot be
+        written as JSON, so the key would have more than one spelling or none.
+        A ``float`` and a ``bool`` are no keys, because a number has more than
+        one spelling and a ``bool`` is not an integer.
     """
     while hasattr(base, "__supertype__"):
         base = base.__supertype__
     if typing.get_origin(base) is Literal:
+        values = [
+            _literal_json(member, table) for member in typing.get_args(base)
+        ]
         return all(
-            _json_kind(_literal_json(member, table)) is not None
-            for member in typing.get_args(base)
-        )
+            _json_kind(value) is not None for value in values
+        ) and _values_are_distinct_keys(values)
     return base is int or base is str
 
 
@@ -3365,7 +3390,8 @@ def _enum_values_are_keys(found: _Found) -> bool:
     Returns:
         ``False`` for an enum that the default enum conversion owns, if the
         value of any member is not a string, an integer that is not a ``bool``,
-        or ``None``. Every other conversion decides its own wire type, and a
+        or ``None``, or if a string and an integer among them have the same
+        text. Every other conversion decides its own wire type, and a
         conversion that is not for an enum is not examined.
     """
     if found.key is not enum.Enum:
@@ -3373,10 +3399,11 @@ def _enum_values_are_keys(found: _Found) -> bool:
     values = (
         found.entry.encode(member, found.declared) for member in found.declared
     )
+    wire = [*values]
     # A member that writes null names no key, which has no URL.
     return all(
-        value is None or _json_kind(value) is not None for value in values
-    )
+        value is None or _json_kind(value) is not None for value in wire
+    ) and _values_are_distinct_keys(wire)
 
 
 def _is_leaf_key(
