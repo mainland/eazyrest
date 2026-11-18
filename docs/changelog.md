@@ -351,13 +351,13 @@ describe them further.
   key is the one that the object last took from the server or was given, and a
   key that is a relation compares as the related object's key that the model
   copied when the relation was assigned or loaded. Keys compare by their
-  encoding as JSON, so a key of any type, including one that compares by
-  identity or cannot be hashed, such as a `list`, gives equal objects with
-  equal hashes, and spellings that decode to one value and encode alike, such
-  as `Z` and `+00:00`, are one key. A key that encodes differently is another
-  key, as `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`,
-  `float`, or `bool` refuses a value of another JSON type where it is given,
-  with `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
+  encoding as JSON, so a key of a type that a conversion converts, even one
+  that compares by identity or cannot be hashed, gives equal objects with equal
+  hashes, and spellings that decode to one value and encode alike, such as `Z`
+  and `+00:00`, are one key. A key that encodes differently is another key, as
+  `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`, `float`,
+  or `bool` refuses a value of another JSON type where it is given, with
+  `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
   `User(id=True)` raise, where `v1.0.0a5` gave other keys that a load of the
   object then replaced and so changed its hash. A related object that a read
   builds from the server's JSON is checked too, and the error names the
@@ -587,8 +587,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   is the one that the object last took from the server or was given, and a key
   that is a relation compares as the related object's key that the model copied
   when the relation was assigned or loaded. Keys compare by their encoding as
-  JSON, so a key of any type, including one that compares by identity or cannot
-  be hashed, such as a `list`, gives equal objects with equal hashes, and
+  JSON, so a key of a type that a conversion converts, even one that compares
+  by identity or cannot be hashed, gives equal objects with equal hashes, and
   spellings that decode to one value and encode alike, such as `Z` and
   `+00:00`, are one key. A key that encodes differently is another key, as
   `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`, `float`,
@@ -788,16 +788,16 @@ that can break code written for 0.9.0, followed by what to do about it.
   the pagination helpers receive, and the client that the hooks receive as
   `api`, by what eazyrest guarantees of any HTTP library, so that a later
   release can add another library without changing these signatures. `API`
-  still returns a `requests.Response`, and the hooks still receive an `API`.
-  Annotate a hook override's parameters as `eazyrest.Response` and
-  `eazyrest.Client`, because an override annotated `requests.Response` or `API`
-  fails type checking, and cast them to use anything else, such as `resp.links`
-  or `api.session`. `bulk_get_by_pks()` and `bulk_get_by_urls()` return a
-  `Mapping` of objects of the model, so an override may return a `dict` of its
-  own class. The query methods, `create()`, and the model constructor take a
-  `Client` as `api=`. The names that `request_options=` accepts and the
-  exceptions for a failed connection are those of the client's HTTP library,
-  requests for `API`.
+  still returns a `requests.Response`, and the hooks receive an `API`, or a
+  view of one for a query with `request_options=`. Annotate a hook override's
+  parameters as `eazyrest.Response` and `eazyrest.Client`, because an override
+  annotated `requests.Response` or `API` fails type checking, and cast them to
+  use anything else, such as `resp.links` or `api.session`. `bulk_get_by_pks()`
+  and `bulk_get_by_urls()` return a `Mapping` of objects of the model, so an
+  override may return a `dict` of its own class. The query methods, `create()`,
+  and the model constructor take a `Client` as `api=`. The names that
+  `request_options=` accepts and the exceptions for a failed connection are
+  those of the client's HTTP library, requests for `API`.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
@@ -838,10 +838,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   `__cause__` or `__context__`, since the error that rejected the link, such as
   one for a port that is not a number, can quote it. This holds also with
   `allow_other_origins=True`. A link to another origin, or to a page already
-  read, is quoted as requests prepares it, without its user and password.
-  `Page.next_url` and `Page.previous_url` hold the whole link. A link that is
-  not an HTTP or HTTPS URL is not quoted, since its text can read as a user and
-  password.
+  read, is quoted by its origin alone. `Page.next_url` and `Page.previous_url`
+  hold the whole link. A link that is not an HTTP or HTTPS URL is not quoted,
+  since its text can read as a user and password.
 - Response limits also cover intermediate retry bodies and retry delays with
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and

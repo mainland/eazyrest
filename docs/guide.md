@@ -166,9 +166,9 @@ resource, and these laws follow:
 - Equal objects have the same `url`, unless one has its own URL, as an object
   read through a `Hyperlinked()` relation has, or its class overrides `url`.
   Keys that spell one value alike, such as `2026-01-01T00:00:00Z` and
-  `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key type that
-  compares by identity, or that cannot be hashed, still gives equal objects
-  when the encoded keys are equal.
+  `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key of a type
+  that a conversion converts, even one that compares by identity or cannot be
+  hashed, still gives equal objects when the encoded keys are equal.
 - Keys that encode differently are different keys, even when Python equates
   their values, and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each
   pair names different URLs. A key whose type is `int`, `str`, `float`, or
@@ -2063,9 +2063,8 @@ exception type that it replaced, so code written for that type keeps working:
 - `RedirectError`, a `requests.HTTPError`, for an unsafe redirect, a redirect
   that is not followed when requests raises `ValueError` or `UnicodeError`
   while it prepares the next request, or an unfollowed final 3xx on a model
-  write, a query, or a next-page request, or on a request that a hook sends
-  through the `api` of a query with `request_options=`. Its `response` is the
-  redirect. Another exception from that preparation comes through unchanged.
+  write, a query, or a next-page request. Its `response` is the redirect.
+  Another exception from that preparation comes through unchanged.
 - `PaginationError`, a `ValueError`, for a next-page link or redirect to
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
