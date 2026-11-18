@@ -432,11 +432,12 @@ describe them further.
   showed the whole related object when the JSON embedded it, with its fields.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
-  `Literal` member, raises `TypeError` when the class is decorated, where
-  `v1.0.0a5` accepted it. A conversion that writes a key as anything else, such
-  as a number with a fraction, a `bool`, a list, or a mapping, gives a key that
-  is refused where it is given and unknown where a server sends it. Write such
-  a key as a string, or as an integer. A `NewType` of `int` whose conversion
+  `Literal` member, or an enum with a member whose value is not a string or an
+  integer, raises `TypeError` when the class is decorated, where `v1.0.0a5`
+  accepted it. A conversion that writes a key as anything else, such as a
+  number with a fraction, a `bool`, a list, or a mapping, gives a key that is
+  refused where it is given and unknown where a server sends it. Write such a
+  key as a string, or as an integer. A `NewType` of `int` whose conversion
   writes a string is now a string key, so `Entry(id=N(3))` takes the key that
   `Entry(json={"id": "3"})` does. A key of another JSON type than its field's,
   which a server sends, is refused as a key that is given is. An embedded

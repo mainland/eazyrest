@@ -64,12 +64,6 @@ def _declare_key(key_type: Any, **extra: Any) -> Any:
     return json_object(type("Thing", (WireBase,), namespace))
 
 
-class Size(enum.Enum):
-    """Enum whose members are numbers."""
-
-    SMALL = 1.5
-
-
 class Tag(enum.IntEnum):
     """Enum whose members are integers."""
 
@@ -103,12 +97,96 @@ def test_a_float_or_bool_key_is_refused_at_decoration(key_type: Any) -> None:
         _declare_key(key_type)
 
 
-def test_an_enum_key_whose_members_are_numbers_is_refused_when_given() -> None:
-    """The enum decorates, but a member that writes a float is no key."""
-    model = _declare_key(Size)
+class FloatEnum(enum.Enum):
+    """Enum whose members are numbers with a fraction."""
 
-    with pytest.raises(FieldConversionError, match=r"Thing\.id"):
-        model(id=Size.SMALL)
+    A = 1.5
+
+
+class BoolEnum(enum.Enum):
+    """Enum whose members are booleans."""
+
+    A = True
+
+
+class MixedFloatEnum(enum.Enum):
+    """Enum with a string, an integer, and a float member."""
+
+    A = "a"
+    B = 1
+    C = 1.5
+
+
+class StrEnum(enum.Enum):
+    """Enum whose members are strings."""
+
+    A = "a"
+
+
+class MixedEnum(enum.Enum):
+    """Enum whose members are strings and integers."""
+
+    A = "a"
+    B = 1
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        pytest.param(FloatEnum, id="float-valued"),
+        pytest.param(BoolEnum, id="bool-valued"),
+        pytest.param(MixedFloatEnum, id="mixed-with-a-float"),
+        pytest.param(FloatEnum | None, id="optional"),
+        pytest.param(NewType("FloatNew", FloatEnum), id="new-type"),
+        pytest.param(Annotated[FloatEnum, "note"], id="annotated"),
+        pytest.param(Literal[FloatEnum.A], id="literal"),
+        pytest.param(Literal[BoolEnum.A], id="literal-bool-valued"),
+    ],
+)
+def test_an_enum_key_with_a_member_that_is_not_a_key_is_refused(
+    key_type: Any,
+) -> None:
+    """The members' values are known when the class is decorated."""
+    with pytest.raises(
+        TypeError, match=r"Thing\.id is the primary key.*must be one value"
+    ):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize(
+    ("key_type", "key", "url"),
+    [
+        pytest.param(Tag, Tag.ONE, "/x/1/", id="int-enum"),
+        pytest.param(StrEnum, StrEnum.A, "/x/a/", id="str-enum"),
+        pytest.param(MixedEnum, MixedEnum.A, "/x/a/", id="mixed-str"),
+        pytest.param(MixedEnum, MixedEnum.B, "/x/1/", id="mixed-int"),
+        pytest.param(Tag | None, Tag.ONE, "/x/1/", id="optional"),
+        pytest.param(Literal[Tag.ONE], Tag.ONE, "/x/1/", id="literal"),
+    ],
+)
+def test_an_enum_key_of_strings_and_integers_decorates(
+    key_type: Any, key: Any, url: str
+) -> None:
+    """Members that are strings or integers give keys with URLs."""
+    model = _declare_key(key_type, class_url="/x/")
+
+    assert model(id=key).url == url
+
+
+def test_an_enum_that_a_conversion_owns_is_decided_by_it() -> None:
+    """A registered conversion of the enum decides the wire type."""
+    model = _declare_key(
+        FloatEnum,
+        class_url="/x/",
+        conversions={
+            FloatEnum: Conversion(
+                decode=lambda value, _: FloatEnum.A,
+                encode=lambda value, _: "a",
+            )
+        },
+    )
+
+    assert model(id=FloatEnum.A).url == "/x/a/"
 
 
 @pytest.mark.parametrize(

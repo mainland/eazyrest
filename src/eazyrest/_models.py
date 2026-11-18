@@ -3301,6 +3301,30 @@ def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
     )
 
 
+def _enum_values_are_keys(found: _Found) -> bool:
+    """Return whether an enum that converts by value has keys for members.
+
+    Args:
+        found: The conversion of a key's type, as ``_conversion_of()`` found
+            it.
+
+    Returns:
+        ``False`` for an enum that the default enum conversion owns, if the
+        value of any member is not a string, an integer that is not a ``bool``,
+        or ``None``. Every other conversion decides its own wire type, and a
+        conversion that is not for an enum is not examined.
+    """
+    if found.key is not enum.Enum:
+        return True
+    values = (
+        found.entry.encode(member, found.declared) for member in found.declared
+    )
+    # A member that writes null names no key, which has no URL.
+    return all(
+        value is None or _json_kind(value) is not None for value in values
+    )
+
+
 def _is_leaf_key(
     analyzed: AnalyzedType, table: Mapping[Any, Conversion]
 ) -> bool:
@@ -3324,8 +3348,9 @@ def _is_leaf_key(
             case OptionalType(inner) | NewTypeType(_, inner):
                 analyzed = inner
             case BaseType(base):
-                if _conversion_of(base, table) is not None:
-                    return True
+                found = _conversion_of(base, table)
+                if found is not None:
+                    return _enum_values_are_keys(found)
                 _refuse_pydantic_class(base)
                 return _is_plain_key_class(base, table)
             case _:

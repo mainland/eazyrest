@@ -247,25 +247,26 @@ that its payload names if its saved key is absent or `null`.
 A key is one value, or a relation to a model whose key is one value. A value is
 one if it converts as a whole, so that its JSON has one spelling for equality,
 `url`, and the hash to read. That is `int`, `str`, a subclass of one of these
-that is not a `bool`, an enum, a `Literal` of strings and integers, and a class
-that a conversion of the model converts. The conversions include eazyrest's
-own, for `UUID`, `datetime`, `date`, `time`, `timedelta`, and `Decimal`, and
-any that the model declares, such as one for `bytes` to and from base64. The
-key may be one of these inside `T | None`, a `NewType`, or `Annotated`. A
-relation is allowed unless it is `Hyperlinked()`. However the key is converted,
-the value that it is written as must be a string or an integer that is not a
-`bool`. A conversion that writes a number with a fraction, a `bool`, a list, or
-a mapping makes a key that is refused where it is given or read, as a key of
-another JSON type is.
+that is not a `bool`, an enum whose members' values are strings or integers, a
+`Literal` of strings and integers, and a class that a conversion of the model
+converts. The conversions include eazyrest's own, for `UUID`, `datetime`,
+`date`, `time`, `timedelta`, and `Decimal`, and any that the model declares,
+such as one for `bytes` to and from base64. The key may be one of these inside
+`T | None`, a `NewType`, or `Annotated`. A relation is allowed unless it is
+`Hyperlinked()`. However the key is converted, the value that it is written as
+must be a string or an integer that is not a `bool`. A conversion that writes a
+number with a fraction, a `bool`, a list, or a mapping makes a key that is
+refused where it is given or read, as a key of another JSON type is.
 
 Any other key raises `TypeError` when the class is decorated, naming the field.
 That includes `float` and `bool`, alone or as a `NewType`, optional, or
-`Literal` member, because a number has more than one spelling and a `bool` is
-not an integer. It includes a collection such as `list[int]`, a mapping, a
-fixed-length tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a
-conversion, a union of more than one type besides `None`, `Any`, and a class
-that Pydantic configures, or `Annotated` with Pydantic metadata. It also
-includes a class that is not listed and that no conversion of the model
+`Literal` member, and an enum with a member whose value is not a string or an
+integer, such as a float, because a number has more than one spelling and a
+`bool` is not an integer. It includes a collection such as `list[int]`, a
+mapping, a fixed-length tuple, a `TypedDict`, a `NamedTuple`, a dataclass
+without a conversion, a union of more than one type besides `None`, `Any`, and
+a class that Pydantic configures, or `Annotated` with Pydantic metadata. It
+also includes a class that is not listed and that no conversion of the model
 converts, such as `complex`, `None`, `pathlib.Path`, and a bare `bytes`,
 because eazyrest would read the server's JSON as it is, which may be an array
 or a mapping, or could not write it. A mapping is refused because two mappings
