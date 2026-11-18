@@ -366,6 +366,109 @@ def test_the_member_of_a_typed_dict_with_pydantic_metadata_is_named() -> None:
         _model(Keyed)
 
 
+def test_a_late_member_is_refused_though_no_value_uses_it() -> None:
+    """A member that resolves late is refused when its field is first used.
+
+    The refusal belongs to the declaration, so a value that holds no instance
+    of the member, such as an empty list, does not escape it.
+    """
+
+    @dataclasses.dataclass
+    class Waiting:
+        inner: "LaterPoint"  # type: ignore[name-defined]  # noqa: F821
+
+    model = _model(list[Waiting])
+    obj = model(json={"id": 1, "value": []})
+    globals()["LaterPoint"] = Point
+    try:
+        with pytest.raises(
+            FieldConversionError, match="Point is configured for Pydantic"
+        ):
+            _ = obj.value
+    finally:
+        del globals()["LaterPoint"]
+
+
+class _CountingMeta(type):
+    """Metaclass that counts the lookups of Pydantic's config attribute."""
+
+    lookups = 0
+
+    def __getattribute__(cls, name: str) -> Any:
+        """Count a lookup of ``__pydantic_config__``, then look it up.
+
+        Args:
+            name: Attribute name.
+
+        Returns:
+            The attribute.
+        """
+        if name == "__pydantic_config__":
+            count = _CountingMeta.lookups + 1
+            type.__setattr__(_CountingMeta, "lookups", count)
+        return super().__getattribute__(name)
+
+
+@dataclasses.dataclass
+class _Counted(metaclass=_CountingMeta):
+    """Dataclass that counts how often a refusal looks at it."""
+
+    x: int
+
+
+def test_a_late_member_is_checked_once_and_not_for_each_value() -> None:
+    """The check of a member that resolves late does not repeat for a value."""
+
+    @dataclasses.dataclass
+    class Waiting:
+        inner: "LaterCounted"  # type: ignore[name-defined]  # noqa: F821
+
+    model = _model(list[Waiting])
+    items = [{"inner": {"x": index}} for index in range(5)]
+    first = model(json={"id": 1, "value": items})
+    globals()["LaterCounted"] = _Counted
+    try:
+        assert len(first.value) == 5
+        after_first_use = _CountingMeta.lookups
+        assert len(model(json={"id": 2, "value": items}).value) == 5
+    finally:
+        del globals()["LaterCounted"]
+
+    assert _CountingMeta.lookups == after_first_use
+
+
+def test_a_subclass_that_converts_a_late_member_reads_it() -> None:
+    """A conversion in a subclass admits a late member that its base refuses.
+
+    The base's decision about the inherited field is not the subclass's.
+    """
+
+    @dataclasses.dataclass
+    class Waiting:
+        inner: "LaterPoint"  # type: ignore[name-defined]  # noqa: F821
+
+    base = _model(Waiting)
+    conversion = _CLASSES["model"][1]
+    child: Any = json_object(
+        type(
+            "Child",
+            (base,),
+            {"__module__": __name__, "conversions": {Point: conversion}},
+        )
+    )
+    globals()["LaterPoint"] = Point
+    try:
+        value = child(json={"id": 1, "value": {"inner": {"x": 1}}}).value
+        with pytest.raises(
+            FieldConversionError, match="Point is configured for Pydantic"
+        ):
+            _ = base(json={"id": 1, "value": {"inner": {"x": 1}}}).value
+    finally:
+        del globals()["LaterPoint"]
+
+    assert value.inner == Point(x=1)
+
+
 def test_a_member_with_pydantic_metadata_that_resolves_late_is_refused() -> (
     None
 ):

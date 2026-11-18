@@ -1368,22 +1368,29 @@ def _check_no_pydantic(
     analyzed: AnalyzedType,
     table: Mapping[Any, Conversion],
     seen: frozenset[type[Any]] = frozenset(),
+    *,
+    late: bool = False,
 ) -> None:
     """Refuse a class that Pydantic configures, at any member that is walked.
 
     The walk goes through optionals, unions, collections, mappings,
     fixed-length tuples, ``NewType``, and the members of a ``TypedDict``, a
     ``NamedTuple``, and a dataclass. A class that an entry of the table
-    converts is not entered. A member whose annotations cannot be analyzed yet
-    waits for the field's first use, as for any other member.
+    converts is not entered. It refuses a class that Pydantic configures.
+
+    A member whose annotations cannot be analyzed yet waits for the field's
+    first use, unless ``late`` says that this is it.
 
     Args:
         analyzed: Analyzed type of a field.
-        table: Conversion table of the model that declares the field.
+        table: Conversion table of the model that owns the field.
         seen: Structures being walked, to stop at a cycle.
+        late: Whether the field is in use, so that a member that cannot be
+            analyzed raises.
 
     Raises:
-        TypeError: If a member is a class that Pydantic configures.
+        TypeError: If a member is a class that Pydantic configures. If
+            ``late``, also whatever analyzing a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1415,12 +1422,14 @@ def _check_no_pydantic(
                         members = tuple(item for _, item, _ in analyzed.fields)
             except _PydanticMetadataError:
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception:
+                if late:
+                    raise
                 # Whatever analyzing a member raises, as for a name that is not
-                # defined yet, waits for the member's first use.
+                # defined yet, waits for the field's first use.
                 return
     for member in members:
-        _check_no_pydantic(member, table, seen)
+        _check_no_pydantic(member, table, seen, late=late)
 
 
 def _hints_of(cls: type[Any]) -> dict[str, Any]:
@@ -3556,6 +3565,10 @@ def _refuse_declared_types(
         _refuse_declared_type(cls, prop)
     for prop in _inherited_fields_with_new_table(cls, props):
         _refuse_declared_type(cls, prop, inherited=True)
+        bound = prop._owned_by(cls)
+        setattr(cls, prop.field, bound)
+        if _pk_property_of(cls) is prop:
+            cls._pk = bound
 
 
 def _inherited_fields_with_new_table(
@@ -3572,15 +3585,15 @@ def _inherited_fields_with_new_table(
         checked: The fields that were checked as the class's own.
 
     Returns:
-        The fields that a base declares, in name order, whose declaring class
-        has a conversion table that differs from ``cls``'s.
+        The fields that a base declares, in name order, whose owner has a
+        conversion table that differs from ``cls``'s.
     """
     table = _table_of(cls)
     own = {prop.field for prop in checked}
     props = []
     for name in sorted(cls._json_fields - own):
         prop = inspect.getattr_static(cls, name, None)
-        if isinstance(prop, JSONProperty) and _table_of(prop.cls) != table:
+        if isinstance(prop, JSONProperty) and _table_of(prop._owner) != table:
             props.append(prop)
     return props
 
@@ -3665,7 +3678,9 @@ def encode_json(
         raise TypeError(
             f"encode_json(model=) must be a JSONObject subclass, got {model!r}"
         )
-    encoded = model._to_json(value, analyze_type(annotation))
+    analyzed = analyze_type(annotation)
+    _check_no_pydantic(analyzed, _table_of(model), late=True)
+    encoded = model._to_json(value, analyzed)
     _check_json(encoded, "")
     return encoded
 
@@ -4629,6 +4644,7 @@ class JSONProperty:
             read_only: Whether the Python field value cannot be written.
         """
         self.cls = cls
+        self._owner = cls
         self.field = field
         self.json_field = json_field
         self.is_primary_key = is_primary_key
@@ -4732,7 +4748,30 @@ class JSONProperty:
                 whatever resolving it raises. It is cached only once it
                 resolves.
         """
-        return _field_type(self, strict=True)
+        analyzed = _field_type(self, strict=True)
+        # Decoration could not check a member that names something not defined
+        # yet, so check it, once, now that the field is in use.
+        _check_no_pydantic(analyzed, _table_of(self._owner), late=True)
+        return analyzed
+
+    def _owned_by(self, owner: type[JSONObject]) -> JSONProperty:
+        """Return this field for a subclass whose conversions differ.
+
+        What eazyrest accepts of a field's type depends on the conversions of
+        the model that owns the field, so the descriptor that a base declares
+        cannot decide it for a subclass with other conversions.
+
+        Args:
+            owner: The subclass.
+
+        Returns:
+            A copy of the descriptor that checks its type against ``owner``'s
+            conversions, when it is first used.
+        """
+        bound = copy.copy(self)
+        bound.__dict__.pop("analyzed_type", None)
+        bound._owner = owner
+        return bound
 
     def __get__(
         self,
@@ -5643,7 +5682,6 @@ class JSONObject:
                     return found.entry.decode(
                         _copy_json(value), found.declared
                     )
-                _refuse_pydantic_class(base_type)
                 if typing.get_origin(base_type) is Literal:
                     return _literal_member(
                         base_type, value, _table_of(type(self))
@@ -5661,8 +5699,7 @@ class JSONObject:
                     hyperlinked=hyperlinked,
                 )
 
-            case TypedDictType(typed_dict):
-                _refuse_pydantic_class(typed_dict)
+            case TypedDictType():
                 keys = conversion.keys
                 _check_mapping(value, conversion)
                 read: dict[str, Any] = {}
@@ -5697,7 +5734,6 @@ class JSONObject:
                 )
 
             case NamedTupleType(named_tuple):
-                _refuse_pydantic_class(named_tuple)
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "read")
                 return named_tuple(
@@ -5710,7 +5746,6 @@ class JSONObject:
                 )
 
             case DataclassType(dataclass_type):
-                _refuse_pydantic_class(dataclass_type)
                 fields = conversion.fields
                 declared = {name for name, _, _ in fields}
                 if not isinstance(value, Mapping):
@@ -5848,8 +5883,6 @@ class JSONObject:
                         found.entry.encode(value, found.declared)
                     )
 
-                if found is None:
-                    _refuse_pydantic_class(base_type)
                 if typing.get_origin(base_type) is Literal and isinstance(
                     value, enum.Enum
                 ):
@@ -5887,8 +5920,7 @@ class JSONObject:
                         zip(items, item_types, strict=True)
                     )
                 ]
-            case NamedTupleType(named_tuple):
-                _refuse_pydantic_class(named_tuple)
+            case NamedTupleType():
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "write")
                 return [
@@ -5898,7 +5930,6 @@ class JSONObject:
                     )
                 ]
             case DataclassType(dataclass_type):
-                _refuse_pydantic_class(dataclass_type)
                 name = dataclass_type.__name__
                 if not isinstance(value, dataclass_type):
                     raise TypeError(
@@ -5924,8 +5955,7 @@ class JSONObject:
             case UnionType():
                 _check_union(conversion, _table_of(cls))
                 return _checked_json(value)
-            case TypedDictType(typed_dict):
-                _refuse_pydantic_class(typed_dict)
+            case TypedDictType():
                 keys = conversion.keys
                 _check_mapping(value, conversion)
                 written: dict[str, Any] = {}
