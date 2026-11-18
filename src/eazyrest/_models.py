@@ -7334,7 +7334,7 @@ class JSONObject:
                     descriptor.analyzed_type,
                     mode,
                     defs,
-                    frozenset({cls}),
+                    frozenset(),
                     _table_of(cls),
                 )
 

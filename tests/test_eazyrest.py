@@ -10462,6 +10462,29 @@ def test_json_schema_of_a_relation_to_a_model_keyed_by_a_relation() -> None:
     }
 
 
+def test_json_schema_of_a_self_relation_has_the_models_key_schema() -> None:
+    """A relation to the model itself is written as the model's own key."""
+
+    @json_object
+    class Employee(ModelBase):
+        class_url = "/employees/"
+
+        id: int
+        manager: Employee | None
+        reports: list[Employee]
+
+    assert Employee.json_schema("write")["properties"]["manager"] == {
+        "anyOf": [{"type": "integer"}, {"type": "null"}]
+    }
+    assert Employee.json_schema("write")["properties"]["reports"] == {
+        "type": "array",
+        "items": {"type": "integer"},
+    }
+    assert Employee.json_schema()["properties"]["reports"]["items"] == {
+        "anyOf": [{"type": "integer"}, {"type": "object"}]
+    }
+
+
 def test_json_schema_follows_declaration_order() -> None:
     """Properties follow declaration order, with or without defaults.
 
