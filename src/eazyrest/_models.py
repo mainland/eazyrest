@@ -149,6 +149,27 @@ _DECLARATION_ERROR = "_eazyrest_declaration_error"
 """Attribute that marks a ``TypeError`` that refuses a model's declaration."""
 
 
+def _passes_through(err: Exception) -> bool:
+    """Tell whether a conversion error keeps its own type.
+
+    A refusal of a model's declaration is no conversion of a value. An
+    ``EazyrestError`` other than ``FieldConversionError``, such as the
+    ``ResponseShapeError`` of loading a related object to learn its key,
+    reports something other than a value that a field cannot convert.
+
+    Args:
+        err: Error that a conversion raised.
+
+    Returns:
+        Whether to raise ``err`` as it is.
+    """
+    if getattr(err, _DECLARATION_ERROR, False):
+        return True
+    return isinstance(err, EazyrestError) and not isinstance(
+        err, FieldConversionError
+    )
+
+
 @contextlib.contextmanager
 def _converting(model: type, field: str) -> Generator[None, None, None]:
     """Report a conversion error of ``field`` as a FieldConversionError.
@@ -164,14 +185,15 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         FieldConversionError: If the conversion raises a ``TypeError`` or a
             ``ValueError``. A ``FieldConversionError`` that the conversion
             raises propagates unchanged, and so does a refusal of the model's
-            declaration, which is no conversion of a value.
+            declaration, which is no conversion of a value, and any other
+            ``EazyrestError``.
     """
     try:
         yield
     except FieldConversionError:
         raise
     except (TypeError, ValueError) as err:
-        if getattr(err, _DECLARATION_ERROR, False):
+        if _passes_through(err):
             raise
         raise FieldConversionError(model, field, err) from err
 
@@ -4192,7 +4214,8 @@ def _at_key(where: str) -> Generator[None, None, None]:
     Yields:
         Nothing. A ``TypeError`` or ``ValueError`` raised inside the block is
         raised again with ``where`` before its message, but for a refusal of a
-        model's declaration, which is raised as it is.
+        model's declaration and an ``EazyrestError`` other than
+        ``FieldConversionError``, which are raised as they are.
 
     Raises:
         TypeError: If the block raises a ``TypeError``.
@@ -4202,10 +4225,12 @@ def _at_key(where: str) -> Generator[None, None, None]:
     try:
         yield
     except TypeError as err:
-        if getattr(err, _DECLARATION_ERROR, False):
+        if _passes_through(err):
             raise
         raise TypeError(f"{where}: {err}") from err
     except ValueError as err:
+        if _passes_through(err):
+            raise
         raise ValueError(f"{where}: {err}") from err
 
 
@@ -4237,10 +4262,12 @@ def _each_item(
         for index, item in enumerate(items):  # noqa: B007
             converted.append(convert(item))
     except TypeError as err:
-        if getattr(err, _DECLARATION_ERROR, False):
+        if _passes_through(err):
             raise
         raise TypeError(f"[{index}]: {err}") from err
     except ValueError as err:
+        if _passes_through(err):
+            raise
         raise ValueError(f"[{index}]: {err}") from err
     return converted
 

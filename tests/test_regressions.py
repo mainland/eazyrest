@@ -1326,3 +1326,91 @@ def test_failed_in_place_encoding_queues_nothing(
 
     assert patch.last_request.json() == {"tags": ["a", "b"]}
     assert diary._pending_updates == {}
+
+
+@json_object
+class Dispatch(TenantBase):
+    """Resource that holds users by key, and reads them by hyperlink."""
+
+    class_url = "/dispatches/"
+
+    id: int
+    linked: Annotated[LinkedUser, Hyperlinked()]
+    sender: LinkedUser | None
+    recipients: list[LinkedUser]
+
+
+def _unloadable_user(requests_mock: Any) -> Any:
+    """Return a hyperlinked user whose load gets a body that is not JSON.
+
+    Args:
+        requests_mock: Fixture that serves the responses.
+
+    Returns:
+        The user, which knows only its URL.
+    """
+    requests_mock.get(
+        "https://mocked.example/v1/users/9/", text="<html>", status_code=200
+    )
+    dispatch = Dispatch(
+        json={
+            "id": 5,
+            "linked": "/v1/users/9/",
+            "sender": None,
+            "recipients": [],
+        }
+    )
+    return dispatch.linked
+
+
+def _dispatch() -> Any:
+    """Return a dispatch that holds no user.
+
+    Returns:
+        The dispatch.
+    """
+    return Dispatch(
+        json={
+            "id": 1,
+            "linked": "/v1/users/2/",
+            "sender": None,
+            "recipients": [],
+        }
+    )
+
+
+def test_related_object_that_does_not_load_raises_response_shape_error(
+    requests_mock: Any,
+) -> None:
+    """An assigned relation whose load is not JSON raises the load's error."""
+    user = _unloadable_user(requests_mock)
+    dispatch = _dispatch()
+
+    with pytest.raises(ResponseShapeError):
+        dispatch.sender = user
+
+
+def test_list_relation_that_does_not_load_raises_response_shape_error(
+    requests_mock: Any,
+) -> None:
+    """Saving a list relation whose item fails to load raises its error."""
+    user = _unloadable_user(requests_mock)
+    requests_mock.patch(
+        "https://mocked.example/v1/dispatches/1/", status_code=204
+    )
+    dispatch = _dispatch()
+
+    dispatch.recipients.append(user)
+    with pytest.raises(ResponseShapeError):
+        dispatch.save()
+
+
+def test_query_by_related_object_that_does_not_load_raises_shape_error(
+    requests_mock: Any,
+) -> None:
+    """A query that names an object that fails to load raises its error."""
+    user = _unloadable_user(requests_mock)
+    requests_mock.get("https://mocked.example/v1/dispatches/", json=[])
+
+    with pytest.raises(ResponseShapeError):
+        Dispatch.filter(sender=user)
