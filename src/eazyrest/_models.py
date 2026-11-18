@@ -3349,27 +3349,29 @@ def _check_api_attribute(
         error: Exception type to raise.
 
     Raises:
-        Exception: Of type ``error``, if a class in the MRO of ``cls`` has its
-            own ``api`` other than eazyrest's.
+        Exception: Of type ``error``, if the first class in the MRO of ``cls``
+            that has its own ``api`` has one other than eazyrest's.
     """
     for base in cls.__mro__:
-        # Test for presence, since ``None`` is an assignment too.
-        if "api" in (own := vars(base)) and not isinstance(
-            own["api"], APIDescriptor
-        ):
-            assigned = (
-                f"{base.__name__}.api was assigned, which would make every "
-                "api= ignored."
-            )
-            if issubclass(base, JSONObject):
-                raise error(
-                    f"{assigned} Use {base.__name__}.register_api(api) "
-                    "instead."
-                )
+        # Test for presence, since ``None`` is an assignment too. The first
+        # class that has an ``api`` is the one that ``cls.api`` reads, so a
+        # later one is never read and cannot shadow eazyrest's.
+        if "api" not in (own := vars(base)):
+            continue
+        if isinstance(own["api"], APIDescriptor):
+            return
+        assigned = (
+            f"{base.__name__}.api was assigned, which would make every "
+            "api= ignored."
+        )
+        if issubclass(base, JSONObject):
             raise error(
-                f"{assigned} Remove it, and use {cls.__name__}."
-                "register_api(api) instead."
+                f"{assigned} Use {base.__name__}.register_api(api) instead."
             )
+        raise error(
+            f"{assigned} Remove it, and use {cls.__name__}."
+            "register_api(api) instead."
+        )
 
 
 def encode_json(

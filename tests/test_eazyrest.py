@@ -10612,6 +10612,24 @@ def test_a_mixin_defining_api_is_refused_naming_the_model_register_api() -> (
     assert "Mixin.register_api" not in str(info.value)
 
 
+def test_a_mixin_after_the_base_class_may_define_an_unrelated_api() -> None:
+    """An ``api`` that a model never reads does not shadow the model's.
+
+    ``JSONObject`` precedes the mixin in the MRO, so ``User.api`` is eazyrest's
+    attribute and the mixin's is never read.
+    """
+
+    class Helper:
+        api = "unrelated"
+
+    class User(JSONObject, Helper):  # type: ignore[misc]
+        pass
+
+    api = API("https://good.example.com")
+    User.register_api(api)
+    assert User.api is api
+
+
 def test_an_api_assigned_none_is_refused(requests_mock: Any) -> None:
     """``None`` assigned to a class's ``api`` is an assignment like any API."""
 
