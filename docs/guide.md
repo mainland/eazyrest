@@ -773,7 +773,10 @@ there yet, so annotate such a key or field with the model's primary key type,
 such as `int`. So are a `TypedDict` that is closed or has extra items (PEP
 728), and a generic `TypedDict`, `NamedTuple`, or dataclass with type
 arguments. Annotate its JSON form, such as `dict[str, Any]`. The field's own
-type raises `TypeError` when the class is decorated. A member of a `TypedDict`,
+type raises `TypeError` when the class is decorated, except a `TypedDict` that
+is closed or has extra items. Such a field raises `FieldConversionError` when
+it is first used, also inside an optional or a collection, since a conversion
+of the `TypedDict` may replace the check. A member of a `TypedDict`,
 `NamedTuple`, or dataclass raises `FieldConversionError` when the field is
 first used.
 
