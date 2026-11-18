@@ -9,12 +9,13 @@ field is first used. Each operation that uses the field raises
 import dataclasses
 import datetime
 from collections.abc import Callable, Iterator
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, ClassVar, NamedTuple, NewType, TypedDict
 
 import pytest
 
 from eazyrest import (
     API,
+    Conversion,
     FieldConversionError,
     JSONObject,
     encode_json,
@@ -282,3 +283,81 @@ def test_encode_json_refuses_a_union_in_a_structure_for_an_empty_list(
     """
     with pytest.raises(TypeError, match="do not all pass through"):
         encode_json([], list[structure])  # type: ignore[valid-type]
+
+
+_Code = NewType("_Code", str)
+"""String type that a subclass's conversions may convert."""
+
+_CODE_CONVERSION = Conversion(
+    decode=lambda value, _: _Code(value), encode=lambda value, _: str(value)
+)
+
+
+@json_object(read_only={"seen"})
+class _Coded(JSONObject):
+    """Model whose fields pass a ``NewType`` through, as its table stands."""
+
+    class_url = "/coded/"
+
+    id: int
+    value: _Code | int | None = None
+    seen: _Code | int | None = None
+
+
+_Coded.register_api(API(BASE))
+
+
+class _Converting(_Coded):
+    """Subclass, not decorated, that converts the ``NewType``.
+
+    Its inherited fields were checked against its base's conversions, so the
+    union that its conversions make one that converts is refused by the
+    conversion of a value.
+    """
+
+    conversions: ClassVar[dict[Any, Conversion]] = {_Code: _CODE_CONVERSION}
+
+
+@pytest.mark.parametrize("value", [1, "a", None])
+def test_an_undecorated_subclass_refuses_a_union_it_converts_on_read(
+    value: Any,
+) -> None:
+    """Reading any value of the inherited union raises, null included.
+
+    Args:
+        value: JSON of the field.
+    """
+    obj = _Converting(json={"id": 1, "seen": value})
+
+    with pytest.raises(
+        FieldConversionError, match=r"_Converting\.seen.*do not all pass"
+    ):
+        _ = obj.seen
+
+
+@pytest.mark.parametrize("value", [1, "a", None])
+def test_an_undecorated_subclass_refuses_a_union_it_converts_on_write(
+    value: Any, requests_mock: Any
+) -> None:
+    """Writing any value of the inherited union raises, null included.
+
+    Nothing is sent.
+
+    Args:
+        value: Value of the field.
+        requests_mock: Mock of the transport.
+    """
+    with pytest.raises(
+        FieldConversionError, match=r"_Converting\.value.*do not all pass"
+    ):
+        _Converting.create(id=1, value=value)
+
+    assert not requests_mock.called
+
+
+def test_a_base_still_passes_the_union_through() -> None:
+    """The base's own conversions leave the union as it is."""
+    obj = _Coded(json={"id": 1, "seen": None})
+
+    assert obj.seen is None
+    assert _Coded(json={"id": 1, "seen": "a"}).seen == "a"
