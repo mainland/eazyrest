@@ -1,13 +1,15 @@
 """Tests of the refusals that wait for a field's first use.
 
-A member of a structure that names a class defined later, or a late class that
-has no conversion, is refused when the field is first used. Each operation that
-uses the field raises ``FieldConversionError`` naming it, as a read does.
+A member of a structure that names a class defined later, a late class that has
+no conversion, and a union that holds a converting member are refused when the
+field is first used. Each operation that uses the field raises
+``FieldConversionError`` naming it, as a read does.
 """
 
 import dataclasses
+import datetime
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import Any, NamedTuple, TypedDict
 
 import pytest
 
@@ -15,6 +17,7 @@ from eazyrest import (
     API,
     FieldConversionError,
     JSONObject,
+    encode_json,
     json_object,
 )
 
@@ -156,3 +159,111 @@ def test_an_operation_refuses_a_member_that_is_refused_at_first_use(
         _ENTRY_POINTS[entry_point](model)
 
     assert not requests_mock.called
+
+
+class _Mixed(TypedDict):
+    """``TypedDict`` with a union that has a converting member."""
+
+    when: str | datetime.datetime
+
+
+class _MixedTuple(NamedTuple):
+    """``NamedTuple`` with a union that has a converting member."""
+
+    when: str | datetime.datetime
+
+
+@dataclasses.dataclass
+class _MixedDataclass:
+    """Dataclass with a union that has a converting member."""
+
+    when: str | datetime.datetime
+
+
+_STRUCTURES = [_Mixed, _MixedTuple, _MixedDataclass]
+
+
+@pytest.mark.parametrize("structure", _STRUCTURES)
+def test_a_union_in_a_structure_is_not_refused_when_decorated(
+    structure: type[Any],
+) -> None:
+    """The class decorates, and the refusal waits for the field's use.
+
+    Args:
+        structure: Structure with a union that has a converting member.
+    """
+    _model(structure)
+    _model(list[structure])  # type: ignore[valid-type]
+    _model(structure | None)
+
+
+@pytest.mark.parametrize("structure", _STRUCTURES)
+@pytest.mark.parametrize(
+    ("hint", "value"),
+    [
+        (lambda cls: list[cls], []),  # type: ignore[valid-type]
+        (lambda cls: dict[str, cls], {}),  # type: ignore[valid-type]
+        (lambda cls: cls | None, None),
+    ],
+    ids=["empty_list", "empty_mapping", "null"],
+)
+def test_a_union_in_a_structure_is_refused_whatever_the_value(
+    structure: type[Any], hint: Callable[[Any], Any], value: Any
+) -> None:
+    """A read of a value that holds no instance of the structure raises.
+
+    Args:
+        structure: Structure with a union that has a converting member.
+        hint: Builds the field's annotation from the structure.
+        value: JSON that holds no instance of the structure.
+    """
+    model = _model(hint(structure))
+    obj = model(json={"id": 1, "value": value})
+
+    with pytest.raises(FieldConversionError, match=r"Holder\.value"):
+        _ = obj.value
+
+
+class _Partial(TypedDict, total=False):
+    """``TypedDict`` whose union member may be missing."""
+
+    when: str | datetime.datetime
+
+
+def test_a_union_in_a_typed_dict_is_refused_when_its_key_is_missing() -> None:
+    """A value without the key, or an empty one, still raises."""
+    model = _model(_Partial)
+
+    for value in ({}, {"other": 1}):
+        with pytest.raises(FieldConversionError, match=r"Holder\.value"):
+            _ = model(json={"id": 1, "value": value}).value
+
+
+@pytest.mark.parametrize("structure", _STRUCTURES)
+def test_json_schema_refuses_a_union_in_a_structure(
+    structure: type[Any],
+) -> None:
+    """The schema of a field with such a union is refused too.
+
+    Args:
+        structure: Structure with a union that has a converting member.
+    """
+    model = _model(structure)
+
+    with pytest.raises(
+        FieldConversionError, match=r"Holder\.value.*do not all pass through"
+    ):
+        model.json_schema()
+
+
+@pytest.mark.parametrize("structure", _STRUCTURES)
+def test_encode_json_refuses_a_union_in_a_structure_for_an_empty_list(
+    structure: type[Any],
+) -> None:
+    """An empty list of such a structure is refused, not written as ``[]``.
+
+    Args:
+        structure: Structure with a union that has a converting member.
+    """
+    with pytest.raises(TypeError, match="do not all pass through"):
+        encode_json([], list[structure])  # type: ignore[valid-type]

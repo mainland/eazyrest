@@ -1443,7 +1443,9 @@ def _check_admitted(
     class that nothing converts.
 
     A member whose annotations cannot be analyzed yet waits for the field's
-    first use, unless ``late`` says that this is it.
+    first use, unless ``late`` says that this is it. So does the check of a
+    union that holds a member that converts, which decoration makes only for a
+    field's own type.
 
     Args:
         analyzed: Analyzed type of a field.
@@ -1453,8 +1455,8 @@ def _check_admitted(
             analyzed raises.
 
     Raises:
-        TypeError: If a member is refused. If ``late``, also whatever analyzing
-            a member raises.
+        TypeError: If a member is refused. If ``late``, also a union with a
+            member that converts, and whatever analyzing a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1470,6 +1472,10 @@ def _check_admitted(
                 else:
                     _refuse_unconverted_class(base_type)
         case UnionType(leaves):
+            if late:
+                # A structure's union is refused whatever the value, so a value
+                # that holds none of it, such as an empty list, is refused too.
+                _check_union(analyzed, table)
             members = leaves
         case OptionalType(inner) | NewTypeType(_, inner):
             members = (inner,)
