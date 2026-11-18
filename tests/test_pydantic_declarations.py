@@ -25,6 +25,8 @@ from eazyrest import (
 pytest.importorskip("pydantic")
 
 from pydantic import (
+    AfterValidator,
+    Base64Bytes,
     BaseModel,
     ConfigDict,
     Field,
@@ -292,8 +294,102 @@ def test_a_subclass_of_a_pydantic_model_is_refused() -> None:
         _model(Child)
 
 
-def test_annotated_pydantic_metadata_is_not_detected() -> None:
-    """Metadata inside ``Annotated`` does not change how a field converts."""
-    model = _model(typing.Annotated[int, Field(gt=0)])
+_METADATA_TYPES = {
+    "field": (typing.Annotated[int, Field(gt=0)], "FieldInfo"),
+    "alias": (typing.Annotated[int, Field(alias="other")], "FieldInfo"),
+    "validator": (
+        typing.Annotated[int, AfterValidator(lambda value: value)],
+        "AfterValidator",
+    ),
+    "base64": (Base64Bytes, "EncodedBytes"),
+}
+_BYTES_CONVERSION = {
+    bytes: Conversion(
+        decode=lambda value, cls: value.encode(),
+        encode=lambda value, cls: value.decode(),
+    )
+}
+
+
+@pytest.mark.parametrize("place", sorted(_PLACES))
+@pytest.mark.parametrize("name", sorted(_METADATA_TYPES))
+def test_pydantic_metadata_is_refused_at_decoration(
+    name: str, place: str
+) -> None:
+    """Metadata for Pydantic is refused at the root and inside, with a path.
+
+    Args:
+        name: Which annotation.
+        place: Where it appears in the field's annotation.
+    """
+    ty, metadata = _METADATA_TYPES[name]
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            rf"^Holder\.value: .*The Annotated metadata {metadata} is for "
+            r"Pydantic.* Remove the Pydantic metadata, or register a "
+            r"Conversion for the type\.$"
+        ),
+    ):
+        _model(_PLACES[place](ty))
+
+
+def test_a_conversion_for_bytes_does_not_allow_base64_bytes() -> None:
+    """An entry for ``bytes`` does not make Pydantic's encoder apply."""
+    with pytest.raises(
+        TypeError, match="metadata EncodedBytes is for Pydantic"
+    ):
+        _model(Base64Bytes, _BYTES_CONVERSION)
+
+
+def test_a_conversion_for_a_new_type_does_not_allow_pydantic_metadata() -> (
+    None
+):
+    """An entry for the underlying type does not make the metadata apply."""
+    Cents = typing.NewType("Cents", int)
+    conversion = Conversion(decode=lambda v, c: v, encode=lambda v, c: v)
+
+    with pytest.raises(TypeError, match="FieldInfo is for Pydantic"):
+        _model(typing.Annotated[Cents, Field(gt=0)], {Cents: conversion})
+
+
+def test_the_member_of_a_typed_dict_with_pydantic_metadata_is_named() -> None:
+    """A ``TypedDict`` key with a Pydantic alias is named."""
+
+    class Keyed(TypedDict):
+        """``TypedDict`` whose key has a Pydantic alias."""
+
+        name: typing.Annotated[str, Field(alias="label")]
+
+    with pytest.raises(TypeError, match=r"Keyed\.name: The Annotated"):
+        _model(Keyed)
+
+
+def test_a_member_with_pydantic_metadata_that_resolves_late_is_refused() -> (
+    None
+):
+    """Metadata in a member that cannot be analyzed yet is refused then."""
+
+    @dataclasses.dataclass
+    class Waiting:
+        inner: "LaterField"  # type: ignore[name-defined]  # noqa: F821
+
+    model = _model(Waiting)
+    obj = model(json={"id": 1, "value": {"inner": 1}})
+    globals()["LaterField"] = typing.Annotated[int, Field(gt=0)]
+    try:
+        with pytest.raises(
+            FieldConversionError, match=r"Waiting\.inner: The Annotated"
+        ):
+            _ = obj.value
+    finally:
+        del globals()["LaterField"]
+
+
+def test_annotated_types_constraints_are_accepted() -> None:
+    """Constraints that other libraries use too do not opt in to Pydantic."""
+    annotated_types = pytest.importorskip("annotated_types")
+    model = _model(typing.Annotated[int, annotated_types.Gt(0)])
 
     assert model(json={"id": 1, "value": -1}).value == -1

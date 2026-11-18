@@ -651,7 +651,7 @@ class NamedTupleType:
         """
         hints = _hints_of(self.named_tuple)
         return tuple(
-            (name, _structure_member(hints[name], self.named_tuple))
+            (name, _structure_member(hints[name], self.named_tuple, name))
             for name in self.named_tuple._fields
         )
 
@@ -689,7 +689,7 @@ class DataclassType:
         return tuple(
             (
                 field.name,
-                _structure_member(hint(field.name), cls),
+                _structure_member(hint(field.name), cls, field.name),
                 field.default is dataclasses.MISSING
                 and field.default_factory is dataclasses.MISSING,
             )
@@ -911,6 +911,38 @@ class _UnresolvedAliasError(TypeError):
     """A type alias names a type by a string that does not resolve yet."""
 
 
+class _PydanticMetadataError(TypeError):
+    """``Annotated`` metadata that is for Pydantic, which eazyrest ignores."""
+
+
+def _check_not_pydantic_metadata(metadata: Any) -> None:
+    """Refuse ``Annotated`` metadata that is for Pydantic.
+
+    Metadata is for Pydantic if it has Pydantic's schema hook, or its type
+    comes from the ``pydantic`` package. That covers ``Field()``, the
+    validators and serializers, and the encoders in ``Base64Bytes``. The
+    constraints of ``annotated_types``, which other libraries use too, are not.
+    eazyrest does not apply any of it, so it would change nothing. A conversion
+    for the underlying type does not make it apply.
+
+    Args:
+        metadata: One item of ``Annotated`` metadata.
+
+    Raises:
+        TypeError: If ``metadata`` is for Pydantic.
+    """
+    module = type(metadata).__module__
+    if hasattr(metadata, "__get_pydantic_core_schema__") or (
+        module == "pydantic" or module.startswith("pydantic.")
+    ):
+        raise _PydanticMetadataError(
+            f"The Annotated metadata {type(metadata).__name__} is for "
+            "Pydantic, which eazyrest does not apply, so it would change "
+            "nothing. Remove the Pydantic metadata, or register a Conversion "
+            "for the type."
+        )
+
+
 def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
     """Return type metadata whose related types are hyperlinked.
 
@@ -980,6 +1012,8 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         ty_origin = None
 
     if ty_origin is Annotated:
+        for metadata in ty_args[1:]:
+            _check_not_pydantic_metadata(metadata)
         inner = analyze_type(ty_args[0])
         if any(isinstance(metadata, Hyperlinked) for metadata in ty_args[1:]):
             return _hyperlinked(inner)
@@ -1277,9 +1311,11 @@ def _pydantic_class(ty: Any) -> type[Any] | None:
     """Return the class of a type that Pydantic configures, if it is one.
 
     A class is Pydantic's if it carries ``__pydantic_config__``, as a
-    ``TypedDict`` or a dataclass does after ``pydantic.with_config()``, or it
-    derives from a ``BaseModel`` or ``RootModel`` of the ``pydantic`` package.
-    The test goes by attribute and name, so it does not import Pydantic.
+    ``TypedDict`` or a dataclass does after ``pydantic.with_config()``, or has
+    Pydantic's schema hook ``__get_pydantic_core_schema__``, as a type written
+    for Pydantic does, or derives from a ``BaseModel`` or ``RootModel`` of the
+    ``pydantic`` package. The test goes by attribute and name, so it does not
+    import Pydantic.
 
     Args:
         ty: Type to test, which may be a ``NewType`` or a parameterized
@@ -1292,7 +1328,9 @@ def _pydantic_class(ty: Any) -> type[Any] | None:
     cls = typing.get_origin(cls) or cls
     if not isinstance(cls, type) or cls.__module__ == "builtins":
         return None
-    if hasattr(cls, "__pydantic_config__"):
+    if hasattr(cls, "__pydantic_config__") or hasattr(
+        cls, "__get_pydantic_core_schema__"
+    ):
         return cls
     for base in cls.__mro__:
         if base.__name__ in ("BaseModel", "RootModel") and (
@@ -1374,6 +1412,8 @@ def _check_no_pydantic(
                         members = tuple(item for _, item in analyzed.fields)
                     case DataclassType():
                         members = tuple(item for _, item, _ in analyzed.fields)
+            except _PydanticMetadataError:
+                raise
             except Exception:  # noqa: BLE001
                 # Whatever analyzing a member raises, as for a name that is not
                 # defined yet, waits for the member's first use.
@@ -1527,12 +1567,13 @@ def _dataclass_field_annotation(cls: type[Any], name: str) -> Any:
     return _resolve_annotation(_annotation_owner(cls, name), name, names)
 
 
-def _structure_member(hint: Any, container: Any) -> AnalyzedType:
+def _structure_member(hint: Any, container: Any, name: str) -> AnalyzedType:
     """Analyze the annotation of a field of a ``NamedTuple`` or dataclass.
 
     Args:
         hint: The field's annotation.
         container: The class, for messages.
+        name: The field's name, for messages.
 
     Returns:
         The field's type metadata.
@@ -1540,7 +1581,12 @@ def _structure_member(hint: Any, container: Any) -> AnalyzedType:
     Raises:
         TypeError: If the annotation cannot be converted, or holds a model.
     """
-    analyzed = analyze_type(hint)
+    try:
+        analyzed = analyze_type(hint)
+    except _PydanticMetadataError as err:
+        raise _PydanticMetadataError(
+            f"{container.__name__}.{name}: {err}"
+        ) from err
     _check_no_models(analyzed, container)
     return analyzed
 
@@ -1643,7 +1689,12 @@ def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
     keys: dict[str, AnalyzedType] = {}
     for key, hint in _hints_of(ty).items():
         hint = _without_key_qualifiers(hint)
-        analyzed = analyze_type(hint)
+        try:
+            analyzed = analyze_type(hint)
+        except _PydanticMetadataError as err:
+            raise _PydanticMetadataError(
+                f"{ty.__name__}.{key}: {err}"
+            ) from err
         _check_no_models(analyzed, ty)
         keys[key] = analyzed
     return keys
@@ -3145,7 +3196,12 @@ def _refuses_key_type(error: TypeError) -> bool:
         resolve yet or one that has its own error.
     """
     return not (
-        isinstance(error, _KeylessFieldTypeError | _UnresolvedAliasError)
+        isinstance(
+            error,
+            _KeylessFieldTypeError
+            | _UnresolvedAliasError
+            | _PydanticMetadataError,
+        )
         or getattr(error, _DECLARATION_ERROR, False)
     )
 

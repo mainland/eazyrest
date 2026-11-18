@@ -7,6 +7,8 @@ run without Pydantic.
 """
 
 import dataclasses
+import typing
+from collections.abc import Callable
 from typing import Any, TypedDict
 
 import pytest
@@ -116,3 +118,103 @@ def test_a_conversion_owns_a_class_with_a_pydantic_config() -> None:
     )
 
     assert model(json={"id": 1, "value": 3}).value == Configured(3)
+
+
+def _metadata(module: str, hook: bool = False) -> Any:
+    """Return an object that looks like metadata from a module.
+
+    Args:
+        module: The module that the object's class claims.
+        hook: Whether the class has Pydantic's schema hook.
+
+    Returns:
+        The metadata object.
+    """
+    body: dict[str, Any] = {"__module__": module}
+    if hook:
+        body["__get_pydantic_core_schema__"] = classmethod(
+            lambda cls, source, handler: None
+        )
+    return type("Marker", (), body)()
+
+
+_SHAPES: dict[str, Callable[[Any], Any]] = {
+    "root": lambda ty: ty,
+    "list": lambda ty: list[ty],  # type: ignore[valid-type]
+    "typed_dict": lambda ty: typing.cast(Any, TypedDict)(
+        "Holding", {"inner": ty}
+    ),
+    "dataclass": lambda ty: dataclasses.make_dataclass(
+        "Holding", [("inner", ty)]
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+@pytest.mark.parametrize(
+    "marker",
+    [
+        _metadata("pydantic"),
+        _metadata("pydantic.fields"),
+        _metadata("other", hook=True),
+    ],
+    ids=["pydantic", "submodule", "hook"],
+)
+def test_metadata_from_pydantic_is_refused(marker: Any, shape: str) -> None:
+    """Metadata by module, or with the schema hook, is refused anywhere.
+
+    Args:
+        marker: The metadata.
+        shape: Where the annotated type appears.
+    """
+    Cents = typing.NewType("Cents", int)
+    conversion = Conversion(decode=lambda v, c: v, encode=lambda v, c: v)
+    hint = _SHAPES[shape](typing.Annotated[Cents, marker])
+
+    with pytest.raises(TypeError, match="The Annotated metadata Marker"):
+        _model(hint, {Cents: conversion})
+
+
+@pytest.mark.parametrize("module", ["annotated_types", "pydantic_like"])
+def test_metadata_from_another_library_is_accepted(module: str) -> None:
+    """Only the ``pydantic`` package and the schema hook count.
+
+    Args:
+        module: The module that the metadata's class claims.
+    """
+    model = _model(typing.Annotated[int, _metadata(module)])
+
+    assert model(json={"id": 1, "value": 5}).value == 5
+
+
+class _Hooked:
+    """User type written for Pydantic, with its schema hook."""
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source: Any, handler: Any) -> None:
+        """Return no schema, as the tests never build one."""
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_a_class_with_the_schema_hook_is_refused(shape: str) -> None:
+    """A user type written for Pydantic is refused, at the root and inside.
+
+    Args:
+        shape: Where the class appears.
+    """
+    with pytest.raises(TypeError, match="_Hooked is configured for Pydantic"):
+        _model(_SHAPES[shape](_Hooked))
+
+
+def test_a_conversion_owns_a_class_with_the_schema_hook() -> None:
+    """An entry for the class makes the field convert by the entry."""
+    model = _model(
+        list[_Hooked],
+        {
+            _Hooked: Conversion(
+                decode=lambda value, cls: cls(), encode=lambda value, cls: 1
+            )
+        },
+    )
+
+    assert len(model(json={"id": 1, "value": [1, 2]}).value) == 2
