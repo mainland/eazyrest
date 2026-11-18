@@ -765,6 +765,10 @@ as `dict[str, Any]`. The field's own type raises `TypeError` when the class is
 decorated. A member of a `TypedDict`, `NamedTuple`, or dataclass raises
 `FieldConversionError` when the field is first used.
 
+A dataclass with an init-only field, of type `dataclasses.InitVar`, is refused
+the same way when a field's type names it, because the dataclass does not keep
+the value that the key would give. Make it a field.
+
 An annotation that is not a type also raises `TypeError` when the class is
 decorated, since its JSON would pass through unconverted. That covers a
 function, a module, a value, a bare special form such as `LiteralString`,

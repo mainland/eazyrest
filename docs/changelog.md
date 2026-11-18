@@ -321,6 +321,10 @@ describe them further.
   one that converts is refused when the subclass is decorated. A union inside a
   `TypedDict`, dataclass, or `NamedTuple` still raises when the field is first
   used.
+- A field typed by a dataclass with an init-only field, of type
+  `dataclasses.InitVar`, raises `TypeError` when the class is decorated, naming
+  the init-only field, where `v1.0.0a5` raised `FieldConversionError` on every
+  read, blaming keys that the dataclass does not declare. Make it a field.
 - A field annotated with something that is not a type, such as a function, a
   module, a value, a bare `LiteralString`, `Never`, `Self`, `Final`, or a
   `TypeVar`, raises `TypeError` when the class is decorated, naming the field,

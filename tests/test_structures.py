@@ -305,6 +305,47 @@ def test_union_of_converting_members_is_refused_when_decorated(
     assert "do not all pass through" in str(refused.value)
 
 
+@dataclasses.dataclass
+class _Scaled:
+    """Dataclass with an init-only field, with a default."""
+
+    x: int
+    scale: dataclasses.InitVar[int] = 1
+
+
+@dataclasses.dataclass
+class _Required(_Scaled):
+    """Dataclass that inherits an init-only field."""
+
+    y: int = 0
+
+
+@pytest.mark.parametrize("cls", [_Scaled, _Required])
+def test_dataclass_with_an_init_only_field_is_refused_when_decorated(
+    cls: type[Any],
+) -> None:
+    """A dataclass's init-only field is not kept, so the field is refused.
+
+    The message names the init-only field rather than keys that the dataclass
+    does not declare, and a field typed by a class that inherits one is refused
+    too.
+
+    Args:
+        cls: Dataclass with an init-only field.
+    """
+    namespace = {
+        "__annotations__": {"id": int, "value": cls},
+        "class_url": "/scaled/",
+        "__module__": __name__,
+    }
+
+    with pytest.raises(TypeError, match=r"^Holder\.value: ") as refused:
+        json_object(type("Holder", (StructureBase,), namespace))
+
+    assert not isinstance(refused.value, FieldConversionError)
+    assert "init-only field scale" in str(refused.value)
+
+
 class _Code(str):
     """String class that a subclass's conversions convert."""
 

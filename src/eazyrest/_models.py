@@ -1174,6 +1174,7 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     if _is_named_tuple(ty):
         return NamedTupleType(ty)
     if _is_dataclass(ty):
+        _check_no_init_only(ty)
         return DataclassType(ty)
     _check_is_type(ty, ty_origin)
     return BaseType(ty)
@@ -1233,6 +1234,28 @@ def _is_dataclass(ty: Any) -> bool:
         Whether ``ty`` is a dataclass.
     """
     return isinstance(ty, type) and dataclasses.is_dataclass(ty)
+
+
+def _check_no_init_only(ty: type[Any]) -> None:
+    """Refuse a dataclass with an init-only field.
+
+    An init-only field, of type ``dataclasses.InitVar``, is a parameter of
+    ``__init__`` that the dataclass does not keep, so a read cannot give it the
+    key's value and a write cannot find the value to write.
+
+    Args:
+        ty: Dataclass.
+
+    Raises:
+        TypeError: If ``ty`` has an init-only field, own or inherited.
+    """
+    for name, field in ty.__dataclass_fields__.items():
+        if field._field_type is dataclasses._FIELD_INITVAR:  # type: ignore[attr-defined]
+            raise TypeError(
+                f"{ty.__name__} has the init-only field {name}, which a "
+                "dataclass does not keep, so eazyrest cannot read or write "
+                "it. Make it a field."
+            )
 
 
 def _union_type(ty: Any, members: tuple[Any, ...]) -> UnionType:
