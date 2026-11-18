@@ -26,7 +26,6 @@ from collections.abc import (
 )
 from collections.abc import Set as AbstractSet
 from copy import deepcopy
-from ipaddress import IPv4Address
 from typing import (
     Annotated,
     Any,
@@ -10532,19 +10531,16 @@ def test_json_schema_follows_declaration_order() -> None:
 
 @json_object
 class Odd(ModelBase):
-    """Model with a field of a type that eazyrest does not convert."""
+    """Model with a field that keeps any JSON."""
 
     class_url = "/odd/"
 
     id: int
-    address: IPv4Address
+    address: Any
 
 
-def test_json_schema_allows_any_value_of_an_unconverted_type() -> None:
-    """A type that eazyrest does not convert accepts any value.
-
-    Its JSON form is not known.
-    """
+def test_json_schema_allows_any_value_of_an_any_field() -> None:
+    """A field annotated ``Any`` accepts any value, which its schema says."""
     properties = Odd.json_schema("write")["properties"]
 
     assert properties["address"] == {}

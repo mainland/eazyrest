@@ -683,7 +683,7 @@ def test_encode_json_converts_by_a_models_table() -> None:
         WHEN.timestamp()
     )
     assert encode_json(WHEN, datetime.datetime) == WHEN.isoformat()
-    with pytest.raises(TypeError, match="has the type IPv4Address"):
+    with pytest.raises(TypeError, match="IPv4Address has no conversion"):
         encode_json(address, ipaddress.IPv4Address)
     with pytest.raises(TypeError, match="must be a JSONObject subclass"):
         encode_json(1, int, model=int)  # type: ignore[arg-type]
@@ -928,7 +928,7 @@ def test_writes_that_are_not_json_raise_when_assigned() -> None:
         id: int
         when: datetime.datetime
         name: str
-        address: ipaddress.IPv4Address
+        address: Any
         v6: ipaddress.IPv6Address
 
     plain = Plain(

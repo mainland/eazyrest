@@ -53,6 +53,15 @@ describe them further.
   session hook. A subclass that sent a next-page request through the session
   directly now has the redirects of that request checked, and its session
   response hooks run.
+- A field type that eazyrest has no way to convert is refused, where `v1.0.0a5`
+  read and wrote its JSON as it was. That covers `bytes` without a conversion,
+  `Hashable`, `type`, `Callable`, a bare `set`, `frozenset`, `Mapping`, or
+  `Sequence`, their aliases in `typing`, and any class that no entry of
+  `conversions` converts, at the field and inside a collection, a mapping, a
+  union, or a `TypedDict`, `NamedTuple`, or dataclass. Annotate the field `Any`
+  to keep its JSON, give a bare collection its items, as `set[Any]` or
+  `Mapping[str, Any]`, or register a `Conversion` for the class. A subclass's
+  `conversions` decide for the fields that it inherits.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

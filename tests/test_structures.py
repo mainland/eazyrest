@@ -396,9 +396,11 @@ def test_an_empty_tuple_type_is_still_a_fixed_tuple() -> None:
     assert analyze_type(tuple[()]) == FixedTupleType(())
 
 
-class _Code(str):
-    """String class that a subclass's conversions convert."""
+_Code = NewType("_Code", str)
+"""String type that a subclass's conversions may convert."""
 
+_Address = NewType("_Address", str)
+"""Another string type, which a subclass converts, off the union."""
 
 _CODE_CONVERSION = Conversion(
     decode=lambda value, _: _Code(value), encode=lambda value, _: str(value)
@@ -408,9 +410,9 @@ _CODE_CONVERSION = Conversion(
 def test_inherited_union_is_refused_when_a_subclass_converts_it() -> None:
     """A subclass's conversions can make an inherited union one that converts.
 
-    The base passes ``_Code`` through, and the subclass converts it, so the
-    subclass is refused when it is decorated, as it would be if it declared the
-    field itself.
+    The base passes the ``NewType`` ``_Code`` through, and the subclass
+    converts it, so the subclass is refused when it is decorated, as it would
+    be if it declared the field itself.
     """
 
     @json_object
@@ -441,10 +443,10 @@ def test_inherited_union_is_kept_when_a_subclass_converts_other_types() -> (
         class_url = "/bases/"
 
         id: int
-        value: int | str
+        value: int | _Code
 
     namespace = {
-        "conversions": {_Code: _CODE_CONVERSION},
+        "conversions": {_Address: _CODE_CONVERSION},
         "__module__": __name__,
     }
     sub: Any = json_object(type("Sub", (Base,), namespace))

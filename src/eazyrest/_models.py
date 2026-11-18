@@ -1364,19 +1364,61 @@ def _refuse_pydantic_class(ty: Any) -> None:
         )
 
 
-def _check_no_pydantic(
+_RAW_JSON_CLASSES: frozenset[Any] = frozenset(
+    {Any, object, str, int, float, bool, dict, list, type(None)}
+)
+"""The classes whose JSON eazyrest reads and writes as it is: arbitrary JSON,
+the JSON primitives, and a bare JSON object or array."""
+
+
+def _refuse_unconverted_class(ty: Any) -> None:
+    """Refuse a class whose JSON eazyrest has no way to read and write.
+
+    A class that nothing converts, such as ``bytes``, ``Path``, a class of the
+    application, ``Hashable``, ``type``, or ``Callable``, has no JSON form that
+    eazyrest knows, so a value of it would pass through unconverted, and a
+    declaration that says otherwise would not hold.
+
+    Args:
+        ty: Class that no entry of the model's conversion table converts, as a
+            field or a member that eazyrest walks declares it.
+
+    Raises:
+        TypeError: If ``ty`` is not ``Any``, ``object``, a JSON primitive, a
+            bare ``dict`` or ``list``, or a ``Literal``.
+    """
+    cls = ty
+    if typing.get_origin(cls) is Literal:
+        return
+    try:
+        if cls in _RAW_JSON_CLASSES:
+            return
+    except TypeError:
+        # An unhashable annotation is no class that passes through.
+        pass
+    name = getattr(cls, "__name__", repr(cls))
+    raise TypeError(
+        f"{name} has no conversion, so eazyrest cannot say how its JSON reads "
+        "or writes. Annotate Any to keep the JSON as it is, give a bare "
+        "collection its items, as set[Any], or register a Conversion for "
+        f"{name} in the model's conversions."
+    )
+
+
+def _check_admitted(
     analyzed: AnalyzedType,
     table: Mapping[Any, Conversion],
     seen: frozenset[type[Any]] = frozenset(),
     *,
     late: bool = False,
 ) -> None:
-    """Refuse a class that Pydantic configures, at any member that is walked.
+    """Check that eazyrest can convert a type and each member that it walks.
 
     The walk goes through optionals, unions, collections, mappings,
     fixed-length tuples, ``NewType``, and the members of a ``TypedDict``, a
     ``NamedTuple``, and a dataclass. A class that an entry of the table
-    converts is not entered. It refuses a class that Pydantic configures.
+    converts is not entered. It refuses a class that Pydantic configures and a
+    class that nothing converts.
 
     A member whose annotations cannot be analyzed yet waits for the field's
     first use, unless ``late`` says that this is it.
@@ -1389,8 +1431,8 @@ def _check_no_pydantic(
             analyzed raises.
 
     Raises:
-        TypeError: If a member is a class that Pydantic configures. If
-            ``late``, also whatever analyzing a member raises.
+        TypeError: If a member is refused. If ``late``, also whatever analyzing
+            a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1399,6 +1441,12 @@ def _check_no_pydantic(
         case BaseType(base_type):
             if _conversion_of(base_type, table) is None:
                 _refuse_pydantic_class(base_type)
+                if (supertype := _supertype(base_type)) is not None:
+                    _check_admitted(
+                        analyze_type(supertype), table, seen, late=late
+                    )
+                else:
+                    _refuse_unconverted_class(base_type)
         case UnionType(leaves):
             members = leaves
         case OptionalType(inner) | NewTypeType(_, inner):
@@ -1429,7 +1477,7 @@ def _check_no_pydantic(
                 # defined yet, waits for the field's first use.
                 return
     for member in members:
-        _check_no_pydantic(member, table, seen, late=late)
+        _check_admitted(member, table, seen, late=late)
 
 
 def _hints_of(cls: type[Any]) -> dict[str, Any]:
@@ -3513,7 +3561,7 @@ def _refuse_declared_type(
         else:
             analyzed = _analyze_field(prop, resolved, strict=False)
         _check_field_unions(analyzed, _table_of(cls))
-        _check_no_pydantic(analyzed, _table_of(cls))
+        _check_admitted(analyzed, _table_of(cls))
     except Exception as err:
         if (
             resolving
@@ -3679,7 +3727,7 @@ def encode_json(
             f"encode_json(model=) must be a JSONObject subclass, got {model!r}"
         )
     analyzed = analyze_type(annotation)
-    _check_no_pydantic(analyzed, _table_of(model), late=True)
+    _check_admitted(analyzed, _table_of(model), late=True)
     encoded = model._to_json(value, analyzed)
     _check_json(encoded, "")
     return encoded
@@ -4751,7 +4799,7 @@ class JSONProperty:
         analyzed = _field_type(self, strict=True)
         # Decoration could not check a member that names something not defined
         # yet, so check it, once, now that the field is in use.
-        _check_no_pydantic(analyzed, _table_of(self._owner), late=True)
+        _check_admitted(analyzed, _table_of(self._owner), late=True)
         return analyzed
 
     def _owned_by(self, owner: type[JSONObject]) -> JSONProperty:

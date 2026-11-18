@@ -790,6 +790,14 @@ Python 3.14 and later, a method with the name of a field's type, as a method
 method, and the class is refused for the same reason. Annotate the type by a
 name that the class does not shadow, such as `datetime.date`.
 
+A class that nothing converts is refused too, wherever it appears in a field's
+type, at the field or inside an optional, a collection, a mapping, a union, or
+a `TypedDict`, `NamedTuple`, or dataclass. An entry of the model's
+`conversions` for the class admits it, as
+[Custom field conversion](#custom-field-conversion) describes, and a subclass's
+entries admit it for the subclass. Its message names the class and says to
+annotate `Any` or register a `Conversion`.
+
 A field whose annotation is `None` as a whole is refused the same way. It
 happens when a field is named like its type and has the default `None`, as in
 `date: date = None`, because the default replaces the type in the class body.
@@ -818,10 +826,20 @@ been sent.
 
 A model converts field values by a table of conversions, keyed by type. The
 default table converts `datetime`, `date`, `time`, `timedelta`, `UUID`,
-`Decimal`, and enums, as [Field conversion](#field-conversion) describes, and
-any other type reads and writes its JSON value as it is. To convert another
-type, or to convert one of these differently, declare `conversions` on a shared
-base model, mapping the type to a `Conversion`:
+`Decimal`, and enums, as [Field conversion](#field-conversion) describes. A
+field may also be a related model, a `TypedDict`, a `NamedTuple`, a dataclass,
+a collection or mapping of these, a `Literal`, `Any` or `object` for any JSON,
+or a JSON type: `str`, `int`, `float`, `bool`, and a bare `dict` or `list`. Any
+other class, such as `bytes`, `pathlib.Path`, `Hashable`, `type`, `Callable`, a
+bare `set`, `frozenset`, `Mapping`, or `Sequence`, their aliases in `typing`,
+or a class of your own, has no JSON form that eazyrest knows, and a field that
+names it raises `TypeError` when the class is decorated, or, for a member that
+names something not defined yet, `FieldConversionError` when the field is first
+used. Annotate such a field `Any` to keep its JSON as it is, or give a bare
+collection its items, as `set[Any]`, `frozenset[Any]`, `Mapping[str, Any]`, or
+`Sequence[Any]`. To convert another type, or to convert one of these
+differently, declare `conversions` on a shared base model, mapping the type to
+a `Conversion`:
 
 ```python
 import ipaddress
@@ -867,7 +885,7 @@ caller as a `FieldConversionError` that names the field, with the error as its
 cause. Their messages should not quote the value, which may be a secret. Any
 other exception is a bug in the conversion, and propagates unchanged. A value
 written, or returned by `encode`, must be JSON: one that is not, such as an
-`IPv4Address` assigned to a field of a model without its conversion, raises
+`IPv4Address` assigned to a field annotated `Any`, raises
 `FieldConversionError` when it is assigned.
 
 A class's `conversions` are merged over those of its bases, and theirs over the
