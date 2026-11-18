@@ -294,7 +294,7 @@ naturally with `JSONObject` annotations, and hyperlinks with
 [`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
 
 A nested serializer without an `id`, such as one for an address, is declared as
-a `TypedDict` or a Pydantic model, not as a `JSONObject`. A model without a
+a `TypedDict` or a dataclass, not as a `JSONObject`. A model without a
 primary-key field has no URL to load from or save to, so it cannot be the type
 of a field. Such a field raises `TypeError`, whether the type stands alone or
 is an optional, a collection, or a `NewType`. A model without a key field can

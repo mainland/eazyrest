@@ -14,13 +14,6 @@ items in collection annotations such as `list[datetime.datetime]`,
 pip install eazyrest
 ```
 
-To have Pydantic convert fields whose types use it, such as Pydantic models or
-`Annotated[int, pydantic.Field(gt=0)]`, install the `pydantic` extra:
-
-```bash
-pip install "eazyrest[pydantic]"
-```
-
 To send requests through a SOCKS proxy, install the `socks` extra:
 
 ```bash
@@ -171,12 +164,12 @@ Build the documentation with warnings treated as errors:
 ```
 
 On every push and pull request, GitHub Actions runs the test suite on Python
-3.11 through 3.15, at the minimum declared dependency versions, with the oldest
-supported Pydantic, and without Pydantic. It also runs the lint and
-documentation environments, checks that `uv.lock` is current, audits the locked
-dependencies for known vulnerabilities, and checks that the built wheel imports
-with and without each extra. The test environments install only the runtime
-dependencies and a test dependency group, so a runtime dependency missing from
+3.11 through 3.15, at the minimum declared dependency versions, and without
+Pydantic, which only the tests use. It also runs the lint and documentation
+environments, checks that `uv.lock` is current, audits the locked dependencies
+for known vulnerabilities, and checks that the built wheel imports with and
+without each extra. The test environments install only the runtime dependencies
+and a test dependency group, so a runtime dependency missing from
 `pyproject.toml` fails the tests, and they report branch coverage. The lint
 environment includes `zizmor`, which audits the workflows.
 

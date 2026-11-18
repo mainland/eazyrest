@@ -1422,7 +1422,7 @@ def test_time_field_rejects_other_strings(value: str) -> None:
 
 
 def test_time_field_rejects_numbers() -> None:
-    """A number is not read as seconds since midnight, as Pydantic reads it."""
+    """A number is not read as seconds since midnight."""
     shop = Shop(json={"id": 1, "opens": 3600})
 
     with pytest.raises(FieldConversionError, match="must be strings"):
@@ -11014,7 +11014,7 @@ def test_a_model_without_a_key_is_refused_as_the_type_of_a_field(
         TypeError,
         match=re.escape(
             "Address has no primary-key field, so it cannot be the type of a "
-            "field. Declare nested JSON as a TypedDict or a Pydantic model, "
+            "field. Declare nested JSON as a TypedDict or a dataclass, "
             "or declare the key field of Address."
         ),
     ):
@@ -11083,7 +11083,7 @@ def test_an_undecorated_subclass_without_a_key_is_told_what_it_needs() -> None:
             "declares its fields, before it can be the type of a field. Its "
             "decorator also needs a primary-key field, which the class "
             "declares or json_object(pk=...) names. Declare nested JSON "
-            "without a key as a TypedDict or a Pydantic model instead."
+            "without a key as a TypedDict or a dataclass instead."
         ),
     ):
 

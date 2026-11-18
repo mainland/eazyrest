@@ -43,11 +43,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest Pydantic, the minimum of every dependency on the oldest
-        # and newest Python, the core without Pydantic, and the DRF guide's
-        # server-side recipes.
+        # The minimum of every dependency on the oldest and newest Python,
+        # the core without Pydantic, and the DRF guide's server-side recipes.
         env:
-          - "pydantic-min"
           - "min-deps"
           - "min-deps-py315"
           - "no-pydantic"
@@ -150,7 +148,7 @@ jobs:
         run: |
           wheel="$(ls dist/*.whl)"
           for python in 3.11 3.15; do
-            for extra in core pydantic socks; do
+            for extra in core socks; do
               env="$RUNNER_TEMP/wheel-$python-$extra"
               uv venv --python "$python" "$env"
               if [ "$extra" = core ]; then
@@ -166,7 +164,5 @@ jobs:
             # The core installs without Pydantic.
             "$RUNNER_TEMP/wheel-$python-core/bin/python" -c \
               "import importlib.util, sys; sys.exit(importlib.util.find_spec('pydantic') is not None)"
-            "$RUNNER_TEMP/wheel-$python-pydantic/bin/python" -c \
-              "import eazyrest.pydantic"
             "$RUNNER_TEMP/wheel-$python-socks/bin/python" -c "import socks"
           done

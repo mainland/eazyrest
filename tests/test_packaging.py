@@ -28,16 +28,6 @@ def test_tox_imports_the_installed_package() -> None:
     assert SRC not in module.parents
 
 
-# A module that the package imports without declaring it, because a declared
-# requirement brings it in and fixes its version: Pydantic depends on an exact
-# release of pydantic-core.
-_PROVIDED_BY = {"pydantic-core": "pydantic"}
-
-# Extras whose modules are not part of the core, and the extra that installs
-# each one's requirements.
-_MODULE_EXTRAS = {"pydantic": "pydantic"}
-
-
 def _taken_body(statement: ast.If) -> list[ast.stmt]:
     """Return the branch of an ``if`` that runs on this Python.
 
@@ -104,19 +94,15 @@ def test_each_imported_distribution_is_a_requirement() -> None:
         Requirement(text)
         for text in importlib.metadata.requires("eazyrest") or []
     ]
+    required = {
+        canonicalize_name(requirement.name)
+        for requirement in requirements
+        if requirement.marker is None
+        or requirement.marker.evaluate({"extra": ""})
+    }
     package = Path(eazyrest.__file__).parent
     for path in sorted(package.glob("*.py")):
-        extra = _MODULE_EXTRAS.get(path.stem, "")
-        required = {
-            canonicalize_name(requirement.name)
-            for requirement in requirements
-            if requirement.marker is None
-            or requirement.marker.evaluate({"extra": extra})
-        }
         for name in _imported_distributions(path):
-            provider = _PROVIDED_BY.get(name, name)
-            assert provider in required, (
-                f"{path.name} imports {name}, which eazyrest"
-                + (f"[{extra}]" if extra else "")
-                + " does not require"
+            assert name in required, (
+                f"{path.name} imports {name}, which eazyrest does not require"
             )

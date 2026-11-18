@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from functools import cached_property
 from types import MappingProxyType
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     ClassVar,
@@ -56,7 +55,6 @@ import requests
 
 from ._conversion import (
     Conversion,
-    _active_table,
     _conversion_of,
     _final_supertype,
     _Found,
@@ -112,9 +110,6 @@ except ImportError:  # pragma: no cover
     _typing_extensions = None
 else:
     _typing_extensions = _typing_extensions_module
-
-if TYPE_CHECKING:
-    from pydantic import TypeAdapter
 
 
 class FieldConversionError(EazyrestError, TypeError, ValueError):
@@ -593,41 +588,6 @@ class CollectionType:
 
 
 @dataclass(frozen=True)
-class PydanticType:
-    """Leaf type metadata for a type that Pydantic converts.
-
-    A type that mentions Pydantic, such as a Pydantic model or ``Annotated[int,
-    pydantic.Field(gt=0)]``, converts with a Pydantic ``TypeAdapter``.
-    """
-
-    annotation: Any
-    """Declared type, with its ``Annotated`` metadata."""
-
-    @cached_property
-    def adapter(self) -> TypeAdapter[Any]:
-        """Return the ``TypeAdapter`` that converts values of the type.
-
-        The adapter converts ``datetime``, ``date``, ``timedelta``, ``UUID``,
-        and enum types that the annotation names as eazyrest does. Types inside
-        a class that the annotation names, such as the fields of a Pydantic
-        model, follow that class's rules.
-
-        Raises:
-            TypeError: If Pydantic is not installed, or it cannot convert the
-                type.
-        """
-        try:
-            from .pydantic import _type_adapter
-        except ImportError as err:
-            raise TypeError(
-                f"Converting {self.annotation!r} needs Pydantic, which the "
-                "eazyrest[pydantic] extra installs"
-            ) from err
-
-        return _type_adapter(self.annotation)
-
-
-@dataclass(frozen=True)
 class TypedDictType:
     """Type metadata for a ``TypedDict``, whose keys convert by annotation.
 
@@ -778,63 +738,7 @@ AnalyzedType: TypeAlias = (
     | NamedTupleType
     | DataclassType
     | UnionType
-    | PydanticType
 )
-
-
-def _is_pydantic_metadata(metadata: Any) -> bool:
-    """Return whether ``Annotated`` metadata is for Pydantic.
-
-    Constraints from ``annotated_types``, which other libraries also use, are
-    not.
-
-    Args:
-        metadata: One item of ``Annotated`` metadata.
-
-    Returns:
-        Whether ``metadata`` has Pydantic's schema hook or its type comes from
-        the ``pydantic`` package.
-    """
-    return (
-        hasattr(metadata, "__get_pydantic_core_schema__")
-        or type(metadata).__module__.partition(".")[0] == "pydantic"
-    )
-
-
-def _mentions_pydantic(ty: Any) -> bool:
-    """Return whether a type, or a type inside it, is for Pydantic.
-
-    A class with Pydantic's schema hook, such as a Pydantic model, a class with
-    a Pydantic config, such as a ``TypedDict`` decorated with
-    ``pydantic.with_config()``, and ``Annotated`` metadata for Pydantic are for
-    Pydantic. ``analyze_type()`` converts a ``TypedDict`` itself, so its config
-    matters here only inside a type that Pydantic converts, such as a union.
-
-    Args:
-        ty: Type to inspect. The values of a ``Literal`` are not inspected.
-
-    Returns:
-        Whether ``ty``, or any type argument inside it, is for Pydantic.
-    """
-    origin = typing.get_origin(ty)
-    args = typing.get_args(ty)
-    if origin is Annotated:
-        return _mentions_pydantic(args[0]) or any(
-            _is_pydantic_metadata(metadata) for metadata in args[1:]
-        )
-
-    # A generic alias, such as Spec[int], does not forward these attributes to
-    # the generic class.
-    for candidate in (ty, origin):
-        if hasattr(candidate, "__get_pydantic_core_schema__") or hasattr(
-            candidate, "__pydantic_config__"
-        ):
-            return True
-
-    if origin is Literal:
-        return False
-
-    return any(_mentions_pydantic(arg) for arg in args)
 
 
 def _is_type_alias(ty: Any) -> bool:
@@ -1033,10 +937,8 @@ def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
-    ``Annotated[T, ...]`` analyzes as ``T``, unless its metadata is for
-    Pydantic. Then, and for a type below eazyrest's structure of related
-    objects, optional values, and collections that mentions Pydantic, Pydantic
-    converts the whole type.
+    ``Annotated[T, ...]`` analyzes as ``T``, and its metadata does not change
+    the conversion.
 
     A named type alias, such as one that the ``type`` statement creates,
     analyzes as the type it stands for, and so does a bare alias from
@@ -1058,11 +960,11 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             ``NewType``. Also raised for a mapping whose keys are not strings,
             whose JSON form would read them as strings, for a model inside a
             mapping, for a union that holds a ``TypedDict``, and for a
-            ``TypedDict`` that is parameterized or has a Pydantic config that
-            eazyrest would not apply. A closed ``TypedDict`` raises when its
-            keys are first analyzed, since a conversion may replace it. A
-            string in a named type alias that names nothing in the alias's
-            module raises one that says the annotations cannot be resolved.
+            ``TypedDict`` that is parameterized. A closed ``TypedDict`` raises
+            when its keys are first analyzed, since a conversion may replace
+            it. A string in a named type alias that names nothing in the
+            alias's module raises one that says the annotations cannot be
+            resolved.
         NameError: If ``ty`` holds a named type alias whose value names a class
             that is not defined yet. Evaluating the value raises whatever the
             name raises, so an attribute of a module that does not have it yet
@@ -1078,9 +980,6 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
         ty_origin = None
 
     if ty_origin is Annotated:
-        if any(_is_pydantic_metadata(metadata) for metadata in ty_args[1:]):
-            return PydanticType(ty)
-
         inner = analyze_type(ty_args[0])
         if any(isinstance(metadata, Hyperlinked) for metadata in ty_args[1:]):
             return _hyperlinked(inner)
@@ -1094,14 +993,12 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             raise TypeError(
                 f"{ty!r} is a union that holds a TypedDict, which eazyrest "
                 "cannot convert, because a JSON object does not say which "
-                "member it is. Annotate it for Pydantic, with "
-                "Annotated[T, pydantic.Field()]."
+                "member it is. Annotate the field as Any to keep its JSON."
             )
-        if not _mentions_pydantic(ty):
-            union = _union_type(ty, non_none_args)
-            if len(non_none_args) != len(ty_args):
-                return OptionalType(union)
-            return union
+        union = _union_type(ty, non_none_args)
+        if len(non_none_args) != len(ty_args):
+            return OptionalType(union)
+        return union
 
     supertype = _supertype(ty)
     if supertype is not None:
@@ -1128,12 +1025,12 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
                     "a field. Its decorator also needs a primary-key field, "
                     "which the class declares or json_object(pk=...) names. "
                     "Declare nested JSON without a key as a TypedDict or a "
-                    "Pydantic model instead."
+                    "dataclass instead."
                 )
             raise _KeylessFieldTypeError(
                 f"{ty.__name__} has no primary-key field, so it cannot be "
                 "the type of a field. Declare nested JSON as a TypedDict or "
-                f"a Pydantic model, or declare the key field of {ty.__name__}."
+                f"a dataclass, or declare the key field of {ty.__name__}."
             )
         return RelatedType(ty)
 
@@ -1167,14 +1064,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     if _is_typed_dict(ty_origin):
         raise TypeError(
             f"{ty!r} is a parameterized generic TypedDict, which eazyrest "
-            "cannot convert. Annotate the TypedDict that it stands for, or "
-            "annotate it for Pydantic."
+            "cannot convert. Annotate the TypedDict that it stands for."
         )
-    if _is_typed_dict(ty) and not hasattr(ty, "__pydantic_config__"):
+    if _is_typed_dict(ty):
         return TypedDictType(ty)
-
-    if _mentions_pydantic(ty):
-        return PydanticType(ty)
 
     _check_json_form(ty, ty_origin)
     if _is_named_tuple(ty):
@@ -1299,8 +1192,8 @@ def _union_message(ty: Any) -> str:
     return (
         f"{ty!r} is a union whose members do not all pass through "
         "unchanged, which eazyrest cannot convert, because a JSON value does "
-        "not say which member it is. Annotate it for Pydantic, with "
-        "Annotated[T, pydantic.Field()]."
+        "not say which member it is. Annotate the field as Any to keep "
+        "its JSON."
     )
 
 
@@ -1544,23 +1437,20 @@ def _structure_member(hint: Any, container: Any) -> AnalyzedType:
 
 
 def _names_typed_dict(ty: Any) -> bool:
-    """Return whether a union member is a ``TypedDict`` that eazyrest owns.
-
-    A ``TypedDict`` decorated for Pydantic is Pydantic's, which converts a
-    union of such members.
+    """Return whether a union member is a ``TypedDict``.
 
     Args:
         ty: Member of a union, which may be a named type alias or
             ``Annotated``.
 
     Returns:
-        Whether ``ty`` is a plain ``TypedDict``, or a parameterized one.
+        Whether ``ty`` is a ``TypedDict``, or a parameterized one.
     """
     ty = _expand_aliases(ty)
     if typing.get_origin(ty) is Annotated:
         ty = typing.get_args(ty)[0]
     cls = typing.get_origin(ty) or ty
-    return _is_typed_dict(cls) and not hasattr(cls, "__pydantic_config__")
+    return _is_typed_dict(cls)
 
 
 _NO_EXTRA_ITEMS: tuple[Any, ...] = (
@@ -1638,46 +1528,16 @@ def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
     ):
         raise TypeError(
             f"{ty.__name__} is closed or declares extra items, which eazyrest "
-            "does not convert yet. Remove closed= and extra_items=, give it a "
-            "conversion, or decorate it for Pydantic."
+            "does not convert yet. Remove closed= and extra_items=, or give "
+            "it a Conversion."
         )
     keys: dict[str, AnalyzedType] = {}
     for key, hint in _hints_of(ty).items():
         hint = _without_key_qualifiers(hint)
-        _check_no_alias(hint, ty, key)
         analyzed = analyze_type(hint)
         _check_no_models(analyzed, ty)
         keys[key] = analyzed
     return keys
-
-
-def _check_no_alias(hint: Any, ty: type[Any], key: str) -> None:
-    """Refuse a Pydantic alias on a ``TypedDict`` key that eazyrest converts.
-
-    The key is read and written under its own name, so an alias would be
-    ignored rather than applied as Pydantic applies it.
-
-    Args:
-        hint: The key's annotation.
-        ty: ``TypedDict`` class, for the message.
-        key: The key, for the message.
-
-    Raises:
-        TypeError: If ``hint``'s ``Annotated`` metadata gives an alias.
-    """
-    if typing.get_origin(hint) is not Annotated:
-        return
-    for metadata in typing.get_args(hint)[1:]:
-        if _is_pydantic_metadata(metadata) and any(
-            getattr(metadata, name, None) is not None
-            for name in ("alias", "validation_alias", "serialization_alias")
-        ):
-            raise TypeError(
-                f"{ty.__name__}.{key} has a Pydantic alias, which eazyrest "
-                "does not apply when it converts a TypedDict. Remove it, or "
-                "annotate the field for Pydantic, with "
-                "Annotated[T, pydantic.Field()]."
-            )
 
 
 class _ModelInContainerError(TypeError):
@@ -1806,22 +1666,19 @@ def _check_json_form(ty: Any, ty_origin: Any) -> None:
     if ty_origin in _MAPPING_TYPES:
         raise TypeError(
             f"{ty!r} is a mapping whose keys are not strings, whose JSON form "
-            "eazyrest would read as another type. Annotate it for Pydantic, "
-            "with Annotated[T, pydantic.Field()], or annotate its JSON form, "
+            "eazyrest would read as another type. Annotate its JSON form, "
             "such as dict[str, Any]."
         )
     if _is_dataclass(ty_origin) or _is_named_tuple(ty_origin):
         raise TypeError(
             f"{ty!r} is a parameterized generic class, which eazyrest cannot "
-            "convert. Annotate the class itself, or annotate it for Pydantic, "
-            "with Annotated[T, pydantic.Field()]."
+            "convert. Annotate the class itself."
         )
     if ty_origin is not None and ty_origin is not Literal:
         raise TypeError(
             f"{ty!r} is a parameterized type that eazyrest does not convert, "
             "whose items would pass through unconverted. Annotate a type that "
-            "it converts, such as list[T] or dict[str, T], or annotate it for "
-            "Pydantic, with Annotated[T, pydantic.Field()]."
+            "it converts, such as list[T] or dict[str, T]."
         )
 
 
@@ -3155,10 +3012,10 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
         "or an enum, or a relation without Hyperlinked() to a model whose "
         "key is one. It cannot be a collection, a mapping, a tuple, a "
-        "TypedDict, a NamedTuple, a dataclass, a type that Pydantic "
-        "converts, a union, or a relation to a model keyed by a relation. To "
-        "key the model by another model, declare the key as a relation to "
-        "that model, or as the type of that model's key."
+        "TypedDict, a NamedTuple, a dataclass, a union, or a relation to a "
+        "model keyed by a relation. To key the model by another model, "
+        "declare the key as a relation to that model, or as the type of that "
+        "model's key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3401,12 +3258,11 @@ def _refuse_declared_types(
     Each declared field and the primary key are resolved and analyzed once. A
     field whose annotation cannot be resolved yet, or whose type alias names a
     class that is not defined yet, waits for the field's first use. So does a
-    member of a ``TypedDict``, a dataclass, a ``NamedTuple``, or a Pydantic
-    type, which is analyzed when it is first needed. Any other ``TypeError``
-    from analyzing the resolved type is a refusal, whose message names the
-    field and whose cause is the reason. A field that a base declares is
-    checked again for a union, when the class's conversions differ from the
-    base's.
+    member of a ``TypedDict``, a dataclass, or a ``NamedTuple``, which is
+    analyzed when it is first needed. Any other ``TypeError`` from analyzing
+    the resolved type is a refusal, whose message names the field and whose
+    cause is the reason. A field that a base declares is checked again for a
+    union, when the class's conversions differ from the base's.
 
     Args:
         cls: Decorated model class.
@@ -3754,13 +3610,13 @@ def json_object(
             ``collection_items()``, with a method that takes no ``**kwargs``.
             Also raised if a field's type is a model without a primary-key
             field, alone or inside an optional, a collection, or a ``NewType``.
-            Declare nested JSON without a key as a ``TypedDict`` or a Pydantic
-            model. A class defined later raises when the field is first used.
-            Also raised if the primary key is a ``Hyperlinked()`` relation,
-            which cannot form the model's URL. A key whose type is not yet
-            defined raises when the key is first used. Also raised if a field
-            is a set of ``Hyperlinked()`` relations, since an object known only
-            by its URL has no hash. Declare a list or a tuple.
+            Declare nested JSON without a key as a ``TypedDict`` or a
+            dataclass. A class defined later raises when the field is first
+            used. Also raised if the primary key is a ``Hyperlinked()``
+            relation, which cannot form the model's URL. A key whose type is
+            not yet defined raises when the key is first used. Also raised if a
+            field is a set of ``Hyperlinked()`` relations, since an object
+            known only by its URL has no hash. Declare a list or a tuple.
     """
     if field_map is None:
         field_map = {}
@@ -3943,7 +3799,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
     """Move a schema's definitions into shared ones, renaming on collision.
 
     Args:
-        schema: A Pydantic JSON schema, which may hold ``$defs``.
+        schema: A conversion's JSON schema, which may hold ``$defs``.
         defs: Definitions shared by the model's schema, updated in place.
 
     Returns:
@@ -3973,20 +3829,6 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
                     }
                 elif key == "$ref":
                     result[key] = reference(item)
-                elif (
-                    key == "discriminator"
-                    and isinstance(item, dict)
-                    and isinstance(item.get("mapping"), dict)
-                ):
-                    # Pydantic's discriminator, from OpenAPI, maps each tag
-                    # to a reference too.
-                    result[key] = {
-                        **item,
-                        "mapping": {
-                            tag: reference(target)
-                            for tag, target in item["mapping"].items()
-                        },
-                    }
                 else:
                     result[key] = rewrite(item)
             return result
@@ -4049,52 +3891,6 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
     return rewrite(schema)
 
 
-# The keys that stand for $defs and $ref in a sealed schema.
-_SEALED = {"$defs": "x-eazyrest-defs", "$ref": "x-eazyrest-ref"}
-_UNSEALED = {sealed: key for key, sealed in _SEALED.items()}
-
-
-def _rename_keys(value: Any, names: Mapping[str, str]) -> Any:
-    """Return a value with the keys of its objects renamed, at any depth.
-
-    Args:
-        value: Part of a schema.
-        names: New names of keys.
-
-    Returns:
-        ``value`` with each key in ``names`` renamed.
-    """
-    if isinstance(value, dict):
-        return {
-            names.get(key, key): _rename_keys(item, names)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_rename_keys(item, names) for item in value]
-    return value
-
-
-def _seal(schema: dict[str, Any]) -> dict[str, Any]:
-    """Hide a standalone schema's definitions and references from Pydantic.
-
-    Pydantic resolves each ``$ref`` in a schema that a type gives it against
-    its own definitions, so a conversion's schema with its own ``$defs`` is
-    sealed inside a Pydantic schema, and ``json_schema()`` unseals and hoists
-    it.
-
-    Args:
-        schema: A conversion's schema.
-
-    Returns:
-        ``schema``, with ``$defs`` and ``$ref`` renamed if it has
-        definitions.
-    """
-    if "$defs" not in schema:
-        return schema
-    result: dict[str, Any] = _rename_keys(schema, _SEALED)
-    return result
-
-
 # Keywords whose values map names to schemas, and keywords whose values are
 # JSON data rather than schemas.
 _SCHEMA_MAPS = frozenset(
@@ -4108,9 +3904,8 @@ def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
 
     A conversion's schema is a standalone schema, whose local references,
     such as ``#/$defs/Part``, name its own ``$defs``. Embedded in a model's
-    schema, also sealed inside a Pydantic schema, its definitions move into
-    the model's ``$defs``, renamed on collision, and only its own references
-    are rewritten.
+    schema, its definitions move into the model's ``$defs``, renamed on
+    collision, and only its own references are rewritten.
 
     Args:
         value: Part of a schema, after the model's own definitions have been
@@ -4124,8 +3919,6 @@ def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
         return [_hoist_nested_defs(item, defs) for item in value]
     if not isinstance(value, dict):
         return value
-    if _SEALED["$defs"] in value:
-        value = _rename_keys(value, _UNSEALED)
     if "$defs" in value:
         value = _hoist_defs(dict(value), defs)
     result: dict[str, Any] = {}
@@ -4182,8 +3975,7 @@ def _json_schema_of(
         The schema of the JSON value that the field reads or writes.
 
     Raises:
-        TypeError: If a Pydantic-converted field needs Pydantic, which is not
-            installed, or another conversion error.
+        TypeError: If a conversion fails.
     """
     found = _class_entry(analyzed, table)
     if found is not None:
@@ -4291,16 +4083,6 @@ def _json_schema_of(
                     for member in members
                 ]
             }
-        case PydanticType():
-            # Building the adapter reports a missing Pydantic.
-            adapter = analyzed.adapter
-            from .pydantic import _json_schema
-
-            # The eazyrest.pydantic types give the schemas of the model's
-            # conversions.
-            with _active_table(table):
-                schema = _json_schema(adapter, mode)
-            return _hoist_defs(schema, defs)
         case BaseType(base_type):
             return _base_schema(base_type, mode, table)
     raise TypeError(f"Unsupported analyzed type {type(analyzed).__name__}")
@@ -4438,19 +4220,15 @@ def _class_key(analyzed: AnalyzedType) -> Any:
         analyzed: Analyzed type.
 
     Returns:
-        The dataclass, ``NamedTuple``, ``TypedDict``, or class that Pydantic
-        converts, or the ``NewType`` of one, which a conversion table entry
-        may convert instead. ``None`` for any other type, including one
-        annotated for Pydantic, whose annotation is more specific than a
-        table.
+        The dataclass, ``NamedTuple``, or ``TypedDict``, or the ``NewType`` of
+        one, which a conversion table entry may convert instead. ``None`` for
+        any other type.
     """
     match analyzed:
         case DataclassType(key) | NamedTupleType(key) | TypedDictType(key):
             return key
         case NewTypeType(key, _):
             return key
-        case PydanticType(annotation) if isinstance(annotation, type):
-            return annotation
     return None
 
 
@@ -5031,7 +4809,7 @@ class JSONObject:
     ``Decimal``, and enums. A field type converts by the entry for exactly that
     type, else by the entry of the nearest class in its MRO, else, for a
     ``NewType``, as its supertype. An entry for a dataclass, a ``NamedTuple``,
-    a ``TypedDict``, or a class that Pydantic converts replaces its structure.
+    or a ``TypedDict`` replaces its structure.
     A key cannot be a model, or a type that eazyrest converts itself:
     ``object``, ``bool``, ``int``, ``float``, ``str``, ``None``'s type, or a
     collection type such as ``list`` or ``dict``. Declare the mapping in the
@@ -5561,16 +5339,6 @@ class JSONObject:
                 # object's JSON without recording an update.
                 return _copy_json(value)
 
-            case PydanticType():
-                # Building the adapter reports a missing Pydantic.
-                adapter = conversion.adapter
-                from .pydantic import _decode
-
-                # Pydantic does not copy nested values of type Any, which the
-                # returned value would then share with the JSON.
-                with _active_table(_table_of(type(self))):
-                    return _decode(adapter, _copy_json(value))
-
             case RelatedType(model_type, hyperlinked):
                 return self._create_related(
                     value,
@@ -5856,13 +5624,6 @@ class JSONObject:
                     with _at_key("[key]"):
                         written[key] = cls._to_json(item, value_type)
                 return written
-            case PydanticType():
-                from .pydantic import _encode
-
-                with _active_table(_table_of(cls)):
-                    # Pydantic writes a float that is not finite as itself,
-                    # which JSON cannot write.
-                    return _checked_json(_encode(conversion.adapter, value))
             case _:
                 raise TypeError(
                     f"Unsupported analyzed type {type(conversion).__name__}"
@@ -6093,9 +5854,8 @@ class JSONObject:
             saved key is unknown: ``null``, or JSON that the key field cannot
             decode or encode. An unknown key is kept, except while something in
             the key's type cannot be resolved yet, as a name in its annotation,
-            a form, a type alias, or a field that Pydantic converts is not
-            defined. Then the key is unknown only until it can be, and the next
-            call tries again.
+            a form, or a type alias is not defined. Then the key is unknown
+            only until it can be, and the next call tries again.
 
         Raises:
             TypeError: If the model's key declaration is refused, as for a
@@ -6757,8 +6517,8 @@ class JSONObject:
             Exception: If the key's type cannot be resolved yet, whatever
                 resolving it raises: a ``NameError`` for a class that is not
                 defined, an ``AttributeError`` for a module's attribute that is
-                not set, and a ``FieldConversionError`` for a form or a model
-                that Pydantic converts whose annotations cannot be resolved.
+                not set, and a ``FieldConversionError`` for a form whose
+                annotations cannot be resolved.
         """
         if self._url_override is not None:
             return self._url_override
@@ -7403,15 +7163,10 @@ class JSONObject:
         ``format`` ``date-time`` for ``datetime.datetime``. ``T | None`` allows
         ``null``, a collection is an array, and a relation is the related
         model's primary key, or its URL for ``Hyperlinked()``, which a read
-        also accepts as an embedded object. A Pydantic-converted field gives
-        Pydantic's validation schema in ``"read"`` mode, and its serialization
-        schema in ``"write"`` mode, so that a serializer's return type
-        describes what it writes, except that a ``pydantic.Json`` field is the
-        JSON text that it writes and a computed field, which a write does not
-        send, is left out. Its definitions, like those of a conversion's
-        schema, move into the schema's ``$defs``, renamed with the references
-        to them when two share a name. A ``TypedDict`` or ``dict[str, T]`` is
-        an object. A type whose JSON form eazyrest does not check, such as
+        also accepts as an embedded object. The definitions of a conversion's
+        schema move into the schema's ``$defs``, renamed with the references to
+        them when two share a name. A ``TypedDict`` or ``dict[str, T]`` is an
+        object. A type whose JSON form eazyrest does not check, such as
         ``Any``, allows any value.
 
         eazyrest has no required fields, so the schema lists none, and allows
@@ -7430,8 +7185,6 @@ class JSONObject:
             ValueError: If ``mode`` is neither ``"read"`` nor ``"write"``.
             NameError: If a field's annotation names a type that cannot be
                 resolved, as when the field is read.
-            FieldConversionError: If a Pydantic-converted field needs
-                Pydantic, which is not installed.
         """
         if mode not in ("read", "write"):
             raise ValueError(f"mode must be 'read' or 'write', got {mode!r}")

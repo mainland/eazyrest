@@ -9,8 +9,6 @@ eazyrest's conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
 from __future__ import annotations
 
 import collections
-import contextlib
-import contextvars
 import copy
 import datetime
 import decimal
@@ -23,7 +21,6 @@ import weakref
 from collections.abc import (
     Callable,
     Collection,
-    Generator,
     Iterable,
     Mapping,
     MutableMapping,
@@ -929,44 +926,3 @@ def _is_instance(value: Any, ty: Any) -> bool:
     if supertype is not None:
         return _is_instance(value, supertype)
     return isinstance(ty, type) and isinstance(value, ty)
-
-
-_ACTIVE_TABLE: contextvars.ContextVar[Mapping[Any, Conversion] | None] = (
-    contextvars.ContextVar("eazyrest_active_table", default=None)
-)
-"""The table of the model whose field Pydantic is converting, if any."""
-
-
-@contextlib.contextmanager
-def _active_table(
-    table: Mapping[Any, Conversion],
-) -> Generator[None, None, None]:
-    """Make a model's table the one that ``eazyrest.pydantic`` types use.
-
-    Args:
-        table: Conversion table of the model whose field Pydantic converts.
-
-    Yields:
-        Nothing. The previous table is restored afterward.
-    """
-    token = _ACTIVE_TABLE.set(table)
-    try:
-        yield
-    finally:
-        _ACTIVE_TABLE.reset(token)
-
-
-def _current_conversion(ty: Any) -> _Found:
-    """Return the conversion of a type in the active table, or the default.
-
-    Args:
-        ty: A type with a default conversion, such as ``datetime.datetime``
-            or an enum.
-
-    Returns:
-        The conversion, the type to pass to it, and its key.
-    """
-    table = _ACTIVE_TABLE.get()
-    found = _conversion_of(ty, DEFAULT_CONVERSIONS if table is None else table)
-    assert found is not None, ty
-    return found

@@ -247,19 +247,19 @@ one if it converts as a whole, so that its JSON has one spelling for equality,
 `url`, and the hash to read. That is `int`, `str`, `bool`, `float`, `UUID`,
 `datetime`, `date`, `Decimal`, an enum, a `Literal`, and a class that a
 conversion of the model converts. The key may be one of these inside
-`T | None`, a `NewType`, or `Annotated` with metadata that is not Pydantic's. A
-relation is allowed unless it is `Hyperlinked()`.
+`T | None`, a `NewType`, or `Annotated`. A relation is allowed unless it is
+`Hyperlinked()`.
 
 Any other key raises `TypeError` when the class is decorated, naming the field.
 That includes a collection such as `list[int]`, a mapping, a fixed-length
 tuple, a `TypedDict`, a `NamedTuple`, a dataclass without a conversion, a union
-of more than one type besides `None`, `Any`, a type that Pydantic converts, and
-`Annotated` with Pydantic metadata. A mapping is refused because two mappings
-with the same items in another order are one key but have different spellings.
-A relation to a model keyed by a relation is refused as well, so a chain of key
-relations is, and so is a cycle, such as a model keyed by itself or two models
-keyed by each other. To key a model by another model, declare the key as a
-relation to that model, or as the type of that model's key.
+of more than one type besides `None` and `Any`. A mapping is refused because
+two mappings with the same items in another order are one key but have
+different spellings. A relation to a model keyed by a relation is refused as
+well, so a chain of key relations is, and so is a cycle, such as a model keyed
+by itself or two models keyed by each other. To key a model by another model,
+declare the key as a relation to that model, or as the type of that model's
+key.
 
 A name in the key's annotation, or in the key of the related model, may not be
 defined yet when the class is decorated. The class is then checked when its key
@@ -279,9 +279,8 @@ refused raises its `TypeError`.
 
 A field that is not the key raises a `NameError` when its annotation, or a type
 alias in it, names the class that is not defined yet. It raises a
-`FieldConversionError` when the name is in a `TypedDict`, `NamedTuple`,
-dataclass, or Pydantic model that the field names, or in a string in a type
-alias's value.
+`FieldConversionError` when the name is in a `TypedDict`, `NamedTuple`, or
+dataclass that the field names, or in a string in a type alias's value.
 
 A field whose annotation resolves, and whose own type eazyrest does not
 convert, raises `TypeError` when the class is decorated. The message is
@@ -289,8 +288,8 @@ convert, raises `TypeError` when the class is decorated. The message is
 types are `Counter[str]`, `int | list[int]`, a mapping whose keys are not
 strings, a model inside a mapping or a fixed-length tuple, a type alias that
 refers to itself, and `Hyperlinked()` on a type that is not a relation. A
-member of a `TypedDict`, dataclass, `NamedTuple`, or Pydantic type is analyzed
-when the field is first used, so that a structure can name itself, and raises
+member of a `TypedDict`, dataclass, or `NamedTuple` is analyzed when the field
+is first used, so that a structure can name itself, and raises
 `FieldConversionError` then.
 
 ### Differences from Django
@@ -377,12 +376,11 @@ payload with `copy.deepcopy()` before changing a value in it for another
 purpose.
 
 An assignment converts the value for its field but does not otherwise check its
-type, unless the field's type is one that Pydantic validates. A value that
-cannot be written as JSON, such as an object of a type that eazyrest does not
-convert or a float that is not finite, raises `FieldConversionError` at the
-assignment, which leaves the field unchanged and queues nothing. A write that
-the server refuses is different: its updates stay pending, so a later `save()`
-sends them again.
+type. A value that cannot be written as JSON, such as an object of a type that
+eazyrest does not convert or a float that is not finite, raises
+`FieldConversionError` at the assignment, which leaves the field unchanged and
+queues nothing. A write that the server refuses is different: its updates stay
+pending, so a later `save()` sends them again.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it.
@@ -418,7 +416,7 @@ such an object, post to the endpoint with the API and build the object from the
 response with `json=`. `url` raises `ValueError`. It cannot be the type of a
 field, also inside an optional, a collection, or a `NewType`, and such a field
 raises `TypeError`. Declare nested JSON that has no key as a `TypedDict` or a
-Pydantic model instead, or declare the key field.
+dataclass instead, or declare the key field.
 
 ## Resource URLs
 
@@ -556,13 +554,11 @@ was asked for, and not the one that a redirect chose, and the `repr()` of an
 object known only by its URL leaves out a user and password too. An exception
 that requests itself raises, such as `requests.ConnectionError`, quotes the URL
 as requests does, with its path and query, also for the host that a redirect
-reached. A Pydantic error says where and why a value is invalid, as in
-`Asset.rating: Input should be greater than 0`, without the input. A mapping
-key that the input chose appears as `[key]`, and a value that Pydantic would
-quote, such as a discriminated union's unknown tag, appears as `[redacted]`.
-The error that eazyrest replaced remains the `__cause__`, and it can quote the
-value, so a logged traceback can still expose it. A message that your own
-conversion code or validator writes appears as written.
+reached. A conversion error says which field and which key or position of it is
+invalid, and why, without the input. A mapping key that the input chose appears
+as `[key]`. The error that eazyrest replaced remains the `__cause__`, and it
+can quote the value, so a logged traceback can still expose it. A message that
+your own conversion code or validator writes appears as written.
 
 A JSON value that an enum lacks, such as a status that the server added after
 the client was written, raises `FieldConversionError`. Python calls an enum's
@@ -610,14 +606,12 @@ replacing a set with an equal one is not a change that `save()` sends, even
 when the server lists the items in another order. That holds for a field
 annotated as a set or frozenset, an optional one, or a `NewType` of either. A
 set nested in a list, tuple, or mapping field is compared in the server's
-order. A set inside a Pydantic-converted field is written by Pydantic, in
-iteration order. Any other parameterized type, such as `Counter[str]`, raises
-`TypeError` when the class is decorated, because its items would otherwise pass
-through unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As
-Python's types say, `tuple[T]` is a tuple of exactly one item, and a bare
-`tuple` is a tuple of any length whose items read as they are. A bare alias
-from `typing`, such as `typing.List` or `typing.Dict`, reads as its class,
-`list` or `dict`:
+order. Any other parameterized type, such as `Counter[str]`, raises `TypeError`
+when the class is decorated, because its items would otherwise pass through
+unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As Python's
+types say, `tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a
+tuple of any length whose items read as they are. A bare alias from `typing`,
+such as `typing.List` or `typing.Dict`, reads as its class, `list` or `dict`:
 
 ```python
 import datetime
@@ -723,14 +717,10 @@ names a declared key, as in `Reservation.window: ['start']: ...`, and a
 collection item's position, as in `[1]`, but shows a key of a `dict[str, T]`,
 which the server chose, as `[key]`. A value under an undeclared key is written
 as it is, so assigning one that is not JSON, such as a `datetime`, raises
-`FieldConversionError`. To have a `TypedDict` validated, annotate it for
-Pydantic, as [Pydantic conversion](#pydantic-conversion) describes. A
-`TypedDict` decorated with `pydantic.with_config()` is annotated for Pydantic,
-which converts and validates it by its whole config, aliases included, as
-[Pydantic conversion](#pydantic-conversion) describes. A plain `TypedDict`
-whose key has a Pydantic alias raises `FieldConversionError`, because eazyrest
-reads and writes keys by their own names, so decorate such a `TypedDict` for
-Pydantic.
+`FieldConversionError`. Validate a `TypedDict` in the application, or register
+a conversion for it, as [Custom field conversion](#custom-field-conversion)
+describes. eazyrest reads and writes keys by their own names, so it ignores a
+Pydantic alias in a key's `Annotated` metadata.
 
 A fixed-length tuple, such as `tuple[int, datetime.date]`, reads a JSON array
 of exactly that length, each position by its own annotation, and a `NamedTuple`
@@ -752,8 +742,8 @@ fixed-length tuple, or a `NewType`, and the model's conversions decide which
 members convert. A subclass whose conversions change an inherited field's union
 into one that converts is refused when the subclass is decorated. In a
 `TypedDict`, `NamedTuple`, or dataclass, it raises `FieldConversionError` when
-the field is first used. Annotate such a union for Pydantic, with a
-discriminator if needed.
+the field is first used. Annotate such a field as `Any` to keep its JSON, and
+convert it in the application.
 
 Some annotations raise because eazyrest cannot read them as their types. A
 mapping whose keys are not strings is one, because JSON object keys are
@@ -762,10 +752,10 @@ strings. So is a model inside a `TypedDict`, a mapping, a fixed-length tuple, a
 there yet, so annotate such a key or field with the model's primary key type,
 such as `int`. So are a `TypedDict` that is closed or has extra items (PEP
 728), and a generic `TypedDict`, `NamedTuple`, or dataclass with type
-arguments. Annotate such a type for Pydantic, or annotate its JSON form, such
-as `dict[str, Any]`. The field's own type raises `TypeError` when the class is
-decorated. A member of a `TypedDict`, `NamedTuple`, or dataclass raises
-`FieldConversionError` when the field is first used.
+arguments. Annotate its JSON form, such as `dict[str, Any]`. The field's own
+type raises `TypeError` when the class is decorated. A member of a `TypedDict`,
+`NamedTuple`, or dataclass raises `FieldConversionError` when the field is
+first used.
 
 A dataclass with an init-only field, of type `dataclasses.InitVar`, is refused
 the same way when a field's type names it, because the dataclass does not keep
@@ -803,205 +793,6 @@ place is therefore sent by the next `save()` or eager assignment, not
 immediately. Assigning the field, `refresh()`, and an `update_from_json()`
 payload that holds the field each discard a change made in place that has not
 been sent.
-
-## Pydantic conversion
-
-Pydantic converts a field's value when the field's type mentions Pydantic. Such
-a type is, or contains, one of the following:
-
-- A class with Pydantic's schema hook, such as a Pydantic model,
-  `pydantic.Base64Bytes`, or a type from `pydantic-extra-types`.
-- A class with a Pydantic config, such as a Pydantic dataclass or a `TypedDict`
-  decorated with `pydantic.with_config()`.
-- `Annotated` metadata from Pydantic, such as `pydantic.Field()`,
-  `pydantic.Strict()`, or `pydantic.AfterValidator()`.
-
-Every other type converts as [Field conversion](#field-conversion) describes.
-eazyrest converts a plain `TypedDict` itself, without validating it, and a
-`Literal` passes through unchecked, except that a JSON value of one of its enum
-members reads as the member, and the member writes as that JSON value. To have
-Pydantic check such a type, annotate it with `Annotated[T, pydantic.Field()]`.
-Constraints from `annotated_types` alone, such as `Annotated[int, Gt(0)]`, do
-not mention Pydantic, because other libraries use them too.
-
-Some of Pydantic's own types are made only of such constraints, so they do not
-mention Pydantic either. `pydantic.PositiveInt`, for example, is
-`Annotated[int, Gt(0)]`, and the same holds for `NegativeInt`,
-`NonNegativeInt`, `PositiveFloat`, their relatives, and the result of
-`conint()` or `confloat()` with only bounds. A field of such a type reads and
-writes any value of the underlying type unchecked. Annotate it as
-`Annotated[PositiveInt, pydantic.Field()]` to have Pydantic check it. Types
-that carry Pydantic's own metadata, such as `StrictInt` and `FiniteFloat`,
-mention Pydantic and are checked.
-
-Pydantic conversion requires the `pydantic` extra, which installs Pydantic 2.12
-or later:
-
-```bash
-pip install "eazyrest[pydantic]"
-```
-
-```python
-import datetime
-from typing import Annotated, Literal
-
-from pydantic import Base64Bytes, BaseModel, ConfigDict, Field, with_config
-from typing_extensions import TypedDict
-
-from eazyrest import JSONObject, json_object
-from eazyrest.pydantic import Duration
-
-
-@with_config(ConfigDict(extra="allow"))
-class Rendering(TypedDict):
-    width: int
-    height: int
-    timeout: Duration
-
-
-class Point(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    x: float
-    y: float
-
-
-@json_object
-class Logo(JSONObject):
-    class_url = "/logos/"
-
-    id: int
-    image: Base64Bytes
-    rendering: Annotated[Rendering, Field()]
-    anchors: list[Point]
-    shape: Annotated[Literal["square", "round"], Field()]
-    published: Annotated[datetime.datetime, Field(description="First shown")]
-```
-
-Reading `Logo.image` decodes the base64 JSON string to `bytes`, and reading
-`Logo.rendering` checks the mapping against `Rendering`, because its annotation
-asks Pydantic to. A value that Pydantic rejects raises `FieldConversionError`.
-Pydantic on Python before 3.12 requires `TypedDict` from `typing_extensions`.
-
-eazyrest still handles related objects, `T | None`, collections,
-`dict[str, T]`, and `TypedDict` keys around a type that Pydantic converts, so
-`Logo.anchors` converts each item to a `Point`, and `dict[str, Point]` each
-value. Pydantic converts the whole of any other type, such as `Point | str`,
-which therefore cannot contain an eazyrest model.
-
-Assigning a value, or passing it to `create()` or a query, writes the JSON
-value that Pydantic serializes for a round trip, so a field typed as
-`pydantic.Json[dict[str, int]]` writes JSON text, as it reads. A value of
-another type, such as a `dict` assigned to a field typed as a Pydantic model,
-is validated first. A field typed as `Base64Bytes` therefore writes both
-`b"hello"` and `"aGVsbG8="` as `"aGVsbG8="`. A value that the field could not
-read back raises `FieldConversionError` and sends nothing. This includes a
-value that breaks a constraint, such as `0` for a field typed as
-`Annotated[int, Field(gt=0)]`. As for every field, `None` reads and writes as
-`null`.
-
-A Pydantic model is written by its fields' aliases, as Pydantic reads it, so a
-model whose config sets `alias_generator=to_camel` writes `darkMode` rather
-than `dark_mode`. A value must also read back as the value written. Pydantic
-writes a `SecretStr` or `SecretBytes` as `"**********"`, so writing one raises
-`FieldConversionError`, and so does reading one, because a read encodes the
-value to detect changes made in place. To send a secret, annotate its type with
-a serializer that reveals it:
-
-```python
-from typing import Annotated
-
-from pydantic import PlainSerializer, SecretStr
-
-RevealedSecret = Annotated[
-    SecretStr,
-    PlainSerializer(
-        lambda secret: secret.get_secret_value(),
-        return_type=str,
-        when_used="json",
-    ),
-]
-```
-
-A field typed as `RevealedSecret` writes the secret itself, and its `repr()`
-still hides it.
-
-`Annotated[T, ...]` converts as `T` does, and the metadata refines that
-conversion. Where eazyrest converts `T` itself, as for `datetime.datetime`,
-`datetime.date`, `datetime.time`, `datetime.timedelta`, `uuid.UUID`,
-`decimal.Decimal`, and enums, eazyrest's conversion reads and writes the value
-and Pydantic applies the metadata. `Logo.published` therefore reads as a plain
-`datetime.datetime` field would, a constraint such as
-`Field(ge=datetime.timedelta(0))` checks the decoded value, and a
-`pydantic.PlainSerializer` replaces eazyrest's encoding. This holds for every
-type that the annotation names, such as the items of
-`Annotated[list[datetime.datetime], Field(max_length=3)]`, and for a `NewType`
-of one of these types, which converts by its own entry in the model's table, if
-it has one, as a plain field of it does. A model's conversions of other types,
-such as `IPv4Address`, do not apply inside an annotation for Pydantic, which
-converts those types by its own rules.
-
-Inside a class that Pydantic converts, such as a Pydantic model, or a
-`TypedDict` annotated for Pydantic, Pydantic's own rules apply, and they differ
-from eazyrest's:
-
-| Type | eazyrest | Pydantic |
-| --- | --- | --- |
-| `datetime.datetime` | Reads a number as seconds, and rejects `1.7e12` as out of range | Reads `1.7e12` as milliseconds |
-| `datetime.datetime` | A UTC offset becomes `datetime.timezone` | Uses its own `TzInfo` class |
-| `datetime.date` | Rejects numbers | Reads a number as a timestamp |
-| `datetime.timedelta` | Reads Django's `DurationField` format, such as `1 02:03:04`, and rejects years and months | Rejects Django's format, and reads `P1Y` as 365 days |
-| `datetime.time` | Rejects numbers | Reads a number as seconds since midnight |
-| `decimal.Decimal` | Rejects spaces and underscores, and writes `Decimal("1E+2")` as `"100"` | Reads them, and writes `"1E+2"` |
-| Enums | Reads only the members' values | Also reads `"1"` for a member whose value is `1` |
-
-To convert a value inside such a class as an eazyrest field would, annotate it
-with `Datetime`, `Date`, `Time`, `Duration`, `UUID`, or `Decimal` from
-`eazyrest.pydantic`, as `Rendering.timeout` is above. These types convert by
-the [conversion table](#custom-field-conversion) of the model whose field holds
-them, so they follow its conversions, such as one that writes datetimes as
-timestamps, and take their [JSON schemas](#json-schemas) from those conversions
-too. Outside a model, they convert by the default table. Pydantic's own types,
-such as `AwareDatetime`, keep Pydantic's rules.
-
-A server may send keys that a `TypedDict` or a Pydantic model does not declare,
-and saving a value that dropped them would delete them on the server. A `PATCH`
-leaves the fields that it omits alone, but it replaces the whole value of each
-field that it sends, so a key missing from that value is deleted. eazyrest
-keeps such keys in a `TypedDict` that it converts, as
-[Field conversion](#field-conversion) describes. Under Pydantic's default
-config, both a `TypedDict` and a Pydantic model drop such keys. A `TypedDict`
-that Pydantic converts must therefore set `extra="allow"`, or `extra="forbid"`
-to reject such keys, or using the field raises `FieldConversionError`. Under
-`extra="forbid"`, Pydantic writes a value without the keys that it does not
-declare, so writing such a value raises `FieldConversionError` rather than
-dropping them, at any depth. So does writing an instance of a dataclass's
-subclass that has fields of its own, which Pydantic writes as the declared
-class. A `TypedDict` or dataclass nested inside a field's type must follow the
-same rules, at any depth. A Pydantic model follows its own config, so give it
-`extra="allow"`, as `Point` has. A `TypedDict`, dataclass, or `NamedTuple`
-without a config of its own inside a model takes the model's config. Pydantic
-never writes undeclared keys for a dataclass, of Pydantic or the standard
-library, even under `extra="allow"`, so a dataclass that a field type names
-must set `extra="forbid"`, as with
-`@pydantic.with_config(pydantic.ConfigDict(extra="forbid"))`, or be inside a
-model with `extra="forbid"` without a config of its own, or using the field
-raises `FieldConversionError`. A Pydantic dataclass always has a config of its
-own, empty if declared without one, so it is accepted only with
-`extra="forbid"` on itself, even inside a model with `extra="forbid"`. Nor does
-Pydantic write a dataclass's init-only fields, of type `dataclasses.InitVar`,
-or a field of a model or dataclass that it excludes from writes, with
-`Field(exclude=True)` or `exclude_if`, so such a class raises
-`FieldConversionError` too. A `TypedDict`'s extra items, which `extra_items=`
-types, are checked as its keys are, and a dataclass's class variables, which
-Pydantic neither reads nor writes, are not checked. A class whose fields'
-annotations cannot be resolved cannot be checked, so it raises
-`FieldConversionError`. A serializer that leaves a key out, such as a model's
-`model_serializer`, is a model's own choice, which eazyrest does not check.
-
-A value that Pydantic converts can be changed in place, as
-[Field conversion](#field-conversion) describes. For example,
-`logo.anchors[0].x = 2` followed by `logo.save()` sends the changed `anchors`.
 
 ## Custom field conversion
 
@@ -1077,23 +868,35 @@ raises `TypeError` for a bad entry. `DEFAULT_CONVERSIONS` holds the default
 table, so an entry can reuse a default's `decode`, `encode`, or `schema`.
 
 An entry can also convert a class whose structure eazyrest would otherwise
-convert: a dataclass, a `NamedTuple`, a `TypedDict`, or a class that Pydantic
-converts, such as a Pydantic model. The entry replaces the structure, so a
-`Money` dataclass can read and write `"12 USD"`, and eazyrest does not analyze
-the class's fields, so the entry can convert one that eazyrest refuses, such as
-a dataclass that holds a model. A `NewType` of such a class converts by its own
-entry, else by the class's. An entry for a `TypedDict` converts exactly that
-`TypedDict`, because a `TypedDict` that extends it does not have it in its MRO,
-and its `encode` is called for any mapping, because a `TypedDict` has no
-instances. A field annotated with `Annotated[T, pydantic.Field()]` names
-Pydantic itself, which is more specific than the table, so Pydantic converts
-it, rather than an entry for `T`, except that the types that eazyrest converts
-itself, and `NewType`s of them, still convert by the table, as
-[Pydantic conversion](#pydantic-conversion) describes.
+convert: a dataclass, a `NamedTuple`, or a `TypedDict`. The entry replaces the
+structure, so a `Money` dataclass can read and write `"12 USD"`, and eazyrest
+does not analyze the class's fields, so the entry can convert one that eazyrest
+refuses, such as a dataclass that holds a model. A `NewType` of such a class
+converts by its own entry, else by the class's. An entry for a `TypedDict`
+converts exactly that `TypedDict`, because a `TypedDict` that extends it does
+not have it in its MRO, and its `encode` is called for any mapping, because a
+`TypedDict` has no instances.
 
-Pydantic conversion can replace a custom one: a field typed as
-`Annotated[IPv4Address, pydantic.Field()]` reads and writes addresses as
-strings.
+eazyrest does not apply Pydantic. Metadata inside `Annotated`, such as
+`pydantic.Field()`, changes nothing, like the metadata of any other library. A
+type that is made only of such metadata, such as `pydantic.Base64Bytes`, is its
+underlying type, here `bytes`, which eazyrest does not convert. To read and
+write bytes that the server sends as base64, register a conversion for `bytes`:
+
+```python
+import base64
+
+from eazyrest import Conversion
+
+base64_bytes = Conversion(
+    decode=lambda value, cls: base64.b64decode(value),
+    encode=lambda value, cls: base64.b64encode(value).decode("ascii"),
+    schema={"type": "string", "format": "base64"},
+)
+```
+
+Declare `conversions = {bytes: base64_bytes}` on the model whose field is
+annotated `bytes`.
 
 Decoding accepts Unix timestamps for `datetime.datetime` fields, but encoding
 writes ISO 8601 strings. For an API that requires timestamps in requests,
@@ -1138,18 +941,13 @@ Unix timestamp and a number of seconds, and for `decimal.Decimal`. `T | None`
 also allows `null`, and a collection is an array, whose items are unique for a
 set. A relation is the related model's primary key, or a URL for a
 `Hyperlinked()` relation, and a read also accepts the related object embedded
-as JSON. A field that Pydantic converts gives Pydantic's validation schema in a
-read schema, and its serialization schema in a write schema, so that a
-serializer's return type describes what it writes, except that a
-`pydantic.Json` field is the JSON text that it writes and a computed field,
-which a write does not send, is left out. Its definitions, like those of a
-conversion's schema, move into the schema's `$defs`, renamed with the
-references to them when two share a name. A plain `TypedDict` is an object with
-a property for each declared key that allows other properties, and one inside
-itself is any object. A `NamedTuple` or dataclass inside itself is likewise any
-array or object. `dict[str, T]` is an object whose properties all have `T`'s
-schema. A type whose JSON form `eazyrest` does not check, such as `Any`, allows
-any value.
+as JSON. The definitions of a conversion's schema move into the schema's
+`$defs`, renamed with the references to them when two share a name. A plain
+`TypedDict` is an object with a property for each declared key that allows
+other properties, and one inside itself is any object. A `NamedTuple` or
+dataclass inside itself is likewise any array or object. `dict[str, T]` is an
+object whose properties all have `T`'s schema. A type whose JSON form
+`eazyrest` does not check, such as `Any`, allows any value.
 
 `eazyrest` has no required fields, so the schema lists none. Every field reads
 `null` as `None`, but the schema allows `null` only where the annotation does,
@@ -1953,10 +1751,8 @@ api.post("/reservations/1/extend/", json=body)
 `encode_json(value, annotation)` returns the JSON value that a field annotated
 `annotation` writes, so `body` is `{"duration": "PT2H"}`. Any field annotation
 works, such as `datetime.datetime` for a query parameter or `list[Extension]`
-for a list. A key annotated `pydantic.Base64Bytes` writes base64 through
-Pydantic, so the annotation, not eazyrest, decides how bytes are written. It
-converts by the default conversion table. Pass `model=` to convert by a model's
-table instead, as that model's fields would, such as
+for a list. It converts by the default conversion table. Pass `model=` to
+convert by a model's table instead, as that model's fields would, such as
 `encode_json(body, Extension, model=Reservation)` for an API whose models
 declare their own `conversions`. A value that does not encode to JSON, such as
 a model under a key annotated `int`, raises `TypeError` naming its key.

@@ -1,8 +1,4 @@
-"""Tests of ``TypedDict`` and ``dict[str, T]`` fields, which eazyrest converts.
-
-None of these needs Pydantic. The tests of a ``TypedDict`` under a Pydantic
-config, or inside a type that Pydantic converts, are in ``test_pydantic.py``.
-"""
+"""Tests of ``TypedDict`` and ``dict[str, T]`` fields."""
 
 from __future__ import annotations
 

@@ -57,7 +57,6 @@ from eazyrest._models import (
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
-HAVE_PYDANTIC = importlib.util.find_spec("pydantic") is not None
 HAVE_ANNOTATED_TYPES = importlib.util.find_spec("annotated_types") is not None
 if HAVE_ANNOTATED_TYPES:
     import annotated_types
@@ -686,51 +685,33 @@ def test_query_sends_each_name_under_its_own_key(
     assert sorted(int(value) for _, value in query) == sorted(call.values())
 
 
-if HAVE_PYDANTIC:
-    from typing import Annotated, Literal
+class Pet(typing.TypedDict):
+    """Structure whose keys convert by annotation."""
 
-    from pydantic import (
-        AliasChoices,
-        BaseModel,
-        ConfigDict,
-        Field,
-    )
-    from pydantic import (
-        Json as PydanticJson,
-    )
+    kind: str
+    lives: int
 
-    class Cat(BaseModel):
-        """Member of a discriminated union."""
 
-        kind: Literal["cat"]
-        lives: int
+@dataclasses.dataclass
+class Strict:
+    """Dataclass that rejects undeclared keys."""
 
-    class Dog(BaseModel):
-        """Member of a discriminated union."""
+    name: str
+    size: int
 
-        kind: Literal["dog"]
-        good: bool
 
-    class Strict(BaseModel):
-        """Model with aliases that rejects undeclared keys."""
+@json_object
+class Validated(PropertyBase):
+    """Model whose structured fields convert by annotation."""
 
-        model_config = ConfigDict(extra="forbid")
+    class_url = "/validated/"
 
-        name: str = Field(validation_alias=AliasChoices("name", "label"))
-        size: int = Field(alias="sizeValue")
-
-    @json_object
-    class Validated(PropertyBase):
-        """Model whose Pydantic fields transform their input."""
-
-        class_url = "/validated/"
-
-        id: int
-        text: PydanticJson[dict[str, int]]
-        pet: Annotated[Cat | Dog, Field(discriminator="kind")]
-        nested: Annotated[list[dict[str, int | list[int]] | Strict], Field()]
-        keyed: Annotated[dict[int, Strict], Field()]
-        strict: Strict
+    id: int
+    text: dict[str, int]
+    pet: Pet
+    nested: list[dict[str, int]]
+    keyed: dict[str, Strict]
+    strict: Strict
 
 
 _SENTINEL = "Zq9SENTINEL"
@@ -751,10 +732,10 @@ def _with_sentinel(depth: int = 2) -> st.SearchStrategy[Any]:
         st.integers(-2, 2),
         st.booleans(),
         st.none(),
-        st.sampled_from(["cat", "dog", "name", "label", "sizeValue"]),
+        st.sampled_from(["cat", "dog", "name", "label", "size"]),
     )
     keys = st.sampled_from(
-        [_SENTINEL, "kind", "lives", "good", "name", "label", "sizeValue", "1"]
+        [_SENTINEL, "kind", "lives", "good", "name", "label", "size", "1"]
     )
     return st.recursive(
         leaves,
@@ -766,27 +747,25 @@ def _with_sentinel(depth: int = 2) -> st.SearchStrategy[Any]:
     )
 
 
-@pytest.mark.skipif(not HAVE_PYDANTIC, reason="Pydantic is not installed")
 @settings(max_examples=200)
 @given(
     field=st.sampled_from(["text", "pet", "nested", "keyed", "strict"]),
     value=st.deferred(_with_sentinel),
     as_text=st.booleans(),
 )
-def test_pydantic_errors_never_quote_the_input(
+def test_conversion_errors_never_quote_the_input(
     field: str, value: Any, as_text: bool
 ) -> None:
     """A conversion error never quotes a key or value from the input.
 
-    Pydantic's messages and locations copy input mapping keys, discriminator
-    tags, and values, including those that JSON text holds once it is decoded
-    during validation. ``FieldConversionError`` must redact them.
+    The error of a structure, a mapping, or a dataclass could copy input
+    mapping keys and values. ``FieldConversionError`` must redact them.
 
     Args:
         field: Name of the ``Validated`` field to read.
         value: Generated JSON value that holds the sentinel.
-        as_text: Whether to send the value as JSON text, which only ``text``
-            decodes during validation.
+        as_text: Whether to send the value as JSON text, which no field
+            decodes.
     """
     if as_text:
         value = json.dumps(value)
@@ -1025,8 +1004,7 @@ class _Note:
 
 _ANNOTATED: Any = typing.Annotated
 
-# Metadata that is not for Pydantic. annotated_types constraints, which
-# Pydantic also reads, are not Pydantic's own, so they do not opt in either.
+# Metadata of other libraries, including annotated_types constraints.
 _NEUTRAL_METADATA = st.one_of(
     st.text(max_size=3),
     st.integers(),
@@ -1102,10 +1080,10 @@ def _collapsed(analyzed: Any) -> Any:
 def test_neutral_metadata_leaves_conversion_unchanged(
     pair: _TypePair, value: Any
 ) -> None:
-    """``Annotated`` metadata that is not for Pydantic changes nothing.
+    """``Annotated`` metadata changes nothing.
 
-    A field typed ``Annotated[T, m]`` analyzes as ``T``, so it never opts in
-    to Pydantic, and it reads and writes every value as ``T`` does.
+    A field typed ``Annotated[T, m]`` analyzes as ``T``, and it reads and
+    writes every value as ``T`` does.
 
     Args:
         pair: Type as written with metadata and as bare.
@@ -1236,160 +1214,6 @@ def test_failed_read_leaves_no_cached_value(field: str, value: Any) -> None:
         getattr(obj, field)
     assert obj.name == "n"
     assert obj._pending_updates == {}
-
-
-def _from_hex(value: Any) -> int:
-    """Read an integer from hexadecimal text, as a custom Pydantic type does.
-
-    Args:
-        value: Input value.
-
-    Returns:
-        The integer that ``value`` writes.
-
-    Raises:
-        ValueError: If ``value`` is not hexadecimal text.
-    """
-    if not isinstance(value, str):
-        raise ValueError("Expected hexadecimal text")  # noqa: TRY004
-    return int(value, 16)
-
-
-if HAVE_PYDANTIC:
-    from pydantic import (
-        Base64Bytes,
-        BaseModel,
-        ConfigDict,
-        PlainSerializer,
-        PlainValidator,
-    )
-    from pydantic.alias_generators import to_camel
-
-    class Corner(BaseModel):
-        """Pydantic model read and written by its aliases."""
-
-        model_config = ConfigDict(alias_generator=to_camel, extra="allow")
-
-        top_left: int
-
-    @json_object
-    class Encoded(PropertyBase):
-        """Model whose Pydantic fields write values in other forms."""
-
-        class_url = "/encoded/"
-
-        id: int
-        text: PydanticJson[dict[str, int]]
-        blob: Base64Bytes
-        hexed: Annotated[int, PlainValidator(_from_hex), PlainSerializer(hex)]
-        corner: Corner
-
-
-ENCODED_JSON = {
-    "id": 1,
-    "text": '{"a": 1}',
-    "blob": "AA==",
-    "hexed": "0x1",
-    "corner": {"topLeft": 1},
-}
-
-# Values assigned to Encoded's fields, each of the field's type or not.
-_ENCODED_VALUES = {
-    "text": st.one_of(
-        st.dictionaries(st.text(max_size=3), st.integers(), max_size=3),
-        st.dictionaries(st.text(max_size=2), st.text(max_size=2), max_size=2),
-        st.integers(),
-    ),
-    "blob": st.one_of(st.binary(max_size=8), st.text(max_size=3)),
-    "hexed": st.one_of(
-        st.integers(), st.floats(allow_nan=False), st.text(max_size=3)
-    ),
-    "corner": st.integers().map(lambda n: {"topLeft": n}),
-}
-
-
-def _of_field_type(field: str, value: Any) -> bool:
-    """Return whether a value already has an ``Encoded`` field's type.
-
-    Pydantic also accepts values of other types, such as text for bytes, and
-    reads them back as the field's type instead.
-
-    Args:
-        field: Name of the ``Encoded`` field.
-        value: Value assigned to it.
-
-    Returns:
-        Whether the field reads ``value`` back unchanged.
-    """
-    if field == "text":
-        return isinstance(value, dict) and all(
-            type(item) is int for item in value.values()
-        )
-    if field == "blob":
-        return isinstance(value, bytes)
-    if field == "corner":
-        return False
-    return type(value) is int
-
-
-def _saved_json(field: str, value: Any) -> Any:
-    """Assign a value to a field of a loaded object, and save it.
-
-    Args:
-        field: Name of the ``Encoded`` field.
-        value: Value to assign.
-
-    Returns:
-        The field's JSON in the ``PATCH`` that ``save()`` sends, or the JSON
-        that the object already holds when the value encodes as it does, and
-        ``save()`` sends nothing.
-    """
-    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
-    setattr(obj, field, value)
-    if not obj._pending_updates:
-        return obj.json[field]
-    with requests_mock.Mocker() as mock:
-        patch = mock.patch(f"{BASE_URL}encoded/1/", status_code=204)
-        obj.save()
-        return patch.last_request.json()[field]
-
-
-@pytest.mark.skipif(not HAVE_PYDANTIC, reason="Pydantic is not installed")
-@settings(max_examples=150)
-@given(data=st.data(), field=st.sampled_from(sorted(_ENCODED_VALUES)))
-def test_accepted_pydantic_writes_read_back(
-    data: st.DataObject, field: str
-) -> None:
-    """A value that a Pydantic field accepts reads back from what it writes.
-
-    An assignment either raises and queues nothing, or the ``PATCH`` that
-    ``save()`` sends holds JSON that another object reads, and writing the
-    value read sends the same JSON again. The JSON differs from the value:
-    JSON text, base64 text, or hexadecimal text. A value of the field's type
-    reads back unchanged.
-
-    Args:
-        data: Hypothesis data, to draw a value for the field.
-        field: Name of the ``Encoded`` field to assign.
-    """
-    value = data.draw(_ENCODED_VALUES[field], label="value")
-    obj = Encoded(json=copy.deepcopy(ENCODED_JSON))
-
-    try:
-        setattr(obj, field, value)
-    except FieldConversionError:
-        # Every corner is valid input, by its alias, so it must be written.
-        assert field != "corner"
-        assert obj._pending_updates == {}
-        assert obj.json == ENCODED_JSON
-        return
-
-    sent = _saved_json(field, value)
-    read = getattr(Encoded(json={**ENCODED_JSON, field: sent}), field)
-
-    assert _saved_json(field, read) == sent
-    if _of_field_type(field, value):
-        assert read == value
 
 
 _PAGES_ORIGIN = "https://pages.example"

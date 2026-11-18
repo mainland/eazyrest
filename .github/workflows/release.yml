@@ -66,7 +66,7 @@ jobs:
         run: |
           wheel="$(ls release/*.whl)"
           uvx --with tox-uv tox \
-            -e py311,py315,pydantic-min,min-deps,min-deps-py315,no-pydantic,drf \
+            -e py311,py315,min-deps,min-deps-py315,no-pydantic,drf \
             --skip-missing-interpreters false \
             --installpkg "$wheel"
 
