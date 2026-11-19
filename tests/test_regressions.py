@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime
 import io
 from collections.abc import Callable
@@ -1428,3 +1429,36 @@ def test_query_by_related_object_that_does_not_load_raises_shape_error(
 
     with pytest.raises(ResponseShapeError):
         Dispatch.filter(sender=user)
+
+
+def test_a_shallow_copy_changes_and_saves_apart_from_its_original(
+    requests_mock: Any,
+) -> None:
+    """An assignment to the copy neither reaches the original nor its save."""
+    patch = requests_mock.patch("https://mocked.example/users/1/", json={})
+    original = MockedUser(json={"id": 1, "name": "a"}, write_mode="lazy")
+    clone = copy.copy(original)
+
+    clone.name = "b"
+    original.name = "c"
+
+    assert (original.name, clone.name) == ("c", "b")
+    assert (original.json["name"], clone.json["name"]) == ("c", "b")
+    clone.save()
+    assert patch.last_request.json() == {"name": "b"}
+    original.save()
+    assert patch.last_request.json() == {"name": "c"}
+    assert patch.call_count == 2
+
+
+def test_a_shallow_copy_of_a_saved_object_keeps_its_original_unchanged(
+    requests_mock: Any,
+) -> None:
+    """A copy's pending assignment is not the original's to send."""
+    patch = requests_mock.patch("https://mocked.example/users/1/", json={})
+    original = MockedUser(json={"id": 1, "name": "a"}, write_mode="lazy")
+
+    copy.copy(original).name = "b"
+    original.save()
+
+    assert not patch.called

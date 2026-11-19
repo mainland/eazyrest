@@ -6018,6 +6018,33 @@ class JSONObject:
         finally:
             self._is_being_built = False
 
+    def __copy__(self) -> Self:
+        """Return a copy that changes and saves apart from this object.
+
+        The copy has the same JSON, pending updates, cached values, snapshots,
+        and prefetched related objects, each in a container of its own, so an
+        assignment to one object is neither read from nor sent by the other.
+        The containers are copied one level deep, as ``copy.copy()`` copies a
+        dict, so the related objects, and any value that was changed in place,
+        are shared. Use ``copy.deepcopy()`` to share nothing.
+
+        Returns:
+            A new object of the same class.
+        """
+        copied = object.__new__(type(self))
+        state = vars(copied)
+        state.update(vars(self))
+        for name in (
+            "_pending_updates",
+            "_field_cache",
+            "_field_snapshots",
+            "_prefetched_related",
+        ):
+            state[name] = dict(state[name])
+        if state["_json"] is not None:
+            state["_json"] = dict(state["_json"])
+        return copied
+
     def __eq__(self, other: object) -> bool:
         """Return whether another object is this object's resource.
 

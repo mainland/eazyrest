@@ -438,6 +438,11 @@ nothing or the wrong fields. Assign fields to change an object, and copy the
 payload with `copy.deepcopy()` before changing a value in it for another
 purpose.
 
+`copy.copy()` of an object gives an object that changes and saves apart from
+the original: an assignment to one is neither read from nor sent by the other.
+The copy shares the related objects, and any value that was changed in place,
+as a shallow copy does. `copy.deepcopy()` shares nothing.
+
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
 eazyrest does not convert or a float that is not finite, raises

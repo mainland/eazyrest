@@ -524,6 +524,9 @@ describe them further.
   text is empty, and an item whose text holds a comma do. A set is sent in
   sorted order. Join no values yourself: the guide advised that for
   django-filter's lookups, and it is no longer needed.
+- `copy.copy()` of a model object gives an object that owns its pending
+  updates, cached values, and JSON, where it shared them with the original, so
+  an assignment to the copy was sent by the original's `save()`.
 - A list of relations, such as `list[User]`, reads an item that the server
   embeds without a key as an object whose `pk` is `None`, as a single relation
   does. It raised `FieldConversionError` with a message about writing a
