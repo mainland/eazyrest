@@ -669,6 +669,37 @@ def test_a_list_lookup_refuses_a_value_that_its_field_takes_whole(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("suffix", ["in", "range"])
+def test_get_or_create_refuses_a_value_that_a_list_lookup_cannot_take(
+    suffix: str, requests_mock: Any
+) -> None:
+    """The value is not read into a list, so the lookup refuses it as such."""
+    requests_mock.get("https://lookups.example/windows/", json=[])
+    created = requests_mock.post("https://lookups.example/windows/", json={})
+
+    with pytest.raises(ValueError, match=rf"span__{suffix}.*Pass a list"):
+        Window.get_or_create(params={"id": 1, f"span__{suffix}": Span(1, 2)})
+
+    assert requests_mock.call_count == 0
+    assert created.call_count == 0
+
+
+def test_get_or_create_sends_one_value_that_its_field_takes_whole(
+    requests_mock: Any,
+) -> None:
+    """An iterable value of a field's own conversion is one operand."""
+    requests_mock.get(
+        "https://lookups.example/windows/", json=[{"id": 1, "name": "x"}]
+    )
+
+    Window.get_or_create(id=1, span__exact=Span(1, 2))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "id": ["1"],
+        "span__exact": ["1-2"],
+    }
+
+
 def test_a_list_lookup_takes_a_list_of_values_that_its_field_takes_whole(
     requests_mock: Any,
 ) -> None:

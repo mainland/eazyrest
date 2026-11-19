@@ -8148,11 +8148,11 @@ class JSONObject:
 
     @classmethod
     def _is_whole_lookup_value(cls, name: str, value: Any) -> bool:
-        """Return whether a lookup of several values is given one value.
+        """Return whether a lookup is given one value that its field takes.
 
         Args:
-            name: Name of a parameter that ends in ``__in`` or ``__range`` and
-                is no field's own name.
+            name: Name of a parameter that is no field's own name, such as
+                ``span__in`` or ``span__exact``.
             value: Query value.
 
         Returns:
@@ -9440,12 +9440,15 @@ class JSONObject:
         _query_request_options(request_options)
         _request_options(request_options)
         # The lookup and the creation each iterate a collection value, so read
-        # a single-pass iterable, such as a generator, only once.
+        # a single-pass iterable, such as a generator, only once. A value that
+        # the field's conversion takes whole is no collection of values, and
+        # the query reads it itself.
         kwargs = {
             name: list(value)
             if isinstance(value, Iterable)
             and not isinstance(value, (Collection, str, bytes, Mapping))
             and not cls._is_whole_query_value(name, value)
+            and not cls._is_whole_lookup_value(name, value)
             else value
             for name, value in _query_params(params, kwargs).items()
         }
