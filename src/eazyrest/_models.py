@@ -2611,24 +2611,6 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
     return named[0]
 
 
-def _hyperlinked_model(analyzed: AnalyzedType) -> type[Any] | None:
-    """Return the model of a hyperlinked relation, or a collection of them.
-
-    Args:
-        analyzed: Analyzed type of a field, or of an item of one.
-
-    Returns:
-        The related model if ``analyzed`` is a ``Hyperlinked()`` relation, also
-        optional or as the item of a collection, and otherwise ``None``.
-    """
-    analyzed = _unwrap_optional_type(analyzed)
-    if isinstance(analyzed, CollectionType):
-        analyzed = _unwrap_optional_type(analyzed.item_type)
-    if isinstance(analyzed, RelatedType) and analyzed.hyperlinked:
-        return analyzed.model_type
-    return None
-
-
 def _json_identity(owner: type[Any], field: str, value: Any) -> str:
     """Return a text that tells a JSON value from every other.
 
@@ -7726,15 +7708,8 @@ class JSONObject:
                 else collection.item_type
             )
             conversion = _query_type(analyzed)
-            linked = _hyperlinked_model(analyzed)
 
             def convert(item: Any) -> Any:
-                if linked is not None and not isinstance(item, JSONObject):
-                    # A filter on a hyperlinked relation takes the key as a
-                    # server's filter reads it, such as the text "2", and does
-                    # not build it.
-                    item = linked._to_json(item, linked._pk.analyzed_type)
-                    return _query_value(item)
                 return _query_value(cls._to_json(item, conversion))
 
             guard = _converting(cls, name)

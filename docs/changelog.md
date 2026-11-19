@@ -476,12 +476,11 @@ describe them further.
   in `post.owner = 7`, `create(owner=7)`, or `filter(owner=7)`, is built by the
   same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
   key, and read a mapping back as an embedded object, they now raise
-  `FieldConversionError` naming the relation field before any request. A filter
-  on a `Hyperlinked()` relation still sends a key as it is given. A write of a
-  `Hyperlinked()` relation checks the object it is given as the others do, so
-  an object of a subclass that redeclares the key field with another type is
-  refused when it is written, as it already was in a query, where `v1.0.0a5`
-  wrote its URL.
+  `FieldConversionError` naming the relation field before any request, in a
+  filter on a `Hyperlinked()` relation too. A write of a `Hyperlinked()`
+  relation checks the object it is given as the others do, so an object of a
+  subclass that redeclares the key field with another type is refused when it
+  is written, as it already was in a query, where `v1.0.0a5` wrote its URL.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A key that model would not read, such as `"7"` or `true` for an

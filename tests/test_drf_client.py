@@ -651,10 +651,12 @@ def test_hyperlinked_relation_reads_and_writes_urls(api: API) -> None:
 
     assert Permission.objects.get(pk=stored.pk).content_type_id == user_type
 
-    for value in (user_type, str(user_type), ContentTypeModel(id=user_type)):
+    for value in (user_type, ContentTypeModel(id=user_type)):
         results = list(HyperPermissionModel.filter(content_type=value))
         assert stored.pk in {result.pk for result in results}
         assert all(result.content_type.pk == user_type for result in results)
+    with pytest.raises(eazyrest.FieldConversionError, match="content_type"):
+        list(HyperPermissionModel.filter(content_type=str(user_type)))
 
 
 def test_stock_hyperlinked_serializer_with_its_key(api: API) -> None:

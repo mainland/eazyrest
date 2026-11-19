@@ -681,15 +681,19 @@ def test_a_bare_key_that_builds_is_written_as_the_wire_key(
     assert requests_mock.last_request.qs == {"owner": ["7"]}
 
 
-@pytest.mark.parametrize("key", [7, "7"])
-def test_a_filter_on_a_hyperlinked_relation_sends_a_key_as_given(
-    key: Any, requests_mock: Any
+def test_a_filter_on_a_hyperlinked_relation_builds_a_key_as_other_filters_do(
+    requests_mock: Any,
 ) -> None:
-    """A server's filter reads the key's text, so it is not built."""
+    """A key in its field's type is sent, and one given as text is refused."""
     requests_mock.get("https://related.example/notes/", json=[])
 
-    list(Note.filter(author=key))
-    list(Note.filter(params={"author": [key]}))
+    list(Note.filter(author=7))
+    list(Note.filter(params={"author": [7]}))
+    for key in ("7", True, 1.5):
+        with pytest.raises(FieldConversionError, match=r"Note\.author"):
+            list(Note.filter(author=key))
+        with pytest.raises(FieldConversionError, match=r"Note\.author"):
+            list(Note.filter(author=[7, key]))
 
     assert [r.qs for r in requests_mock.request_history] == [
         {"author": ["7"]},

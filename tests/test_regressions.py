@@ -304,7 +304,7 @@ def test_query_rejects_colliding_read_names(requests_mock: Any) -> None:
     assert not requests_mock.called
 
 
-@pytest.mark.parametrize("value", [2, "2", MockedUser(id=2)])
+@pytest.mark.parametrize("value", [2, MockedUser(id=2)])
 def test_hyperlinked_queries_use_primary_keys(
     requests_mock: Any, value: Any
 ) -> None:
@@ -318,6 +318,18 @@ def test_hyperlinked_queries_use_primary_keys(
     list(MockedDoc.filter(linked=value))
 
     assert query.last_request.qs == {"linked": ["2"]}
+
+
+def test_hyperlinked_queries_refuse_a_key_given_as_text(
+    requests_mock: Any,
+) -> None:
+    """A key is built as a relation's model builds it, whatever the wire."""
+    query = requests_mock.get("https://mocked.example/docs/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"MockedDoc\.linked"):
+        list(MockedDoc.filter(linked="2"))
+
+    assert not query.called
 
 
 def test_non_field_queries_encode_model_keys(requests_mock: Any) -> None:
