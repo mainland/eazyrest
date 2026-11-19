@@ -3079,13 +3079,16 @@ class RelatedCollection(Iterable[T]):
         Yields:
             Each related object, created from the next raw JSON value.
         """
-        for value in self._values:
-            yield self._owner._create_related(
-                value,
-                self._related_type,
-                field=self._field,
-                hyperlinked=self._hyperlinked,
-            )
+        for index, value in enumerate(self._values):
+            try:
+                yield self._owner._create_related(
+                    value,
+                    self._related_type,
+                    field=self._field,
+                    hyperlinked=self._hyperlinked,
+                )
+            except FieldConversionError as err:
+                raise _at_position(err, index) from err.__cause__
 
 
 def _declared_fields(
@@ -4685,6 +4688,32 @@ def _at_key(where: str) -> Generator[None, None, None]:
         raise ValueError(f"{where}: {err}") from err
 
 
+def _at_position(err: FieldConversionError, index: int) -> Exception:
+    """Add an item's position to the cause of a field's conversion error.
+
+    The error already names the field, so the position goes after it, and the
+    field is named once.
+
+    Args:
+        err: Error that converting an item of a collection field raised.
+        index: The item's position.
+
+    Returns:
+        ``err`` if it has no cause to carry the position. Otherwise an error
+        for the same field whose cause has the position before its message.
+    """
+    cause = err.__cause__
+    if not isinstance(cause, (TypeError, ValueError)):
+        return err
+    detail = str(err).removeprefix(f"{err.model.__name__}.{err.field}: ")
+    kind = TypeError if isinstance(cause, TypeError) else ValueError
+    indexed = kind(f"[{index}]: {detail}")
+    indexed.__cause__ = cause
+    error = FieldConversionError(err.model, err.field, indexed)
+    error.__cause__ = indexed
+    return error
+
+
 def _each_item(
     convert: Callable[[Any], Any], items: Iterable[Any]
 ) -> list[Any]:
@@ -4713,9 +4742,10 @@ def _each_item(
         # The except clauses read index.
         for index, item in enumerate(items):  # noqa: B007
             converted.append(convert(item))
-    except FieldConversionError:
-        # It names its field, and a second conversion would name it again.
-        raise
+    except FieldConversionError as err:
+        # It names its field, and a second conversion would name it again, so
+        # the position goes into its message.
+        raise _at_position(err, index) from err.__cause__
     except TypeError as err:
         if _passes_through(err):
             raise

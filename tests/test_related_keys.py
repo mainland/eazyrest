@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 import pytest
@@ -48,6 +49,16 @@ class Post(RelatedBase):
     id: int
     owner: User
     readers: list[User]
+
+
+@json_object
+class Feed(RelatedBase):
+    """Model whose relations are read lazily and by a bulk hook."""
+
+    class_url = "/feeds/"
+
+    id: int
+    readers: Iterable[User]
 
 
 @json_object
@@ -528,3 +539,22 @@ def test_repr_hides_a_key_that_is_not_a_string_or_an_integer(key: Any) -> None:
 def test_repr_shows_a_missing_key_as_none() -> None:
     """A key that the JSON does not give is not hidden."""
     assert repr(User(json={"id": None})) == "<User id=None>"
+
+
+def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
+    """The index says which item of the server's list is wrong."""
+    post = Post(json={"id": 1, "owner": 2, "readers": [3, "x", 4]})
+    feed = Feed(json={"id": 1, "readers": [3, 4, "x"]})
+
+    with pytest.raises(FieldConversionError) as eager:
+        _ = post.readers
+    with pytest.raises(FieldConversionError) as lazy:
+        list(feed.readers)
+
+    assert str(eager.value) == (
+        "Post.readers: [1]: The key must be a JSON int, not a str"
+    )
+    assert str(lazy.value) == (
+        "Feed.readers: [2]: The key must be a JSON int, not a str"
+    )
+    assert isinstance(eager.value.__cause__, TypeError)
