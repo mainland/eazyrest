@@ -738,7 +738,10 @@ is of a subclass that chose another key or redeclared the key field with
 another type, raises `FieldConversionError` naming the field, as it does in a
 query. An object known only by its URL is not loaded to check its key, so its
 class decides: one of a subclass that redeclares the key field with another
-type raises `FieldConversionError` too.
+type raises `FieldConversionError` too, unless the related model builds every
+value of that type. A `NewType` or an `Annotated` of the related model's key
+type, and a `Literal` each of whose members the related model builds, are
+accepted without a load.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps

@@ -2047,13 +2047,63 @@ def _check_related_key(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
+_KEY_TYPES_BUILT: weakref.WeakKeyDictionary[
+    type, weakref.WeakKeyDictionary[type, bool]
+] = weakref.WeakKeyDictionary()
+"""Whether a model builds every key of a subclass's key type, by class pair."""
+
+
+def _builds_every_key_of(model_type: type[Any], sub_type: type[Any]) -> bool:
+    """Return whether a model builds every value of a subclass's key type.
+
+    A key of ``int`` or ``str``, inside ``NewType`` and ``Annotated``, is built
+    from every value of its JSON type. A ``Literal`` key is built from each of
+    its members that the model's constructor builds. A key under a registered
+    conversion, or of any other type, is not decided.
+
+    Args:
+        model_type: Model that a relation names, with the constructor.
+        sub_type: Subclass that redeclares the key field.
+
+    Returns:
+        Whether every value that ``sub_type`` allows as a key is built by
+        ``model_type``'s key constructor.
+
+    Raises:
+        Exception: If a key's type cannot be resolved yet, whatever resolving
+            it raises.
+    """
+    key = _pk_property_of(sub_type)
+    related_key = _pk_property_of(model_type)
+    if key is None or related_key is None:
+        return False
+    sub_native = _native_key_values(sub_type, key.analyzed_type)
+    related_native = _native_key_values(model_type, related_key.analyzed_type)
+    if sub_native is None or related_native is None:
+        return False
+    sub_kinds, sub_members = sub_native
+    kinds, members = related_native
+    if sub_members is None:
+        # Every int or str is a key of the subclass, so the related model must
+        # read every one.
+        return members is None and sub_kinds <= kinds
+    for _, wire in sub_members:
+        try:
+            _build_key(object.__new__(model_type), wire)
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def _check_related_key_type(value: JSONObject, model_type: type[Any]) -> None:
     """Refuse a related object whose class redeclares the key's type.
 
     The object's key is not known without a request, so its class decides: a
     subclass that redeclares the key field with another type has keys that
     ``model_type`` may not read, which a query on the object would find out by
-    loading it.
+    loading it. A redeclared type whose every value ``model_type`` builds, such
+    as a ``NewType`` or an ``Annotated`` of its key's type, or a ``Literal`` of
+    values that it builds, is accepted without a load.
 
     Args:
         value: Object written as a relation whose class is ``model_type`` or a
@@ -2062,8 +2112,8 @@ def _check_related_key_type(value: JSONObject, model_type: type[Any]) -> None:
 
     Raises:
         TypeError: If the type of the key field of ``value``'s class is not the
-            type of ``model_type``'s. The field's name is added where the
-            conversion runs.
+            type of ``model_type``'s, and ``model_type`` does not build every
+            value of it. The field's name is added where the conversion runs.
         Exception: If a key's type cannot be resolved yet, whatever resolving
             it raises.
     """
@@ -2075,11 +2125,17 @@ def _check_related_key_type(value: JSONObject, model_type: type[Any]) -> None:
         and key is not related_key
         and key.analyzed_type != related_key.analyzed_type
     ):
-        raise TypeError(
-            f"A relation to {model_type.__name__} cannot take an object of "
-            f"{type(value).__name__}, which redeclares the type of the "
-            "primary key"
+        built = _KEY_TYPES_BUILT.setdefault(
+            model_type, weakref.WeakKeyDictionary()
         )
+        if type(value) not in built:
+            built[type(value)] = _builds_every_key_of(model_type, type(value))
+        if not built[type(value)]:
+            raise TypeError(
+                f"A relation to {model_type.__name__} cannot take an object "
+                f"of {type(value).__name__}, which redeclares the type of the "
+                "primary key"
+            )
 
 
 def _check_prefetched_class(

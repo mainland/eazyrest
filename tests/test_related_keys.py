@@ -1316,3 +1316,175 @@ def test_a_relation_refuses_a_mapping_that_a_key_conversion_would_encode(
 
     assert not posted.called
     assert requests_mock.call_count == 0
+
+
+UserNumber = NewType("UserNumber", int)
+
+
+@json_object
+class NumberedUser(User):
+    """Subclass whose key is a ``NewType`` of the related model's key."""
+
+    id: UserNumber
+
+
+@json_object
+class NotedUser(User):
+    """Subclass whose key is an ``Annotated`` of the related model's key."""
+
+    id: Annotated[int, "a note"]
+
+
+@json_object
+class ChosenUser(User):
+    """Subclass whose key is a ``Literal`` of keys that ``User`` builds."""
+
+    id: Literal[1, 2]
+
+
+@json_object
+class LabeledUser(User):
+    """Subclass whose key is a ``Literal`` that ``User`` cannot build."""
+
+    id: Literal["a"]  # type: ignore[assignment]
+
+
+@json_object
+class Seat(RelatedBase):
+    """Model keyed by a ``Literal``."""
+
+    class_url = "/seats/"
+
+    id: Literal[1, 2, 3]
+
+
+@json_object
+class AnySeat(Seat):
+    """Subclass whose key allows more than ``Seat``'s."""
+
+    id: Literal[1, 2, 3, 4]  # type: ignore[assignment]
+
+
+@json_object
+class FrontSeat(Seat):
+    """Subclass whose key is a ``Literal`` of some of ``Seat``'s members."""
+
+    id: Literal[1, 2]
+
+
+@json_object
+class IntSeat(Seat):
+    """Subclass whose key is any int."""
+
+    id: int  # type: ignore[assignment]
+
+
+@json_object
+class NumberedNote(RelatedBase):
+    """Models that name each kind of user by a hyperlink."""
+
+    class_url = "/numbered-notes/"
+
+    id: int
+    numbered: Annotated[NumberedUser, Hyperlinked()]
+    noted: Annotated[NotedUser, Hyperlinked()]
+    chosen: Annotated[ChosenUser, Hyperlinked()]
+    labeled: Annotated[LabeledUser, Hyperlinked()]
+    any_seat: Annotated[AnySeat, Hyperlinked()]
+    front_seat: Annotated[FrontSeat, Hyperlinked()]
+    int_seat: Annotated[IntSeat, Hyperlinked()]
+
+
+@json_object
+class SeatNote(RelatedBase):
+    """Model that names a seat by a hyperlink."""
+
+    class_url = "/seat-notes/"
+
+    id: int
+    seat: Annotated[Seat, Hyperlinked()]
+
+
+def _by_url(field: str, path: str) -> Any:
+    """Return an object that is known only by its URL.
+
+    Args:
+        field: Field of ``NumberedNote`` that names it.
+        path: Path of its URL.
+
+    Returns:
+        The object.
+    """
+    url = f"https://related.example/{path}/"
+    return getattr(NumberedNote(json={"id": 1, field: url}), field)
+
+
+@pytest.mark.parametrize(
+    ("field", "path"),
+    [
+        ("numbered", "users/1"),
+        ("noted", "users/1"),
+        ("chosen", "users/1"),
+    ],
+)
+def test_a_hyperlinked_write_takes_a_key_type_that_the_related_model_builds(
+    field: str, path: str, requests_mock: Any
+) -> None:
+    """A NewType, an Annotated, or a Literal of keys is written unloaded."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    other = _by_url(field, path)
+
+    note = Note.create(id=2, author=other)
+
+    assert posted.last_request.json() == {
+        "id": 2,
+        "author": "https://related.example/users/1/",
+    }
+    assert note is not None
+    assert requests_mock.call_count == 1
+
+
+def test_a_hyperlinked_write_refuses_a_key_type_that_the_model_cannot_build(
+    requests_mock: Any,
+) -> None:
+    """A Literal with a member that the related model refuses stays refused."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    other = _by_url("labeled", "users/a")
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=2, author=other)
+
+    assert not posted.called
+
+
+@pytest.mark.parametrize(
+    ("field", "accepted"), [("front_seat", True), ("any_seat", False)]
+)
+def test_a_hyperlinked_write_checks_each_member_of_a_literal_key(
+    field: str, accepted: bool, requests_mock: Any
+) -> None:
+    """A subclass's Literal is accepted only if every member is built."""
+    posted = requests_mock.post("https://related.example/seat-notes/", json={})
+    other = _by_url(field, "seats/1")
+
+    if accepted:
+        SeatNote.create(id=2, seat=other)
+        assert posted.called
+    else:
+        with pytest.raises(FieldConversionError, match=r"SeatNote\.seat"):
+            SeatNote.create(id=2, seat=other)
+        assert not posted.called
+
+
+def test_a_hyperlinked_write_refuses_a_wider_key_than_a_literal_builds(
+    requests_mock: Any,
+) -> None:
+    """An int key is not built by a model whose key is a Literal."""
+    posted = requests_mock.post("https://related.example/seat-notes/", json={})
+
+    other = _by_url("int_seat", "seats/1")
+
+    with pytest.raises(FieldConversionError, match=r"SeatNote\.seat"):
+        SeatNote.create(id=2, seat=other)
+
+    assert not posted.called
