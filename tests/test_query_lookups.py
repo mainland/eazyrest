@@ -6,7 +6,15 @@ import dataclasses
 import datetime
 import enum
 from collections.abc import Iterator, Mapping
-from typing import Annotated, Any, ClassVar, NamedTuple, Optional, TypedDict
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    NamedTuple,
+    NewType,
+    Optional,
+    TypedDict,
+)
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -515,6 +523,34 @@ def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
         list(Placed.filter(name__exact=object()))
 
     assert requests_mock.call_count == 0
+
+
+Pair = NewType("Pair", tuple[int, int])
+
+
+@json_object
+class Paired(LookupBase):
+    """Model with a field that is a ``NewType`` of a structure."""
+
+    class_url = "/paired/"
+
+    id: int
+    pair: Pair
+    maybe: Optional[Pair]  # noqa: UP045
+
+
+@pytest.mark.parametrize("field", ["pair", "maybe"])
+def test_a_value_lookup_on_a_new_type_of_a_structure_is_sent_as_given(
+    field: str, requests_mock: Any
+) -> None:
+    """A ``NewType`` writes the structure that it names."""
+    requests_mock.get("https://lookups.example/paired/", json=[])
+
+    list(Paired.filter(params={f"{field}__exact": "1,2"}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        f"{field}__exact": ["1,2"]
+    }
 
 
 @json_object

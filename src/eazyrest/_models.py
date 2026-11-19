@@ -7852,20 +7852,25 @@ class JSONObject:
             name: Name of a JSON-backed field.
 
         Returns:
-            The field's analyzed type, inside any optional, if it is a
-            fixed-length tuple, a named tuple, a dataclass, a ``TypedDict``, or
-            a mapping, and not a collection of items, and no conversion of the
-            model converts it instead. ``None`` for any other field.
+            The field's analyzed type, inside any optional or ``NewType``, if
+            it is a fixed-length tuple, a named tuple, a dataclass, a
+            ``TypedDict``, or a mapping, and not a collection of items, and no
+            conversion of the model converts it instead. ``None`` for any other
+            field.
         """
         descriptor = getattr(cls, name)
         if cls._query_collection(descriptor) is not None:
             return None
         table = _table_of(cls)
         analyzed = _analyzed_in_use(cls, descriptor)
-        analyzed = _unwrap_optional_type(analyzed)
-        if _class_entry(analyzed, table) is not None:
-            # The conversion decides what the field writes.
-            return None
+        while True:
+            analyzed = _unwrap_optional_type(analyzed)
+            if _class_entry(analyzed, table) is not None:
+                # The conversion decides what the field writes.
+                return None
+            if not isinstance(analyzed, NewTypeType):
+                break
+            analyzed = analyzed.inner
         if isinstance(
             analyzed,
             (
