@@ -6608,10 +6608,13 @@ class JSONObject:
                             return wire_key
                     with _of_the_relation():
                         url = value.absolute_url
-                    if api is not None:
-                        # The same URL as a string is checked, so the write
-                        # does not save what reading the field refuses.
-                        _checked_hyperlink(api, url)
+                    # The same URL as a string is checked, against the same
+                    # API, so the write does not save what reading the field
+                    # refuses.
+                    _check_api_attribute(model_type, UsageError)
+                    _checked_hyperlink(
+                        model_type.api if api is None else api, url
+                    )
                     return url
                 if isinstance(value, str):
                     # A write takes what reading the field accepts, which is a

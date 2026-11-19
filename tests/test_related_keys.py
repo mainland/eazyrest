@@ -1659,6 +1659,31 @@ def test_a_hyperlinked_object_is_checked_against_the_api_of_its_owner(
     assert requests_mock.call_count == 1
 
 
+def test_a_hyperlinked_object_is_checked_against_the_related_models_api(
+    requests_mock: Any,
+) -> None:
+    """An owner without ``api=`` refuses the URL that reading it refuses."""
+    patched = requests_mock.patch("https://related.example/notes/1/", json={})
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+    foreign = User(id=3, api=TENANT)
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = foreign
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=4, author=foreign)
+    note.author = User(id=3)
+    note.save()
+
+    assert patched.last_request.json() == {
+        "author": "https://related.example/users/3/"
+    }
+    assert posted.call_count == 0
+
+
 def test_create_checks_a_hyperlink_against_the_api_it_is_given(
     requests_mock: Any,
 ) -> None:
