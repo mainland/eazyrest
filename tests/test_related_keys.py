@@ -1804,3 +1804,50 @@ def test_a_lookup_that_compares_no_value_needs_no_type_of_its_field(
     }
     with pytest.raises(NameError):
         list(Waiting.filter(owner__in=[7]))
+
+
+class Number(enum.Enum):
+    """Enum of keys that the related model builds."""
+
+    ONE = 1
+    TWO = 2
+
+
+@json_object
+class OptionalUser(User):
+    """Subclass whose key may be missing."""
+
+    id: int | None  # type: ignore[assignment]
+
+
+@json_object
+class EnumUser(User):
+    """Subclass whose key is an enum of integers."""
+
+    id: Number  # type: ignore[assignment]
+
+
+@json_object
+class VariantNote(RelatedBase):
+    """Model that names subclasses by hyperlinks."""
+
+    class_url = "/variant-notes/"
+
+    id: int
+    optional: Annotated[OptionalUser, Hyperlinked()]
+    number: Annotated[EnumUser, Hyperlinked()]
+
+
+def test_a_hyperlinked_write_takes_an_optional_key_and_refuses_an_enum(
+    requests_mock: Any,
+) -> None:
+    """An enum is refused though every value builds, as only its class says."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    url = "https://related.example/users/1/"
+    variants = VariantNote(json={"id": 1, "optional": url, "number": url})
+
+    Note.create(id=2, author=variants.optional)
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=3, author=variants.number)
+
+    assert posted.call_count == 1
