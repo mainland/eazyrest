@@ -3326,6 +3326,30 @@ def _checked_hyperlink(api: _AnyAPI, url: str) -> str:
     return absolute
 
 
+def _hyperlink_api(
+    model_type: type[Any], owner_api: _AnyAPI | None
+) -> _AnyAPI:
+    """Return the API that checks a hyperlinked relation's URLs.
+
+    Reading the field, writing it, and prefetching it check a URL against the
+    same API, so the three accept the same URLs.
+
+    Args:
+        model_type: Model that the relation's field names.
+        owner_api: The API that the owner reads with, or ``None`` for an owner
+            that has none of its own, whose related objects use the model's.
+
+    Returns:
+        ``owner_api``, or the related model's API if there is none.
+
+    Raises:
+        UsageError: If a class in the MRO of ``model_type`` had ``api``
+            assigned.
+    """
+    _check_api_attribute(model_type, UsageError)
+    return model_type.api if owner_api is None else owner_api
+
+
 class RelatedCollection(Iterable[T]):
     """Lazy, single-pass iterable of related objects backed by JSON values.
 
@@ -6255,7 +6279,7 @@ class JSONObject:
                     "Hyperlinked field values must be URLs or objects, got "
                     f"{type(arg).__name__}"
                 )
-            url = _checked_hyperlink(ty.api if api is None else api, arg)
+            url = _checked_hyperlink(_hyperlink_api(ty, api), arg)
             if field is not None and field in self._prefetched_related:
                 prefetched = self._prefetched_related[field].get(
                     _canonical_url(url)
@@ -6556,38 +6580,24 @@ class JSONObject:
             case NewTypeType(_, inner_type):
                 return cls._to_json(value, inner_type, api=api)
             case RelatedType(model_type, hyperlinked=True):
+                # A hyperlink writes a URL, never a key. An object's class must
+                # be one whose objects the relation reads, and its URL, like a
+                # string, must be one that reading the field accepts.
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
                     _check_related_key(value, model_type)
-                    if value._key_is_unknown():
-                        # An object known only by its URL needs no key, and
-                        # checking one would load it. Its class says whether
-                        # its key could be the related model's.
-                        _check_related_key_type(value, model_type)
-                    else:
-                        _related_wire_key(value, model_type)
+                    _check_related_key_type(value, model_type)
                     with _of_the_relation():
                         url = value.absolute_url
-                    # The same URL as a string is checked, against the same
-                    # API, so the write does not save what reading the field
-                    # refuses.
-                    _check_api_attribute(model_type, UsageError)
-                    _checked_hyperlink(
-                        model_type.api if api is None else api, url
+                elif isinstance(value, str):
+                    url = value
+                else:
+                    raise TypeError(
+                        "Hyperlinked field values must be objects or URLs, "
+                        f"got {type(value).__name__}"
                     )
-                    return url
-                if isinstance(value, str):
-                    # A write takes what reading the field accepts, which is a
-                    # URL on an origin that the related model's API allows.
-                    _check_api_attribute(model_type, UsageError)
-                    if api is None:
-                        api = model_type.api
-                    _checked_hyperlink(api, value)
-                    return value
-                raise TypeError(
-                    "Hyperlinked field values must be objects or URLs, got "
-                    f"{type(value).__name__}"
-                )
+                _checked_hyperlink(_hyperlink_api(model_type, api), url)
+                return url
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
@@ -9049,7 +9059,7 @@ class JSONObject:
             TypeError: If the hook returns an object that is not a
                 ``model_type``.
         """
-        check_api = model_type.api if query.api is None else query.api
+        check_api = _hyperlink_api(model_type, query.api)
         urls: dict[str, str] = {}
         for value in values:
             if not isinstance(value, str):

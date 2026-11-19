@@ -832,6 +832,49 @@ def test_a_hyperlinked_relation_refuses_a_subclass_that_redeclares_the_key(
     assert not posted.called
 
 
+def test_a_hyperlinked_object_is_refused_by_its_class_whatever_its_key(
+    requests_mock: Any,
+) -> None:
+    """A subclass of another key type is refused as a class, not a key."""
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+
+    with pytest.raises(
+        FieldConversionError, match="redeclares the type of the primary key"
+    ):
+        note.author = SubUser(id="abc")
+    with pytest.raises(
+        FieldConversionError, match="has primary key None, so it has no URL"
+    ):
+        note.author = User(json={})
+    assert requests_mock.call_count == 0
+
+
+def test_a_hyperlinked_object_that_loaded_an_unreadable_key_writes_its_url(
+    requests_mock: Any,
+) -> None:
+    """Reading the field accepts the URL, so writing it back does too."""
+    patch = requests_mock.patch("https://related.example/notes/1/", json={})
+    requests_mock.get("https://related.example/users/3/", json={"id": "x"})
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+    other = Note(
+        json={"id": 2, "author": "https://related.example/users/3/"}
+    ).author
+    assert other.json == {"id": "x"}
+
+    note.author = other
+    note.save()
+
+    assert patch.last_request.json() == {
+        "author": "https://related.example/users/3/"
+    }
+
+
 @json_object(pk="slug")
 class Badge(User):
     """Subclass that chooses another key field, which holds an integer."""

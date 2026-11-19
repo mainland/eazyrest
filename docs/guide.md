@@ -736,18 +736,19 @@ relations raises `TypeError` when the class is decorated. Declare a `list` or a
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 
-Writing a `Hyperlinked()` relation checks the object as a relation written by
-key is checked. An object that the relation's model would not read, because it
-is of a subclass that chose another key or redeclared the key field with
-another type, raises `FieldConversionError` naming the field, as it does in a
-query. An object known only by its URL is not loaded to check its key, so its
-class decides: one of a subclass that redeclares the key field with another
-type raises `FieldConversionError` too, unless that type is accepted without a
-load. Those are a key type that is an `int` or a `str`, or a `NewType`, an
-`Annotated`, or an `Optional` of one, when the related model's key reads every
-value of that JSON type, and a `Literal` each of whose members the related
-model builds. A subclass keyed by a plain `int` is accepted for a model keyed
-by `NewType("UID", int)`. A key type that is an enum, or that a registered
+Writing a `Hyperlinked()` relation checks the object's class as a relation
+written by key is checked. An object that the relation's model would not read,
+because it is of a subclass that chose another key or redeclared the key field
+with another type, raises `FieldConversionError` naming the field, as it does
+in a query. The write sends the object's URL, so it neither loads the object
+nor builds its key, and the class decides whether or not the key is known: one
+of a subclass that redeclares the key field with another type raises
+`FieldConversionError`, unless that type is accepted without a load. Those are
+a key type that is an `int` or a `str`, or a `NewType`, an `Annotated`, or an
+`Optional` of one, when the related model's key reads every value of that JSON
+type, and a `Literal` each of whose members the related model builds. A
+subclass keyed by a plain `int` is accepted for a model keyed by
+`NewType("UID", int)`. A key type that is an enum, or that a registered
 conversion owns, is refused even if the related model builds every value of it.
 
 A class that overrides `url` writes that URL whatever its key. One that formats

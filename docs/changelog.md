@@ -479,18 +479,20 @@ describe them further.
   `FieldConversionError` naming the relation field before any request, in a
   filter on a `Hyperlinked()` relation too, and in the `__in` and `__exact`
   lookups of a relation, which sent a bare value as it was given. A write of a
-  `Hyperlinked()` relation checks the object it is given as the others do, so
-  an object of a subclass that redeclares the key field with another type is
-  refused when it is written, as it already was in a query, where `v1.0.0a5`
-  wrote its URL. An object known only by its URL is refused by its class,
-  without a load, unless its key type is an `int` or a `str`, or a `NewType`,
-  an `Annotated`, or an `Optional` of one, that the related model's key reads
-  for every value of that JSON type, or a `Literal` of keys that the model
-  builds. A URL written as a string is checked as a read checks it, against the
-  API that the owner reads with, so one on an origin that API does not allow
-  raises `FieldConversionError` naming the field, where `v1.0.0a5` sent it and
-  the read raised. The URL of a related object that is written is checked the
-  same way.
+  `Hyperlinked()` relation checks the class of the object it is given, as a
+  query does, so an object of a subclass that redeclares the key field with
+  another type is refused when it is written, as it already was in a query,
+  where `v1.0.0a5` wrote its URL. The check is by class whether or not the
+  object knows its key, and no load or key build is needed, so an object whose
+  loaded key the related model cannot read is written as its URL, which a read
+  of the field accepts. A class is refused unless its key type is an `int` or a
+  `str`, or a `NewType`, an `Annotated`, or an `Optional` of one, that the
+  related model's key reads for every value of that JSON type, or a `Literal`
+  of keys that the model builds. A URL written as a string is checked as a read
+  checks it, against the API that the owner reads with, so one on an origin
+  that API does not allow raises `FieldConversionError` naming the field, where
+  `v1.0.0a5` sent it and the read raised. The URL of a related object that is
+  written is checked the same way.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601
