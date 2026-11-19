@@ -1520,6 +1520,68 @@ def test_schemas_that_cannot_be_embedded_are_refused(
         Late.json_schema()
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$ref": "#/$defs/Point"},
+        {"$ref": "#/$defs/Point/properties/x"},
+        {"items": {"$ref": "#/$defs/Point"}, "$defs": {"Other": {}}},
+        {
+            "$defs": {"Other": {"$ref": "#/$defs/Point"}},
+            "$ref": "#/$defs/Other",
+        },
+        {"$defs": {"a/b": {}}, "$ref": "#/$defs/a~0b"},
+    ],
+    ids=["root", "pointer", "other-definition", "in-definition", "escaped"],
+)
+def test_a_reference_to_a_definition_the_schema_lacks_is_refused(
+    schema: dict[str, Any],
+) -> None:
+    """A reference may name only a definition of the schema itself.
+
+    Otherwise, once embedded, it would resolve to what another conversion
+    defines under that name.
+
+    Args:
+        schema: A schema with a reference to a definition that it lacks.
+    """
+    with pytest.raises(TypeError, match=r"Point|a~0b"):
+        Conversion(decode=lambda v, c: v, encode=lambda v, c: v, schema=schema)
+
+    @json_object
+    class Late(JSONObject):
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            Token: Conversion(
+                decode=lambda v, c: v,
+                encode=lambda v, c: v,
+                schema=lambda cls, mode: schema,
+            )
+        }
+        id: int
+        token: Token
+
+    with pytest.raises(TypeError, match=r"Point|a~0b"):
+        Late.json_schema()
+
+
+def test_a_reference_to_a_definition_of_the_schema_is_allowed() -> None:
+    """A reference, also into a definition or escaped, names one it has."""
+    Conversion(
+        decode=lambda v, c: v,
+        encode=lambda v, c: v,
+        schema={
+            "$defs": {
+                "Point": {"properties": {"x": {"$ref": "#/$defs/a~1b"}}},
+                "a/b": {"type": "integer"},
+            },
+            "properties": {
+                "p": {"$ref": "#/$defs/Point"},
+                "x": {"$ref": "#/$defs/Point/properties/x"},
+            },
+        },
+    )
+
+
 def test_data_that_looks_like_a_reference_is_allowed() -> None:
     """A ``const`` or a property named ``$id`` is not a reference."""
     Conversion(

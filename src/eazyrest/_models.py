@@ -50,13 +50,14 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote, unquote, urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 
 from ._conversion import (
     Conversion,
     _conversion_of,
+    _definition_name,
     _final_supertype,
     _Found,
     _is_instance,
@@ -4327,7 +4328,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         if not isinstance(item, str) or not item.startswith("#/$defs/"):
             return item
         token, slash, rest = item[8:].partition("/")
-        name = unquote(token).replace("~1", "/").replace("~0", "~")
+        name = _definition_name(token)
         if name not in renamed:
             return item
         # A new name only adds a suffix, which needs no escaping.

@@ -33,6 +33,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, NamedTuple, cast
+from urllib.parse import unquote
 
 import isodate
 
@@ -86,14 +87,14 @@ class Conversion:
     of the declared type and the mode, ``"read"`` or ``"write"``, that
     returns it. The default, an empty schema, allows any value.
 
-    ``json_schema()`` embeds the schema in a model's, and moves its
-    ``$defs`` into the model's, so its references may name only its own
-    definitions, as ``#/$defs/Name`` or a pointer into one. A schema with
-    another reference, such as ``#`` for a schema that refers to itself, or
-    with ``$id``, an anchor, or ``$defs`` below its root, raises
-    ``TypeError``, when the conversion is made or, for a function, when
-    ``json_schema()`` calls it. Put such a schema in ``$defs`` and refer to
-    it there."""
+    ``json_schema()`` embeds the schema in a model's, and moves its ``$defs``
+    into the model's, so its references may name only its own definitions, as
+    ``#/$defs/Name`` or a pointer into one. A schema with another reference,
+    such as ``#`` for a schema that refers to itself, or one to a definition
+    that its ``$defs`` lacks, or with ``$id``, an anchor, or ``$defs`` below
+    its root, raises ``TypeError``, when the conversion is made or, for a
+    function, when ``json_schema()`` calls it. Put such a schema in ``$defs``
+    and refer to it there."""
 
     def __post_init__(self) -> None:
         """Check a schema given as a mapping.
@@ -121,20 +122,41 @@ _UNEMBEDDABLE = frozenset(
 )
 
 
-def _check_embeddable(schema: Any, *, root: bool = True) -> None:
+def _definition_name(token: str) -> str:
+    """Return the name of a definition from its token in a reference.
+
+    Args:
+        token: The part of a reference such as ``#/$defs/Cat/properties/name``
+            after ``$defs/`` and before the next ``/``, escaped as a JSON
+            Pointer in a URI fragment.
+
+    Returns:
+        The definition's name, such as ``Cat``.
+    """
+    return unquote(token).replace("~1", "/").replace("~0", "~")
+
+
+def _check_embeddable(
+    schema: Any, *, root: bool = True, defs: Collection[str] = ()
+) -> None:
     """Check that a conversion's schema can be embedded in a model's.
 
     Args:
         schema: The schema, or part of it.
         root: Whether ``schema`` is the whole schema.
+        defs: Names of the definitions in the root's ``$defs``, when ``schema``
+            is not the root.
 
     Raises:
         TypeError: If the schema has ``$id``, an anchor, ``$defs`` below its
-            root, or a reference other than to one of its own definitions.
+            root, or a reference other than to a definition that it has.
     """
+    if root:
+        own = schema.get("$defs") if isinstance(schema, Mapping) else None
+        defs = own if isinstance(own, Mapping) else ()
     if isinstance(schema, list):
         for item in schema:
-            _check_embeddable(item, root=False)
+            _check_embeddable(item, root=False, defs=defs)
         return
     if not isinstance(schema, Mapping):
         return
@@ -157,6 +179,13 @@ def _check_embeddable(schema: Any, *, root: bool = True) -> None:
                 f"A conversion's schema may refer only to its own $defs, as "
                 f"#/$defs/Name, not to {value!r}"
             )
+        if key == "$ref":
+            token = value[8:].partition("/")[0]
+            if _definition_name(token) not in defs:
+                raise TypeError(
+                    f"A conversion's schema refers to {value!r}, which names "
+                    "a definition that its $defs lacks"
+                )
         if key in (
             "properties",
             "patternProperties",
@@ -165,9 +194,9 @@ def _check_embeddable(schema: Any, *, root: bool = True) -> None:
         ):
             if isinstance(value, Mapping):
                 for item in value.values():
-                    _check_embeddable(item, root=False)
+                    _check_embeddable(item, root=False, defs=defs)
             continue
-        _check_embeddable(value, root=False)
+        _check_embeddable(value, root=False, defs=defs)
 
 
 def _decode_uuid(value: Any) -> uuid.UUID:
