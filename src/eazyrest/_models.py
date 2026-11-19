@@ -2863,6 +2863,29 @@ _MISSING = object()
 """Stands for a key that a JSON object lacks."""
 
 
+def _relation_model(analyzed: AnalyzedType) -> type[Any] | None:
+    """Return the model that a field relates to, if it is a relation.
+
+    Args:
+        analyzed: The field's analyzed type.
+
+    Returns:
+        The model of a relation, or of the items of a collection of relations,
+        inside any optional, or ``None`` for any other field.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    if isinstance(analyzed, CollectionType):
+        analyzed = _unwrap_optional_type(analyzed.item_type)
+    if isinstance(analyzed, RelatedType):
+        return analyzed.model_type
+    return None
+
+
+# The lookups whose operands are values of the field, as Django's lookups of
+# those names compare them.
+_VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
+
+
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
 
@@ -7732,28 +7755,47 @@ class JSONObject:
         return found is not None and _encodes(value, found)
 
     @classmethod
-    def _lookup_relation(cls, name: str) -> tuple[str, type[Any]] | None:
-        """Return the relation that a lookup parameter filters on.
+    def _lookup_field(cls, name: str) -> tuple[str, str] | None:
+        """Return the field that a lookup parameter filters on, and its suffix.
 
         Args:
             name: Name of a parameter that is no field, such as ``owner__in``.
 
         Returns:
-            The name of the field before the first ``__``, and the model of its
-            relation, or ``None`` if the name has no ``__`` or the field is not
-            a relation, or a collection of relations. A query names a
-            hyperlinked relation by its key too.
+            The Python name of the longest JSON-backed field that ``name``
+            starts with, followed by ``__``, and the rest of the name, or
+            ``None`` if no field does. A field named ``type_`` gives
+            ``type___in`` as ``type_`` and ``in``.
         """
-        field, separator, _ = name.partition("__")
-        descriptor = getattr(cls, field, None)
-        if not separator or not isinstance(descriptor, JSONProperty):
-            return None
-        analyzed = _unwrap_optional_type(_analyzed_in_use(cls, descriptor))
-        if isinstance(analyzed, CollectionType):
-            analyzed = _unwrap_optional_type(analyzed.item_type)
-        if isinstance(analyzed, RelatedType):
-            return field, analyzed.model_type
-        return None
+        found = None
+        for field in getattr(cls, "_json_fields", ()):
+            if name.startswith(f"{field}__") and (
+                found is None or len(field) > len(found)
+            ):
+                found = field
+        return None if found is None else (found, name[len(found) + 2 :])
+
+    @classmethod
+    def _query_key(cls, name: str) -> str:
+        """Return the JSON key that a query parameter is sent under.
+
+        Args:
+            name: Name of the parameter, a field, a lookup on a field, or
+                another name.
+
+        Returns:
+            The JSON key of a field, a lookup on a field with the field's name
+            replaced by its JSON key, and any other name as it is.
+        """
+        descriptor = getattr(cls, name, None)
+        if isinstance(descriptor, JSONProperty):
+            return descriptor.json_field
+        found = cls._lookup_field(name)
+        if found is None:
+            return name
+        field = found[0]
+        json_field: str = getattr(cls, field).json_field
+        return json_field + name[len(field) :]
 
     @classmethod
     def _query_items(cls, name: str, value: Any) -> tuple[list[Any], bool]:
@@ -7763,10 +7805,10 @@ class JSONObject:
         even if the conversion writes it as a list. Otherwise an iterable that
         is not a string, bytes, or a mapping is read once and gives an operand
         for each of its items, which the item conversion of a collection field,
-        or the field's conversion, encodes. A parameter that names no field is
-        not converted, except that a model is its primary key, and that a bare
-        value of an ``__in`` or ``__exact`` lookup on a relation is built as
-        the relation's key.
+        or the field's conversion, encodes. A lookup whose suffix compares
+        values of its field, such as ``in`` or ``gte``, encodes its operands as
+        the field's own parameter does. Any other parameter is not converted,
+        except that a model is its primary key.
 
         Args:
             name: Name of the parameter.
@@ -7776,9 +7818,14 @@ class JSONObject:
             The operands, and whether the value gave them as repeated ones.
         """
         descriptor = getattr(cls, name, None)
+        field = name if isinstance(descriptor, JSONProperty) else None
+        found = None if field is not None else cls._lookup_field(name)
+        if found is not None and found[1] in _VALUE_LOOKUPS:
+            field = found[0]
         convert: Callable[[Any], Any]
         guard: contextlib.AbstractContextManager[None]
-        if isinstance(descriptor, JSONProperty):
+        if field is not None:
+            descriptor = getattr(cls, field)
             collection = cls._query_collection(descriptor)
             analyzed = (
                 _analyzed_in_use(cls, descriptor)
@@ -7790,37 +7837,29 @@ class JSONObject:
             def convert(item: Any) -> Any:
                 return _query_value(cls._to_json(item, conversion))
 
-            guard = _converting(cls, name)
+            guard = _converting(cls, field)
         else:
             collection = None
-
-            relation = cls._lookup_relation(name)
-            compares_key = name.partition("__")[2] in ("in", "exact")
+            relation = None
+            if found is not None:
+                guard = _converting(cls, found[0])
+                relation = _relation_model(
+                    _analyzed_in_use(cls, getattr(cls, found[0]))
+                )
+            else:
+                guard = contextlib.nullcontext()
 
             def convert(item: Any) -> Any:
-                # A lookup on a relation writes the key as the relation does,
-                # and names it in an error. Another model object is its own
-                # key.
+                # Another model object is its own key, built by its relation's
+                # model if the lookup is on a relation.
                 if not isinstance(item, JSONObject):
-                    if relation is None or not compares_key or item is None:
-                        return item
-                    # Only these suffixes compare the relation's key. The
-                    # others compare something else, which is not converted.
-                    field, model = relation
-                    with _converting(cls, field):
-                        return _bare_wire_key(item, model)
-                if relation is None:
+                    return item
+                if relation is None or not isinstance(item, relation):
                     return _related_wire_key(item, type(item))
-                field, model = relation
-                with _converting(cls, field):
-                    return _related_wire_key(
-                        item, model if isinstance(item, model) else type(item)
-                    )
-
-            guard = contextlib.nullcontext()
+                return _related_wire_key(item, relation)
 
         with guard:
-            if cls._is_whole_query_value(name, value):
+            if field is not None and cls._is_whole_query_value(field, value):
                 return [convert(value)], False
             if (
                 value is None
@@ -7910,12 +7949,7 @@ class JSONObject:
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
         for name, value in params.items():
-            descriptor = getattr(cls, name, None)
-            key = (
-                descriptor.json_field
-                if isinstance(descriptor, JSONProperty)
-                else name
-            )
+            key = cls._query_key(name)
             if key in payload:
                 clash = TypeError(f"Multiple fields use the JSON key {key}")
                 for field in (names[key], name):

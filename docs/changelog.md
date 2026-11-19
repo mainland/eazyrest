@@ -487,6 +487,16 @@ describe them further.
   one on an origin that the related model's API does not allow raises
   `FieldConversionError` naming the field, where `v1.0.0a5` sent it and the
   read raised.
+- A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
+  encodes each value as the field's own parameter does, where `v1.0.0a5` sent
+  its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601
+  text, and `True` as `true`, and a value that the field refuses raises
+  `FieldConversionError`. The suffixes that compare values of the field are
+  `exact`, `in`, `range`, `gt`, `gte`, `lt`, and `lte`. A lookup is also sent
+  under its field's JSON key, so `type___in` on a field `type_` with the key
+  `type` is sent as `type__in`, where it was sent under the Python name. A
+  lookup such as `point__exact="1,2"`, on a field whose conversion writes a
+  list, is now refused as the field's own parameter is.
 - A list of relations, such as `list[User]`, reads an item that the server
   embeds without a key as an object whose `pk` is `None`, as a single relation
   does. It raised `FieldConversionError` with a message about writing a

@@ -212,7 +212,7 @@ server names the resource, and these laws follow:
   `FieldConversionError` naming the relation field before any request, and so
   does a mapping, which a relation never takes for the related object. That
   holds for a filter on a `Hyperlinked()` relation too, which sends the key,
-  and for a bare value of the `__in` and `__exact` lookups of a relation, as in
+  and for a bare value of a lookup that compares the relation's key, such as
   `filter(owner__in=[7])`. Another lookup, such as `owner__name`, compares
   something else, and its value is sent as given. Give the key in its field's
   type, as the server returns it.
@@ -1162,11 +1162,24 @@ hook of your own can return any iterable with an integer `count` attribute.
 field with the same JSON field name and conversion as `create()`. For example,
 `Todo.filter(user=user)` sends the user's primary key under the field's JSON
 key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean
-is sent as `true` or `false`, as JSON writes it. Other keyword arguments, such
-as `ordering` or `created__gte`, are sent unchanged, as their `str()`, except
-that a model instance, also as an item of a collection, is sent as its primary
-key. A plain enum member is therefore sent as its `str()`, such as
-`Status.DONE`, so pass its `value`. A collection repeats the parameter, so
+is sent as `true` or `false`, as JSON writes it.
+
+A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
+field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,
+`range`, `gt`, `gte`, `lt`, and `lte` compare values of the field, so each
+value is encoded as the field's own parameter encodes it: `status__in` sends an
+enum member's `value`, `due__gte` sends an ISO 8601 string, and
+`flag__exact=True` sends `true`. A value that the field refuses, a relation's
+key of the wrong type among them, raises `FieldConversionError` naming the
+field, and one that the field accepts as it is, such as `"done"` for an enum,
+is sent as given. A lookup is sent under the field's JSON key, with any suffix,
+so `field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
+starts with the name of no field, followed by `__`, is sent as given. If two
+fields' names fit, the longer one is the field. Any other keyword argument, and
+a lookup whose suffix does not compare values of its field, such as `ordering`,
+`title__iexact`, `due__isnull`, or `created__date__gte`, is sent unchanged, as
+its `str()`, except that a model instance, also as an item of a collection, is
+sent as its primary key. A collection repeats the parameter, so
 `Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
 `QueryDict.getlist()` reads, as django-filter does for a filter on a
 many-to-many field. django-filter's `__in` and `__range` lookups, and DRF's
@@ -1205,13 +1218,14 @@ such as a model for a relation field or an instance of a class that
 value is refused if the conversion writes it as a list, as for a `NamedTuple`
 or fixed-length tuple field, because requests would send the list as separate
 values, which a server cannot tell from a filter on several values. No value
-can be sent under the field's own name. To filter on such a field, encode the
-value as the API expects and pass it under a name that names no field, such as
-a lookup on the field's JSON key like `point__exact="1,2"`, which is sent
-unchanged. A collection must be finite, because eazyrest reads all of it before
-it sends the request, so an endless generator never returns. Use the API's own
-null filter, such as `parent__isnull=True` in django-filter, to match objects
-whose field is null.
+can be sent under the field's own name, nor in a lookup that compares its
+values, such as `point__exact`. To filter on such a field, encode the value as
+the API expects and pass it under a name that names no field, such as the
+field's JSON key when it differs from its Python name, which is sent unchanged.
+A collection must be finite, because eazyrest reads all of it before it sends
+the request, so an endless generator never returns. Use the API's own null
+filter, such as `parent__isnull=True` in django-filter, to match objects whose
+field is null.
 
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. Its keyword arguments are sent in
