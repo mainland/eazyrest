@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import enum
+import uuid
 from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, ClassVar, Literal, NewType, TypedDict
 
@@ -16,6 +17,7 @@ from eazyrest import (
     FieldConversionError,
     Hyperlinked,
     JSONObject,
+    UsageError,
     json_object,
 )
 
@@ -1851,3 +1853,98 @@ def test_a_hyperlinked_write_takes_an_optional_key_and_refuses_an_enum(
         Note.create(id=3, author=variants.number)
 
     assert posted.call_count == 1
+
+
+@json_object
+class Tag(RelatedBase):
+    """Model keyed by a UUID that a bulk hook records."""
+
+    class_url = "/tags/"
+
+    id: uuid.UUID
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, Tag]:
+        """Return a tag for each key, recording the keys."""
+        tag_keys.append(set(pks))
+        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
+
+
+tag_keys: list[set[Any]] = []
+"""The keys that ``Tag.bulk_get_by_pks()`` received."""
+
+
+@json_object
+class Tagged(RelatedBase):
+    """Model whose relation prefetch loads in bulk."""
+
+    class_url = "/tagged/"
+
+    id: int
+    tag: Tag
+
+
+def test_prefetch_hands_the_hook_the_key_as_the_related_model_writes_it(
+    requests_mock: Any,
+) -> None:
+    """A parent's upper-case UUID is the canonical text for the hook."""
+    tag_keys.clear()
+    requests_mock.get(
+        "https://related.example/tagged/",
+        json=[
+            {"id": 1, "tag": "5f2a9f5b-0b6f-4f0e-9b7a-3a1c3b8a7c11"},
+            {"id": 2, "tag": "5F2A9F5B-0B6F-4F0E-9B7A-3A1C3B8A7C11"},
+        ],
+    )
+
+    list(Tagged.filter(prefetch=["tag"]))
+
+    assert tag_keys == [{"5f2a9f5b-0b6f-4f0e-9b7a-3a1c3b8a7c11"}]
+
+
+def test_a_refused_lookup_names_the_field_and_not_the_parameter(
+    requests_mock: Any,
+) -> None:
+    """The error's field is the relation, which a caller can look up."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    with pytest.raises(FieldConversionError) as info:
+        list(Post.filter(owner__in=["7"]))
+
+    assert info.value.field == "owner"
+    assert str(info.value).startswith("Post.owner:")
+
+
+@json_object
+class Assigned(RelatedBase):
+    """Model whose ``api`` the test assigns instead of registering."""
+
+    class_url = "/assigned/"
+
+    id: int
+
+
+@json_object
+class AssignedHolder(RelatedBase):
+    """Model that names such a model by a hyperlink."""
+
+    class_url = "/assigned-holders/"
+
+    id: int
+    owner: Annotated[Assigned, Hyperlinked()]
+
+
+def test_a_hyperlink_is_refused_when_the_related_model_has_an_api_assigned(
+    requests_mock: Any,
+) -> None:
+    """The write would otherwise check against an API that reads ignore."""
+    Assigned.api = API("https://other.example/")
+    try:
+        with pytest.raises(UsageError, match=r"Assigned\.api was assigned"):
+            AssignedHolder.create(id=1, owner="/assigned/1/")
+    finally:
+        del Assigned.api
+
+    assert requests_mock.call_count == 0
