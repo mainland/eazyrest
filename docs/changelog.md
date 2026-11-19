@@ -482,6 +482,12 @@ describe them further.
   an object of a subclass that redeclares the key field with another type is
   refused when it is written, as it already was in a query, where `v1.0.0a5`
   wrote its URL.
+- Prefetch builds each key that the parent payloads hold with the related
+  model's key constructor before it calls `bulk_get_by_pks()`, each distinct
+  value once. A key that model would not read, such as `"7"` or `true` for an
+  `int` key, raises `FieldConversionError` naming the relation field before the
+  method and its request, where `v1.0.0a5` passed it on, and `true` and `1`
+  were one key. The method receives the keys as the related model writes them.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an

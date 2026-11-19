@@ -1260,9 +1260,13 @@ for todo in todos:
 ```
 
 Explicit prefetch requires the related model to implement `bulk_get_by_pks()`.
-The method receives the primary keys found in the parent payloads, and as `api`
-the client to request them with, which is the query's `api=` or else the
-related model's own API. It must return related objects keyed by primary key:
+The method receives the primary keys found in the parent payloads, each once,
+and as `api` the client to request them with, which is the query's `api=` or
+else the related model's own API. The related model builds each key, as it does
+when a parent reads the field, so a payload that holds a key that the model
+would not read, such as `"7"` or `true` for an `int` key, raises
+`FieldConversionError` naming the relation field before the method is called.
+It must return related objects keyed by primary key:
 
 ```python
 @json_object

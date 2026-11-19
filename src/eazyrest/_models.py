@@ -2618,6 +2618,71 @@ def _hyperlinked_model(analyzed: AnalyzedType) -> type[Any] | None:
     return None
 
 
+def _json_identity(owner: type[Any], field: str, value: Any) -> str:
+    """Return a text that tells a JSON value from every other.
+
+    ``true`` and ``1`` differ, as do ``1`` and ``1.0``, which a set of the
+    values would not tell apart.
+
+    Args:
+        owner: Class of the parent objects, for the message.
+        field: Name of the relation's field, for the message.
+        value: A value that the server sent for the relation.
+
+    Returns:
+        The value's JSON text.
+
+    Raises:
+        ResponseShapeError: If the value cannot be a key at all, because it is
+            not hashable, as a list is, or is not JSON.
+    """
+    try:
+        hash(value)
+        return json.dumps(value)
+    except (TypeError, ValueError) as err:
+        raise ResponseShapeError(
+            f"{owner.__name__}.{field} has an invalid related key"
+        ) from err
+
+
+def _prefetch_keys(
+    owner: type[Any],
+    field: str,
+    model_type: type[Any],
+    values: Iterable[Any],
+) -> set[Any]:
+    """Build the keys that prefetch hands to ``bulk_get_by_pks()``.
+
+    The related model's key constructor builds each value, as it does when a
+    parent reads the field, so the hook and the bulk request get no key that
+    reading would refuse.
+
+    Args:
+        owner: Class of the parent objects.
+        field: Name of the relation's field.
+        model_type: Model that the field names.
+        values: The distinct values that the parents hold, as the server sent
+            them.
+
+    Returns:
+        The keys' wire values.
+
+    Raises:
+        FieldConversionError: If a value is not a key that ``model_type``
+            reads. It names the relation's field.
+    """
+    keys: dict[str, Any] = {}
+    for value in values:
+        with _converting(owner, field):
+            named = _build_key(object.__new__(model_type), value)
+            if named is None:
+                raise ValueError(
+                    f"{model_type.__name__} writes no key for the value"
+                )
+        keys[named[1]] = named[0]
+    return set(keys.values())
+
+
 def _bare_wire_key(value: Any, model_type: type[Any]) -> Any:
     """Return the wire value of a key that a relation is given as it is.
 
@@ -8350,7 +8415,9 @@ class JSONObject:
                 field
             )
 
-            pks: set[Any] = set()
+            # Each distinct value once, by its JSON type and value, so that
+            # true and 1 stay apart.
+            raw_keys: dict[str, Any] = {}
 
             for item in items:
                 if descriptor.json_field not in item:
@@ -8363,13 +8430,9 @@ class JSONObject:
 
                 if collection_type is None:
                     if not isinstance(raw_value, dict):
-                        try:
-                            pks.add(raw_value)
-                        except TypeError as err:
-                            raise ResponseShapeError(
-                                f"{cls.__name__}.{field} has an invalid "
-                                "related key"
-                            ) from err
+                        raw_keys.setdefault(
+                            _json_identity(cls, field, raw_value), raw_value
+                        )
                     continue
 
                 if not isinstance(raw_value, Iterable) or isinstance(
@@ -8377,21 +8440,15 @@ class JSONObject:
                 ):
                     continue
 
-                raw_items = tuple(raw_value)
                 # Explicit prefetch only bulk-loads foreign-key style entries.
                 # Embedded related JSON objects do not need to be prefetched.
-                try:
-                    pks.update(
-                        item
-                        for item in raw_items
-                        if item is not None and not isinstance(item, dict)
-                    )
-                except TypeError as err:
-                    raise ResponseShapeError(
-                        f"{cls.__name__}.{field} has an invalid related key"
-                    ) from err
+                for entry in tuple(raw_value):
+                    if entry is not None and not isinstance(entry, dict):
+                        raw_keys.setdefault(
+                            _json_identity(cls, field, entry), entry
+                        )
 
-            if len(pks) == 0:
+            if len(raw_keys) == 0:
                 continue
 
             # The related model loads through its own registered API, unless
@@ -8399,7 +8456,7 @@ class JSONObject:
             model_type = related_type.model_type
             if related_type.hyperlinked:
                 prefetched_related[field] = cls._prefetch_hyperlinks(
-                    model_type, pks, query, cls, field
+                    model_type, list(raw_keys.values()), query, cls, field
                 )
                 continue
             # The objects that the bulk request returns match their parents by
@@ -8407,7 +8464,8 @@ class JSONObject:
             # the request rather than keep an empty prefetch.
             _resolve_key(model_type)
             related_objects = model_type.bulk_get_by_pks(
-                pks, api=query.related_client(model_type)
+                _prefetch_keys(cls, field, model_type, raw_keys.values()),
+                api=query.related_client(model_type),
             )
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
@@ -8433,7 +8491,7 @@ class JSONObject:
     @staticmethod
     def _prefetch_hyperlinks(
         model_type: type[JSONObject],
-        values: set[Any],
+        values: Iterable[Any],
         query: _Query,
         owner: type[JSONObject],
         field: str,

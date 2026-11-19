@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import enum
-from collections.abc import Iterable
-from typing import Annotated, Any
+from collections.abc import Iterable, Mapping
+from typing import Annotated, Any, ClassVar, NewType
 
 import pytest
 
 from eazyrest import (
     API,
+    Client,
+    Conversion,
     FieldConversionError,
     Hyperlinked,
     JSONObject,
@@ -737,3 +739,174 @@ def test_a_hyperlinked_relation_writes_an_object_known_only_by_its_url(
         "https://related.example/users/7/"
     )
     assert requests_mock.call_count == 1
+
+
+hook_calls: list[tuple[set[Any], int]] = []
+"""The keys that a bulk hook received, with the decodes done by then."""
+
+decoded_slugs: list[Any] = []
+"""The values that the slug conversion decoded."""
+
+Slug = NewType("Slug", str)
+
+
+def _decode_slug(value: Any, _: Any) -> Slug:
+    """Decode a slug, recording that the key was built."""
+    decoded_slugs.append(value)
+    return Slug(value)
+
+
+@json_object
+class Writer(RelatedBase):
+    """Model with a bulk hook that records the keys it gets."""
+
+    class_url = "/writers/"
+
+    id: int
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, Writer]:
+        """Return a writer for each key, after recording the keys."""
+        hook_calls.append((set(pks), len(decoded_slugs)))
+        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
+
+
+@json_object
+class Label(RelatedBase):
+    """Model keyed by a slug whose decodes are counted."""
+
+    class_url = "/labels/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Slug: Conversion(
+            decode=_decode_slug, encode=lambda value, _: str(value)
+        )
+    }
+
+    id: Slug
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, Label]:
+        """Return a label for each key, after recording the keys."""
+        hook_calls.append((set(pks), len(decoded_slugs)))
+        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
+
+
+@json_object
+class Article(RelatedBase):
+    """Model with relations that prefetch loads in bulk."""
+
+    class_url = "/articles/"
+
+    id: int
+    writer: Writer
+    editors: list[Writer]
+    label: Label
+
+
+@pytest.fixture(autouse=True)
+def _clear_records() -> None:
+    """Start each test with no recorded hook calls or decodes."""
+    hook_calls.clear()
+    decoded_slugs.clear()
+
+
+def _article(**fields: Any) -> dict[str, Any]:
+    """Return an article's JSON with valid relations except the given."""
+    return {
+        "id": 1,
+        "writer": 1,
+        "editors": [],
+        "label": "a",
+    } | fields
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param("7", id="string"),
+        pytest.param(True, id="bool"),
+        pytest.param(1.0, id="float"),
+    ],
+)
+def test_prefetch_refuses_a_key_that_cannot_be_built_before_the_hook(
+    key: Any, requests_mock: Any
+) -> None:
+    """The hook gets no key that reading the field would refuse."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[_article(writer=key), _article(id=2, writer=2)],
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Article\.writer"):
+        list(Article.filter(prefetch=["writer"]))
+    with pytest.raises(FieldConversionError, match=r"Article\.writer"):
+        list(Article.filter(prefetch="writer"))
+
+    assert hook_calls == []
+
+
+def test_prefetch_refuses_a_key_in_a_list_before_the_hook(
+    requests_mock: Any,
+) -> None:
+    """An item of a list relation is built as a single relation is."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[_article(editors=[1, "7"])],
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Article\.editors"):
+        list(Article.filter(prefetch=["editors"]))
+
+    assert hook_calls == []
+
+
+def test_prefetch_keeps_true_apart_from_one(requests_mock: Any) -> None:
+    """A valid 1 is not sent as True because a sibling holds true."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[_article(writer=1), _article(id=2, writer=True)],
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Article\.writer"):
+        list(Article.filter(prefetch=["writer"]))
+
+    assert hook_calls == []
+
+
+def test_prefetch_hands_the_hook_each_key_once(requests_mock: Any) -> None:
+    """Parents that share a key give the hook one key."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[
+            _article(writer=1, editors=[2, 1]),
+            _article(id=2, writer=1, editors=[3]),
+        ],
+    )
+
+    articles = list(Article.filter(prefetch=["writer", "editors"]))
+
+    assert hook_calls == [({1}, 0), ({1, 2, 3}, 0)]
+    assert [writer.pk for writer in articles[0].editors] == [2, 1]
+
+
+def test_prefetch_builds_each_distinct_key_once_before_the_hook(
+    requests_mock: Any,
+) -> None:
+    """The key constructor runs once for each distinct value."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[
+            _article(label="a"),
+            _article(id=2, label="a"),
+            _article(id=3, label="b"),
+        ],
+    )
+
+    list(Article.filter(prefetch=["label"]))
+
+    assert hook_calls[0][0] == {"a", "b"}
+    assert hook_calls[0][1] == 2
