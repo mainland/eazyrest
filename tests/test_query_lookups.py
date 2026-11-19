@@ -720,6 +720,19 @@ def test_a_list_lookup_refuses_a_value_that_its_field_takes_whole(
     assert requests_mock.call_count == 0
 
 
+def test_a_lookup_that_compares_no_value_of_its_field_takes_an_iterable(
+    requests_mock: Any,
+) -> None:
+    """``span__year__in`` compares years, so its operands are the caller's."""
+    requests_mock.get("https://lookups.example/windows/", json=[])
+
+    list(Window.filter(span__year__in=Span(1, 2)))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "span__year__in": ["1,2"]
+    }
+
+
 @pytest.mark.parametrize("suffix", ["in", "range"])
 def test_get_or_create_refuses_a_value_that_a_list_lookup_cannot_take(
     suffix: str, requests_mock: Any

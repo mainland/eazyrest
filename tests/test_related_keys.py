@@ -1545,6 +1545,79 @@ def test_a_hyperlink_is_written_back_to_the_api_that_read_it(
     }
 
 
+@json_object(write_only={"secret"})
+class Pinboard(RelatedBase):
+    """Model with hyperlinked relations of several shapes."""
+
+    class_url = "/pinboards/"
+
+    id: int
+    optional: Annotated[User, Hyperlinked()] | None
+    links: list[Annotated[User, Hyperlinked()]]
+    secret: Annotated[User, Hyperlinked()]
+
+
+_TENANT_USER = "https://tenant.example/users/3/"
+
+
+def _pinboard(requests_mock: Any) -> tuple[Pinboard, Any]:
+    """Return a lazy pinboard loaded with ``api=`` and its mocked ``PATCH``.
+
+    Args:
+        requests_mock: The mocked transport.
+
+    Returns:
+        The pinboard and the mock of its ``PATCH``.
+    """
+    patched = requests_mock.patch(
+        "https://tenant.example/pinboards/1/", json={}
+    )
+    pinboard = Pinboard(
+        json={
+            "id": 1,
+            "optional": None,
+            "links": ["https://tenant.example/users/2/"],
+        },
+        api=TENANT,
+        write_mode="lazy",
+    )
+    return pinboard, patched
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "sent"),
+    [
+        ("optional", _TENANT_USER, _TENANT_USER),
+        ("links", [_TENANT_USER], [_TENANT_USER]),
+        ("secret", _TENANT_USER, _TENANT_USER),
+    ],
+)
+def test_a_url_of_the_owners_api_is_written_to_a_hyperlink_of_any_shape(
+    field: str, value: Any, sent: Any, requests_mock: Any
+) -> None:
+    """An optional, a list, and a write-only field check against that API."""
+    pinboard, patched = _pinboard(requests_mock)
+
+    setattr(pinboard, field, value)
+    pinboard.save()
+
+    assert patched.last_request.json() == {field: sent}
+
+
+def test_a_url_appended_to_a_hyperlink_list_is_checked_when_saved(
+    requests_mock: Any,
+) -> None:
+    """A change made in place is encoded against the owner's API."""
+    pinboard, patched = _pinboard(requests_mock)
+
+    pinboard.links.append(_TENANT_USER)  # type: ignore[arg-type]
+    pinboard.save()
+
+    assert patched.last_request.json() == {
+        "links": ["https://tenant.example/users/2/", _TENANT_USER]
+    }
+
+
 def test_a_hyperlink_is_checked_against_the_api_of_its_owner(
     requests_mock: Any,
 ) -> None:
