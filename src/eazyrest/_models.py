@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import contextlib
-import contextvars
 import copy
 import dataclasses
 import datetime
@@ -250,96 +249,53 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
-_COMPARING_KEYLESS: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "eazyrest_comparing_keyless", default=False
-)
-"""Whether a related object without a key encodes as a stand-in."""
+def _holds_relations(analyzed: AnalyzedType) -> bool:
+    """Return whether a field's collections hold related objects.
 
+    Args:
+        analyzed: The field's analyzed type.
 
-class _KeylessItem:
-    """Stand-in for a related object without a key in a change check.
-
-    It holds the object and equals only a stand-in of that same object, so a
-    copy of the object, or a new one at the address of a freed one, is not
-    equal to it. A copy of the owner copies its snapshot and its objects
-    together, so the copied stand-in names the copied object.
+    Returns:
+        Whether the field, inside any optional or ``NewType``, is a collection
+        whose items, at any depth of collections, are relations.
     """
-
-    __slots__ = ("item",)
-
-    def __init__(self, item: JSONObject) -> None:
-        """Hold the object.
-
-        Args:
-            item: Related object without a key.
-        """
-        self.item = item
-
-    def __getstate__(self) -> tuple[JSONObject]:
-        """Return the state to pickle, for every protocol.
-
-        A class with ``__slots__`` pickles at protocols 0 and 1 only if it says
-        what its state is.
-
-        Returns:
-            The object, in a tuple that is never false, so ``__setstate__``
-            always runs.
-        """
-        return (self.item,)
-
-    def __setstate__(self, state: tuple[JSONObject]) -> None:
-        """Restore the object that the stand-in holds.
-
-        Args:
-            state: Value that ``__getstate__`` returned.
-        """
-        (self.item,) = state
-
-    def __eq__(self, other: object) -> bool:
-        """Return whether ``other`` stands for the same object.
-
-        Args:
-            other: Value to compare.
-
-        Returns:
-            Whether ``other`` is a stand-in whose object is this one's.
-        """
-        return isinstance(other, _KeylessItem) and other.item is self.item
-
-    def __hash__(self) -> int:
-        """Return a hash that agrees with equality.
-
-        Returns:
-            The identity hash of the object.
-        """
-        return id(self.item)
-
-    def __repr__(self) -> str:
-        """Return a description that names the object's type.
-
-        Returns:
-            Text that is no key.
-        """
-        return f"<keyless {type(self.item).__name__} at {id(self.item):#x}>"
+    while isinstance(analyzed, OptionalType | NewTypeType):
+        analyzed = (
+            analyzed.inner_type
+            if isinstance(analyzed, OptionalType)
+            else analyzed.inner
+        )
+    if isinstance(analyzed, CollectionType):
+        item = analyzed.item_type
+        return isinstance(_unwrap_optional_type(item), RelatedType) or (
+            _holds_relations(item)
+        )
+    return False
 
 
-@contextlib.contextmanager
-def _comparing_keyless() -> Generator[None, None, None]:
-    """Encode a related object without a key as a stand-in for its identity.
+def _relation_items(value: Any) -> Any:
+    """Return the items of a collection of related objects, in its shape.
 
-    A list that a program reads can hold embedded related objects that have no
-    key, as a single relation can. The encoding that detects a change made in
-    place to the list is only compared, never sent, so such an object stands
-    for itself in it, and an object that was replaced or added differs.
+    A change made in place to such a collection is found by comparing these
+    items with the ones that were read or assigned. ``==`` compares related
+    objects by their canonical key, and an object whose key is not known by
+    identity, so an object without a key needs no encoding to be compared.
 
-    Yields:
-        ``None``, while values are encoded.
+    Args:
+        value: A collection of related objects, at any depth, or one item.
+
+    Returns:
+        Nested tuples of the same objects, and frozensets for sets. A value
+        that is not a sized collection, or is text or a mapping, is returned as
+        it is.
     """
-    token = _COMPARING_KEYLESS.set(True)
-    try:
-        yield
-    finally:
-        _COMPARING_KEYLESS.reset(token)
+    if not isinstance(value, Collection) or isinstance(
+        value, (str, bytes, Mapping, JSONObject)
+    ):
+        return value
+    if isinstance(value, AbstractSet):
+        return frozenset(value)
+    return tuple(_relation_items(item) for item in value)
 
 
 @contextlib.contextmanager
@@ -2780,10 +2736,6 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
         ):
             # Loading may give the key, which the object's own URL allows.
             _known_key(value)
-        if _COMPARING_KEYLESS.get():
-            # The stand-in holds the object, so that no other object, not a
-            # copy and not one at the address of a freed object, equals it.
-            return _KeylessItem(value)
         # Writing None would clear the relation.
         raise ValueError(
             f"The {name} object's primary key is None, so it cannot be "
@@ -3321,26 +3273,6 @@ def _copy_json(value: Any) -> Any:
         return copy.deepcopy(value)
 
     return value
-
-
-def _copy_snapshot(value: Any) -> Any:
-    """Return a copy of a value's encoding that a change check compares.
-
-    Args:
-        value: Encoding of a field, which can hold a stand-in for a related
-            object without a key.
-
-    Returns:
-        A deep copy, except that a stand-in is kept, since it names the object
-        that the field holds and a copy of that object would not equal it.
-    """
-    if isinstance(value, _KeylessItem):
-        return value
-    if isinstance(value, dict):
-        return {key: _copy_snapshot(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_copy_snapshot(item) for item in value]
-    return _copy_json(value)
 
 
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
@@ -5550,12 +5482,13 @@ class JSONProperty:
         changeable = not self.read_only and not isinstance(
             value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
         )
-        if changeable:
+        items = changeable and _holds_relations(self.analyzed_type)
+        if changeable and not items:
             # The caller can change this value in place. Record its encoding,
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
-            with _converting(type(obj), self.field), _comparing_keyless():
+            with _converting(type(obj), self.field):
                 encoded = obj._to_json(
                     value, self.analyzed_type, api=obj._api_override
                 )
@@ -5564,8 +5497,12 @@ class JSONProperty:
         # whose value cannot be encoded fails on every read, rather than
         # returning a value whose changes save() would miss.
         obj._field_cache[self.field] = value
-        if changeable:
-            obj._field_snapshots[self.field] = _copy_snapshot(encoded)
+        if items:
+            # Related objects are compared by what they are, not by how they
+            # encode, so the snapshot keeps the objects themselves.
+            obj._field_snapshots[self.field] = _relation_items(value)
+        elif changeable:
+            obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
 
@@ -5655,7 +5592,11 @@ class JSONProperty:
             if not isinstance(kept, JSONObject):
                 # The caller can change a collection in place, as one read
                 # from JSON.
-                obj._field_snapshots[self.field] = _copy_json(new_value)
+                obj._field_snapshots[self.field] = (
+                    _relation_items(kept)
+                    if _holds_relations(self.analyzed_type)
+                    else _copy_json(new_value)
+                )
 
     def _set_key(self, obj: JSONObject, value: Any) -> None:
         """Give an object its key, or check that an assignment keeps it.
@@ -6624,11 +6565,7 @@ class JSONObject:
                         # its key could be the related model's.
                         _check_related_key_type(value, model_type)
                     else:
-                        wire_key = _related_wire_key(value, model_type)
-                        if _COMPARING_KEYLESS.get() and value.pk is None:
-                            # Nothing is sent, and the object has no URL, so
-                            # its stand-in is all that the comparison has.
-                            return wire_key
+                        _related_wire_key(value, model_type)
                     with _of_the_relation():
                         url = value.absolute_url
                     # The same URL as a string is checked, against the same
@@ -7068,20 +7005,18 @@ class JSONObject:
         changed: list[tuple[str, JSONProperty, Any]] = []
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
+            current = self._field_cache[field]
+            compared_by_items = _holds_relations(descriptor.analyzed_type)
+            if compared_by_items and _relation_items(current) == snapshot:
+                continue
             with _converting(type(self), field):
-                with _comparing_keyless():
-                    encoded = self._to_json(
-                        self._field_cache[field],
-                        descriptor.analyzed_type,
-                        api=self._api_override,
-                    )
-                if not _json_equal(encoded, snapshot):
-                    # An object without a key cannot be written.
-                    encoded = self._to_json(
-                        self._field_cache[field],
-                        descriptor.analyzed_type,
-                        api=self._api_override,
-                    )
+                # An object without a key cannot be written.
+                encoded = self._to_json(
+                    current, descriptor.analyzed_type, api=self._api_override
+                )
+            if compared_by_items:
+                changed.append((field, descriptor, encoded))
+                continue
             if descriptor._is_key_of(self):
                 # A key is the same key if its canonical text is. Python
                 # equality is not the test, since it equates 1 with 1.0.
@@ -7126,7 +7061,11 @@ class JSONObject:
         """
         for field, descriptor, encoded in changed:
             self._queue_update(descriptor.json_field, _copy_json(encoded))
-            self._field_snapshots[field] = _copy_json(encoded)
+            self._field_snapshots[field] = (
+                _relation_items(self._field_cache[field])
+                if _holds_relations(descriptor.analyzed_type)
+                else _copy_json(encoded)
+            )
 
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.

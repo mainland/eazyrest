@@ -521,7 +521,11 @@ describe them further.
   embeds without a key as an object whose `pk` is `None`, as a single relation
   does. It raised `FieldConversionError` with a message about writing a
   relation. Saving a change made in place to such a list raises while an item
-  has no key.
+  has no key. A list of related objects is checked for a change by comparing
+  its items with `==`, by key, not by encoding them, so a list whose item
+  loaded a key that the related model cannot read still saves another field,
+  and replacing an item with an object of another class or without a key is a
+  change.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

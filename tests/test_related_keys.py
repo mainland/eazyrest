@@ -1890,7 +1890,7 @@ def test_an_owner_with_a_keyless_item_pickles_at_every_protocol(
 def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(
     requests_mock: Any,
 ) -> None:
-    """A copy keeps the stand-ins that its snapshot holds."""
+    """A copy holds the copied items that its snapshot holds."""
     patch = requests_mock.patch("https://related.example/posts/1/", json={})
     post = _post_with_keyless_reader()
     copied = copy.deepcopy(post)
@@ -1904,7 +1904,7 @@ def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(
 def test_two_keyless_items_differ_in_the_change_check(
     requests_mock: Any,
 ) -> None:
-    """The stand-in names the object, so swapping two items is a change."""
+    """A keyless object equals only itself, so swapping two is a change."""
     requests_mock.patch("https://related.example/posts/1/", json={})
     post = Post(
         json={"id": 1, "owner": 2, "readers": [{"name": "x"}, {"name": "y"}]},
@@ -2050,6 +2050,43 @@ def test_a_keyless_item_of_a_hyperlinked_list_is_compared_as_a_key_list_is(
             "https://related.example/users/3/",
             "https://related.example/users/4/",
         ]
+    }
+
+
+def test_a_loaded_item_with_an_unreadable_key_does_not_block_a_save(
+    requests_mock: Any,
+) -> None:
+    """The list is compared by its items, which no key build is needed for."""
+    patch = requests_mock.patch("https://related.example/rosters/1/", json={})
+    requests_mock.get("https://related.example/users/3/", json={"id": "x"})
+    roster = Roster(
+        json={"id": 1, "members": ["https://related.example/users/3/"]},
+        write_mode="lazy",
+    )
+    assert roster.members[0].json == {"id": "x"}
+    roster.id = 1
+
+    roster.save()
+
+    assert not patch.called
+
+
+def test_replacing_a_hyperlinked_item_with_an_object_of_known_key_is_a_change(
+    requests_mock: Any,
+) -> None:
+    """An object known only by its URL equals only itself."""
+    patch = requests_mock.patch("https://related.example/rosters/1/", json={})
+    roster = Roster(
+        json={"id": 1, "members": ["https://related.example/users/3/"]},
+        write_mode="lazy",
+    )
+    assert len(roster.members) == 1
+    roster.members[0] = User(id=3)
+
+    roster.save()
+
+    assert patch.last_request.json() == {
+        "members": ["https://related.example/users/3/"]
     }
 
 

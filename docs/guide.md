@@ -891,7 +891,11 @@ profile.save()
 ```
 
 The object detects such a change by comparing the value's encoding with its
-encoding when it was read. It does so only when `save()` runs, when an eager
+encoding when it was read. A collection of related objects, such as
+`list[User]`, is compared by its items instead, with `==`, which compares
+objects by key. Adding, removing, or reordering items, and replacing an item
+with an object that is not equal to it, change the list, and a change to an
+item's own fields does not. It does so only when `save()` runs, when an eager
 assignment sends a `PATCH`, or before the object loads missing fields, so
 `json` does not show the change before then. In eager mode, a change made in
 place is therefore sent by the next `save()` or eager assignment, not
