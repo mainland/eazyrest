@@ -5,13 +5,15 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import enum
-from typing import Annotated, Any, NamedTuple, Optional, TypedDict
+from collections.abc import Iterator, Mapping
+from typing import Annotated, Any, ClassVar, NamedTuple, Optional, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from eazyrest import (
     API,
+    Conversion,
     FieldConversionError,
     Hyperlinked,
     JSONObject,
@@ -513,3 +515,59 @@ def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
         list(Placed.filter(name__exact=object()))
 
     assert requests_mock.call_count == 0
+
+
+class Span:
+    """An iterable value that a conversion takes whole."""
+
+    def __init__(self, start: int, end: int) -> None:
+        """Hold the bounds."""
+        self.start = start
+        self.end = end
+
+    def __iter__(self) -> Iterator[int]:
+        """Iterate the bounds, which are not values of a field."""
+        return iter((self.start, self.end))
+
+
+@json_object
+class Window(LookupBase):
+    """Model with a field whose conversion takes an iterable whole."""
+
+    class_url = "/windows/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Span: Conversion(
+            decode=lambda value, _: Span(*map(int, value.split("-"))),
+            encode=lambda value, _: f"{value.start}-{value.end}",
+        )
+    }
+
+    id: int
+    span: Span
+    name: str
+
+
+@pytest.mark.parametrize("suffix", ["in", "range"])
+def test_a_list_lookup_refuses_a_value_that_its_field_takes_whole(
+    suffix: str, requests_mock: Any
+) -> None:
+    """One value of the field is no collection of values, though iterable."""
+    requests_mock.get("https://lookups.example/windows/", json=[])
+
+    with pytest.raises(ValueError, match=rf"span__{suffix}.*Pass a list"):
+        list(Window.filter(params={f"span__{suffix}": Span(1, 2)}))
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_list_lookup_takes_a_list_of_values_that_its_field_takes_whole(
+    requests_mock: Any,
+) -> None:
+    """Each item of the list is one such value."""
+    requests_mock.get("https://lookups.example/windows/", json=[])
+
+    list(Window.filter(span__in=[Span(1, 2), Span(3, 4)]))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "span__in": ["1-2,3-4"]
+    }

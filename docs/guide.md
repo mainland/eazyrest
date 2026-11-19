@@ -1200,12 +1200,13 @@ parameter, which django-filter reads: `Todo.filter(user__in=users)` sends
 `user__in=3,5`, and `due__range=(start, end)` sends the two bounds. Each value
 is encoded as the field's own parameter encodes it. A set is sent in sorted
 order, so the same query gives the same URL in every process. A value that is
-no such iterable, such as `"1,2"` or `7`, an empty iterable, which
-django-filter would read as no filter, an item that is `None` or a collection,
-a `__range` of other than two items, and an item whose text holds a comma,
-which the server would split, raise `ValueError` naming the parameter.
-django-filter sees only the last of repeated `__in` values, and refuses
-repeated `__range` values.
+no such iterable, such as `"1,2"` or `7`, one value that the field's conversion
+takes whole, such as an iterable class that `conversions` registers, an empty
+iterable, which django-filter would read as no filter, an item that is `None`
+or a collection, a `__range` of other than two items, and an item whose text
+holds a comma, which the server would split, raise `ValueError` naming the
+parameter. django-filter sees only the last of repeated `__in` values, and
+refuses repeated `__range` values.
 
 A server that reads repeated values of such a lookup, as `getlist()` does,
 needs the other form. Set `list_lookup_style = "repeat"` on the `API`, on an

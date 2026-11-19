@@ -8063,6 +8063,28 @@ class JSONObject:
         )
 
     @classmethod
+    def _is_whole_lookup_value(cls, name: str, value: Any) -> bool:
+        """Return whether a lookup of several values is given one value.
+
+        Args:
+            name: Name of a parameter that ends in ``__in`` or ``__range`` and
+                is no field's own name.
+            value: Query value.
+
+        Returns:
+            Whether the lookup compares values of a field that writes ``value``
+            as one value, so that ``value`` is no collection of them even if it
+            is iterable.
+        """
+        found = cls._lookup_field(name)
+        if found is None or found[1] not in _VALUE_LOOKUPS:
+            return False
+        with _converting(cls, found[0]):
+            if cls._writes_structure(found[0]):
+                return False
+            return cls._is_whole_query_value(found[0], value)
+
+    @classmethod
     def _query_operands(
         cls, name: str, value: Any, style: str = "comma"
     ) -> list[Any]:
@@ -8092,7 +8114,9 @@ class JSONObject:
         """
         several = cls._is_list_lookup(name)
         if several and (
-            isinstance(value, JSONObject) or not _is_collection_value(value)
+            isinstance(value, JSONObject)
+            or not _is_collection_value(value)
+            or cls._is_whole_lookup_value(name, value)
         ):
             raise ValueError(
                 f"Query parameter {name} for {cls.__name__} cannot be sent, "

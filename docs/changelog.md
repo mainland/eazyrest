@@ -508,10 +508,11 @@ describe them further.
   `API.list_lookup_style`, `"comma"` by default, and `"repeat"` for a server
   that reads repeated values with `getlist()`, chooses the form, and `Client`
   has it as a property. The value must be an iterable, so `"1,2"` and `7` raise
-  `ValueError`, as an empty iterable, a `__range` that does not have two items,
-  and an item whose text holds a comma do. A set is sent in sorted order. Join
-  no values yourself: the guide advised that for django-filter's lookups, and
-  it is no longer needed.
+  `ValueError`, as does one value that the field's conversion takes whole, and
+  as an empty iterable, a `__range` that does not have two items, and an item
+  whose text holds a comma do. A set is sent in sorted order. Join no values
+  yourself: the guide advised that for django-filter's lookups, and it is no
+  longer needed.
 - A list of relations, such as `list[User]`, reads an item that the server
   embeds without a key as an object whose `pk` is `None`, as a single relation
   does. It raised `FieldConversionError` with a message about writing a
