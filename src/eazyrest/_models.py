@@ -1481,6 +1481,29 @@ def _refuse_unconverted_class(ty: Any) -> None:
     )
 
 
+def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
+    """Refuse a ``Literal`` or an enum with a value that JSON cannot carry.
+
+    A value that is not a string, a number, a ``bool``, or ``None``, such as
+    bytes or a tuple, has no reading from JSON and cannot be written to it, so
+    a field of the type could neither be read nor be given a value.
+
+    Args:
+        name: What to call the type in the message.
+        values: The JSON values that the type's members stand for.
+
+    Raises:
+        TypeError: If a value is not a JSON scalar.
+    """
+    for value in values:
+        if value is not None and not isinstance(value, (str, int, float)):
+            raise TypeError(
+                f"{name} has a value of type {type(value).__name__}, which is "
+                "not a JSON scalar, so its JSON could not be read or written. "
+                "Use strings, integers, floats, bools, or None."
+            )
+
+
 def _check_admitted(
     analyzed: AnalyzedType,
     table: Mapping[Any, Conversion],
@@ -1517,7 +1540,24 @@ def _check_admitted(
     members: Iterable[AnalyzedType] = ()
     match analyzed:
         case BaseType(base_type):
-            if _conversion_of(base_type, table) is None:
+            if typing.get_origin(base_type) is Literal:
+                _check_json_scalars(
+                    "A Literal",
+                    (
+                        _literal_json(member, table)
+                        for member in typing.get_args(base_type)
+                    ),
+                )
+            found = _conversion_of(base_type, table)
+            if found is not None and found.key is enum.Enum:
+                _check_json_scalars(
+                    found.declared.__name__,
+                    (
+                        found.entry.encode(member, found.declared)
+                        for member in found.declared
+                    ),
+                )
+            if found is None:
                 _refuse_pydantic_class(base_type)
                 if (supertype := _supertype(base_type)) is not None:
                     _check_admitted(

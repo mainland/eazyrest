@@ -63,6 +63,11 @@ describe them further.
   field `Any` to keep its JSON, give a bare collection its items, as `set[Any]`
   or `Mapping[str, Any]`, or register a `Conversion` for the class. A
   subclass's `conversions` decide for the fields that it inherits.
+- A `Literal` or an enum with a value that is not a JSON scalar, such as
+  `Literal[b"x"]` or an enum whose members are tuples, raises `TypeError` when
+  the class is decorated. `v1.0.0a5` accepted it, though no JSON value read as
+  such a member and its schema held a value that JSON cannot write. An enum
+  with an entry of its own in `conversions` is not checked.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

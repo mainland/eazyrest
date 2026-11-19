@@ -8,6 +8,7 @@ form that eazyrest knows, so it is refused wherever it appears.
 
 import collections.abc
 import dataclasses
+import enum
 import ipaddress
 import pathlib
 import typing
@@ -218,6 +219,81 @@ def test_a_field_type_with_a_defined_reading_is_admitted(name: str) -> None:
 
     assert "value" in model.json_schema("read")["properties"]
     assert "value" in model.json_schema("write")["properties"]
+
+
+class Pair(enum.Enum):
+    """Enum whose member values are tuples, which JSON does not have."""
+
+    ORIGIN = (0, 0)
+
+
+class Mixed(enum.Enum):
+    """Enum whose member values are all JSON scalars."""
+
+    TEXT = "a"
+    NUMBER = 1
+    REAL = 1.5
+    FLAG = True
+    NOTHING = None
+
+
+_NOT_SCALARS: dict[str, Any] = {
+    "literal_bytes": typing.Literal[b"x"],
+    "literal_with_bytes": typing.Literal["a", b"x"],
+    "literal_of_member_with_tuple": typing.Literal[Pair.ORIGIN],
+    "enum_with_tuples": Pair,
+}
+
+
+@pytest.mark.parametrize("place", sorted(_PLACES))
+@pytest.mark.parametrize("name", sorted(_NOT_SCALARS))
+def test_a_literal_or_enum_with_a_value_that_is_no_json_scalar_is_refused(
+    name: str, place: str
+) -> None:
+    """Such a value has no JSON reading, so the field is refused.
+
+    Args:
+        name: Which type.
+        place: Where it appears.
+    """
+    hint = _PLACES[place](_NOT_SCALARS[name])
+
+    # A union that holds a type that converts has its own refusal first.
+    message = r"not a JSON scalar" if place != "union" else r"Holder\.value: "
+    with pytest.raises(TypeError, match=message):
+        _model(hint)
+
+
+def test_an_enum_with_an_entry_of_its_own_may_have_any_values() -> None:
+    """A conversion of the enum says how its members read."""
+    own = Conversion(
+        decode=lambda value, cls: cls(tuple(value)),
+        encode=lambda value, cls: list(value.value),
+    )
+
+    model = _model(Pair, {Pair: own})
+
+    assert model(json={"id": 1, "value": [0, 0]}).value is Pair.ORIGIN
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [
+        Mixed,
+        typing.Literal["a", 1, 1.5, True] | None,
+        typing.Literal[Mixed.TEXT, Mixed.NUMBER],
+    ],
+    ids=["enum", "literal", "literal_of_members"],
+)
+def test_json_scalar_values_are_admitted_in_a_literal_or_an_enum(
+    hint: Any,
+) -> None:
+    """A string, an integer, a float, a ``bool``, and ``None`` decorate.
+
+    Args:
+        hint: Annotation of the field.
+    """
+    assert "value" in _model(hint).json_schema()["properties"]
 
 
 def test_the_bare_typing_alias_is_refused_as_the_class_is() -> None:
