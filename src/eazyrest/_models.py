@@ -7841,8 +7841,8 @@ class JSONObject:
         return analyzed if isinstance(analyzed, CollectionType) else None
 
     @classmethod
-    def _writes_structure(cls, name: str) -> bool:
-        """Return whether a field writes every value as a list or an object.
+    def _structure_of(cls, name: str) -> AnalyzedType | None:
+        """Return the structure that a field writes every value as.
 
         Such a field's own parameter takes no value, since requests would send
         the list as separate values and an object as its keys. The caller must
@@ -7852,15 +7852,22 @@ class JSONObject:
             name: Name of a JSON-backed field.
 
         Returns:
-            Whether the field is, inside any optional, a fixed-length tuple, a
-            named tuple, a dataclass, a ``TypedDict``, or a mapping, and not a
-            collection of items.
+            The field's analyzed type, inside any optional, if it is a
+            fixed-length tuple, a named tuple, a dataclass, a ``TypedDict``, or
+            a mapping, and not a collection of items, and no conversion of the
+            model converts it instead. ``None`` for any other field.
         """
         descriptor = getattr(cls, name)
         if cls._query_collection(descriptor) is not None:
-            return False
-        return isinstance(
-            _unwrap_optional_type(_analyzed_in_use(cls, descriptor)),
+            return None
+        table = _table_of(cls)
+        analyzed = _analyzed_in_use(cls, descriptor)
+        analyzed = _unwrap_optional_type(analyzed)
+        if _class_entry(analyzed, table) is not None:
+            # The conversion decides what the field writes.
+            return None
+        if isinstance(
+            analyzed,
             (
                 FixedTupleType,
                 NamedTupleType,
@@ -7868,7 +7875,21 @@ class JSONObject:
                 TypedDictType,
                 MappingType,
             ),
-        )
+        ):
+            return analyzed
+        return None
+
+    @classmethod
+    def _writes_structure(cls, name: str) -> bool:
+        """Return whether a field writes every value as a list or an object.
+
+        Args:
+            name: Name of a JSON-backed field.
+
+        Returns:
+            Whether ``_structure_of()`` finds a structure for the field.
+        """
+        return cls._structure_of(name) is not None
 
     @classmethod
     def _is_whole_query_value(cls, name: str, value: Any) -> bool:

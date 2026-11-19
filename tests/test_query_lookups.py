@@ -517,6 +517,79 @@ def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
     assert requests_mock.call_count == 0
 
 
+@json_object
+class Boxed(LookupBase):
+    """Model whose conversions write a dataclass and a named tuple as text."""
+
+    class_url = "/boxed/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Size: Conversion(
+            decode=lambda value, _: Size(int(value)),
+            encode=lambda value, _: str(value.width),
+        ),
+        Point: Conversion(
+            decode=lambda value, _: Point(*map(int, value.split("-"))),
+            encode=lambda value, _: f"{value.x}-{value.y}",
+        ),
+    }
+
+    id: int
+    size: Size
+    point: Point
+
+
+@pytest.mark.parametrize("suffix", ["exact", "gte"])
+def test_a_value_lookup_on_a_converted_dataclass_is_encoded_by_it(
+    suffix: str, requests_mock: Any
+) -> None:
+    """A conversion decides what the field writes, as for its own parameter."""
+    requests_mock.get("https://lookups.example/boxed/", json=[])
+
+    list(Boxed.filter(params={f"size__{suffix}": Size(3)}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        f"size__{suffix}": ["3"]
+    }
+
+
+def test_a_value_lookup_on_a_converted_named_tuple_is_encoded_by_it(
+    requests_mock: Any,
+) -> None:
+    """The named tuple is one value, not the parameter repeated."""
+    requests_mock.get("https://lookups.example/boxed/", json=[])
+
+    list(Boxed.filter(params={"point__exact": Point(1, 2)}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "point__exact": ["1-2"]
+    }
+
+
+def test_an_in_lookup_on_a_converted_named_tuple_encodes_each_item(
+    requests_mock: Any,
+) -> None:
+    """Each item is one value of the field."""
+    requests_mock.get("https://lookups.example/boxed/", json=[])
+
+    list(Boxed.filter(params={"point__in": [Point(1, 2), Point(3, 4)]}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "point__in": ["1-2,3-4"]
+    }
+
+
+def test_a_value_lookup_on_a_converted_field_refuses_another_class(
+    requests_mock: Any,
+) -> None:
+    """The field's conversion refuses a value that it does not encode."""
+    requests_mock.get("https://lookups.example/boxed/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Boxed\.size"):
+        list(Boxed.filter(params={"size__exact": object()}))
+
+    assert requests_mock.call_count == 0
+
+
 class Span:
     """An iterable value that a conversion takes whole."""
 
