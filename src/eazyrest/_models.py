@@ -7665,7 +7665,8 @@ class JSONObject:
         Returns:
             The name of the field before the first ``__``, and the model of its
             relation, or ``None`` if the name has no ``__`` or the field is not
-            a relation, or a collection of relations, that is written by key.
+            a relation, or a collection of relations. A query names a
+            hyperlinked relation by its key too.
         """
         field, separator, _ = name.partition("__")
         descriptor = getattr(cls, field, None)
@@ -7674,7 +7675,7 @@ class JSONObject:
         analyzed = _unwrap_optional_type(_analyzed_in_use(cls, descriptor))
         if isinstance(analyzed, CollectionType):
             analyzed = _unwrap_optional_type(analyzed.item_type)
-        if isinstance(analyzed, RelatedType) and not analyzed.hyperlinked:
+        if isinstance(analyzed, RelatedType):
             return field, analyzed.model_type
         return None
 
@@ -7687,7 +7688,9 @@ class JSONObject:
         is not a string, bytes, or a mapping is read once and gives an operand
         for each of its items, which the item conversion of a collection field,
         or the field's conversion, encodes. A parameter that names no field is
-        not converted, except that a model is its primary key.
+        not converted, except that a model is its primary key, and that a bare
+        value of an ``__in`` or ``__exact`` lookup on a relation is built as
+        the relation's key.
 
         Args:
             name: Name of the parameter.
@@ -7715,13 +7718,21 @@ class JSONObject:
         else:
             collection = None
 
+            relation = cls._lookup_relation(name)
+            compares_key = name.partition("__")[2] in ("in", "exact")
+
             def convert(item: Any) -> Any:
-                if not isinstance(item, JSONObject):
-                    return item
                 # A lookup on a relation writes the key as the relation does,
                 # and names it in an error. Another model object is its own
                 # key.
-                relation = cls._lookup_relation(name)
+                if not isinstance(item, JSONObject):
+                    if relation is None or not compares_key or item is None:
+                        return item
+                    # Only these suffixes compare the relation's key. The
+                    # others compare something else, which is not converted.
+                    field, model = relation
+                    with _converting(cls, field):
+                        return _bare_wire_key(item, model)
                 if relation is None:
                     return _related_wire_key(item, type(item))
                 field, model = relation

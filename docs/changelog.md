@@ -477,10 +477,12 @@ describe them further.
   same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
   key, and read a mapping back as an embedded object, they now raise
   `FieldConversionError` naming the relation field before any request, in a
-  filter on a `Hyperlinked()` relation too. A write of a `Hyperlinked()`
-  relation checks the object it is given as the others do, so an object of a
-  subclass that redeclares the key field with another type is refused when it
-  is written, as it already was in a query, where `v1.0.0a5` wrote its URL.
+  filter on a `Hyperlinked()` relation too, and in the `__in` and `__exact`
+  lookups of a relation, which sent a bare value as it was given. A write of a
+  `Hyperlinked()` relation checks the object it is given as the others do, so
+  an object of a subclass that redeclares the key field with another type is
+  refused when it is written, as it already was in a query, where `v1.0.0a5`
+  wrote its URL.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

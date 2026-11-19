@@ -681,6 +681,54 @@ def test_a_bare_key_that_builds_is_written_as_the_wire_key(
     assert requests_mock.last_request.qs == {"owner": ["7"]}
 
 
+@pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
+@pytest.mark.parametrize("key", ["7", True, 1.5, {"id": 5}])
+def test_a_lookup_refuses_a_bare_key_that_cannot_be_built(
+    lookup: str, key: Any, requests_mock: Any
+) -> None:
+    """A lookup that compares the relation's key builds it as a filter does."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(Post.filter(params={lookup: key}))
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(Post.filter(params={lookup: [7, key]}))
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        list(Post.filter(readers__in=[key]))
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        list(Note.filter(author__in=[key]))
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_lookup_sends_a_bare_key_that_builds(requests_mock: Any) -> None:
+    """A key in its field's type is sent, alone or with related objects."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    list(Post.filter(owner__in=[7, User(id=8)]))
+    list(Post.filter(owner__exact=9))
+
+    assert [r.qs for r in requests_mock.request_history] == [
+        {"owner__in": ["7", "8"]},
+        {"owner__exact": ["9"]},
+    ]
+
+
+def test_a_lookup_that_does_not_compare_the_key_is_not_converted(
+    requests_mock: Any,
+) -> None:
+    """Another suffix compares something else, which is sent as given."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    list(Post.filter(owner__id__in=["7"], owner__name="x", owner__isnull=True))
+
+    assert requests_mock.last_request.qs == {
+        "owner__id__in": ["7"],
+        "owner__name": ["x"],
+        "owner__isnull": ["true"],
+    }
+
+
 def test_a_filter_on_a_hyperlinked_relation_builds_a_key_as_other_filters_do(
     requests_mock: Any,
 ) -> None:

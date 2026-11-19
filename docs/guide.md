@@ -211,8 +211,11 @@ server names the resource, and these laws follow:
   so `"7"`, `True`, or `1.5` given for an `int` key raises
   `FieldConversionError` naming the relation field before any request, and so
   does a mapping, which a relation never takes for the related object. That
-  holds for a filter on a `Hyperlinked()` relation too, which sends the key.
-  Give the key in its field's type, as the server returns it.
+  holds for a filter on a `Hyperlinked()` relation too, which sends the key,
+  and for a bare value of the `__in` and `__exact` lookups of a relation, as in
+  `filter(owner__in=[7])`. Another lookup, such as `owner__name`, compares
+  something else, and its value is sent as given. Give the key in its field's
+  type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
