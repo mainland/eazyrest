@@ -472,7 +472,12 @@ describe them further.
   error before the `PUT`, where it sent the key. A subclass that redeclares the
   key field with another type is refused as well, and a key that is a relation
   refuses a mapping given as the related object, where it read the mapping as
-  an embedded object.
+  an embedded object. A key that the program gives to a relation as it is, as
+  in `post.owner = 7`, `create(owner=7)`, or `filter(owner=7)`, is built by the
+  same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
+  key, and read a mapping back as an embedded object, they now raise
+  `FieldConversionError` naming the relation field before any request. A filter
+  on a `Hyperlinked()` relation still sends a key as it is given.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an

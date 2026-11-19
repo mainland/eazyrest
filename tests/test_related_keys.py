@@ -558,3 +558,132 @@ def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
         "Feed.readers: [2]: The key must be a JSON int, not a str"
     )
     assert isinstance(eager.value.__cause__, TypeError)
+
+
+BAD_BARE_KEYS = [
+    pytest.param("7", id="string"),
+    pytest.param(True, id="bool"),
+    pytest.param(1.5, id="float"),
+    pytest.param([1], id="list"),
+    pytest.param({"id": 5}, id="mapping"),
+]
+
+
+@pytest.mark.parametrize("key", BAD_BARE_KEYS)
+def test_assigning_a_bare_key_that_cannot_be_built_is_refused(
+    key: Any, requests_mock: Any
+) -> None:
+    """A bare key is built by the related model, as one that is read is."""
+    post = _loaded_post()
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        post.owner = key
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.readers = [User(id=3), key]
+
+    assert post._pending_updates == {}
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("key", BAD_BARE_KEYS)
+def test_create_refuses_a_bare_key_that_cannot_be_built(
+    key: Any, requests_mock: Any
+) -> None:
+    """The body holds no key that reading the field would refuse."""
+    posted = requests_mock.post("https://related.example/posts/", json={})
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        Post.create(id=2, owner=key, readers=[])
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        Post.create(id=2, owner=1, readers=[3, key])
+
+    assert not posted.called
+
+
+@pytest.mark.parametrize("key", BAD_BARE_KEYS)
+def test_save_refuses_a_bare_key_that_cannot_be_built(
+    key: Any, requests_mock: Any
+) -> None:
+    """A change in place of a list relation is checked when it is saved."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [3]},
+        write_mode="lazy",
+    )
+    post.readers.append(key)
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()
+
+    assert not patch.called
+
+
+@pytest.mark.parametrize("key", BAD_BARE_KEYS)
+def test_a_query_refuses_a_bare_key_that_cannot_be_built(
+    key: Any, requests_mock: Any
+) -> None:
+    """The query sends no key that the related model would not read."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(Post.filter(owner=[2, key]))
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("key", ["7", True, 1.5, {"id": 5}])
+def test_a_query_refuses_a_single_bare_key_that_cannot_be_built(
+    key: Any, requests_mock: Any
+) -> None:
+    """A key given alone is built as one of several is."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(Post.filter(owner=key))
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("key", ["7", True, 1.5, {"id": 5}])
+def test_get_or_create_refuses_a_bare_key_before_its_lookup(
+    key: Any, requests_mock: Any
+) -> None:
+    """A key relation refuses a key that it would refuse to read."""
+    with pytest.raises(FieldConversionError, match=r"Account\.user"):
+        Account.get_or_create(user=key)
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_bare_key_that_builds_is_written_as_the_wire_key(
+    requests_mock: Any,
+) -> None:
+    """A valid key is sent as it was, and a key of None still clears."""
+    posted = requests_mock.post("https://related.example/posts/", json={})
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    Post.create(id=2, owner=7, readers=[8, 9])
+    list(Post.filter(owner=7))
+
+    assert posted.last_request.json() == {
+        "id": 2,
+        "owner": 7,
+        "readers": [8, 9],
+    }
+    assert requests_mock.last_request.qs == {"owner": ["7"]}
+
+
+@pytest.mark.parametrize("key", [7, "7"])
+def test_a_filter_on_a_hyperlinked_relation_sends_a_key_as_given(
+    key: Any, requests_mock: Any
+) -> None:
+    """A server's filter reads the key's text, so it is not built."""
+    requests_mock.get("https://related.example/notes/", json=[])
+
+    list(Note.filter(author=key))
+    list(Note.filter(params={"author": [key]}))
+
+    assert [r.qs for r in requests_mock.request_history] == [
+        {"author": ["7"]},
+        {"author": ["7"]},
+    ]

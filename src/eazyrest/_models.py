@@ -2600,6 +2600,61 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
     return named[0]
 
 
+def _hyperlinked_model(analyzed: AnalyzedType) -> type[Any] | None:
+    """Return the model of a hyperlinked relation, or a collection of them.
+
+    Args:
+        analyzed: Analyzed type of a field, or of an item of one.
+
+    Returns:
+        The related model if ``analyzed`` is a ``Hyperlinked()`` relation, also
+        optional or as the item of a collection, and otherwise ``None``.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    if isinstance(analyzed, CollectionType):
+        analyzed = _unwrap_optional_type(analyzed.item_type)
+    if isinstance(analyzed, RelatedType) and analyzed.hyperlinked:
+        return analyzed.model_type
+    return None
+
+
+def _bare_wire_key(value: Any, model_type: type[Any]) -> Any:
+    """Return the wire value of a key that a relation is given as it is.
+
+    The key is built by the key constructor of the relation's model, as the key
+    of a related object is, so a value that model would not read is refused
+    here and not written. A mapping is refused, because reading it would take
+    it for an embedded object.
+
+    Args:
+        value: The key, as ``pk`` of the related model returns it.
+        model_type: Model that the relation's field names.
+
+    Returns:
+        The key's wire value, a string or an integer.
+
+    Raises:
+        ValueError: If ``model_type`` writes no key for the value.
+        TypeError: If the value is a mapping, or ``model_type`` cannot build
+            the key from it.
+        UsageError: If a related model had ``api`` assigned after the class was
+            defined.
+        Exception: Whatever a custom conversion raises.
+    """
+    if isinstance(value, Mapping):
+        raise TypeError(
+            "A relation takes a related object or its key, not a mapping"
+        )
+    encoded = model_type._to_json(value, model_type._pk.analyzed_type)
+    named = _build_key(object.__new__(model_type), encoded)
+    if named is None:
+        raise ValueError(
+            f"{model_type.__name__} writes no key for the value, so it cannot "
+            "be written as a relation"
+        )
+    return named[0]
+
+
 def _url_is_overridden(cls: type[JSONObject]) -> bool:
     """Return whether a model class defines its own ``url``.
 
@@ -6210,7 +6265,7 @@ class JSONObject:
                     _check_related_key(value, model_type)
                     return _related_wire_key(value, model_type)
 
-                return model_type._to_json(value, model_type._pk.analyzed_type)
+                return _bare_wire_key(value, model_type)
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(cls))
                 # A subclass of the key reads as the key's type, such as a
@@ -7582,13 +7637,21 @@ class JSONObject:
         guard: contextlib.AbstractContextManager[None]
         if isinstance(descriptor, JSONProperty):
             collection = cls._query_collection(descriptor)
-            conversion = _query_type(
+            analyzed = (
                 _analyzed_in_use(cls, descriptor)
                 if collection is None
                 else collection.item_type
             )
+            conversion = _query_type(analyzed)
+            linked = _hyperlinked_model(analyzed)
 
             def convert(item: Any) -> Any:
+                if linked is not None and not isinstance(item, JSONObject):
+                    # A filter on a hyperlinked relation takes the key as a
+                    # server's filter reads it, such as the text "2", and does
+                    # not build it.
+                    item = linked._to_json(item, linked._pk.analyzed_type)
+                    return _query_value(item)
                 return _query_value(cls._to_json(item, conversion))
 
             guard = _converting(cls, name)
