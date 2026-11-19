@@ -6,6 +6,7 @@ import copy
 import enum
 import gc
 import os
+import pickle
 import subprocess
 import sys
 import uuid
@@ -1795,8 +1796,16 @@ def _renamed(user: User) -> User:
 
 
 _PICKLE_SCRIPT = """
-import pickle, sys
+import pickle, socket, sys
 import test_related_keys as t
+
+
+def no_network(*args, **kwargs):
+    raise OSError("the network is not reachable")
+
+
+socket.socket.connect = no_network
+socket.getaddrinfo = no_network
 
 path = sys.argv[2]
 if sys.argv[1] == "dump":
@@ -1845,6 +1854,19 @@ def test_a_keyless_item_that_a_pickled_owner_holds_is_not_a_new_one(
     _run_pickle_script("dump", path)
 
     assert _run_pickle_script("load", path) == "refused"
+
+
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_an_owner_with_a_keyless_item_pickles_at_every_protocol(
+    protocol: int, requests_mock: Any
+) -> None:
+    """An unchanged owner that is unpickled saves nothing."""
+    post = _post_with_keyless_reader()
+
+    loaded = pickle.loads(pickle.dumps(post, protocol=protocol))
+    loaded.save()
+
+    assert requests_mock.call_count == 0
 
 
 def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(

@@ -275,6 +275,26 @@ class _KeylessItem:
         """
         self.item = item
 
+    def __getstate__(self) -> tuple[JSONObject]:
+        """Return the state to pickle, for every protocol.
+
+        A class with ``__slots__`` pickles at protocols 0 and 1 only if it says
+        what its state is.
+
+        Returns:
+            The object, in a tuple that is never false, so ``__setstate__``
+            always runs.
+        """
+        return (self.item,)
+
+    def __setstate__(self, state: tuple[JSONObject]) -> None:
+        """Restore the object that the stand-in holds.
+
+        Args:
+            state: Value that ``__getstate__`` returned.
+        """
+        (self.item,) = state
+
     def __eq__(self, other: object) -> bool:
         """Return whether ``other`` stands for the same object.
 
