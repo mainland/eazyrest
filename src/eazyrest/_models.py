@@ -3219,7 +3219,8 @@ class RelatedCollection(Iterable[T]):
                     hyperlinked=self._hyperlinked,
                 )
             except FieldConversionError as err:
-                raise _at_position(err, index) from err.__cause__
+                positioned = _at_position(err, index)
+                raise positioned from positioned.__cause__
 
 
 def _declared_fields(
@@ -4876,7 +4877,8 @@ def _each_item(
     except FieldConversionError as err:
         # It names its field, and a second conversion would name it again, so
         # the position goes into its message.
-        raise _at_position(err, index) from err.__cause__
+        positioned = _at_position(err, index)
+        raise positioned from positioned.__cause__
     except TypeError as err:
         if _passes_through(err):
             raise

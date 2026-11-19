@@ -560,6 +560,12 @@ def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
         "Feed.readers: [2]: The key must be a JSON int, not a str"
     )
     assert isinstance(eager.value.__cause__, TypeError)
+    assert str(eager.value.__cause__) == (
+        "[1]: The key must be a JSON int, not a str"
+    )
+    assert str(lazy.value.__cause__) == (
+        "[2]: The key must be a JSON int, not a str"
+    )
 
 
 BAD_BARE_KEYS = [
