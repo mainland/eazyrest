@@ -794,6 +794,58 @@ def test_a_hyperlinked_relation_refuses_a_subclass_that_chose_another_key(
     assert not posted.called
 
 
+@json_object
+class SubNote(RelatedBase):
+    """Model that names a user of a subclass that redeclares the key."""
+
+    class_url = "/subnotes/"
+
+    id: int
+    author: Annotated[SubUser, Hyperlinked()]
+    authors: list[Annotated[SubUser, Hyperlinked()]]
+
+
+@json_object
+class Roster(RelatedBase):
+    """Model that names users by hyperlinks in a list."""
+
+    class_url = "/rosters/"
+
+    id: int
+    members: list[Annotated[User, Hyperlinked()]]
+
+
+def test_a_hyperlinked_relation_refuses_a_subclass_known_only_by_its_url(
+    requests_mock: Any,
+) -> None:
+    """The class says its key is not the related model's, so no load."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    listed = requests_mock.post("https://related.example/rosters/", json={})
+    sub = SubNote(
+        json={
+            "id": 1,
+            "author": "https://related.example/users/abc/",
+            "authors": ["https://related.example/users/abc/"],
+        }
+    ).author
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = sub
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=2, author=sub)
+    with pytest.raises(FieldConversionError, match=r"Roster\.members"):
+        Roster.create(id=2, members=[sub])
+
+    assert note._pending_updates == {}
+    assert not posted.called
+    assert not listed.called
+    assert requests_mock.call_count == 0
+
+
 def test_a_hyperlinked_relation_writes_the_url_of_an_object_with_a_key(
     requests_mock: Any,
 ) -> None:

@@ -2021,6 +2021,41 @@ def _check_related_key(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
+def _check_related_key_type(value: JSONObject, model_type: type[Any]) -> None:
+    """Refuse a related object whose class redeclares the key's type.
+
+    The object's key is not known without a request, so its class decides: a
+    subclass that redeclares the key field with another type has keys that
+    ``model_type`` may not read, which a query on the object would find out by
+    loading it.
+
+    Args:
+        value: Object written as a relation whose class is ``model_type`` or a
+            subclass that keeps its key field.
+        model_type: Model that the relation's field names.
+
+    Raises:
+        TypeError: If the type of the key field of ``value``'s class is not the
+            type of ``model_type``'s. The field's name is added where the
+            conversion runs.
+        Exception: If a key's type cannot be resolved yet, whatever resolving
+            it raises.
+    """
+    key = _pk_property_of(type(value))
+    related_key = _pk_property_of(model_type)
+    if (
+        key is not None
+        and related_key is not None
+        and key is not related_key
+        and key.analyzed_type != related_key.analyzed_type
+    ):
+        raise TypeError(
+            f"A relation to {model_type.__name__} cannot take an object of "
+            f"{type(value).__name__}, which redeclares the type of the "
+            "primary key"
+        )
+
+
 def _check_prefetched_class(
     obj: Any,
     model_type: type[Any],
@@ -6311,9 +6346,12 @@ class JSONObject:
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
                     _check_related_key(value, model_type)
-                    if not value._key_is_unknown():
+                    if value._key_is_unknown():
                         # An object known only by its URL needs no key, and
-                        # checking one would load it.
+                        # checking one would load it. Its class says whether
+                        # its key could be the related model's.
+                        _check_related_key_type(value, model_type)
+                    else:
                         _related_wire_key(value, model_type)
                     with _of_the_relation():
                         return value.absolute_url
