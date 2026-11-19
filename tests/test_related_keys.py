@@ -1885,6 +1885,33 @@ def test_a_keyless_item_of_a_hyperlinked_list_is_compared_as_a_key_list_is(
 
 
 @pytest.mark.parametrize(
+    "lookup",
+    [
+        "owner__in",
+        "owner__id__in",
+        "owner__pk__in",
+        "owner__id__exact",
+        "owner__pk",
+    ],
+)
+def test_a_lookup_on_a_relation_key_refuses_an_object_of_another_model(
+    lookup: str, requests_mock: Any
+) -> None:
+    """The key of a relation is the key of its model, not of another."""
+    requests_mock.get("https://related.example/posts/", json=[])
+    other = Feed(id=4)
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(
+            Post.filter(
+                params={lookup: [other] if lookup.endswith("in") else other}
+            )
+        )
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
     "lookup", ["owner__in", "owner__id__in", "owner__pk__in", "owner__id"]
 )
 def test_a_lookup_through_a_relation_refuses_an_object_of_another_key(

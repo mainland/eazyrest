@@ -8101,6 +8101,13 @@ class JSONObject:
                         _analyzed_in_use(cls, getattr(cls, found[0]))
                     )
                 )
+                if relation is not None and not isinstance(item, relation):
+                    # A path through the relation to another model's field,
+                    # such as ``owner__team__in``, takes that model's objects.
+                    # The relation's own key takes only its model's.
+                    assert found is not None
+                    if found[1].split("__")[0] in ("pk", relation._pk.field):
+                        _check_related_class(item, relation)
                 if relation is None or not isinstance(item, relation):
                     return _related_wire_key(item, type(item))
                 _check_related_key(item, relation)
