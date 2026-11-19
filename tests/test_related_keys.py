@@ -1869,6 +1869,37 @@ def test_a_hyperlinked_list_reads_an_embedded_object_without_a_key() -> None:
 
 
 @json_object
+class Page(RelatedBase):
+    """Model that names the singleton by a hyperlink."""
+
+    class_url = "/pages/"
+
+    id: int
+    me: Annotated[Me, Hyperlinked()]
+
+
+def test_a_hyperlink_names_a_keyless_object_by_a_url_that_ignores_the_key(
+    requests_mock: Any,
+) -> None:
+    """A singleton without a key is written at the URL its class names."""
+    posted = requests_mock.post("https://related.example/pages/", json={})
+    patched = requests_mock.patch("https://related.example/pages/1/", json={})
+
+    Page.create(id=2, me=Me())
+    page = Page(json={"id": 1, "me": {"name": "x"}}, write_mode="lazy")
+    page.me = Me()
+    page.save()
+    page.me = page.me
+    page.save()
+
+    assert posted.last_request.json() == {
+        "id": 2,
+        "me": "https://related.example/me/",
+    }
+    assert patched.last_request.json() == {"me": "https://related.example/me/"}
+
+
+@json_object
 class Linked(RelatedBase):
     """Model that prefetch loads by URL."""
 

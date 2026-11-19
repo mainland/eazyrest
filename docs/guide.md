@@ -750,6 +750,11 @@ model builds. A subclass keyed by a plain `int` is accepted for a model keyed
 by `NewType("UID", int)`. A key type that is an enum, or that a registered
 conversion owns, is refused even if the related model builds every value of it.
 
+A class that overrides `url` writes that URL whatever its key. One that formats
+the URL from the key must be given the key before such an object is written, or
+the URL holds `None`. One whose URL ignores the key, such as a singleton at
+`/me/`, needs none.
+
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
 the related objects whose JSON the load left unchanged, and assigning a related
