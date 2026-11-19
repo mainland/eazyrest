@@ -13,6 +13,7 @@ import copy
 import datetime
 import decimal
 import enum
+import math
 import re
 import types
 import typing
@@ -280,9 +281,9 @@ def _decode_decimal(value: Any) -> decimal.Decimal:
     Raises:
         TypeError: If ``value`` is neither a string nor a number. A boolean is
             not a number.
-        ValueError: If a string is not a decimal number, or its exponent is
-            beyond 4300 in either direction. The message does not quote
-            ``value``.
+        ValueError: If a string is not a decimal number, a float is not finite,
+            or the exponent is beyond 4300 in either direction. The message
+            does not quote ``value``.
     """
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         raise TypeError(
@@ -304,6 +305,9 @@ def _decode_decimal(value: Any) -> decimal.Decimal:
             ) from None
         return _check_decimal_exponent(parsed)
     if isinstance(value, float):
+        if not math.isfinite(value):
+            # A response cannot hold one, but JSON that a caller passes can.
+            raise ValueError("Decimal is not a finite number")
         return _check_decimal_exponent(decimal.Decimal(repr(value)))
     return _check_decimal_exponent(decimal.Decimal(value))
 

@@ -10,6 +10,7 @@ import email
 import email.message
 import enum
 import inspect
+import math
 import pickle
 import re
 import sys
@@ -1270,6 +1271,23 @@ def test_decimal_field_rejects_other_strings(value: str) -> None:
 
     Args:
         value: String that is not a decimal number.
+    """
+    shop = Shop(json={"id": 1, "price": value})
+
+    with pytest.raises(FieldConversionError, match=r"^Shop\.price: Decimal"):
+        _ = shop.price
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_decimal_field_rejects_a_float_that_is_not_finite(
+    value: float,
+) -> None:
+    """A NaN or an infinity in JSON that the caller passes does not read.
+
+    A response cannot carry one, but ``json=`` and a hook's return value can.
+
+    Args:
+        value: Float that is not a number.
     """
     shop = Shop(json={"id": 1, "price": value})
 
