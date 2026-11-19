@@ -672,6 +672,131 @@ def test_renamed_definitions_keep_what_their_schemas_mean(
     assert not validator.is_valid({"a": "x", "b": value})
 
 
+def _pet_schema(required: str, mapping_target: str) -> dict[str, Any]:
+    """Return a conversion's schema of a pet that a discriminator tells apart.
+
+    Args:
+        required: Name of the property that its ``Cat`` requires, which tells
+            the schema of one conversion from another's.
+        mapping_target: What the discriminator's mapping gives for ``cat``, as
+            a reference or a bare definition name.
+
+    Returns:
+        The schema.
+    """
+    return {
+        "oneOf": [{"$ref": "#/$defs/Cat"}, {"$ref": "#/$defs/Dog"}],
+        "discriminator": {
+            "propertyName": "kind",
+            "mapping": {"cat": mapping_target, "dog": "#/$defs/Dog"},
+        },
+        "$defs": {
+            "Cat": {"type": "object", "required": [required]},
+            "Dog": {"type": "object", "required": ["kind"]},
+        },
+    }
+
+
+def _codes_model(first: dict[str, Any], second: dict[str, Any]) -> Any:
+    """Return a model with a field of each of two classes and their schemas.
+
+    Args:
+        first: Schema of ``FirstCode``.
+        second: Schema of ``SecondCode``.
+
+    Returns:
+        The model, whose fields are ``a`` and ``b``.
+    """
+
+    def conversion(schema: dict[str, Any]) -> Conversion:
+        return Conversion(
+            decode=lambda value, cls: value,
+            encode=lambda value, cls: value,
+            schema=schema,
+        )
+
+    return json_object(
+        type(
+            "Codes",
+            (JSONObject,),
+            {
+                "__annotations__": {"a": FirstCode, "b": SecondCode},
+                "conversions": {
+                    FirstCode: conversion(first),
+                    SecondCode: conversion(second),
+                },
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_renamed_definitions_rename_the_targets_of_a_discriminator(
+    mode: Literal["read", "write"],
+) -> None:
+    """A discriminator's mapping names the definition as it was renamed.
+
+    Args:
+        mode: Schema mode.
+    """
+    model = _codes_model(
+        _pet_schema("a", "#/$defs/Cat"), _pet_schema("b", "#/$defs/Cat")
+    )
+
+    schema = model.json_schema(mode)
+
+    assert schema["properties"]["a"]["discriminator"]["mapping"] == {
+        "cat": "#/$defs/Cat",
+        "dog": "#/$defs/Dog",
+    }
+    assert schema["properties"]["b"]["oneOf"][0] == {"$ref": "#/$defs/Cat_2"}
+    assert schema["properties"]["b"]["discriminator"]["mapping"] == {
+        "cat": "#/$defs/Cat_2",
+        "dog": "#/$defs/Dog",
+    }
+    assert schema["$defs"]["Cat_2"]["required"] == ["b"]
+
+
+def test_a_discriminator_mapping_keeps_a_bare_definition_name() -> None:
+    """A mapping value that is a bare name is not a reference to rewrite."""
+    model = _codes_model(_pet_schema("a", "Cat"), _pet_schema("b", "Cat"))
+
+    schema = model.json_schema()
+
+    assert schema["properties"]["b"]["discriminator"]["mapping"]["cat"] == (
+        "Cat"
+    )
+
+
+def test_definitions_that_refer_to_renamed_ones_are_renamed() -> None:
+    """A definition whose dependency is renamed is renamed too.
+
+    Two conversions each define ``Tree``, which refers to a ``Leaf`` of their
+    own. Renaming one ``Leaf`` changes its ``Tree``, which then collides in
+    turn, so both of the second conversion's definitions are renamed.
+    """
+
+    def tree(leaf: str) -> dict[str, Any]:
+        return {
+            "$ref": "#/$defs/Tree",
+            "$defs": {
+                "Tree": {
+                    "type": "object",
+                    "properties": {"leaf": {"$ref": "#/$defs/Leaf"}},
+                },
+                "Leaf": {"type": leaf},
+            },
+        }
+
+    model = _codes_model(tree("integer"), tree("string"))
+
+    validator = jsonschema.Draft202012Validator(model.json_schema())
+
+    assert validator.is_valid({"a": {"leaf": 1}, "b": {"leaf": "x"}})
+    assert not validator.is_valid({"a": {"leaf": "x"}, "b": {"leaf": "x"}})
+    assert not validator.is_valid({"a": {"leaf": 1}, "b": {"leaf": 1}})
+
+
 def test_encode_json_converts_by_a_models_table() -> None:
     """``encode_json(model=)`` writes a value as that model's fields do."""
     address = ipaddress.IPv4Address("10.0.0.9")

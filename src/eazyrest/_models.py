@@ -4240,7 +4240,9 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
             value: Part of a schema.
 
         Returns:
-            The part, with each ``$ref`` to a renamed definition rewritten.
+            The part, with each ``$ref`` to a renamed definition rewritten, and
+            each reference in a ``discriminator``'s ``mapping``. A bare schema
+            name in a mapping is left as it is.
         """
         if isinstance(value, dict):
             result: dict[str, Any] = {}
@@ -4253,6 +4255,15 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
                     }
                 elif key == "$ref":
                     result[key] = reference(item)
+                elif key == "discriminator" and isinstance(item, dict):
+                    result[key] = {
+                        name: (
+                            {tag: reference(ref) for tag, ref in part.items()}
+                            if name == "mapping" and isinstance(part, dict)
+                            else part
+                        )
+                        for name, part in item.items()
+                    }
                 else:
                     result[key] = rewrite(item)
             return result
