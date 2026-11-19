@@ -2991,6 +2991,40 @@ def _relation_model(analyzed: AnalyzedType) -> type[Any] | None:
 _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
 
 
+def _key_operand_model(relation: type[Any], rest: str) -> type[Any] | None:
+    """Return the model whose objects a lookup through a relation compares.
+
+    The operands of a lookup on a relation are objects of the relation's model,
+    or of the model that its key names when the key is a relation. A path that
+    goes on to any other field of the related model compares that field's
+    values, which another model's objects may be.
+
+    Args:
+        relation: Model that the relation's field names.
+        rest: The lookup after the relation's name, such as ``in``, ``pk``,
+            ``id__in``, or ``team__in``. The key may be named by ``pk``, its
+            Python name, or its JSON key.
+
+    Returns:
+        The model that the operands of a path that ends at the key must be of,
+        or ``None`` if the path goes to a field that is not the key.
+    """
+    path = rest.split("__")
+    if path[-1] in _VALUE_LOOKUPS:
+        path.pop()
+    model = relation
+    for position, name in enumerate(path):
+        prop = _pk_property_of(model)
+        if prop is None or name not in ("pk", prop.field, prop.json_field):
+            return None
+        related = _related_key_type(_analyzed_in_use(model, prop))
+        if related is None:
+            # The key's own value ends the path.
+            return model if position == len(path) - 1 else None
+        model = related.model_type
+    return model
+
+
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
     """Return a key that orders the operands of a lookup given a set.
 
@@ -8101,14 +8135,18 @@ class JSONObject:
                         _analyzed_in_use(cls, getattr(cls, found[0]))
                     )
                 )
-                if relation is not None and not isinstance(item, relation):
-                    # A path through the relation to another model's field,
-                    # such as ``owner__team__in``, takes that model's objects.
-                    # The relation's own key takes only its model's.
-                    assert found is not None
-                    if found[1].split("__")[0] in ("pk", relation._pk.field):
-                        _check_related_class(item, relation)
-                if relation is None or not isinstance(item, relation):
+                if relation is None:
+                    return _related_wire_key(item, type(item))
+                # A path through the relation to another model's field, such as
+                # ``owner__team__in``, takes that model's objects. The
+                # relation's own key takes only objects of the model that the
+                # key names, which is the key's model if the key is a relation.
+                assert found is not None
+                target = _key_operand_model(relation, found[1])
+                if target is not None:
+                    _check_related_class(item, target)
+                    relation = target
+                if not isinstance(item, relation):
                     return _related_wire_key(item, type(item))
                 _check_related_key(item, relation)
                 return _related_wire_key(item, relation)
