@@ -8178,7 +8178,7 @@ class JSONObject:
 
     @classmethod
     def _encode_query(
-        cls, params: Mapping[str, Any], client: Client | None = None
+        cls, params: Mapping[str, Any], client: Client
     ) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
@@ -8196,7 +8196,7 @@ class JSONObject:
             params: Query parameter values keyed as for ``_encode_fields()``.
             client: The client that sends the query, whose
                 ``list_lookup_style`` decides how a lookup of several values is
-                sent. The model's API by default.
+                sent.
 
         Returns:
             Operands by JSON key.
@@ -8208,7 +8208,7 @@ class JSONObject:
                 the client's ``list_lookup_style`` is not ``"comma"`` or
                 ``"repeat"``.
         """
-        style = (cls.api if client is None else client).list_lookup_style
+        style = client.list_lookup_style
         if style not in ("comma", "repeat"):
             raise ValueError(
                 f"list_lookup_style must be 'comma' or 'repeat', not {style!r}"

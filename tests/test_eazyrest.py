@@ -5569,7 +5569,7 @@ def test_query_encoding_sends_constraint_or_raises(
         name: Parameter name, a JSON key or a name that is not a field.
     """
     try:
-        params = Todo._encode_query({name: value})
+        params = Todo._encode_query({name: value}, test_api)
     except ValueError:
         return
 
