@@ -222,8 +222,8 @@ model's. That check is of the origin only. A key written as a string, such as
 `"2"`, is a relative URL, which is sent as it is, and a DRF server refuses it
 with a 400. Assign a related object, or the URL. A query sends its primary key,
 as django-filter's relation filters expect. Pass a related model instance or a
-bare primary key to the query. A relative URL is resolved against the related
-model's API. A URL whose origin is neither that API's nor one of its
+bare primary key to the query. A relative URL is resolved against the API that
+reading the field uses. A URL whose origin is neither that API's nor one of its
 `redirect_origins` raises `FieldConversionError` when the field is read, so a
 server cannot send the client, with its credentials, to another host. A
 hyperlinked field can be prefetched when the related model implements

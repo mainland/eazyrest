@@ -483,13 +483,14 @@ describe them further.
   an object of a subclass that redeclares the key field with another type is
   refused when it is written, as it already was in a query, where `v1.0.0a5`
   wrote its URL. An object known only by its URL is refused by its class,
-  without a load, unless its key type is a `NewType`, an `Annotated`, or an
-  `Optional` of the related model's key type, or a `Literal` of keys that the
-  model builds. A URL written as a string is checked as a read checks it,
-  against the API that the owner reads with, so one on an origin that API does
-  not allow raises `FieldConversionError` naming the field, where `v1.0.0a5`
-  sent it and the read raised. The URL of a related object that is written is
-  checked the same way.
+  without a load, unless its key type is an `int` or a `str`, or a `NewType`,
+  an `Annotated`, or an `Optional` of one, that the related model's key reads
+  for every value of that JSON type, or a `Literal` of keys that the model
+  builds. A URL written as a string is checked as a read checks it, against the
+  API that the owner reads with, so one on an origin that API does not allow
+  raises `FieldConversionError` naming the field, where `v1.0.0a5` sent it and
+  the read raised. The URL of a related object that is written is checked the
+  same way.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601

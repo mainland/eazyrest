@@ -743,11 +743,12 @@ another type, raises `FieldConversionError` naming the field, as it does in a
 query. An object known only by its URL is not loaded to check its key, so its
 class decides: one of a subclass that redeclares the key field with another
 type raises `FieldConversionError` too, unless that type is accepted without a
-load. Those are a `NewType`, an `Annotated`, or an `Optional` of the related
-model's key type, when the key is an `int` or a `str`, and a `Literal` each of
-whose members the related model builds. A key type that is an enum, or that a
-registered conversion owns, is refused even if the related model builds every
-value of it.
+load. Those are a key type that is an `int` or a `str`, or a `NewType`, an
+`Annotated`, or an `Optional` of one, when the related model's key reads every
+value of that JSON type, and a `Literal` each of whose members the related
+model builds. A subclass keyed by a plain `int` is accepted for a model keyed
+by `NewType("UID", int)`. A key type that is an enum, or that a registered
+conversion owns, is refused even if the related model builds every value of it.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
