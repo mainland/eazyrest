@@ -6573,7 +6573,12 @@ class JSONObject:
                             # its stand-in is all that the comparison has.
                             return wire_key
                     with _of_the_relation():
-                        return value.absolute_url
+                        url = value.absolute_url
+                    if api is not None:
+                        # The same URL as a string is checked, so the write
+                        # does not save what reading the field refuses.
+                        _checked_hyperlink(api, url)
+                    return url
                 if isinstance(value, str):
                     # A write takes what reading the field accepts, which is a
                     # URL on an origin that the related model's API allows.

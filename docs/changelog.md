@@ -488,7 +488,8 @@ describe them further.
   model builds. A URL written as a string is checked as a read checks it,
   against the API that the owner reads with, so one on an origin that API does
   not allow raises `FieldConversionError` naming the field, where `v1.0.0a5`
-  sent it and the read raised.
+  sent it and the read raised. The URL of a related object that is written is
+  checked the same way.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601

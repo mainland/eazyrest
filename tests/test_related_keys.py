@@ -1562,6 +1562,30 @@ def test_a_hyperlink_is_checked_against_the_api_of_its_owner(
     assert requests_mock.call_count == 0
 
 
+def test_a_hyperlinked_object_is_checked_against_the_api_of_its_owner(
+    requests_mock: Any,
+) -> None:
+    """An object's URL is refused on another origin, as a string's is."""
+    patched = requests_mock.patch("https://tenant.example/notes/1/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://tenant.example/users/2/"},
+        api=TENANT,
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = User(id=3)
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=4, author=User(id=3), api=TENANT)
+    note.author = User(id=3, api=TENANT)
+    note.save()
+
+    assert patched.last_request.json() == {
+        "author": "https://tenant.example/users/3/"
+    }
+    assert requests_mock.call_count == 1
+
+
 def test_create_checks_a_hyperlink_against_the_api_it_is_given(
     requests_mock: Any,
 ) -> None:
