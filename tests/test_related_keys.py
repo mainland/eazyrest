@@ -11,7 +11,7 @@ import subprocess
 import sys
 import uuid
 import weakref
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any, ClassVar, Literal, NewType, TypedDict
 
 import pytest
@@ -725,6 +725,42 @@ def test_get_or_create_refuses_a_bare_key_before_its_lookup(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
+@pytest.mark.parametrize("key", ["7", True, 1.5])
+def test_a_query_for_the_key_field_refuses_a_key_that_cannot_be_built(
+    method: str, key: Any, requests_mock: Any
+) -> None:
+    """The key field is compared as every key is, before any request."""
+    requests_mock.get("https://related.example/users/", json=[])
+
+    queries: dict[str, Callable[..., Any]] = {
+        "filter": lambda **kwargs: list(User.filter(**kwargs)),
+        "get": User.get,
+        "get_or_create": User.get_or_create,
+    }
+    query = queries[method]
+
+    with pytest.raises(FieldConversionError, match=r"User\.id"):
+        query(id=key)
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_query_for_the_key_field_sends_the_built_key(
+    requests_mock: Any,
+) -> None:
+    """A key of the field's type is sent as the key constructor writes it."""
+    requests_mock.get("https://related.example/users/", json=[])
+
+    list(User.filter(id=7))
+    list(User.filter(id__in=[7, 8]))
+
+    assert [r.qs for r in requests_mock.request_history] == [
+        {"id": ["7"]},
+        {"id__in": ["7,8"]},
+    ]
+
+
 def test_a_bare_key_that_builds_is_written_as_the_wire_key(
     requests_mock: Any,
 ) -> None:
@@ -784,12 +820,47 @@ def test_a_lookup_that_does_not_compare_the_key_is_not_converted(
     """Another suffix compares something else, which is sent as given."""
     requests_mock.get("https://related.example/posts/", json=[])
 
-    list(Post.filter(owner__id__in=["7"], owner__name="x", owner__isnull=True))
+    list(Post.filter(owner__name="x", owner__isnull=True))
 
     assert requests_mock.last_request.qs == {
-        "owner__id__in": ["7"],
         "owner__name": ["x"],
         "owner__isnull": ["true"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("lookup", "value"),
+    [
+        ("owner__id__in", ["7"]),
+        ("owner__pk", "7"),
+        ("owner__pk__in", ["7"]),
+        ("owner__id__exact", True),
+        ("owner__id", 1.5),
+    ],
+)
+def test_a_bare_value_on_a_path_to_the_key_is_built_by_the_keys_model(
+    lookup: str, value: Any, requests_mock: Any
+) -> None:
+    """The path compares the key, so a key of another JSON type is refused."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(Post.filter(params={lookup: value}))
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_bare_key_on_a_path_to_the_key_is_sent_as_the_relation_sends_it(
+    requests_mock: Any,
+) -> None:
+    """A key of the right type is built to its wire value."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    list(Post.filter(owner__id__in=[7, 8], owner__pk=9))
+
+    assert requests_mock.last_request.qs == {
+        "owner__id__in": ["7,8"],
+        "owner__pk": ["9"],
     }
 
 

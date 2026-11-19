@@ -2965,38 +2965,37 @@ def _relation_model(analyzed: AnalyzedType) -> type[Any] | None:
 _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
 
 
-def _key_operand_model(relation: type[Any], rest: str) -> type[Any] | None:
-    """Return the model whose objects a lookup through a relation compares.
+@dataclass(frozen=True)
+class _Parameter:
+    """What a query parameter's name means, resolved once."""
 
-    The operands of a lookup on a relation are objects of the relation's model,
-    or of the model that its key names when the key is a relation. A path that
-    goes on to any other field of the related model compares that field's
-    values, which another model's objects may be.
+    wire: str
+    """The name that the parameter is sent under."""
 
-    Args:
-        relation: Model that the relation's field names.
-        rest: The lookup after the relation's name, such as ``in``, ``pk``,
-            ``id__in``, or ``team__in``. The key may be named by ``pk``, its
-            Python name, or its JSON key.
+    field: str | None
+    """The field that its errors name, or ``None`` for a name of no field."""
 
-    Returns:
-        The model that the operands of a path that ends at the key must be of,
-        or ``None`` if the path goes to a field that is not the key.
-    """
-    path = rest.split("__")
-    if path[-1] in _VALUE_LOOKUPS:
-        path.pop()
-    model = relation
-    for position, name in enumerate(path):
-        prop = _pk_property_of(model)
-        if prop is None or name not in ("pk", prop.field, prop.json_field):
-            return None
-        related = _related_key_type(_analyzed_in_use(model, prop))
-        if related is None:
-            # The key's own value ends the path.
-            return model if position == len(path) - 1 else None
-        model = related.model_type
-    return model
+    conversion: AnalyzedType | None
+    """The conversion of each operand, or ``None`` to send it as given."""
+
+    collection: CollectionType | None
+    """A collection field's own type, for its own parameter."""
+
+    structured: bool
+    """Whether the field writes every value as a list or an object."""
+
+    several: bool
+    """Whether it is a lookup that takes several values."""
+
+    own: bool
+    """Whether it is a field's own parameter, which a creation sends."""
+
+    deferred: bool = False
+    """Whether the field's relation could not be resolved yet."""
+
+    key: RelatedType | None = None
+    """The relation by which an operand that is no model is built, for the
+    model's own key field, so that the key constructor builds it."""
 
 
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
@@ -7968,39 +7967,47 @@ class JSONObject:
         return cls._structure_of(name) is not None
 
     @classmethod
-    def _is_whole_query_value(cls, name: str, value: Any) -> bool:
-        """Return whether a field's conversion takes a value as a whole.
+    def _takes_whole(
+        cls, conversion: AnalyzedType, value: Any, *, structured: bool
+    ) -> bool:
+        """Return whether a conversion takes a value as one operand.
 
-        A model for a related field, and an instance of a class that a
-        conversion of the field's type, or of its collection's items, encodes,
-        are one value even if they are iterable.
+        Args:
+            conversion: The conversion of each operand.
+            value: Query value.
+            structured: Whether the field writes every value as a list or an
+                object, so that any value is one.
+
+        Returns:
+            Whether ``value`` is one operand even if it is iterable: a model
+            for a relation, or a value that a registered conversion encodes.
+        """
+        conversion = _unwrap_optional_type(conversion)
+        if isinstance(conversion, RelatedType):
+            return isinstance(value, JSONObject)
+        if structured:
+            return True
+        found = _class_entry(conversion, _table_of(cls))
+        if found is None and isinstance(conversion, BaseType):
+            found = _conversion_of(conversion.base_type, _table_of(cls))
+        return found is not None and _encodes(value, found)
+
+    @classmethod
+    def _takes_whole_value(cls, name: str, value: Any) -> bool:
+        """Return whether a parameter's conversion takes a value whole.
 
         Args:
             name: Name of the parameter.
             value: Query value.
 
         Returns:
-            Whether ``name`` is a JSON-backed field and its conversion takes
-            ``value`` as one value, not as a collection of values.
+            Whether the query would send ``value`` as one operand, or refuse it
+            for a lookup of several values, rather than read its items.
         """
-        descriptor = getattr(cls, name, None)
-        if not isinstance(descriptor, JSONProperty):
-            return False
-        collection = cls._query_collection(descriptor)
-        conversion = _unwrap_optional_type(
-            _analyzed_in_use(cls, descriptor)
-            if collection is None
-            else collection.item_type
+        parameter = cls._parameter(name)
+        return parameter.conversion is not None and cls._takes_whole(
+            parameter.conversion, value, structured=parameter.structured
         )
-        if isinstance(conversion, RelatedType):
-            return isinstance(value, JSONObject)
-        if cls._writes_structure(name):
-            # Its items are not each of the field's type.
-            return True
-        found = _class_entry(conversion, _table_of(cls))
-        if found is None and isinstance(conversion, BaseType):
-            found = _conversion_of(conversion.base_type, _table_of(cls))
-        return found is not None and _encodes(value, found)
 
     @classmethod
     def _lookup_field(cls, name: str) -> tuple[str, str] | None:
@@ -8024,193 +8031,127 @@ class JSONObject:
         return None if found is None else (found, name[len(found) + 2 :])
 
     @classmethod
-    def _query_key(cls, name: str) -> str:
-        """Return the JSON key that a query parameter is sent under.
+    def _field_parameter(
+        cls, field: str, wire: str, *, several: bool, own: bool
+    ) -> _Parameter:
+        """Resolve a parameter that compares the values of a field.
 
         Args:
-            name: Name of the parameter, a field, a lookup on a field, or
-                another name.
+            field: Python name of the field.
+            wire: The name that the parameter is sent under.
+            several: Whether it is a lookup that takes several values.
+            own: Whether it is the field's own parameter.
 
         Returns:
-            The JSON key of a field, a lookup on a field with the field's name
-            replaced by its JSON key, and any other name as it is.
+            The parameter. A field that writes every value as a list or an
+            object takes no conversion in a lookup, which is sent as given. The
+            own parameter of the model's key field builds each operand that is
+            no model with the key constructor.
+
+        Raises:
+            FieldConversionError: If the field's type cannot be resolved.
         """
-        descriptor = getattr(cls, name, None)
-        if isinstance(descriptor, JSONProperty):
-            return descriptor.json_field
-        found = cls._lookup_field(name)
-        if found is None:
-            return name
-        field = found[0]
-        json_field: str = getattr(cls, field).json_field
-        return json_field + name[len(field) :]
-
-    @classmethod
-    def _query_items(cls, name: str, value: Any) -> tuple[list[Any], bool]:
-        """Return the operands of a query parameter, each encoded.
-
-        A value that the field's conversion takes as a whole is one operand,
-        even if the conversion writes it as a list. Otherwise an iterable that
-        is not a string, bytes, or a mapping is read once and gives an operand
-        for each of its items, which the item conversion of a collection field,
-        or the field's conversion, encodes. A lookup whose suffix compares
-        values of its field, such as ``in`` or ``gte``, encodes its operands as
-        the field's own parameter does, unless the field writes every value as
-        a list or an object, whose lookups are sent as given. Any other
-        parameter is not converted, except that a model is its primary key.
-
-        Args:
-            name: Name of the parameter.
-            value: Query value.
-
-        Returns:
-            The operands, and whether the value gave them as repeated ones.
-        """
-        descriptor = getattr(cls, name, None)
-        field = name if isinstance(descriptor, JSONProperty) else None
-        found = None if field is not None else cls._lookup_field(name)
-        if found is not None and found[1] in _VALUE_LOOKUPS:
-            # A field that writes a list or an object takes no value of its
-            # own, so a lookup on it is sent as given.
-            with _converting(cls, found[0]):
-                if not cls._writes_structure(found[0]):
-                    field = found[0]
-        convert: Callable[[Any], Any]
-        guard: contextlib.AbstractContextManager[None]
-        if field is not None:
-            descriptor = getattr(cls, field)
+        descriptor = getattr(cls, field)
+        with _converting(cls, field):
+            structured = cls._writes_structure(field)
+            if structured and not own:
+                return _Parameter(wire, field, None, None, True, several, own)
             collection = cls._query_collection(descriptor)
             analyzed = (
                 _analyzed_in_use(cls, descriptor)
                 if collection is None
                 else collection.item_type
             )
-            conversion = _query_type(analyzed)
-
-            def convert(item: Any) -> Any:
-                return _query_value(cls._to_json(item, conversion, api=None))
-
-            guard = _converting(cls, field)
-        else:
-            collection = None
-            guard = (
-                contextlib.nullcontext()
-                if found is None
-                else _converting(cls, found[0])
-            )
-
-            def convert(item: Any) -> Any:
-                # Another model object is its own key. Only an operand that is
-                # a model needs the field's type, which a lookup of a field
-                # that is not yet defined may not have. It is built by its
-                # relation's model if the lookup is on a relation, and refused
-                # as the relation refuses it.
-                if not isinstance(item, JSONObject):
-                    return item
-                relation = (
-                    None
-                    if found is None
-                    else _relation_model(
-                        _analyzed_in_use(cls, getattr(cls, found[0]))
-                    )
-                )
-                if relation is None:
-                    return _related_wire_key(item, type(item))
-                # A path through the relation to another model's field, such as
-                # ``owner__team__in``, takes that model's objects. The
-                # relation's own key takes only objects of the model that the
-                # key names, which is the key's model if the key is a relation.
-                assert found is not None
-                target = _key_operand_model(relation, found[1])
-                if target is not None:
-                    _check_related_class(item, target)
-                    relation = target
-                if not isinstance(item, relation):
-                    return _related_wire_key(item, type(item))
-                _check_related_key(item, relation)
-                return _related_wire_key(item, relation)
-
-        with guard:
-            # A value of a lookup that takes several values is always their
-            # collection.
+            key = None
             if (
-                field is not None
-                and not cls._is_list_lookup(name)
-                and cls._is_whole_query_value(field, value)
+                own
+                and descriptor is _pk_property_of(cls)
+                and _related_key_type(analyzed) is None
             ):
-                return [convert(value)], False
-            if (
-                value is None
-                or isinstance(value, (str, bytes, Mapping))
-                or not isinstance(value, Iterable)
-            ):
-                return [convert(value)], False
-            if isinstance(value, RelatedCollection):
-                # Reading the collection must not use up its single traversal.
-                value = value._related_objects()
-            items = _each_item(convert, value)
-            if collection is not None and _READ_AS[
-                collection.collection_type
-            ] in (set, frozenset):
-                items.sort(key=_json_order)
-            return items, True
-
-    @classmethod
-    def _is_list_lookup(cls, name: str) -> bool:
-        """Return whether a parameter is a lookup that takes several values.
-
-        Args:
-            name: Name of the parameter.
-
-        Returns:
-            Whether ``name`` ends in ``__in`` or ``__range`` and is no field's
-            own name, whose parameter repeats a collection instead.
-        """
-        return name.endswith(("__in", "__range")) and not isinstance(
-            getattr(cls, name, None), JSONProperty
+                key = RelatedType(cls)
+        return _Parameter(
+            wire,
+            field,
+            _query_type(analyzed),
+            collection if own else None,
+            structured,
+            several,
+            own,
+            key=key,
         )
 
     @classmethod
-    def _is_whole_lookup_value(cls, name: str, value: Any) -> bool:
-        """Return whether a lookup is given one value that its field takes.
+    def _parameter(cls, name: str) -> _Parameter:
+        """Resolve a query parameter's name, once, to what its operands are.
 
-        Args:
-            name: Name of a parameter that is no field's own name, such as
-                ``span__in`` or ``span__exact``.
-            value: Query value.
-
-        Returns:
-            Whether the lookup compares values of a field that writes ``value``
-            as one value, so that ``value`` is no collection of them even if it
-            is iterable.
-        """
-        found = cls._lookup_field(name)
-        if found is None or found[1] not in _VALUE_LOOKUPS:
-            return False
-        with _converting(cls, found[0]):
-            if cls._writes_structure(found[0]):
-                return False
-            return cls._is_whole_query_value(found[0], value)
-
-    @classmethod
-    def _lookup_structure(cls, name: str) -> AnalyzedType | None:
-        """Return the structure that a value lookup's field writes.
+        A field's own name compares the field's values. A lookup on a field,
+        ``<field>__<path>``, compares the field's values if the path is one
+        value suffix, and the related key's values if the field is a relation
+        and the path names the related key, through any key that is itself a
+        relation, followed by at most one value suffix. Any other lookup, and a
+        name that is no lookup, compares something else, and its operands are
+        sent as given, a model as its key.
 
         Args:
             name: Name of the parameter.
 
         Returns:
-            The structure that ``_structure_of()`` finds for the field of a
-            lookup that compares values of it, such as ``point__in``. ``None``
-            for any other parameter, including a field's own name.
+            The parameter.
+
+        Raises:
+            FieldConversionError: If the type of the field that the parameter
+                compares cannot be resolved.
         """
-        if isinstance(getattr(cls, name, None), JSONProperty):
-            return None
+        several = name.endswith(("__in", "__range"))
+        descriptor = getattr(cls, name, None)
+        if isinstance(descriptor, JSONProperty):
+            return cls._field_parameter(
+                name, descriptor.json_field, several=False, own=True
+            )
         found = cls._lookup_field(name)
-        if found is None or found[1] not in _VALUE_LOOKUPS:
-            return None
-        with _converting(cls, found[0]):
-            return cls._structure_of(found[0])
+        if found is None:
+            return _Parameter(name, None, None, None, False, several, False)
+        field, rest = found
+        descriptor = getattr(cls, field)
+        wire = f"{descriptor.json_field}__{rest}"
+        path = rest.split("__")
+        if path[-1] in _VALUE_LOOKUPS:
+            path.pop()
+        if not path:
+            # A value lookup compares the field's own values.
+            return cls._field_parameter(
+                field, wire, several=several, own=False
+            )
+        try:
+            model = _relation_model(_analyzed_in_use(cls, descriptor))
+        except Exception:  # noqa: BLE001
+            # The relation is not defined yet. Only a model operand needs it.
+            return _Parameter(
+                wire, field, None, None, False, several, False, deferred=True
+            )
+        for position, segment in enumerate(path):
+            prop = None if model is None else _pk_property_of(model)
+            if prop is None or segment not in (
+                "pk",
+                prop.field,
+                prop.json_field,
+            ):
+                model = None
+                break
+            assert model is not None
+            related = _related_key_type(_analyzed_in_use(model, prop))
+            if related is None:
+                if position != len(path) - 1:
+                    model = None
+                break
+            model = related.model_type
+        if model is None:
+            return _Parameter(wire, field, None, None, False, several, False)
+        # The path compares the related key, so it takes what the relation
+        # takes: an object of the key's model, or its key.
+        return _Parameter(
+            wire, field, RelatedType(model), None, False, several, False
+        )
 
     @classmethod
     def _structured_value_error(cls, name: str, what: str) -> ValueError:
@@ -8235,6 +8176,16 @@ class JSONObject:
         cls, name: str, value: Any, style: str = "comma"
     ) -> list[Any]:
         """Return the operands that a query sends for a parameter.
+
+        A value that the parameter's conversion takes as a whole is one
+        operand, even if the conversion writes it as a list. Otherwise an
+        iterable that is not a string, bytes, or a mapping is read once and
+        gives an operand for each of its items. A parameter that compares the
+        values of a field encodes its operands as the field's own parameter
+        does, unless the field writes every value as a list or an object, whose
+        lookups are sent as given. One that compares a key builds each operand
+        with the key constructor. Any other parameter is not converted, except
+        that a model is its primary key.
 
         Args:
             name: Name of the parameter.
@@ -8261,30 +8212,81 @@ class JSONObject:
                 object is given an instance of the field's own class, an item
                 of one, or a collection for a lookup of one value, since the
                 caller must encode such a value.
+            FieldConversionError: If the parameter's conversion refuses an
+                operand.
         """
-        several = cls._is_list_lookup(name)
-        structure = cls._lookup_structure(name)
+        parameter = cls._parameter(name)
+        guard = (
+            contextlib.nullcontext()
+            if parameter.field is None
+            else _converting(cls, parameter.field)
+        )
         own: type[Any] | None = None
-        if isinstance(structure, NamedTupleType):
-            own = structure.named_tuple
-        elif isinstance(structure, DataclassType):
-            own = structure.dataclass_type
-        if structure is not None:
+        if parameter.structured and not parameter.own:
+            assert parameter.field is not None
+            structure = cls._structure_of(parameter.field)
+            if isinstance(structure, NamedTupleType):
+                own = structure.named_tuple
+            elif isinstance(structure, DataclassType):
+                own = structure.dataclass_type
             if own is not None and isinstance(value, own):
                 raise cls._structured_value_error(name, f"a {own.__name__}")
-            if not several and _is_collection_value(value):
+            if not parameter.several and _is_collection_value(value):
                 raise cls._structured_value_error(name, "a collection")
+        whole = parameter.conversion is not None and cls._takes_whole(
+            parameter.conversion, value, structured=parameter.structured
+        )
+        several = parameter.several
         if several and (
             isinstance(value, JSONObject)
             or not _is_collection_value(value)
-            or cls._is_whole_lookup_value(name, value)
+            or whole
         ):
             raise ValueError(
                 f"Query parameter {name} for {cls.__name__} cannot be sent, "
                 "because it takes several values and its value is not a "
                 "collection of them. Pass a list"
             )
-        operands, repeated = cls._query_items(name, value)
+
+        def convert(item: Any) -> Any:
+            conversion = parameter.conversion
+            if conversion is not None:
+                if (
+                    parameter.key is not None
+                    and item is not None
+                    and not isinstance(item, (JSONObject, Mapping))
+                    and not _is_collection_value(item)
+                ):
+                    # A value that no key could be is left to the checks of
+                    # what a query can send.
+                    conversion = parameter.key
+                return _query_value(cls._to_json(item, conversion, api=None))
+            if not isinstance(item, JSONObject):
+                return item
+            if parameter.deferred:
+                # Raise the error that resolving the relation raises.
+                assert parameter.field is not None
+                _analyzed_in_use(cls, getattr(cls, parameter.field))
+            return _related_wire_key(item, type(item))
+
+        with guard:
+            if (
+                whole
+                or value is None
+                or isinstance(value, (str, bytes, Mapping))
+                or not isinstance(value, Iterable)
+            ):
+                operands, repeated = [convert(value)], False
+            else:
+                if isinstance(value, RelatedCollection):
+                    # Reading the collection must not use up its single
+                    # traversal.
+                    value = value._related_objects()
+                operands, repeated = _each_item(convert, value), True
+                if parameter.collection is not None and _READ_AS[
+                    parameter.collection.collection_type
+                ] in (set, frozenset):
+                    operands.sort(key=_json_order)
         if own is not None and any(isinstance(item, own) for item in operands):
             raise cls._structured_value_error(
                 name, f"a collection of {own.__name__} items"
@@ -8381,7 +8383,7 @@ class JSONObject:
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
         for name, value in params.items():
-            key = cls._query_key(name)
+            key = cls._parameter(name).wire
             if key in payload:
                 clash = TypeError(f"Multiple fields use the JSON key {key}")
                 for field in (names[key], name):
@@ -9528,8 +9530,7 @@ class JSONObject:
             name: list(value)
             if isinstance(value, Iterable)
             and not isinstance(value, (Collection, str, bytes, Mapping))
-            and not cls._is_whole_query_value(name, value)
-            and not cls._is_whole_lookup_value(name, value)
+            and not cls._takes_whole_value(name, value)
             else value
             for name, value in _query_params(params, kwargs).items()
         }
