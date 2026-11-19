@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Iterable, Mapping
-from typing import Annotated, Any, ClassVar, NewType
+from typing import Annotated, Any, ClassVar, Literal, NewType
 
 import pytest
 
@@ -910,3 +910,88 @@ def test_prefetch_builds_each_distinct_key_once_before_the_hook(
 
     assert hook_calls[0][0] == {"a", "b"}
     assert hook_calls[0][1] == 2
+
+
+@json_object
+class Lit(RelatedBase):
+    """Model keyed by one of two strings."""
+
+    class_url = "/letters/"
+
+    id: Literal["a", "b"]
+
+
+@json_object
+class LitRef(RelatedBase):
+    """Model that relates to a model keyed by a literal."""
+
+    class_url = "/litrefs/"
+
+    id: int
+    lit: Lit
+
+
+@json_object
+class Shade(RelatedBase):
+    """Model keyed by one member of an enum, and an integer."""
+
+    class_url = "/shades/"
+
+    id: Literal[Color.RED, 3]
+
+
+def test_a_literal_key_refuses_a_value_that_is_not_a_member() -> None:
+    """The key's value names a URL, so it must be one that the type lists."""
+    with pytest.raises(FieldConversionError, match=r"Lit\.id"):
+        Lit(id="c")
+    with pytest.raises(FieldConversionError, match=r"Lit\.id"):
+        _ = Lit(json={"id": "c"}).url
+    with pytest.raises(TypeError, match="cannot be read from its JSON"):
+        hash(Lit(json={"id": "c"}))
+    assert Lit(id="a").url == "/letters/a/"
+    assert Lit(json={"id": "b"}).url == "/letters/b/"
+
+
+def test_a_literal_key_checks_the_members_of_an_enum_and_an_integer() -> None:
+    """A member is compared by its wire value and its JSON type."""
+    assert Shade(json={"id": "red"}).url == "/shades/red/"
+    assert Shade(json={"id": 3}).url == "/shades/3/"
+    for key in ("blue", 4, "3", True):
+        with pytest.raises(FieldConversionError, match=r"Shade\.id"):
+            _ = Shade(json={"id": key}).url
+
+
+def test_a_relation_refuses_a_literal_key_that_is_not_a_member(
+    requests_mock: Any,
+) -> None:
+    """A read, a write, and a query name the relation, before any request."""
+    posted = requests_mock.post("https://related.example/litrefs/", json={})
+    outsider = Lit(json={"id": "c"})
+
+    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
+        _ = LitRef(json={"id": 1, "lit": "c"}).lit
+    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
+        LitRef.create(id=1, lit=outsider)
+    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
+        list(LitRef.filter(lit=outsider))
+    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
+        LitRef.create(id=1, lit="c")
+
+    assert requests_mock.call_count == 0
+    assert not posted.called
+
+
+def test_a_relation_writes_a_literal_key_that_is_a_member(
+    requests_mock: Any,
+) -> None:
+    """A member is written as the wire key."""
+    posted = requests_mock.post("https://related.example/litrefs/", json={})
+
+    LitRef.create(id=1, lit=Lit(id="a"))
+    LitRef.create(id=2, lit="b")
+
+    assert [r.json()["lit"] for r in requests_mock.request_history] == [
+        "a",
+        "b",
+    ]
+    assert posted.call_count == 2

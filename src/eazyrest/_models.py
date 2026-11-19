@@ -2303,25 +2303,27 @@ def _decode_key(obj: JSONObject, key: Any) -> Any:
     return host._from_json(value, conversion)
 
 
-def _native_key_kinds(
+def _native_key_values(
     owner: type[JSONObject], conversion: AnalyzedType
-) -> frozenset[str] | None:
-    """Return the JSON types that a key of a native codec may be given as.
+) -> tuple[frozenset[str], frozenset[tuple[str, Any]] | None] | None:
+    """Return what a key of a native codec may be given as.
 
     A key whose type is ``int`` or ``str``, or a ``Literal`` of such values,
     inside ``T | None``, ``NewType``, and ``Annotated``, has one JSON type. A
     value of another type would name another key than the server's spelling of
-    it, which a later load would refuse. A conversion that the model registers
-    for the key, or for a ``NewType`` or class inside it, decides its own wire
-    type instead.
+    it, which a later load would refuse. A ``Literal`` also has its members,
+    and a value that is none of them names no resource of the model. A
+    conversion that the model registers for the key, or for a ``NewType`` or
+    class inside it, decides its own wire type instead.
 
     Args:
         owner: Model that owns the key field.
         conversion: Analyzed type of the key field.
 
     Returns:
-        The JSON types, or ``None`` if a registered conversion owns the key or
-        the type is not one of these.
+        The JSON types, and for a ``Literal`` the members as pairs of a JSON
+        type and a wire value, otherwise ``None``. ``None`` instead of both if
+        a registered conversion owns the key or the type is not one of these.
     """
     table = _table_of(owner)
     while _class_entry(conversion, table) is None and isinstance(
@@ -2342,13 +2344,15 @@ def _native_key_kinds(
     while hasattr(base, "__supertype__"):
         base = base.__supertype__
     if typing.get_origin(base) is Literal:
-        return frozenset(
-            kind
+        members = frozenset(
+            (kind, wire)
             for member in typing.get_args(base)
-            if (kind := _json_kind(_literal_json(member, table))) is not None
+            if (kind := _json_kind(wire := _literal_json(member, table)))
+            is not None
         )
+        return frozenset(kind for kind, _ in members), members
     if base in (int, str):
-        return frozenset({base.__name__})
+        return frozenset({base.__name__}), None
     return None
 
 
@@ -2414,7 +2418,8 @@ def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
         TypeError: If the key cannot be decoded or encoded, or is not a string
             or an integer as the field's codec writes it, or is of another JSON
             type than a native codec reads.
-        ValueError: If the key cannot be decoded or encoded.
+        ValueError: If the key cannot be decoded or encoded, or is not a member
+            of the ``Literal`` that is its type.
         UsageError: If a related model had ``api`` assigned after the class was
             defined.
         Exception: If a key's type cannot be resolved yet, whatever resolving
@@ -2424,12 +2429,18 @@ def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
     if reduced is None:
         return None
     owner, conversion, value = reduced
-    kinds = _native_key_kinds(owner, conversion)
-    if kinds is not None and _json_kind(value) not in kinds:
-        raise TypeError(
-            f"The key must be a JSON {' or '.join(sorted(kinds))}, not a "
-            f"{type(value).__name__}"
-        )
+    native = _native_key_values(owner, conversion)
+    if native is not None:
+        kinds, members = native
+        if _json_kind(value) not in kinds:
+            raise TypeError(
+                f"The key must be a JSON {' or '.join(sorted(kinds))}, not a "
+                f"{type(value).__name__}"
+            )
+        if members is not None and (_json_kind(value), value) not in members:
+            raise ValueError(
+                "The key must be one of the members of its Literal type"
+            )
     host = obj if owner is type(obj) else object.__new__(owner)
     decoded = host._from_json(value, conversion)
     encoded = owner._to_json(decoded, conversion)

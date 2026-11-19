@@ -194,15 +194,17 @@ server names the resource, and these laws follow:
   `FieldConversionError` where it is given, as `"not-a-uuid"` does for a `UUID`
   key. So `User(id="1")`, `User(id=1.0)`, and `User(id=True)` raise for an
   `int` key, because a `bool` is not an `int`, since the two encode
-  differently. A registered conversion decides its own wire type, so a
-  `NewType` of `int` whose conversion writes a string is a string key. A
-  related object that a read builds from the server's JSON is checked the same
-  way, and the error names the relation field, as in `Post.owner`. A related
-  object that the program gives to a relation is checked the same way, whether
-  it is assigned, saved, given to `create()`, or used in a query or a lookup
-  such as `owner__in`, and so is one that `save(full=True)` reads from the
-  object's own JSON. The relation's model builds its key, so an object whose
-  key that model would not read raises `FieldConversionError` naming the
+  differently. A `Literal` key also raises for a value that is not one of its
+  members, as `Lit(id="c")` does for `Literal["a", "b"]`, where an ordinary
+  `Literal` field reads any JSON. A registered conversion decides its own wire
+  type, so a `NewType` of `int` whose conversion writes a string is a string
+  key. A related object that a read builds from the server's JSON is checked
+  the same way, and the error names the relation field, as in `Post.owner`. A
+  related object that the program gives to a relation is checked the same way,
+  whether it is assigned, saved, given to `create()`, or used in a query or a
+  lookup such as `owner__in`, and so is one that `save(full=True)` reads from
+  the object's own JSON. The relation's model builds its key, so an object
+  whose key that model would not read raises `FieldConversionError` naming the
   relation field before any request, as does one of a subclass that redeclares
   the key field with another type. A key that the program gives to a relation
   as it is, as in `post.owner = 7` or `filter(owner=7)`, is built the same way,
