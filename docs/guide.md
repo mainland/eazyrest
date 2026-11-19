@@ -215,13 +215,14 @@ server names the resource, and these laws follow:
   and for a bare value of a lookup that compares the relation's key, such as
   `filter(owner__in=[7])`, `filter(owner__id__in=[7])`, or
   `filter(owner__pk=7)`, which may name the key by `pk`, its Python name, or
-  its JSON key. A query for the key field of the model itself, as in
-  `User.filter(id=7)` or `User.get_or_create(id=7)`, builds its value the same
-  way, so `"7"` raises `FieldConversionError` naming the field before any
-  request. Another lookup, such as `owner__name`, compares something else, and
-  its value is sent as given, except that a related object in it is checked as
-  above and sent as its key. Give the key in its field's type, as the server
-  returns it.
+  its JSON key. A query that compares the key of the model itself, whether by
+  `id`, `pk`, or the key's JSON key, alone or with a value suffix, as in
+  `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
+  `User.get_or_create(id=7)`, builds each value the same way, so `"7"` for an
+  `int` key raises `FieldConversionError` naming the field before any request.
+  Another lookup, such as `owner__name`, compares something else, and its value
+  is sent as given, except that a related object in it is checked as above and
+  sent as its key. Give the key in its field's type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its

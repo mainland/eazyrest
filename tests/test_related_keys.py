@@ -746,6 +746,43 @@ def test_a_query_for_the_key_field_refuses_a_key_that_cannot_be_built(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize(
+    ("lookup", "value"),
+    [
+        ("pk", "7"),
+        ("id__exact", "7"),
+        ("id__in", ["7"]),
+        ("pk__in", ["7"]),
+        ("id__gte", "7"),
+        ("id__range", ["1", "9"]),
+    ],
+)
+def test_a_lookup_on_the_key_field_refuses_a_key_that_cannot_be_built(
+    lookup: str, value: Any, requests_mock: Any
+) -> None:
+    """Every name of the key, with any value suffix, compares a key."""
+    requests_mock.get("https://related.example/users/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"User\.id"):
+        list(User.filter(params={lookup: value}))
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_lookup_on_the_keys_json_name_builds_the_key(
+    requests_mock: Any,
+) -> None:
+    """A key read from another JSON key is compared under that key too."""
+    requests_mock.get("https://related.example/renamed/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Renamed\.uid"):
+        list(Renamed.filter(params={"id__in": ["7"]}))
+    list(Renamed.filter(params={"id__in": [7]}))
+
+    assert requests_mock.call_count == 1
+    assert requests_mock.last_request.qs == {"id__in": ["7"]}
+
+
 def test_a_query_for_the_key_field_sends_the_built_key(
     requests_mock: Any,
 ) -> None:
@@ -753,11 +790,15 @@ def test_a_query_for_the_key_field_sends_the_built_key(
     requests_mock.get("https://related.example/users/", json=[])
 
     list(User.filter(id=7))
+    list(User.filter(pk=7))
     list(User.filter(id__in=[7, 8]))
+    list(User.filter(id__range=[1, 9]))
 
     assert [r.qs for r in requests_mock.request_history] == [
         {"id": ["7"]},
+        {"pk": ["7"]},
         {"id__in": ["7,8"]},
+        {"id__range": ["1,9"]},
     ]
 
 

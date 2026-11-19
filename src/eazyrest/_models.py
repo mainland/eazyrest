@@ -8072,8 +8072,8 @@ class JSONObject:
         Returns:
             The parameter. A field that writes every value as a list or an
             object takes no conversion in a lookup, which is sent as given. The
-            own parameter of the model's key field builds each operand that is
-            no model with the key constructor.
+            model's key field builds each operand that is no model with the key
+            constructor, in its own parameter and in a lookup on it.
 
         Raises:
             FieldConversionError: If the field's type cannot be resolved.
@@ -8091,8 +8091,7 @@ class JSONObject:
             )
             key = None
             if (
-                own
-                and descriptor is _pk_property_of(cls)
+                descriptor is _pk_property_of(cls)
                 and _related_key_type(analyzed) is None
             ):
                 key = RelatedType(cls)
@@ -8135,6 +8134,19 @@ class JSONObject:
             return cls._field_parameter(
                 name, descriptor.json_field, several=False, own=True
             )
+        key_field = _pk_property_of(cls)
+        if key_field is not None:
+            # The key is also named by ``pk`` and by its JSON key, alone or
+            # with a value suffix.
+            head, _, tail = name.partition("__")
+            if (
+                head in ("pk", key_field.json_field)
+                and head != key_field.field
+                and (not tail or tail in _VALUE_LOOKUPS)
+            ):
+                return cls._field_parameter(
+                    key_field.field, name, several=several, own=False
+                )
         found = cls._lookup_field(name)
         if found is None:
             return _Parameter(name, None, None, None, False, several, False)

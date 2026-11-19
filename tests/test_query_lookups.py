@@ -784,7 +784,7 @@ def test_a_list_lookup_takes_a_list_of_values_that_its_field_takes_whole(
         ("name__in", [""]),
         ("name__in", ["", ""]),
         ("other__in", ["1", ""]),
-        ("id__range", ["", "5"]),
+        ("name__range", ["", "5"]),
     ],
 )
 def test_a_list_lookup_refuses_an_item_whose_text_is_empty(
