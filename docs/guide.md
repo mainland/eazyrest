@@ -719,11 +719,12 @@ with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
 gives an object that loads from that URL, and writing it sends the object's
 absolute URL, or a URL assigned as a string as given. Queries send its primary
 key, as DRF relation filters expect. A URL on an origin that the related
-model's API does not allow raises `FieldConversionError`. An object known only
-by its URL has no hash until it loads, so a set of them cannot exist. A field
-of type `set`, `frozenset`, `Set`, or `MutableSet` whose items are
-`Hyperlinked()` relations raises `TypeError` when the class is decorated.
-Declare a `list` or a `tuple` instead. The
+model's API does not allow raises `FieldConversionError`, also when it is
+written as a string. An object known only by its URL has no hash until it
+loads, so a set of them cannot exist. A field of type `set`, `frozenset`,
+`Set`, or `MutableSet` whose items are `Hyperlinked()` relations raises
+`TypeError` when the class is decorated. Declare a `list` or a `tuple` instead.
+The
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 

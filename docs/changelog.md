@@ -483,7 +483,10 @@ describe them further.
   an object of a subclass that redeclares the key field with another type is
   refused when it is written, as it already was in a query, where `v1.0.0a5`
   wrote its URL. An object known only by its URL is refused by its class,
-  without a load.
+  without a load. A URL written as a string is checked as a read checks it, so
+  one on an origin that the related model's API does not allow raises
+  `FieldConversionError` naming the field, where `v1.0.0a5` sent it and the
+  read raised.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

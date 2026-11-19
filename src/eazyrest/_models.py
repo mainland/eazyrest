@@ -6356,6 +6356,10 @@ class JSONObject:
                     with _of_the_relation():
                         return value.absolute_url
                 if isinstance(value, str):
+                    # A write takes what reading the field accepts, which is a
+                    # URL on an origin that the related model's API allows.
+                    _check_api_attribute(model_type, UsageError)
+                    _checked_hyperlink(model_type.api, value)
                     return value
                 raise TypeError(
                     "Hyperlinked field values must be objects or URLs, got "

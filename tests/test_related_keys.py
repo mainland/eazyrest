@@ -846,6 +846,49 @@ def test_a_hyperlinked_relation_refuses_a_subclass_known_only_by_its_url(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize(
+    "url", ["https://elsewhere.example/users/2/", "http://[bad]/users/2/"]
+)
+def test_a_hyperlinked_relation_refuses_a_url_that_reading_refuses(
+    url: Any, requests_mock: Any
+) -> None:
+    """A string is checked as the field's read checks it, before a request."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = url
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=2, author=url)
+    with pytest.raises(FieldConversionError, match=r"Roster\.members"):
+        Roster.create(id=2, members=["https://related.example/users/1/", url])
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        _ = Note(json={"id": 1, "author": url}).author
+
+    assert note._pending_updates == {}
+    assert not posted.called
+    assert requests_mock.call_count == 0
+
+
+def test_a_hyperlinked_relation_writes_a_url_that_reading_accepts(
+    requests_mock: Any,
+) -> None:
+    """A URL of the API's origin is written as given, absolute or relative."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+
+    Note.create(id=2, author="https://related.example/users/3/")
+    Note.create(id=3, author="/users/4/")
+
+    assert [r.json()["author"] for r in requests_mock.request_history] == [
+        "https://related.example/users/3/",
+        "/users/4/",
+    ]
+    assert posted.call_count == 2
+
+
 def test_a_hyperlinked_relation_writes_the_url_of_an_object_with_a_key(
     requests_mock: Any,
 ) -> None:
