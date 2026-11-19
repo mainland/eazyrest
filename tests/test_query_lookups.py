@@ -513,6 +513,57 @@ def test_an_in_lookup_on_a_structured_field_is_sent_as_given(
     }
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("point__exact", Point(1, 2)),
+        ("point__in", Point(1, 2)),
+        ("point__range", Point(1, 2)),
+        ("maybe__exact", Point(1, 2)),
+        ("size__exact", Size(3)),
+        ("size__in", Size(3)),
+        ("point__in", [Point(1, 2), Point(3, 4)]),
+        ("size__in", [Size(3), Size(4)]),
+        ("point__exact", [1, 2]),
+        ("fixed__exact", (1, 2)),
+        ("fixed__gt", iter([1, 2])),
+        ("size__exact", [3]),
+    ],
+)
+def test_a_lookup_on_a_structured_field_refuses_a_value_to_encode(
+    name: str, value: Any, requests_mock: Any
+) -> None:
+    """The caller encodes such a value, so it is not sent as its items."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    with pytest.raises(ValueError, match=rf"{name}.*Encode the value"):
+        list(Placed.filter(params={name: value}))
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "sent"),
+    [
+        ("point__exact", "1,2", "1,2"),
+        ("point__in", ("1-2", "3-4"), "1-2,3-4"),
+        ("point__range", ["1-2", "3-4"], "1-2,3-4"),
+        ("size__in", ["a", "b"], "a,b"),
+    ],
+)
+def test_a_lookup_on_a_structured_field_sends_text_as_given(
+    name: str, value: Any, sent: str, requests_mock: Any
+) -> None:
+    """Text that the caller encoded, alone or in a collection, is sent."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    list(Placed.filter(params={name: value}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        name: [sent]
+    }
+
+
 def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
     requests_mock: Any,
 ) -> None:

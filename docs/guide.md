@@ -1183,7 +1183,10 @@ key of the wrong type among them, raises `FieldConversionError` naming the
 field, and one that the field accepts as it is, such as `"done"` for an enum,
 is sent as given. A field whose conversion writes every value as a list or an
 object takes no value under its own name, so a lookup on it is sent as given
-too. A lookup is sent under the field's JSON key, with any suffix, so
+too: pass the text that the API expects, as in `point__exact="1,2"`. An
+instance of the field's own class, or a collection given to a lookup of one
+value, raises `ValueError`, since the lookup would send its items. A lookup is
+sent under the field's JSON key, with any suffix, so
 `field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
 starts with the name of no field, followed by `__`, is sent as given. If two
 fields' names fit, the longer one is the field. Any other keyword argument, and

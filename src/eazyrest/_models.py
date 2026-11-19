@@ -8169,6 +8169,44 @@ class JSONObject:
             return cls._is_whole_query_value(found[0], value)
 
     @classmethod
+    def _lookup_structure(cls, name: str) -> AnalyzedType | None:
+        """Return the structure that a value lookup's field writes.
+
+        Args:
+            name: Name of the parameter.
+
+        Returns:
+            The structure that ``_structure_of()`` finds for the field of a
+            lookup that compares values of it, such as ``point__in``. ``None``
+            for any other parameter, including a field's own name.
+        """
+        if isinstance(getattr(cls, name, None), JSONProperty):
+            return None
+        found = cls._lookup_field(name)
+        if found is None or found[1] not in _VALUE_LOOKUPS:
+            return None
+        with _converting(cls, found[0]):
+            return cls._structure_of(found[0])
+
+    @classmethod
+    def _structured_value_error(cls, name: str, what: str) -> ValueError:
+        """Return the error for a lookup on a structured field given a value.
+
+        Args:
+            name: Name of the parameter.
+            what: What the value is, such as ``"a collection"``.
+
+        Returns:
+            A ``ValueError`` that says to encode the value.
+        """
+        return ValueError(
+            f"Query parameter {name} for {cls.__name__} cannot be sent, "
+            f"because its value is {what}, and the field writes every value "
+            "as a list or an object, so a lookup on it is sent as given. "
+            "Encode the value as the API expects"
+        )
+
+    @classmethod
     def _query_operands(
         cls, name: str, value: Any, style: str = "comma"
     ) -> list[Any]:
@@ -8194,9 +8232,24 @@ class JSONObject:
                 ignore or change its constraint. Also if a lookup that takes
                 several values is given anything but a collection, a
                 ``__range`` is given other than two operands, or an operand's
-                text is empty, or holds a comma under ``"comma"``.
+                text is empty, or holds a comma under ``"comma"``. Also if a
+                lookup on a field that writes every value as a list or an
+                object is given an instance of the field's own class, an item
+                of one, or a collection for a lookup of one value, since the
+                caller must encode such a value.
         """
         several = cls._is_list_lookup(name)
+        structure = cls._lookup_structure(name)
+        own: type[Any] | None = None
+        if isinstance(structure, NamedTupleType):
+            own = structure.named_tuple
+        elif isinstance(structure, DataclassType):
+            own = structure.dataclass_type
+        if structure is not None:
+            if own is not None and isinstance(value, own):
+                raise cls._structured_value_error(name, f"a {own.__name__}")
+            if not several and _is_collection_value(value):
+                raise cls._structured_value_error(name, "a collection")
         if several and (
             isinstance(value, JSONObject)
             or not _is_collection_value(value)
@@ -8208,6 +8261,10 @@ class JSONObject:
                 "collection of them. Pass a list"
             )
         operands, repeated = cls._query_items(name, value)
+        if own is not None and any(isinstance(item, own) for item in operands):
+            raise cls._structured_value_error(
+                name, f"a collection of {own.__name__} items"
+            )
         problem = None
         if not repeated and operands[0] is None:
             problem = "is None, and requests omits it"
