@@ -7996,20 +7996,26 @@ class JSONObject:
             guard = _converting(cls, field)
         else:
             collection = None
-            relation = None
-            if found is not None:
-                guard = _converting(cls, found[0])
-                relation = _relation_model(
-                    _analyzed_in_use(cls, getattr(cls, found[0]))
-                )
-            else:
-                guard = contextlib.nullcontext()
+            guard = (
+                contextlib.nullcontext()
+                if found is None
+                else _converting(cls, found[0])
+            )
 
             def convert(item: Any) -> Any:
-                # Another model object is its own key, built by its relation's
-                # model if the lookup is on a relation.
+                # Another model object is its own key. Only an operand that is
+                # a model needs the field's type, which a lookup of a field
+                # that is not yet defined may not have. It is built by its
+                # relation's model if the lookup is on a relation.
                 if not isinstance(item, JSONObject):
                     return item
+                relation = (
+                    None
+                    if found is None
+                    else _relation_model(
+                        _analyzed_in_use(cls, getattr(cls, found[0]))
+                    )
+                )
                 if relation is None or not isinstance(item, relation):
                     return _related_wire_key(item, type(item))
                 return _related_wire_key(item, relation)

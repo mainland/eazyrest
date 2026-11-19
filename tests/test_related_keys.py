@@ -1756,3 +1756,29 @@ def test_a_keyless_item_of_a_hyperlinked_list_is_compared_as_a_key_list_is(
             "https://related.example/users/4/",
         ]
     }
+
+
+def test_a_lookup_that_compares_no_value_needs_no_type_of_its_field(
+    requests_mock: Any,
+) -> None:
+    """A field that cannot be resolved yet does not stop such a lookup."""
+
+    @json_object
+    class Waiting(RelatedBase):
+        """Model whose relation names a class that is not defined."""
+
+        class_url = "/waiting/"
+
+        id: int
+        owner: Missing  # type: ignore[name-defined]  # noqa: F821
+
+    requests_mock.get("https://related.example/waiting/", json=[])
+
+    list(Waiting.filter(owner__isnull=True, owner__name="bob"))
+
+    assert requests_mock.last_request.qs == {
+        "owner__isnull": ["true"],
+        "owner__name": ["bob"],
+    }
+    with pytest.raises(NameError):
+        list(Waiting.filter(owner__in=[7]))
