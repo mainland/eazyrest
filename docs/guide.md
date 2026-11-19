@@ -163,7 +163,10 @@ cannot be renamed through the object either:
   first load, so assigning it a key raises `AttributeError` too. So does
   assigning one to an object of a class that overrides `url`, which has a URL
   of its own, unless the key is given as the object is built, as in
-  `Slot(id=3)` for a class that formats its URL from the key.
+  `Slot(id=3)` for a class that formats its URL from the key. A class whose URL
+  does not use the key should not be given one, because eazyrest cannot tell
+  that the URL ignores it, and the object's first load raises
+  `ResponseShapeError` if the server names another key.
 
 A program that must rename a resource, on a server that allows it, sends the
 write with the raw API and builds the object again from the response:
