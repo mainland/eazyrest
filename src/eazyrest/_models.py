@@ -7837,6 +7837,36 @@ class JSONObject:
         return analyzed if isinstance(analyzed, CollectionType) else None
 
     @classmethod
+    def _writes_structure(cls, name: str) -> bool:
+        """Return whether a field writes every value as a list or an object.
+
+        Such a field's own parameter takes no value, since requests would send
+        the list as separate values and an object as its keys. The caller must
+        encode the value as the API expects.
+
+        Args:
+            name: Name of a JSON-backed field.
+
+        Returns:
+            Whether the field is, inside any optional, a fixed-length tuple, a
+            named tuple, a dataclass, a ``TypedDict``, or a mapping, and not a
+            collection of items.
+        """
+        descriptor = getattr(cls, name)
+        if cls._query_collection(descriptor) is not None:
+            return False
+        return isinstance(
+            _unwrap_optional_type(_analyzed_in_use(cls, descriptor)),
+            (
+                FixedTupleType,
+                NamedTupleType,
+                DataclassType,
+                TypedDictType,
+                MappingType,
+            ),
+        )
+
+    @classmethod
     def _is_whole_query_value(cls, name: str, value: Any) -> bool:
         """Return whether a field's conversion takes a value as a whole.
 
@@ -7863,16 +7893,7 @@ class JSONObject:
         )
         if isinstance(conversion, RelatedType):
             return isinstance(value, JSONObject)
-        if collection is None and isinstance(
-            conversion,
-            (
-                FixedTupleType,
-                NamedTupleType,
-                DataclassType,
-                TypedDictType,
-                MappingType,
-            ),
-        ):
+        if cls._writes_structure(name):
             # Its items are not each of the field's type.
             return True
         found = _class_entry(conversion, _table_of(cls))
@@ -7933,8 +7954,9 @@ class JSONObject:
         for each of its items, which the item conversion of a collection field,
         or the field's conversion, encodes. A lookup whose suffix compares
         values of its field, such as ``in`` or ``gte``, encodes its operands as
-        the field's own parameter does. Any other parameter is not converted,
-        except that a model is its primary key.
+        the field's own parameter does, unless the field writes every value as
+        a list or an object, whose lookups are sent as given. Any other
+        parameter is not converted, except that a model is its primary key.
 
         Args:
             name: Name of the parameter.
@@ -7947,7 +7969,11 @@ class JSONObject:
         field = name if isinstance(descriptor, JSONProperty) else None
         found = None if field is not None else cls._lookup_field(name)
         if found is not None and found[1] in _VALUE_LOOKUPS:
-            field = found[0]
+            # A field that writes a list or an object takes no value of its
+            # own, so a lookup on it is sent as given.
+            with _converting(cls, found[0]):
+                if not cls._writes_structure(found[0]):
+                    field = found[0]
         convert: Callable[[Any], Any]
         guard: contextlib.AbstractContextManager[None]
         if field is not None:

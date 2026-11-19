@@ -497,8 +497,9 @@ describe them further.
   `exact`, `in`, `range`, `gt`, `gte`, `lt`, and `lte`. A lookup is also sent
   under its field's JSON key, so `type___in` on a field `type_` with the key
   `type` is sent as `type__in`, where it was sent under the Python name. A
-  lookup such as `point__exact="1,2"`, on a field whose conversion writes a
-  list, is now refused as the field's own parameter is.
+  field whose conversion writes every value as a list or an object, such as a
+  `NamedTuple`, takes no value under its own name, so a lookup on it, such as
+  `point__exact="1,2"`, is sent as given, as it was.
 - A lookup whose name ends in `__in` or `__range` sends its values as one
   comma-separated parameter, `?id__in=1,2`, where `v1.0.0a5` sent the parameter
   repeated, `?id__in=1&id__in=2`. django-filter reads the joined form, and read

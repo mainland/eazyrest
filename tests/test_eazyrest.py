@@ -4506,26 +4506,17 @@ def test_query_refuses_a_list_for_a_field_whose_conversion_writes_a_list(
     assert requests_mock.call_count == 0
 
 
-def test_query_lookups_on_such_a_field_take_what_the_field_takes(
+def test_query_sends_a_lookup_on_the_key_of_such_a_field_unchanged(
     requests_mock: Any,
 ) -> None:
-    """A lookup on a value of the field is refused as the field is.
-
-    A lookup that compares something else is sent as given.
-    """
+    """A name that names no field is sent as given, as its ``str()``."""
     lookup = requests_mock.get("https://example.com/v1/placed/", json=[])
 
-    with pytest.raises(FieldConversionError, match=r"Placed\.point"):
-        list(Placed.filter(point__exact="1,2"))
-    with pytest.raises(FieldConversionError, match=r"Placed\.fixed"):
-        list(Placed.filter(fixed__exact="3,4"))
-    assert lookup.call_count == 0
-
-    list(Placed.filter(point__x__exact="1", fixed__isnull="false"))
+    list(Placed.filter(point__exact="1,2", fixed__exact="3,4"))
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "point__x__exact": ["1"],
-        "fixed__isnull": ["false"],
+        "point__exact": ["1,2"],
+        "fixed__exact": ["3,4"],
     }
 
 

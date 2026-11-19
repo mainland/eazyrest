@@ -1178,8 +1178,10 @@ enum member's `value`, `due__gte` sends an ISO 8601 string, and
 `flag__exact=True` sends `true`. A value that the field refuses, a relation's
 key of the wrong type among them, raises `FieldConversionError` naming the
 field, and one that the field accepts as it is, such as `"done"` for an enum,
-is sent as given. A lookup is sent under the field's JSON key, with any suffix,
-so `field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
+is sent as given. A field whose conversion writes every value as a list or an
+object takes no value under its own name, so a lookup on it is sent as given
+too. A lookup is sent under the field's JSON key, with any suffix, so
+`field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
 starts with the name of no field, followed by `__`, is sent as given. If two
 fields' names fit, the longer one is the field. Any other keyword argument, and
 a lookup whose suffix does not compare values of its field, such as `ordering`,
@@ -1243,14 +1245,13 @@ such as a model for a relation field or an instance of a class that
 value is refused if the conversion writes it as a list, as for a `NamedTuple`
 or fixed-length tuple field, because requests would send the list as separate
 values, which a server cannot tell from a filter on several values. No value
-can be sent under the field's own name, nor in a lookup that compares its
-values, such as `point__exact`. To filter on such a field, encode the value as
-the API expects and pass it under a name that names no field, such as the
-field's JSON key when it differs from its Python name, which is sent unchanged.
-A collection must be finite, because eazyrest reads all of it before it sends
-the request, so an endless generator never returns. Use the API's own null
-filter, such as `parent__isnull=True` in django-filter, to match objects whose
-field is null.
+can be sent under the field's own name. To filter on such a field, encode the
+value as the API expects and pass it under a name that names no field, such as
+a lookup on the field's JSON key like `point__exact="1,2"`, which is sent
+unchanged. A collection must be finite, because eazyrest reads all of it before
+it sends the request, so an endless generator never returns. Use the API's own
+null filter, such as `parent__isnull=True` in django-filter, to match objects
+whose field is null.
 
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. Its keyword arguments are sent in

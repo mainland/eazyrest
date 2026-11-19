@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import enum
-from typing import Annotated, Any
+from typing import Annotated, Any, NamedTuple, Optional, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -434,3 +435,81 @@ def test_get_or_create_joins_a_lookup_and_does_not_create_with_it(
     query = urlparse(requests_mock.request_history[0].url).query
     assert parse_qs(query) == {"type": ["x"], "id__in": ["1,2"]}
     assert created.last_request.json() == {"type": "x"}
+
+
+class Point(NamedTuple):
+    """A named tuple, which a field writes as a list."""
+
+    x: int
+    y: int
+
+
+class Corner(TypedDict):
+    """A typed dictionary, which a field writes as an object."""
+
+    x: int
+
+
+@dataclasses.dataclass
+class Size:
+    """A dataclass, which a field writes as an object."""
+
+    width: int
+
+
+@json_object
+class Placed(LookupBase):
+    """Model whose fields write every value as a list or an object."""
+
+    class_url = "/placed/"
+
+    id: int
+    point: Point
+    maybe: Optional[Point]  # noqa: UP045
+    fixed: tuple[int, int]
+    corner: Corner
+    size: Size
+    extra: dict[str, int]
+    name: str
+
+
+@pytest.mark.parametrize(
+    "field", ["point", "maybe", "fixed", "corner", "size", "extra"]
+)
+@pytest.mark.parametrize("suffix", ["exact", "gt", "lte"])
+def test_a_value_lookup_on_a_structured_field_is_sent_as_given(
+    field: str, suffix: str, requests_mock: Any
+) -> None:
+    """Such a field's own parameter takes no value, so the caller encodes."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    list(Placed.filter(params={f"{field}__{suffix}": "1,2"}))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        f"{field}__{suffix}": ["1,2"]
+    }
+
+
+def test_an_in_lookup_on_a_structured_field_is_sent_as_given(
+    requests_mock: Any,
+) -> None:
+    """The items of an ``in`` lookup are the caller's encodings."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    list(Placed.filter(point__in=["1-2", "3-4"]))
+
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        "point__in": ["1-2,3-4"]
+    }
+
+
+def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
+    requests_mock: Any,
+) -> None:
+    """Only a field that writes a list or an object takes the lookup as is."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Placed\.name"):
+        list(Placed.filter(name__exact=object()))
+
+    assert requests_mock.call_count == 0
