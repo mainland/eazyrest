@@ -310,7 +310,8 @@ class TeamViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TeamSerializer
     filter_backends = (DjangoFilterBackend,)
     filterset_fields: ClassVar[dict[str, list[str]]] = {
-        "name": ["exact", "startswith"]
+        "id": ["in"],
+        "name": ["exact", "startswith"],
     }
 
 
@@ -834,6 +835,27 @@ def test_bulk_recipes_prefetch_members_in_one_request(
     bulk = urlsplit(urls[1])
     assert bulk.path == bulk_path
     assert sorted(map(int, parse_qs(bulk.query)["id"])) == team_member_keys
+
+
+def test_an_in_lookup_matches_every_listed_object(
+    api: API, team_member_keys: list[int]
+) -> None:
+    """django-filter reads the comma-joined value that the default sends.
+
+    Args:
+        team_member_keys: Creates the teams that the query reads.
+    """
+    teams = list(FilteredTeamModel.filter(name__startswith="bulk-"))
+    keys = sorted(team.id for team in teams)
+    assert len(keys) == 2
+
+    with _recorded_urls(api) as urls:
+        found = list(FilteredTeamModel.filter(id__in=reversed(keys)))
+
+    assert sorted(team.id for team in found) == keys
+    assert parse_qs(urlsplit(urls[0]).query) == {
+        "id__in": [",".join(map(str, reversed(keys)))]
+    }
 
 
 def test_token_recipe_authenticates(api: API) -> None:

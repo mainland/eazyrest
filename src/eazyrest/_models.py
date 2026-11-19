@@ -2886,6 +2886,22 @@ def _relation_model(analyzed: AnalyzedType) -> type[Any] | None:
 _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
 
 
+def _lookup_operand_order(value: Any) -> tuple[int, Any]:
+    """Return a key that orders the operands of a lookup given a set.
+
+    Args:
+        value: Encoded operand, which is not always JSON, since a name that
+            names no field is not converted.
+
+    Returns:
+        The key of ``_json_order()`` for a JSON scalar, and for any other value
+        the key of its ``str()``.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return _json_order(value)
+    return _json_order(str(value))
+
+
 def _query_value(value: Any) -> Any:
     """Return an encoded field value as a query string should send it.
 
@@ -7859,7 +7875,13 @@ class JSONObject:
                 return _related_wire_key(item, relation)
 
         with guard:
-            if field is not None and cls._is_whole_query_value(field, value):
+            # A value of a lookup that takes several values is always their
+            # collection.
+            if (
+                field is not None
+                and not cls._is_list_lookup(name)
+                and cls._is_whole_query_value(field, value)
+            ):
                 return [convert(value)], False
             if (
                 value is None
@@ -7878,16 +7900,36 @@ class JSONObject:
             return items, True
 
     @classmethod
-    def _query_operands(cls, name: str, value: Any) -> list[Any]:
+    def _is_list_lookup(cls, name: str) -> bool:
+        """Return whether a parameter is a lookup that takes several values.
+
+        Args:
+            name: Name of the parameter.
+
+        Returns:
+            Whether ``name`` ends in ``__in`` or ``__range`` and is no field's
+            own name, whose parameter repeats a collection instead.
+        """
+        return name.endswith(("__in", "__range")) and not isinstance(
+            getattr(cls, name, None), JSONProperty
+        )
+
+    @classmethod
+    def _query_operands(
+        cls, name: str, value: Any, style: str = "comma"
+    ) -> list[Any]:
         """Return the operands that a query sends for a parameter.
 
         Args:
             name: Name of the parameter.
             value: Query value.
+            style: How a lookup that takes several values sends them,
+                ``"comma"`` or ``"repeat"``.
 
         Returns:
             A nonempty list of scalars, which requests sends as one parameter
-            repeated.
+            repeated. A lookup that takes several values gives one string of
+            its operands joined with commas, under ``"comma"``.
 
         Raises:
             ValueError: If the value is a mapping or ``None``, an empty
@@ -7895,8 +7937,20 @@ class JSONObject:
                 requests would omit, flatten, or send as its keys, or is one
                 value that its field's conversion writes as a list, which
                 requests would send as separate values, so the query would
-                ignore or change its constraint.
+                ignore or change its constraint. Also if a lookup that takes
+                several values is given anything but a collection, a
+                ``__range`` is given other than two operands, or an operand's
+                text holds a comma under ``"comma"``.
         """
+        several = cls._is_list_lookup(name)
+        if several and (
+            isinstance(value, JSONObject) or not _is_collection_value(value)
+        ):
+            raise ValueError(
+                f"Query parameter {name} for {cls.__name__} cannot be sent, "
+                "because it takes several values and its value is not a "
+                "collection of them. Pass a list"
+            )
         operands, repeated = cls._query_items(name, value)
         problem = None
         if not repeated and operands[0] is None:
@@ -7918,15 +7972,36 @@ class JSONObject:
             for operand in operands
         ):
             problem = "contains a collection, and requests flattens it"
+        elif several and name.endswith("__range") and len(operands) != 2:
+            problem = (
+                f"holds {len(operands)} items, and a range takes two, "
+                "its start and its end"
+            )
         if problem is not None:
             raise ValueError(
                 f"Query parameter {name} for {cls.__name__} cannot be sent, "
                 f"because its value {problem}"
             )
+        if several:
+            if isinstance(value, (set, frozenset)):
+                operands.sort(key=_lookup_operand_order)
+            if style == "comma":
+                texts = [str(operand) for operand in operands]
+                if any("," in text for text in texts):
+                    raise ValueError(
+                        f"Query parameter {name} for {cls.__name__} cannot "
+                        "be sent, because an item's text holds a comma, "
+                        "which the server would read as two items. Set "
+                        'the API\'s list_lookup_style to "repeat" if it '
+                        "reads repeated parameters"
+                    )
+                return [",".join(texts)]
         return operands
 
     @classmethod
-    def _encode_query(cls, params: Mapping[str, Any]) -> dict[str, Any]:
+    def _encode_query(
+        cls, params: Mapping[str, Any], client: Client | None = None
+    ) -> dict[str, Any]:
         """Encode query parameters as ``_encode_fields()`` encodes fields.
 
         Each parameter becomes a list of operands, which requests sends as the
@@ -7935,8 +8010,15 @@ class JSONObject:
         item, which matches the objects whose collection holds it. A boolean
         field value is sent as ``true`` or ``false``, as in JSON.
 
+        A parameter whose name ends in ``__in`` or ``__range`` takes a
+        collection of values, which the client's ``list_lookup_style`` sends as
+        one comma-separated value or as the parameter repeated.
+
         Args:
             params: Query parameter values keyed as for ``_encode_fields()``.
+            client: The client that sends the query, whose
+                ``list_lookup_style`` decides how a lookup of several values is
+                sent. The model's API by default.
 
         Returns:
             Operands by JSON key.
@@ -7944,8 +8026,15 @@ class JSONObject:
         Raises:
             TypeError: If two parameters have the same JSON key.
             ValueError: If a parameter has a value that requests would not send
-                intact, so the query would ignore or change its constraint.
+                intact, so the query would ignore or change its constraint, or
+                the client's ``list_lookup_style`` is not ``"comma"`` or
+                ``"repeat"``.
         """
+        style = (cls.api if client is None else client).list_lookup_style
+        if style not in ("comma", "repeat"):
+            raise ValueError(
+                f"list_lookup_style must be 'comma' or 'repeat', not {style!r}"
+            )
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
         for name, value in params.items():
@@ -7958,7 +8047,7 @@ class JSONObject:
                             raise clash
                 raise clash
             names[key] = name
-            payload[key] = cls._query_operands(name, value)
+            payload[key] = cls._query_operands(name, value, style)
 
         return payload
 
@@ -8803,7 +8892,7 @@ class JSONObject:
         client = base._scoped(options) if options else base
         context = _Query(api, client, options)
         resp = _check_final_response(
-            client.get(cls.class_url, params=cls._encode_query(query)),
+            client.get(cls.class_url, params=cls._encode_query(query, client)),
             "the query has no collection to read",
         )
         items = cls.collection_items_from_response(resp, api=client)
@@ -8931,7 +9020,9 @@ class JSONObject:
         )
         if url is None:
             resp = _check_final_response(
-                client.get(cls.class_url, params=cls._encode_query(query)),
+                client.get(
+                    cls.class_url, params=cls._encode_query(query, client)
+                ),
                 "the query has no collection to read",
             )
         else:

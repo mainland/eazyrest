@@ -594,8 +594,11 @@ That works well when the DRF endpoint accepts requests like:
 /users/?id=2&id=3
 ```
 
-If your API uses a different shape, such as `id__in=2,3` or a custom bulk
-action, implement that shape directly in `bulk_get_by_pks()`.
+If your API uses a different shape, such as `id__in=2,3`, which
+`cls.filter(id__in=pks, api=api)` sends by default, or a custom bulk action,
+implement that shape directly in `bulk_get_by_pks()`. `id__in=2&id__in=3` needs
+`list_lookup_style = "repeat"` on the `API`, and django-filter reads only the
+last of those.
 
 On the DRF server side, the simplest pattern is to expose a normal list
 endpoint that accepts repeated query parameters and filters by primary key:

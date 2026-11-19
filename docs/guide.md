@@ -1182,10 +1182,29 @@ its `str()`, except that a model instance, also as an item of a collection, is
 sent as its primary key. A collection repeats the parameter, so
 `Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
 `QueryDict.getlist()` reads, as django-filter does for a filter on a
-many-to-many field. django-filter's `__in` and `__range` lookups, and DRF's
-`ordering`, read one comma-separated value instead, and see only the last of
-repeated ones, so join the values yourself, as in
-`Todo.filter(user__in=",".join(str(user.pk) for user in users))` or
+many-to-many field.
+
+A lookup whose name ends in `__in` or `__range`, such as `user__in` or
+`due__range`, takes an iterable of values that is not a string, bytes, a
+mapping, or a model, read once, and sends them as one comma-separated
+parameter, which django-filter reads: `Todo.filter(user__in=users)` sends
+`user__in=3,5`, and `due__range=(start, end)` sends the two bounds. Each value
+is encoded as the field's own parameter encodes it. A set is sent in sorted
+order, so the same query gives the same URL in every process. A value that is
+no such iterable, such as `"1,2"` or `7`, an empty iterable, which
+django-filter would read as no filter, an item that is `None` or a collection,
+a `__range` of other than two items, and an item whose text holds a comma,
+which the server would split, raise `ValueError` naming the parameter.
+django-filter sees only the last of repeated `__in` values, and refuses
+repeated `__range` values.
+
+A server that reads repeated values of such a lookup, as `getlist()` does,
+needs the other form. Set `list_lookup_style = "repeat"` on the `API`, on an
+instance or in a subclass, and `Todo.filter(user__in=users)` sends
+`user__in=3&user__in=5`. The setting is read from the API that sends the query,
+and applies to every lookup whose name ends in `__in` or `__range`, not to a
+field's own parameter. Another parameter that the server reads as a joined
+value, such as DRF's `ordering`, is yours to join, as in
 `Todo.filter(ordering="due,-priority")`.
 
 The keyword arguments `api`, `prefetch`, `defaults`, `request_options`,
@@ -1316,8 +1335,8 @@ class User(JSONObject):
 
 The exact implementation depends on the API. Some APIs accept repeated
 parameters such as `?id=1&id=2`, and others use a comma-separated parameter
-such as `?id__in=1,2` or a dedicated bulk endpoint. Put that API-specific shape
-in `bulk_get_by_pks()`.
+such as `?id__in=1,2`, which `cls.filter(id__in=pks, api=api)` sends, or a
+dedicated bulk endpoint. Put that API-specific shape in `bulk_get_by_pks()`.
 
 Prefetch works for single related-object fields and typed related collections.
 Embedded related objects do not need prefetching, because `eazyrest` only
@@ -1411,13 +1430,13 @@ a query first calls the hook.
 The hooks are typed by two protocols rather than by requests' classes, so that
 a later 1.x release can send requests with another HTTP library without
 changing them. `api` is a `Client`, which has the request methods, `base_url`,
-`resolve_url()`, `json()`, and the limits, and a response is a `Response`,
-which has the status, reason, headers, body, URL, request method, and redirect
-history. At run time `api` is an `API`, or a view of one if the query has
-`request_options=`, and a response is a `requests.Response`. Annotate an
-override's parameters with the protocols, because an override that annotates
-them `API` or `requests.Response` fails type checking, and cast them to use
-anything else, such as `api.session` or `resp.links`. The view reads
+`resolve_url()`, `json()`, the limits, and `list_lookup_style`, and a response
+is a `Response`, which has the status, reason, headers, body, URL, request
+method, and redirect history. At run time `api` is an `API`, or a view of one
+if the query has `request_options=`, and a response is a `requests.Response`.
+Annotate an override's parameters with the protocols, because an override that
+annotates them `API` or `requests.Response` fails type checking, and cast them
+to use anything else, such as `api.session` or `resp.links`. The view reads
 `api.session` from the API. The query methods, `create()`, and the model
 constructor take a `Client` as `api=`, so a hook can pass its `api` on.
 

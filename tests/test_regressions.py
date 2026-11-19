@@ -338,7 +338,7 @@ def test_non_field_queries_encode_model_keys(requests_mock: Any) -> None:
 
     list(MockedDoc.filter(owner__in=[MockedUser(id=2), MockedUser(id=3)]))
 
-    assert query.last_request.qs == {"owner__in": ["2", "3"]}
+    assert query.last_request.qs == {"owner__in": ["2,3"]}
 
 
 def test_redeclared_fields_keep_their_options() -> None:

@@ -514,7 +514,7 @@ def test_a_lookup_sends_the_keys_of_related_objects(
 
     list(Post.filter(owner__in=[User(id=1), User(json={"id": 2})]))
 
-    assert requests_mock.last_request.qs == {"owner__in": ["1", "2"]}
+    assert requests_mock.last_request.qs == {"owner__in": ["1,2"]}
 
 
 def test_a_singleton_that_has_not_loaded_says_to_load_or_save_it(
@@ -742,7 +742,9 @@ def test_a_lookup_refuses_a_bare_key_that_cannot_be_built(
     """A lookup that compares the relation's key builds it as a filter does."""
     requests_mock.get("https://related.example/posts/", json=[])
 
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+    # A lookup of several values takes a collection, not one key.
+    refused = ValueError if lookup == "owner__in" else FieldConversionError
+    with pytest.raises(refused, match=r"Post\.owner|owner__in"):
         list(Post.filter(params={lookup: key}))
     with pytest.raises(FieldConversionError, match=r"Post\.owner"):
         list(Post.filter(params={lookup: [7, key]}))
@@ -762,7 +764,7 @@ def test_a_lookup_sends_a_bare_key_that_builds(requests_mock: Any) -> None:
     list(Post.filter(owner__exact=9))
 
     assert [r.qs for r in requests_mock.request_history] == [
-        {"owner__in": ["7", "8"]},
+        {"owner__in": ["7,8"]},
         {"owner__exact": ["9"]},
     ]
 

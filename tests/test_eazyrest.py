@@ -4268,7 +4268,9 @@ def test_query_rejects_unsendable_iterables(
 def test_query_sends_every_item_of_an_iterable(
     requests_mock: Any, make: Any
 ) -> None:
-    """An iterable query value is read once and sent as repeated parameters.
+    """An iterable query value is read once and sent as its items.
+
+    A field's parameter repeats, and a lookup of several values joins them.
 
     Args:
         make: Callable that returns a fresh iterable of two items.
@@ -4279,7 +4281,7 @@ def test_query_sends_every_item_of_an_iterable(
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
         "userId": ["1", "2"],
-        "id__in": ["1", "2"],
+        "id__in": ["1,2"],
     }
 
 

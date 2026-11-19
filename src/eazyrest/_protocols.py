@@ -9,7 +9,7 @@ it returns satisfy them.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 __all__ = ["Client", "Request", "Response"]
 
@@ -125,6 +125,11 @@ class Client(Protocol):
     @property
     def max_items(self) -> int | None:
         """Greatest number of items one traversal yields, or ``None``."""
+        ...
+
+    @property
+    def list_lookup_style(self) -> Literal["comma", "repeat"]:
+        """How a lookup that takes several values sends them."""
         ...
 
     def resolve_url(self, uri: str) -> str:

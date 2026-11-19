@@ -497,6 +497,18 @@ describe them further.
   `type` is sent as `type__in`, where it was sent under the Python name. A
   lookup such as `point__exact="1,2"`, on a field whose conversion writes a
   list, is now refused as the field's own parameter is.
+- A lookup whose name ends in `__in` or `__range` sends its values as one
+  comma-separated parameter, `?id__in=1,2`, where `v1.0.0a5` sent the parameter
+  repeated, `?id__in=1&id__in=2`. django-filter reads the joined form, and read
+  only the last of the repeated one, so `id__in=[1, 2]` matched the object with
+  key 2, and refused a repeated `__range`. The new attribute
+  `API.list_lookup_style`, `"comma"` by default, and `"repeat"` for a server
+  that reads repeated values with `getlist()`, chooses the form, and `Client`
+  has it as a property. The value must be an iterable, so `"1,2"` and `7` raise
+  `ValueError`, as an empty iterable, a `__range` that does not have two items,
+  and an item whose text holds a comma do. A set is sent in sorted order. Join
+  no values yourself: the guide advised that for django-filter's lookups, and
+  it is no longer needed.
 - A list of relations, such as `list[User]`, reads an item that the server
   embeds without a key as an object whose `pk` is `None`, as a single relation
   does. It raised `FieldConversionError` with a message about writing a
