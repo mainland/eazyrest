@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, ClassVar, Literal, NewType, TypedDict
@@ -1592,3 +1593,61 @@ def test_a_hyperlink_is_written_in_a_hierarchy_with_no_registered_api(
         "https://tenant.example/users/4/",
     ]
     assert patched.last_request.json() == {"author": "/users/5/"}
+
+
+def _post_with_keyless_reader() -> Post:
+    """Return a lazy post whose first reader has no key."""
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [{"name": "x"}, 3]},
+        write_mode="lazy",
+    )
+    assert len(post.readers) == 2
+    return post
+
+
+def test_replacing_a_keyless_item_with_another_is_a_change(
+    requests_mock: Any,
+) -> None:
+    """The new item has no key either, but it is not the old one."""
+    requests_mock.patch("https://related.example/posts/1/", json={})
+    # An object freed here may give its address to the next one, so repeat.
+    for _ in range(200):
+        post = Post(
+            json={"id": 1, "owner": 2, "readers": [{"name": "x"}]},
+            write_mode="lazy",
+        )
+        post.readers.pop()
+        post.readers.append(User(json={"name": "y"}))
+
+        with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+            post.save()
+
+
+def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(
+    requests_mock: Any,
+) -> None:
+    """A copy keeps the stand-ins that its snapshot holds."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = _post_with_keyless_reader()
+    copied = copy.deepcopy(post)
+
+    copied.owner = User(id=5)
+    copied.save()
+
+    assert patch.last_request.json() == {"owner": 5}
+
+
+def test_two_keyless_items_differ_in_the_change_check(
+    requests_mock: Any,
+) -> None:
+    """The stand-in names the object, so swapping two items is a change."""
+    requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [{"name": "x"}, {"name": "y"}]},
+        write_mode="lazy",
+    )
+    assert len(post.readers) == 2
+    post.readers.reverse()
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()

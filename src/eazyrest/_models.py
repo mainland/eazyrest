@@ -255,6 +255,9 @@ _COMPARING_KEYLESS: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 """Whether a related object without a key encodes as a stand-in."""
 
+_KEYLESS_SERIALS = itertools.count(1)
+"""Serial numbers for the stand-ins of related objects without a key."""
+
 
 @contextlib.contextmanager
 def _comparing_keyless() -> Generator[None, None, None]:
@@ -2714,7 +2717,12 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
             # Loading may give the key, which the object's own URL allows.
             _known_key(value)
         if _COMPARING_KEYLESS.get():
-            return f"\0keyless:{id(value)}"
+            # The stand-in is a serial kept on the object, not its address,
+            # since a snapshot holds the text and an object that was dropped
+            # can give its address to another.
+            if value._keyless_serial is None:
+                value._keyless_serial = next(_KEYLESS_SERIALS)
+            return f"\0keyless:{value._keyless_serial}"
         # Writing None would clear the relation.
         raise ValueError(
             f"The {name} object's primary key is None, so it cannot be "
@@ -5735,6 +5743,14 @@ class JSONObject:
     For an object that was given its key and has not loaded, this is the key's
     encoding, and ``pk`` decodes it. ``None`` if the object has recorded no
     key. Only ``_record_saved_key()`` sets it.
+    """
+
+    _keyless_serial: int | None = None
+    """The number that stands for the object in a change check.
+
+    Set the first time the object is encoded as a related object without a
+    key, and copied with the object, so that a copy matches the snapshot that
+    its original made.
     """
 
     _api_override: _AnyAPI | None
