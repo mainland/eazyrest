@@ -554,13 +554,15 @@ def test_collection_items_must_be_objects(
         list(MockedDoc.filter(prefetch=prefetch))
 
 
-def test_unhashable_prefetch_key_is_a_shape_error(requests_mock: Any) -> None:
-    """Malformed related keys fail at the response boundary."""
+def test_prefetch_refuses_an_unhashable_key_naming_the_field(
+    requests_mock: Any,
+) -> None:
+    """A key that cannot be built is refused as any other is."""
     requests_mock.get(
         "https://mocked.example/docs/", json=[{"id": 1, "owner": [2]}]
     )
 
-    with pytest.raises(ResponseShapeError):
+    with pytest.raises(FieldConversionError, match=r"MockedDoc\.owner"):
         list(MockedDoc.filter(prefetch="owner"))
 
 
@@ -1278,16 +1280,16 @@ def test_prefetch_skips_embedded_objects(requests_mock: Any) -> None:
     assert requests_mock.call_count == 1
 
 
-def test_unhashable_collection_prefetch_key_is_a_shape_error(
+def test_prefetch_refuses_an_unhashable_key_in_a_list_naming_the_field(
     requests_mock: Any,
 ) -> None:
-    """A malformed key inside a related list fails at the response."""
+    """A key that cannot be built inside a related list names the field."""
     requests_mock.get(
         "https://mocked.example/teams/",
         json=[{"id": 1, "lead": 2, "members": [[2]]}],
     )
 
-    with pytest.raises(ResponseShapeError, match=r"Team\.members"):
+    with pytest.raises(FieldConversionError, match=r"Team\.members"):
         list(Team.filter(prefetch="members"))
 
 

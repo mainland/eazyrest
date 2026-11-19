@@ -2626,16 +2626,15 @@ def _json_identity(owner: type[Any], field: str, value: Any) -> str:
         The value's JSON text.
 
     Raises:
-        ResponseShapeError: If the value cannot be a key at all, because it is
-            not hashable, as a list is, or is not JSON.
+        FieldConversionError: If the value cannot be a key at all, because it
+            is not hashable, as a list is, or is not JSON. It names the field.
     """
     try:
         hash(value)
         return json.dumps(value)
     except (TypeError, ValueError) as err:
-        raise ResponseShapeError(
-            f"{owner.__name__}.{field} has an invalid related key"
-        ) from err
+        with _converting(owner, field):
+            raise ValueError("The key is not a hashable JSON value") from err
 
 
 def _prefetch_keys(

@@ -483,15 +483,16 @@ describe them further.
   is written, as it already was in a query, where `v1.0.0a5` wrote its URL.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
-  value once. A key that model would not read, such as `"7"` or `true` for an
-  `int` key, raises `FieldConversionError` naming the relation field before the
-  method and its request, where `v1.0.0a5` passed it on, and `true` and `1`
-  were one key. The method receives the keys as the related model writes them.
+  value once. A value that model cannot build as a key, such as `"7"` or `true`
+  for an `int` key, or a list, raises `FieldConversionError` naming the
+  relation field before the method and its request. `v1.0.0a5` passed `"7"` and
+  `true` on, where `true` and `1` were one key, and raised `ResponseShapeError`
+  for a list. The method receives the keys as the related model writes them.
 - A key of type `Literal` raises `FieldConversionError` for a value that is not
-  one of its members, where it is given and where the server's JSON names it,
-  and a relation to the model refuses it. `Lit(id="c")` of `Literal["a", "b"]`
-  was accepted, and a relation wrote `"c"`. An ordinary `Literal` field still
-  reads and writes any JSON.
+  one of its members where it is given, and a relation to the model refuses it.
+  A non-member that the server's JSON names is treated as a key of the wrong
+  type. `Lit(id="c")` of `Literal["a", "b"]` was accepted, and a relation wrote
+  `"c"`. An ordinary `Literal` field still reads and writes any JSON.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an
