@@ -2627,7 +2627,7 @@ def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
             )
     host = obj if owner is type(obj) else object.__new__(owner)
     decoded = host._from_json(value, conversion)
-    encoded = owner._to_json(decoded, conversion)
+    encoded = owner._to_json(decoded, conversion, api=None)
     if encoded is None:
         return None
     if _json_kind(encoded) is None:
@@ -2890,7 +2890,9 @@ def _bare_wire_key(value: Any, model_type: type[Any]) -> Any:
         raise TypeError(
             "A relation takes a related object or its key, not a mapping"
         )
-    encoded = model_type._to_json(value, model_type._pk.analyzed_type)
+    encoded = model_type._to_json(
+        value, model_type._pk.analyzed_type, api=None
+    )
     named = _build_key(object.__new__(model_type), encoded)
     if named is None:
         raise ValueError(
@@ -4346,7 +4348,7 @@ def encode_json(
         )
     analyzed = analyze_type(annotation)
     _check_admitted(analyzed, _table_of(model), late=True)
-    encoded = model._to_json(value, analyzed)
+    encoded = model._to_json(value, analyzed, api=None)
     _check_json(encoded, "")
     return encoded
 
@@ -5699,7 +5701,7 @@ class JSONProperty:
                 _known_key(value)
                 value = _related_wire_key(value, related.model_type)
             value = obj._key_as_read_from_json(value)
-            encoded = obj._to_json(value, conversion)
+            encoded = obj._to_json(value, conversion, api=None)
             named = _build_key(obj, encoded)
 
         name = type(obj).__name__
@@ -6373,7 +6375,8 @@ class JSONObject:
         where: str,
         value: Any,
         conversion: AnalyzedType,
-        api: _AnyAPI | None = None,
+        *,
+        api: _AnyAPI | None,
     ) -> Any:
         """Write one item of a structure, naming it in a conversion error.
 
@@ -6568,7 +6571,7 @@ class JSONObject:
         value: Any,
         conversion: AnalyzedType,
         *,
-        api: _AnyAPI | None = None,
+        api: _AnyAPI | None,
     ) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
@@ -6581,8 +6584,8 @@ class JSONObject:
             conversion: Analyzed type metadata that guides conversion.
             api: The API that the owner of the value reads with, which checks
                 the origin of a URL written to a ``Hyperlinked()`` relation, as
-                reading the field checks it. The related model's API by
-                default.
+                reading the field checks it. ``None`` for the related model's
+                API, which a value with no owner, such as a key, uses.
 
         Returns:
             JSON-serializable representation of ``value``.
@@ -6697,7 +6700,7 @@ class JSONObject:
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
                 return [
-                    cls._write_at(f"[{index}]", item, item_type, api)
+                    cls._write_at(f"[{index}]", item, item_type, api=api)
                     for index, (item, item_type) in enumerate(
                         zip(items, item_types, strict=True)
                     )
@@ -6706,7 +6709,7 @@ class JSONObject:
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "write")
                 return [
-                    cls._write_at(f"[{name!r}]", item, item_type, api)
+                    cls._write_at(f"[{name!r}]", item, item_type, api=api)
                     for item, (name, item_type) in zip(
                         items, positions, strict=True
                     )
@@ -6730,7 +6733,10 @@ class JSONObject:
                     )
                 return {
                     name: cls._write_at(
-                        f"[{name!r}]", getattr(value, name), item_type, api
+                        f"[{name!r}]",
+                        getattr(value, name),
+                        item_type,
+                        api=api,
                     )
                     for name, item_type, _ in conversion.fields
                 }
@@ -7425,6 +7431,7 @@ class JSONObject:
                         json[descriptor.json_field], conversion, field=field
                     ),
                     conversion,
+                    api=self._api_override,
                 )
         write_only = self._write_only_keys()
         payload.update(
@@ -7638,7 +7645,7 @@ class JSONObject:
         """
         conversion = type(self)._pk.analyzed_type
         value = self._from_json(
-            self._to_json(key, conversion),
+            self._to_json(key, conversion, api=None),
             conversion,
             field=type(self)._pk.field,
         )
@@ -7874,7 +7881,7 @@ class JSONObject:
         fields: Mapping[str, Any],
         *,
         query: bool = False,
-        api: _AnyAPI | None = None,
+        api: _AnyAPI | None,
     ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
@@ -8132,7 +8139,7 @@ class JSONObject:
             conversion = _query_type(analyzed)
 
             def convert(item: Any) -> Any:
-                return _query_value(cls._to_json(item, conversion))
+                return _query_value(cls._to_json(item, conversion, api=None))
 
             guard = _converting(cls, field)
         else:

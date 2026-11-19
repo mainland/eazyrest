@@ -254,10 +254,10 @@ def test_built_in_conversions_read_back_what_they_write(
     )
     if offset is not None and offset % datetime.timedelta(minutes=1):
         with pytest.raises(ValueError, match="whole minutes"):
-            Codecs._to_json(value, conversion)
+            Codecs._to_json(value, conversion, api=None)
         return
 
-    encoded = Codecs._to_json(value, conversion)
+    encoded = Codecs._to_json(value, conversion, api=None)
     json.dumps(encoded)
 
     decoded = getattr(Codecs(json={"id": 1, field: encoded}), field)
@@ -963,7 +963,7 @@ def _read_outcome(model: Any, value: Any) -> tuple[str, Any]:
     conversion = model.value.analyzed_type
     try:
         read = obj.value
-        written = model._to_json(read, conversion)
+        written = model._to_json(read, conversion, api=None)
         reread = model(json={"id": 1, "value": written}).value
         return "ok", (_plain(read), _plain(reread))
     except (FieldConversionError, TypeError, ValueError) as err:

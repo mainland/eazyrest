@@ -1546,6 +1546,24 @@ def test_a_hyperlink_is_written_back_to_the_api_that_read_it(
     }
 
 
+def test_a_full_save_checks_a_hyperlink_against_the_api_that_read_it(
+    requests_mock: Any,
+) -> None:
+    """A ``PUT`` writes the URL that a read of the field accepted."""
+    put = requests_mock.put("https://tenant.example/notes/1/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://tenant.example/users/2/"},
+        api=TENANT,
+    )
+
+    note.save(full=True)
+
+    assert put.last_request.json() == {
+        "id": 1,
+        "author": "https://tenant.example/users/2/",
+    }
+
+
 @json_object(write_only={"secret"})
 class Pinboard(RelatedBase):
     """Model with hyperlinked relations of several shapes."""
