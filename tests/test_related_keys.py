@@ -1651,3 +1651,108 @@ def test_two_keyless_items_differ_in_the_change_check(
 
     with pytest.raises(FieldConversionError, match=r"Post\.readers"):
         post.save()
+
+
+def test_a_hyperlinked_list_reads_an_embedded_object_without_a_key() -> None:
+    """A list reads such an item as a single hyperlinked relation does."""
+    roster = Roster(
+        json={
+            "id": 1,
+            "members": [{"name": "x"}, "https://related.example/users/3/"],
+        }
+    )
+    note = Note(json={"id": 1, "author": {"name": "x"}})
+
+    first, second = roster.members
+    assert repr(note.author) == "<User id=None>"
+    assert first.pk is None
+    assert second.absolute_url == "https://related.example/users/3/"
+
+
+@json_object
+class Linked(RelatedBase):
+    """Model that prefetch loads by URL."""
+
+    class_url = "/linked/"
+
+    id: int
+
+    @classmethod
+    def bulk_get_by_urls(
+        cls, urls: set[str], *, api: Client, **kwargs: Any
+    ) -> Mapping[str, Linked]:
+        """Return an object for each URL, recording the URLs asked for."""
+        loaded_urls.append(urls)
+        return {
+            url: cls(json={"id": int(url.rstrip("/").rsplit("/", 1)[1])})
+            for url in urls
+        }
+
+
+loaded_urls: list[set[str]] = []
+"""The URLs that ``Linked.bulk_get_by_urls()`` was asked for."""
+
+
+@json_object
+class Squad(RelatedBase):
+    """Model that names linked objects by hyperlinks in a list."""
+
+    class_url = "/squads/"
+
+    id: int
+    members: list[Annotated[Linked, Hyperlinked()]]
+
+
+def test_a_hyperlinked_list_prefetches_past_an_embedded_object(
+    requests_mock: Any,
+) -> None:
+    """Only the URLs are loaded, and the embedded object is read as it is."""
+    loaded_urls.clear()
+    requests_mock.get(
+        "https://related.example/squads/",
+        json=[
+            {
+                "id": 1,
+                "members": [
+                    {"name": "x"},
+                    "https://related.example/linked/3/",
+                ],
+            }
+        ],
+    )
+
+    (squad,) = Squad.filter(prefetch=["members"])
+
+    assert loaded_urls == [{"https://related.example/linked/3/"}]
+    assert [member.pk for member in squad.members] == [None, 3]
+
+
+def test_a_keyless_item_of_a_hyperlinked_list_is_compared_as_a_key_list_is(
+    requests_mock: Any,
+) -> None:
+    """An unchanged item is not sent, and a changed list needs a URL."""
+    patch = requests_mock.patch("https://related.example/rosters/1/", json={})
+    roster = Roster(
+        json={
+            "id": 1,
+            "members": [{"name": "x"}, "https://related.example/users/3/"],
+        },
+        write_mode="lazy",
+    )
+    assert len(roster.members) == 2
+    roster.id = 1
+    roster.save()
+    assert not patch.called
+
+    roster.members.append(User(id=4))
+    with pytest.raises(FieldConversionError, match=r"Roster\.members"):
+        roster.save()
+    del roster.members[0]
+    roster.save()
+
+    assert patch.last_request.json() == {
+        "members": [
+            "https://related.example/users/3/",
+            "https://related.example/users/4/",
+        ]
+    }

@@ -6514,7 +6514,11 @@ class JSONObject:
                         # its key could be the related model's.
                         _check_related_key_type(value, model_type)
                     else:
-                        _related_wire_key(value, model_type)
+                        wire_key = _related_wire_key(value, model_type)
+                        if _COMPARING_KEYLESS.get() and value.pk is None:
+                            # Nothing is sent, and the object has no URL, so
+                            # its stand-in is all that the comparison has.
+                            return wire_key
                     with _of_the_relation():
                         return value.absolute_url
                 if isinstance(value, str):
