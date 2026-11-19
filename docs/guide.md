@@ -720,6 +720,12 @@ Declare a `list` or a `tuple` instead. The
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 
+Writing a `Hyperlinked()` relation checks the object as a relation written by
+key is checked. An object that the relation's model would not read, because it
+is of a subclass that chose another key or redeclared the key field with
+another type, raises `FieldConversionError` naming the field, as it does in a
+query. An object known only by its URL is not loaded to check its key.
+
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
 the related objects whose JSON the load left unchanged, and assigning a related

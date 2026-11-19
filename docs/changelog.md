@@ -477,7 +477,11 @@ describe them further.
   same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
   key, and read a mapping back as an embedded object, they now raise
   `FieldConversionError` naming the relation field before any request. A filter
-  on a `Hyperlinked()` relation still sends a key as it is given.
+  on a `Hyperlinked()` relation still sends a key as it is given. A write of a
+  `Hyperlinked()` relation checks the object it is given as the others do, so
+  an object of a subclass that redeclares the key field with another type is
+  refused when it is written, as it already was in a query, where `v1.0.0a5`
+  wrote its URL.
 - A primary key's wire value is a string, or an integer that is not a `bool`. A
   key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
   `Literal` member, or an enum with a member whose value is not a string or an

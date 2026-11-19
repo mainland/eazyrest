@@ -6251,6 +6251,11 @@ class JSONObject:
             case RelatedType(model_type, hyperlinked=True):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
+                    _check_related_key(value, model_type)
+                    if not value._key_is_unknown():
+                        # An object known only by its URL needs no key, and
+                        # checking one would load it.
+                        _related_wire_key(value, model_type)
                     with _of_the_relation():
                         return value.absolute_url
                 if isinstance(value, str):

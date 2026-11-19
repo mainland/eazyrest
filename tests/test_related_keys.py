@@ -687,3 +687,53 @@ def test_a_filter_on_a_hyperlinked_relation_sends_a_key_as_given(
         {"author": ["7"]},
         {"author": ["7"]},
     ]
+
+
+def test_a_hyperlinked_relation_refuses_a_subclass_that_redeclares_the_key(
+    requests_mock: Any,
+) -> None:
+    """A write checks the object as a query on the relation does."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = SubUser(id="abc")
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=2, author=SubUser(id="abc"))
+
+    assert note._pending_updates == {}
+    assert not posted.called
+
+
+def test_a_hyperlinked_relation_writes_the_url_of_an_object_with_a_key(
+    requests_mock: Any,
+) -> None:
+    """An object that the relation's model reads is written as its URL."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+
+    Note.create(id=2, author=User(id=7))
+
+    assert posted.last_request.json() == {
+        "id": 2,
+        "author": "https://related.example/users/7/",
+    }
+
+
+def test_a_hyperlinked_relation_writes_an_object_known_only_by_its_url(
+    requests_mock: Any,
+) -> None:
+    """The URL needs no key, so checking the key does not load the object."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    author = Note(
+        json={"id": 1, "author": "https://related.example/users/7/"}
+    ).author
+
+    Note.create(id=2, author=author)
+
+    assert posted.last_request.json()["author"] == (
+        "https://related.example/users/7/"
+    )
+    assert requests_mock.call_count == 1
