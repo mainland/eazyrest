@@ -5431,7 +5431,9 @@ class JSONProperty:
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
             with _converting(type(obj), self.field), _comparing_keyless():
-                encoded = obj._to_json(value, self.analyzed_type)
+                encoded = obj._to_json(
+                    value, self.analyzed_type, api=obj._api_override
+                )
 
         # Cache the value only once its encoding is known, so that a field
         # whose value cannot be encoded fails on every read, rather than
@@ -5467,7 +5469,9 @@ class JSONProperty:
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
             with _converting(type(obj), self.field):
-                encoded = obj._to_json(value, self.analyzed_type)
+                encoded = obj._to_json(
+                    value, self.analyzed_type, api=obj._api_override
+                )
             obj._update_json_field(self.json_field, _copy_json(encoded))
             return
 
@@ -5481,7 +5485,9 @@ class JSONProperty:
             )
         stored = obj._json_with_field(self.json_field, self.field)
         with _converting(type(obj), self.field):
-            new_value = obj._to_json(value, self.analyzed_type)
+            new_value = obj._to_json(
+                value, self.analyzed_type, api=obj._api_override
+            )
             # Build the collection that the field keeps before anything is sent
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
@@ -5490,7 +5496,9 @@ class JSONProperty:
             # keeps. Then the write and the snapshot agree, and a later write
             # of another field does not send this one again.
             if isinstance(kept, AbstractSet):
-                new_value = obj._to_json(kept, self.analyzed_type)
+                new_value = obj._to_json(
+                    kept, self.analyzed_type, api=obj._api_override
+                )
 
         # A pending update is not on the server, even though the working JSON
         # holds it. In eager mode, assigning the same value must send it.
@@ -6238,7 +6246,11 @@ class JSONObject:
 
     @classmethod
     def _write_at(
-        cls, where: str, value: Any, conversion: AnalyzedType
+        cls,
+        where: str,
+        value: Any,
+        conversion: AnalyzedType,
+        api: _AnyAPI | None = None,
     ) -> Any:
         """Write one item of a structure, naming it in a conversion error.
 
@@ -6246,12 +6258,13 @@ class JSONObject:
             where: The item's position or declared key, such as ``[0]``.
             value: The item's value.
             conversion: The item's analyzed type.
+            api: The API that the owner reads with, as for ``_to_json()``.
 
         Returns:
             The item's JSON value.
         """
         with _at_key(where):
-            return cls._to_json(value, conversion)
+            return cls._to_json(value, conversion, api=api)
 
     def _from_json(
         self,
@@ -6427,7 +6440,13 @@ class JSONObject:
                 )
 
     @classmethod
-    def _to_json(cls, value: Any, conversion: AnalyzedType) -> Any:
+    def _to_json(
+        cls,
+        value: Any,
+        conversion: AnalyzedType,
+        *,
+        api: _AnyAPI | None = None,
+    ) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
         A collection converts to a list. ``None`` converts to ``None``, which
@@ -6437,6 +6456,10 @@ class JSONObject:
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
+            api: The API that the owner of the value reads with, which checks
+                the origin of a URL written to a ``Hyperlinked()`` relation, as
+                reading the field checks it. The related model's API by
+                default.
 
         Returns:
             JSON-serializable representation of ``value``.
@@ -6462,9 +6485,9 @@ class JSONObject:
 
         match conversion:
             case OptionalType(inner_type):
-                return cls._to_json(value, inner_type)
+                return cls._to_json(value, inner_type, api=api)
             case NewTypeType(_, inner_type):
-                return cls._to_json(value, inner_type)
+                return cls._to_json(value, inner_type, api=api)
             case RelatedType(model_type, hyperlinked=True):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
@@ -6481,8 +6504,10 @@ class JSONObject:
                 if isinstance(value, str):
                     # A write takes what reading the field accepts, which is a
                     # URL on an origin that the related model's API allows.
-                    _check_api_attribute(model_type, UsageError)
-                    _checked_hyperlink(model_type.api, value)
+                    if api is None:
+                        _check_api_attribute(model_type, UsageError)
+                        api = model_type.api
+                    _checked_hyperlink(api, value)
                     return value
                 raise TypeError(
                     "Hyperlinked field values must be objects or URLs, got "
@@ -6525,7 +6550,7 @@ class JSONObject:
                     )
 
                 items = _each_item(
-                    lambda item: cls._to_json(item, item_type), value
+                    lambda item: cls._to_json(item, item_type, api=api), value
                 )
                 if _READ_AS[collection_type] in (set, frozenset):
                     # A set's iteration order depends on how it was built, and
@@ -6537,7 +6562,7 @@ class JSONObject:
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
                 return [
-                    cls._write_at(f"[{index}]", item, item_type)
+                    cls._write_at(f"[{index}]", item, item_type, api)
                     for index, (item, item_type) in enumerate(
                         zip(items, item_types, strict=True)
                     )
@@ -6546,7 +6571,7 @@ class JSONObject:
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "write")
                 return [
-                    cls._write_at(f"[{name!r}]", item, item_type)
+                    cls._write_at(f"[{name!r}]", item, item_type, api)
                     for item, (name, item_type) in zip(
                         items, positions, strict=True
                     )
@@ -6570,7 +6595,7 @@ class JSONObject:
                     )
                 return {
                     name: cls._write_at(
-                        f"[{name!r}]", getattr(value, name), item_type
+                        f"[{name!r}]", getattr(value, name), item_type, api
                     )
                     for name, item_type, _ in conversion.fields
                 }
@@ -6583,7 +6608,9 @@ class JSONObject:
                 for key, item in value.items():
                     if key in keys:
                         with _at_key(f"[{key!r}]"):
-                            written[key] = cls._to_json(item, keys[key])
+                            written[key] = cls._to_json(
+                                item, keys[key], api=api
+                            )
                     else:
                         # An undeclared key is written as it is, so it must
                         # already be JSON.
@@ -6596,7 +6623,7 @@ class JSONObject:
                 written = {}
                 for key, item in value.items():
                     with _at_key("[key]"):
-                        written[key] = cls._to_json(item, value_type)
+                        written[key] = cls._to_json(item, value_type, api=api)
                 return written
             case _:
                 raise TypeError(
@@ -6903,12 +6930,16 @@ class JSONObject:
             with _converting(type(self), field):
                 with _comparing_keyless():
                     encoded = self._to_json(
-                        self._field_cache[field], descriptor.analyzed_type
+                        self._field_cache[field],
+                        descriptor.analyzed_type,
+                        api=self._api_override,
                     )
                 if not _json_equal(encoded, snapshot):
                     # An object without a key cannot be written.
                     encoded = self._to_json(
-                        self._field_cache[field], descriptor.analyzed_type
+                        self._field_cache[field],
+                        descriptor.analyzed_type,
+                        api=self._api_override,
                     )
             if descriptor._is_key_of(self):
                 # A key is the same key if its canonical text is. Python
@@ -7704,7 +7735,11 @@ class JSONObject:
 
     @classmethod
     def _encode_fields(
-        cls, fields: Mapping[str, Any], *, query: bool = False
+        cls,
+        fields: Mapping[str, Any],
+        *,
+        query: bool = False,
+        api: _AnyAPI | None = None,
     ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
@@ -7712,6 +7747,8 @@ class JSONObject:
             fields: Values keyed by Python attribute name for JSON-backed
                 fields, or by JSON key for other values.
             query: Whether to encode a query, whose related values use keys.
+            api: The API that the object being written reads with, as for
+                ``_to_json()``.
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
@@ -7739,6 +7776,7 @@ class JSONObject:
                     payload[key] = cls._to_json(
                         value,
                         _query_type(conversion) if query else conversion,
+                        api=api,
                     )
             else:
                 payload[key] = value
@@ -8162,16 +8200,17 @@ class JSONObject:
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
         options = _request_options(request_options)
+        api = None if api is None else _as_client(api)
         payload = cls._encode_fields(
             _query_params(
                 fields, kwargs, "Field", "fields", reserved=frozenset()
-            )
+            ),
+            api=api,
         )
         cls._check_created_key(payload)
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_client(api)
         client = cls.api if api is None else api
         resp = client.post(
             cls.class_url, **cls._write_body(payload, files), **options

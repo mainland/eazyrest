@@ -1488,3 +1488,107 @@ def test_a_hyperlinked_write_refuses_a_wider_key_than_a_literal_builds(
         SeatNote.create(id=2, seat=other)
 
     assert not posted.called
+
+
+class BareBase(JSONObject):
+    """Models with no registered API, used only through ``api=``."""
+
+
+@json_object
+class BareUser(BareBase):
+    """Model of a hierarchy that registers no API."""
+
+    class_url = "/users/"
+
+    id: int
+
+
+@json_object
+class BareNote(BareBase):
+    """Model that names a user by a hyperlink, in an unregistered hierarchy."""
+
+    class_url = "/notes/"
+
+    id: int
+    author: Annotated[BareUser, Hyperlinked()]
+
+
+TENANT = API("https://tenant.example/")
+"""An API on another origin than the registered one."""
+
+
+def test_a_hyperlink_is_written_back_to_the_api_that_read_it(
+    requests_mock: Any,
+) -> None:
+    """An object loaded with ``api=`` writes the URL its field read."""
+    patched = requests_mock.patch("https://tenant.example/notes/1/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://tenant.example/users/2/"},
+        api=TENANT,
+        write_mode="lazy",
+    )
+
+    note.author = note.author.absolute_url  # type: ignore[assignment]
+    note.author = "https://tenant.example/users/3/"  # type: ignore[assignment]
+    note.save()
+
+    assert patched.last_request.json() == {
+        "author": "https://tenant.example/users/3/"
+    }
+
+
+def test_a_hyperlink_is_checked_against_the_api_of_its_owner(
+    requests_mock: Any,
+) -> None:
+    """The registered API's origin is another origin for such an object."""
+    note = Note(
+        json={"id": 1, "author": "https://tenant.example/users/2/"},
+        api=TENANT,
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = "https://related.example/users/3/"  # type: ignore[assignment]
+
+    assert note._pending_updates == {}
+    assert requests_mock.call_count == 0
+
+
+def test_create_checks_a_hyperlink_against_the_api_it_is_given(
+    requests_mock: Any,
+) -> None:
+    """``create(api=...)`` writes a URL on that API's origin."""
+    posted = requests_mock.post("https://tenant.example/notes/", json={})
+
+    Note.create(id=2, author="https://tenant.example/users/3/", api=TENANT)
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(
+            id=3, author="https://related.example/users/3/", api=TENANT
+        )
+
+    assert posted.call_count == 1
+
+
+def test_a_hyperlink_is_written_in_a_hierarchy_with_no_registered_api(
+    requests_mock: Any,
+) -> None:
+    """A relative URL needs the API of the request, not the related one."""
+    posted = requests_mock.post("https://tenant.example/notes/", json={})
+    patched = requests_mock.patch("https://tenant.example/notes/1/", json={})
+
+    BareNote.create(id=2, author="/users/3/", api=TENANT)
+    BareNote.create(id=3, author="https://tenant.example/users/4/", api=TENANT)
+    note = BareNote(
+        json={"id": 1, "author": "https://tenant.example/users/2/"},
+        api=TENANT,
+        write_mode="lazy",
+    )
+    note.author = note.author.absolute_url  # type: ignore[assignment]
+    note.author = "/users/5/"  # type: ignore[assignment]
+    note.save()
+
+    assert [r.json()["author"] for r in posted.request_history] == [
+        "/users/3/",
+        "https://tenant.example/users/4/",
+    ]
+    assert patched.last_request.json() == {"author": "/users/5/"}

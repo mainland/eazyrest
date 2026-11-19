@@ -722,14 +722,16 @@ primary key, as Django REST Framework's hyperlinked fields do, is annotated
 with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
 gives an object that loads from that URL, and writing it sends the object's
 absolute URL, or a URL assigned as a string as given. Queries send its primary
-key, as DRF relation filters expect. A URL on an origin that the related
-model's API does not allow raises `FieldConversionError`, also when it is
-written as a string. That check is of the origin only, so a key written as a
-string, such as `"2"`, is sent as a relative URL, which a DRF server refuses
-with a 400. An object known only by its URL has no hash until it loads, so a
-set of them cannot exist. A field of type `set`, `frozenset`, `Set`, or
-`MutableSet` whose items are `Hyperlinked()` relations raises `TypeError` when
-the class is decorated. Declare a `list` or a `tuple` instead. The
+key, as DRF relation filters expect. A URL on an origin that the API of its
+owner does not allow raises `FieldConversionError`, also when it is written as
+a string. That API is the one that reading the field uses: the `api=` that the
+owner was loaded or created with, and otherwise the related model's. That check
+is of the origin only, so a key written as a string, such as `"2"`, is sent as
+a relative URL, which a DRF server refuses with a 400. An object known only by
+its URL has no hash until it loads, so a set of them cannot exist. A field of
+type `set`, `frozenset`, `Set`, or `MutableSet` whose items are `Hyperlinked()`
+relations raises `TypeError` when the class is decorated. Declare a `list` or a
+`tuple` instead. The
 [Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
 gives the details.
 
