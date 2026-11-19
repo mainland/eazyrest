@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Iterable, Mapping
-from typing import Annotated, Any, ClassVar, Literal, NewType
+from typing import Annotated, Any, ClassVar, Literal, NewType, TypedDict
 
 import pytest
 
@@ -710,6 +710,32 @@ def test_a_hyperlinked_relation_refuses_a_subclass_that_redeclares_the_key(
     assert not posted.called
 
 
+@json_object(pk="slug")
+class Badge(User):
+    """Subclass that chooses another key field, which holds an integer."""
+
+    slug: int
+
+
+def test_a_hyperlinked_relation_refuses_a_subclass_that_chose_another_key(
+    requests_mock: Any,
+) -> None:
+    """The URL of such an object names no user, though its key would build."""
+    posted = requests_mock.post("https://related.example/notes/", json={})
+    note = Note(
+        json={"id": 1, "author": "https://related.example/users/2/"},
+        write_mode="lazy",
+    )
+
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        note.author = Badge(json={"id": 1, "slug": 7})
+    with pytest.raises(FieldConversionError, match=r"Note\.author"):
+        Note.create(id=2, author=Badge(json={"id": 1, "slug": 7}))
+
+    assert note._pending_updates == {}
+    assert not posted.called
+
+
 def test_a_hyperlinked_relation_writes_the_url_of_an_object_with_a_key(
     requests_mock: Any,
 ) -> None:
@@ -795,6 +821,57 @@ class Label(RelatedBase):
         return {pk: cls(json={"id": pk}, api=api) for pk in pks}
 
 
+Mark = NewType("Mark", str)
+
+
+@json_object
+class Stamp(RelatedBase):
+    """Model keyed by a mark that its codec encodes as None for one value."""
+
+    class_url = "/stamps/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Mark: Conversion(
+            decode=lambda value, _: Mark(value),
+            encode=lambda value, _: None if value == "gone" else str(value),
+        )
+    }
+
+    id: Mark
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
+    ) -> dict[Any, Stamp]:
+        """Return a stamp for each key, after recording the keys."""
+        hook_calls.append((set(pks), len(decoded_slugs)))
+        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
+
+
+class Coords(TypedDict):
+    """Mapping that a codec writes as a key."""
+
+    x: int
+    y: int
+
+
+@json_object
+class Plot(RelatedBase):
+    """Model keyed by a mapping that its codec writes as text."""
+
+    class_url = "/plots/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Coords: Conversion(
+            decode=lambda value, _: {
+                "x": int(value.split("-")[0]),
+                "y": int(value.split("-")[1]),
+            },
+            encode=lambda value, _: f"{value['x']}-{value['y']}",
+        )
+    }
+
+    id: Coords
+
+
 @json_object
 class Article(RelatedBase):
     """Model with relations that prefetch loads in bulk."""
@@ -805,6 +882,8 @@ class Article(RelatedBase):
     writer: Writer
     editors: list[Writer]
     label: Label
+    stamp: Stamp
+    plot: Plot
 
 
 @pytest.fixture(autouse=True)
@@ -995,3 +1074,37 @@ def test_a_relation_writes_a_literal_key_that_is_a_member(
         "b",
     ]
     assert posted.call_count == 2
+
+
+def test_prefetch_names_the_field_of_a_value_that_builds_no_key(
+    requests_mock: Any,
+) -> None:
+    """A key that its codec writes as None is no key."""
+    requests_mock.get(
+        "https://related.example/articles/",
+        json=[_article(stamp="gone")],
+    )
+
+    with pytest.raises(
+        FieldConversionError, match=r"Article\.stamp.*writes no key"
+    ):
+        list(Article.filter(prefetch=["stamp"]))
+
+    assert hook_calls == []
+
+
+def test_a_relation_refuses_a_mapping_that_a_key_conversion_would_encode(
+    requests_mock: Any,
+) -> None:
+    """A mapping is no key even for a codec that writes any value as text."""
+    posted = requests_mock.post("https://related.example/articles/", json={})
+
+    key = {"x": 1, "y": 2}
+
+    with pytest.raises(FieldConversionError, match=r"Article\.plot"):
+        Article.create(id=1, writer=1, editors=[], plot=key)
+    with pytest.raises(FieldConversionError, match=r"Article\.plot"):
+        list(Article.filter(plot=key))
+
+    assert not posted.called
+    assert requests_mock.call_count == 0
