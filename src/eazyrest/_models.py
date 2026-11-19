@@ -6577,8 +6577,8 @@ class JSONObject:
                 if isinstance(value, str):
                     # A write takes what reading the field accepts, which is a
                     # URL on an origin that the related model's API allows.
+                    _check_api_attribute(model_type, UsageError)
                     if api is None:
-                        _check_api_attribute(model_type, UsageError)
                         api = model_type.api
                     _checked_hyperlink(api, value)
                     return value

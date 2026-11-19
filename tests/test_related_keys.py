@@ -2048,3 +2048,25 @@ def test_a_hyperlink_is_refused_when_the_related_model_has_an_api_assigned(
         del Assigned.api
 
     assert requests_mock.call_count == 0
+
+
+def test_a_hyperlink_string_is_refused_for_an_assigned_api_under_api(
+    requests_mock: Any,
+) -> None:
+    """An API passed with the request does not excuse an assigned ``api``."""
+    note = AssignedHolder(
+        json={"id": 1, "owner": "https://tenant.example/assigned/2/"},
+        api=TENANT,
+        write_mode="lazy",
+    )
+    Assigned.api = API("https://other.example/")
+    try:
+        with pytest.raises(UsageError, match=r"Assigned\.api was assigned"):
+            AssignedHolder.create(id=2, owner="/assigned/1/", api=TENANT)
+        with pytest.raises(UsageError, match=r"Assigned\.api was assigned"):
+            note.owner = "https://tenant.example/assigned/3/"  # type: ignore[assignment]
+    finally:
+        del Assigned.api
+
+    assert note._pending_updates == {}
+    assert requests_mock.call_count == 0
