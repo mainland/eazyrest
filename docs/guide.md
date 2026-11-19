@@ -214,7 +214,8 @@ server names the resource, and these laws follow:
   holds for a filter on a `Hyperlinked()` relation too, which sends the key,
   and for a bare value of a lookup that compares the relation's key, such as
   `filter(owner__in=[7])`. Another lookup, such as `owner__name`, compares
-  something else, and its value is sent as given. Give the key in its field's
+  something else, and its value is sent as given, except that a related object
+  in it is checked as above and sent as its key. Give the key in its field's
   type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without

@@ -1758,6 +1758,28 @@ def test_a_keyless_item_of_a_hyperlinked_list_is_compared_as_a_key_list_is(
     }
 
 
+@pytest.mark.parametrize(
+    "lookup", ["owner__in", "owner__id__in", "owner__pk__in", "owner__id"]
+)
+def test_a_lookup_through_a_relation_refuses_an_object_of_another_key(
+    lookup: str, requests_mock: Any
+) -> None:
+    """Every lookup on a relation refuses what the relation refuses."""
+    requests_mock.get("https://related.example/posts/", json=[])
+    other = Badge(json={"slug": 4, "id": 9})
+
+    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+        list(
+            Post.filter(
+                params={lookup: [other] if lookup.endswith("in") else other}
+            )
+        )
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        list(Post.filter(readers__id__in=[other]))
+
+    assert requests_mock.call_count == 0
+
+
 def test_a_lookup_that_compares_no_value_needs_no_type_of_its_field(
     requests_mock: Any,
 ) -> None:

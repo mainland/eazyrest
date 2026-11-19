@@ -8006,7 +8006,8 @@ class JSONObject:
                 # Another model object is its own key. Only an operand that is
                 # a model needs the field's type, which a lookup of a field
                 # that is not yet defined may not have. It is built by its
-                # relation's model if the lookup is on a relation.
+                # relation's model if the lookup is on a relation, and refused
+                # as the relation refuses it.
                 if not isinstance(item, JSONObject):
                     return item
                 relation = (
@@ -8018,6 +8019,7 @@ class JSONObject:
                 )
                 if relation is None or not isinstance(item, relation):
                     return _related_wire_key(item, type(item))
+                _check_related_key(item, relation)
                 return _related_wire_key(item, relation)
 
         with guard:
