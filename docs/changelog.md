@@ -487,6 +487,11 @@ describe them further.
   one on an origin that the related model's API does not allow raises
   `FieldConversionError` naming the field, where `v1.0.0a5` sent it and the
   read raised.
+- A list of relations, such as `list[User]`, reads an item that the server
+  embeds without a key as an object whose `pk` is `None`, as a single relation
+  does. It raised `FieldConversionError` with a message about writing a
+  relation. Saving a change made in place to such a list raises while an item
+  has no key.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import datetime
@@ -247,6 +248,31 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         if _passes_through(err):
             raise
         raise FieldConversionError(model, field, err) from err
+
+
+_COMPARING_KEYLESS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eazyrest_comparing_keyless", default=False
+)
+"""Whether a related object without a key encodes as a stand-in."""
+
+
+@contextlib.contextmanager
+def _comparing_keyless() -> Generator[None, None, None]:
+    """Encode a related object without a key as a stand-in for its identity.
+
+    A list that a program reads can hold embedded related objects that have no
+    key, as a single relation can. The encoding that detects a change made in
+    place to the list is only compared, never sent, so such an object stands
+    for itself in it, and an object that was replaced or added differs.
+
+    Yields:
+        ``None``, while values are encoded.
+    """
+    token = _COMPARING_KEYLESS.set(True)
+    try:
+        yield
+    finally:
+        _COMPARING_KEYLESS.reset(token)
 
 
 @contextlib.contextmanager
@@ -2631,6 +2657,8 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
         ):
             # Loading may give the key, which the object's own URL allows.
             _known_key(value)
+        if _COMPARING_KEYLESS.get():
+            return f"\0keyless:{id(value)}"
         # Writing None would clear the relation.
         raise ValueError(
             f"The {name} object's primary key is None, so it cannot be "
@@ -5307,7 +5335,7 @@ class JSONProperty:
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
-            with _converting(type(obj), self.field):
+            with _converting(type(obj), self.field), _comparing_keyless():
                 encoded = obj._to_json(value, self.analyzed_type)
 
         # Cache the value only once its encoding is known, so that a field
@@ -6778,9 +6806,15 @@ class JSONObject:
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
             with _converting(type(self), field):
-                encoded = self._to_json(
-                    self._field_cache[field], descriptor.analyzed_type
-                )
+                with _comparing_keyless():
+                    encoded = self._to_json(
+                        self._field_cache[field], descriptor.analyzed_type
+                    )
+                if not _json_equal(encoded, snapshot):
+                    # An object without a key cannot be written.
+                    encoded = self._to_json(
+                        self._field_cache[field], descriptor.analyzed_type
+                    )
             if descriptor._is_key_of(self):
                 # A key is the same key if its canonical text is. Python
                 # equality is not the test, since it equates 1 with 1.0.

@@ -568,6 +568,59 @@ def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
     )
 
 
+def test_a_list_relation_reads_an_embedded_object_without_a_key() -> None:
+    """A list reads an item as a single relation does, with no key."""
+    post = Post(
+        json={
+            "id": 1,
+            "owner": {"x": 1},
+            "readers": [{"x": 1}, 3, {"x": 2}],
+        }
+    )
+    feed = Feed(json={"id": 1, "readers": [{"x": 1}, 3]})
+
+    assert repr(post.owner) == "<User id=None>"
+    assert [reader.pk for reader in post.readers] == [None, 3, None]
+    assert [reader.pk for reader in feed.readers] == [None, 3]
+
+
+def test_a_keyless_item_of_a_list_does_not_stop_a_save_of_another_field(
+    requests_mock: Any,
+) -> None:
+    """An item that the program did not change is not sent."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [{"x": 1}, 3]},
+        write_mode="lazy",
+    )
+    assert len(post.readers) == 2
+
+    post.owner = User(id=5)
+    post.save()
+
+    assert patch.last_request.json() == {"owner": 5}
+
+
+def test_a_list_that_changed_in_place_refuses_a_keyless_item_when_saved(
+    requests_mock: Any,
+) -> None:
+    """A change to the list sends it, so every item must have a key."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [{"x": 1}, 3]},
+        write_mode="lazy",
+    )
+    post.readers.append(User(id=4))
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()
+    del post.readers[0]
+    post.save()
+
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"readers": [3, 4]}
+
+
 BAD_BARE_KEYS = [
     pytest.param("7", id="string"),
     pytest.param(True, id="bool"),

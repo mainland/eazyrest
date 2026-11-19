@@ -711,7 +711,11 @@ and any change you make to it while iterating, exists only once. A second
 iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than
 once, call `list()` on the field, or annotate it as `list[User]` or
 `tuple[User, ...]`, which create the related objects when the field is first
-read and keep them.
+read and keep them. An item of such a field that the server embeds without a
+key reads as an object whose `pk` is `None`, as a single relation does. Saving
+a change made in place to the list raises `FieldConversionError` while an item
+has no key, because a list is sent as keys, and a save of another field does
+not send the list.
 
 A relation that the API represents by the related object's URL rather than its
 primary key, as Django REST Framework's hyperlinked fields do, is annotated
