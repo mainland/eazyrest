@@ -255,8 +255,52 @@ _COMPARING_KEYLESS: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 """Whether a related object without a key encodes as a stand-in."""
 
-_KEYLESS_SERIALS = itertools.count(1)
-"""Serial numbers for the stand-ins of related objects without a key."""
+
+class _KeylessItem:
+    """Stand-in for a related object without a key in a change check.
+
+    It holds the object and equals only a stand-in of that same object, so a
+    copy of the object, or a new one at the address of a freed one, is not
+    equal to it. A copy of the owner copies its snapshot and its objects
+    together, so the copied stand-in names the copied object.
+    """
+
+    __slots__ = ("item",)
+
+    def __init__(self, item: JSONObject) -> None:
+        """Hold the object.
+
+        Args:
+            item: Related object without a key.
+        """
+        self.item = item
+
+    def __eq__(self, other: object) -> bool:
+        """Return whether ``other`` stands for the same object.
+
+        Args:
+            other: Value to compare.
+
+        Returns:
+            Whether ``other`` is a stand-in whose object is this one's.
+        """
+        return isinstance(other, _KeylessItem) and other.item is self.item
+
+    def __hash__(self) -> int:
+        """Return a hash that agrees with equality.
+
+        Returns:
+            The identity hash of the object.
+        """
+        return id(self.item)
+
+    def __repr__(self) -> str:
+        """Return a description that names the object's type.
+
+        Returns:
+            Text that is no key.
+        """
+        return f"<keyless {type(self.item).__name__} at {id(self.item):#x}>"
 
 
 @contextlib.contextmanager
@@ -2717,12 +2761,9 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
             # Loading may give the key, which the object's own URL allows.
             _known_key(value)
         if _COMPARING_KEYLESS.get():
-            # The stand-in is a serial kept on the object, not its address,
-            # since a snapshot holds the text and an object that was dropped
-            # can give its address to another.
-            if value._keyless_serial is None:
-                value._keyless_serial = next(_KEYLESS_SERIALS)
-            return f"\0keyless:{value._keyless_serial}"
+            # The stand-in holds the object, so that no other object, not a
+            # copy and not one at the address of a freed object, equals it.
+            return _KeylessItem(value)
         # Writing None would clear the relation.
         raise ValueError(
             f"The {name} object's primary key is None, so it cannot be "
@@ -3224,6 +3265,26 @@ def _copy_json(value: Any) -> Any:
         return copy.deepcopy(value)
 
     return value
+
+
+def _copy_snapshot(value: Any) -> Any:
+    """Return a copy of a value's encoding that a change check compares.
+
+    Args:
+        value: Encoding of a field, which can hold a stand-in for a related
+            object without a key.
+
+    Returns:
+        A deep copy, except that a stand-in is kept, since it names the object
+        that the field holds and a copy of that object would not equal it.
+    """
+    if isinstance(value, _KeylessItem):
+        return value
+    if isinstance(value, dict):
+        return {key: _copy_snapshot(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_snapshot(item) for item in value]
+    return _copy_json(value)
 
 
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
@@ -5448,7 +5509,7 @@ class JSONProperty:
         # returning a value whose changes save() would miss.
         obj._field_cache[self.field] = value
         if changeable:
-            obj._field_snapshots[self.field] = _copy_json(encoded)
+            obj._field_snapshots[self.field] = _copy_snapshot(encoded)
 
         return value
 
@@ -5743,14 +5804,6 @@ class JSONObject:
     For an object that was given its key and has not loaded, this is the key's
     encoding, and ``pk`` decodes it. ``None`` if the object has recorded no
     key. Only ``_record_saved_key()`` sets it.
-    """
-
-    _keyless_serial: int | None = None
-    """The number that stands for the object in a change check.
-
-    Set the first time the object is encoded as a related object without a
-    key, and copied with the object, so that a copy matches the snapshot that
-    its original made.
     """
 
     _api_override: _AnyAPI | None

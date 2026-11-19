@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import copy
 import enum
+import gc
+import os
+import subprocess
+import sys
 import uuid
+import weakref
 from collections.abc import Iterable, Mapping
 from typing import Annotated, Any, ClassVar, Literal, NewType, TypedDict
 
@@ -1612,17 +1617,112 @@ def test_replacing_a_keyless_item_with_another_is_a_change(
 ) -> None:
     """The new item has no key either, but it is not the old one."""
     requests_mock.patch("https://related.example/posts/1/", json={})
-    # An object freed here may give its address to the next one, so repeat.
-    for _ in range(200):
-        post = Post(
-            json={"id": 1, "owner": 2, "readers": [{"name": "x"}]},
-            write_mode="lazy",
-        )
-        post.readers.pop()
-        post.readers.append(User(json={"name": "y"}))
+    post = _post_with_keyless_reader()
+    post.readers.pop(0)
+    post.readers.insert(0, User(json={"name": "y"}))
 
-        with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-            post.save()
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()
+
+
+def test_a_replaced_keyless_item_stays_alive_until_the_next_save() -> None:
+    """No new object can take the address of an item that the check names."""
+    post = _post_with_keyless_reader()
+    old = weakref.ref(post.readers[0])
+
+    post.readers.pop(0)
+    gc.collect()
+
+    assert old() is not None
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        copy.copy,
+        copy.deepcopy,
+        lambda item: _renamed(copy.deepcopy(item)),
+    ],
+    ids=["copy", "deepcopy", "changed deepcopy"],
+)
+def test_replacing_a_keyless_item_with_a_copy_of_it_is_a_change(
+    replacement: Any, requests_mock: Any
+) -> None:
+    """A copy is another object, though it holds the same JSON."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = _post_with_keyless_reader()
+    post.readers[0] = replacement(post.readers[0])
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()
+
+    assert patch.call_count == 0
+
+
+def _renamed(user: User) -> User:
+    """Change the name that a keyless user holds in its JSON.
+
+    Args:
+        user: A user without a key.
+
+    Returns:
+        ``user``.
+    """
+    user._json["name"] = "changed"
+    return user
+
+
+_PICKLE_SCRIPT = """
+import pickle, sys
+import test_related_keys as t
+
+path = sys.argv[2]
+if sys.argv[1] == "dump":
+    post = t._post_with_keyless_reader()
+    with open(path, "wb") as out:
+        pickle.dump(post, out)
+else:
+    with open(path, "rb") as source:
+        post = pickle.load(source)
+    post.readers.pop(0)
+    post.readers.insert(0, t.User(json={"name": "y"}))
+    try:
+        post.save()
+    except t.FieldConversionError:
+        print("refused")
+    else:
+        print("saved")
+"""
+
+
+def _run_pickle_script(mode: str, path: Any) -> str:
+    """Run the pickling script in a new process.
+
+    Args:
+        mode: ``"dump"`` to pickle an owner, or ``"load"`` to change one.
+        path: File of the pickle.
+
+    Returns:
+        What the script printed.
+    """
+    done = subprocess.run(
+        [sys.executable, "-c", _PICKLE_SCRIPT, mode, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    return done.stdout.strip()
+
+
+def test_a_keyless_item_that_a_pickled_owner_holds_is_not_a_new_one(
+    tmp_path: Any,
+) -> None:
+    """Another process unpickles the owner and makes its own objects."""
+    path = tmp_path / "post.pickle"
+    _run_pickle_script("dump", path)
+
+    assert _run_pickle_script("load", path) == "refused"
 
 
 def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(
