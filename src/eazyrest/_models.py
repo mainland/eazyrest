@@ -8110,7 +8110,7 @@ class JSONObject:
                 ignore or change its constraint. Also if a lookup that takes
                 several values is given anything but a collection, a
                 ``__range`` is given other than two operands, or an operand's
-                text holds a comma under ``"comma"``.
+                text is empty, or holds a comma under ``"comma"``.
         """
         several = cls._is_list_lookup(name)
         if several and (
@@ -8157,8 +8157,14 @@ class JSONObject:
         if several:
             if isinstance(value, (set, frozenset)):
                 operands.sort(key=_lookup_operand_order)
+            texts = [str(operand) for operand in operands]
+            if "" in texts:
+                raise ValueError(
+                    f"Query parameter {name} for {cls.__name__} cannot be "
+                    "sent, because an item's text is empty, which "
+                    "django-filter would read as no filter"
+                )
             if style == "comma":
-                texts = [str(operand) for operand in operands]
                 if any("," in text for text in texts):
                     raise ValueError(
                         f"Query parameter {name} for {cls.__name__} cannot "

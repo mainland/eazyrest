@@ -571,3 +571,26 @@ def test_a_list_lookup_takes_a_list_of_values_that_its_field_takes_whole(
     assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
         "span__in": ["1-2,3-4"]
     }
+
+
+@pytest.mark.parametrize("style", ["comma", "repeat"])
+@pytest.mark.parametrize(
+    ("name", "items"),
+    [
+        ("name__in", [""]),
+        ("name__in", ["", ""]),
+        ("other__in", ["1", ""]),
+        ("id__range", ["", "5"]),
+    ],
+)
+def test_a_list_lookup_refuses_an_item_whose_text_is_empty(
+    name: str, items: list[str], style: str, requests_mock: Any
+) -> None:
+    """The server would read the empty text as no filter, or as nothing."""
+    requests_mock.get("https://lookups.example/windows/", json=[])
+    api = RepeatAPI("https://lookups.example/") if style == "repeat" else None
+
+    with pytest.raises(ValueError, match=rf"{name}.*text is empty"):
+        list(Window.filter(api=api, params={name: items}))
+
+    assert requests_mock.call_count == 0
