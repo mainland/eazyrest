@@ -2831,9 +2831,10 @@ class _Parameter:
     """The relation by which an object of the model itself is built, for the
     model's own key field, which gives its own key."""
 
-    lookup: str | None = None
-    """The name that the key's JSON key gives the same lookup, for ``pk``,
-    which another parameter may also name."""
+    key_suffix: str | None = None
+    """For a parameter that names the model's own key, the lookup suffix that
+    follows the name, empty for the key alone and for ``exact``. Two parameters
+    with one suffix name one comparison."""
 
 
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
@@ -7441,6 +7442,7 @@ class JSONObject:
             unchanged.
         """
         payload: dict[str, Any] = {}
+        names: dict[str, str] = {}
 
         for field, value in fields.items():
             descriptor = getattr(cls, field, None)
@@ -7450,7 +7452,11 @@ class JSONObject:
                 else field
             )
             if key in payload:
-                raise TypeError(f"Multiple fields use the JSON key {key}")
+                raise TypeError(
+                    f"Multiple fields use the JSON key {key}: {names[key]} "
+                    f"and {field}"
+                )
+            names[key] = field
             if isinstance(descriptor, JSONProperty):
                 if descriptor.read_only and not query:
                     raise AttributeError(
@@ -7631,7 +7637,7 @@ class JSONObject:
         *,
         several: bool,
         own: bool,
-        lookup: str | None = None,
+        suffix: str = "",
     ) -> _Parameter:
         """Resolve a parameter that compares the values of a field.
 
@@ -7640,7 +7646,8 @@ class JSONObject:
             wire: The name that the parameter is sent under.
             several: Whether it is a lookup that takes several values.
             own: Whether it is the field's own parameter.
-            lookup: The name that the key's JSON key gives the same lookup.
+            suffix: The lookup suffix after the field's name, empty for the
+                field's own parameter.
 
         Returns:
             The parameter. The model's key field builds each operand that is no
@@ -7661,7 +7668,9 @@ class JSONObject:
             )
             key = None
             model = None
+            key_suffix = None
             if descriptor is _pk_property_of(cls):
+                key_suffix = "" if suffix == "exact" else suffix
                 model = RelatedType(cls)
                 if _related_key_type(analyzed) is None:
                     key = model
@@ -7675,7 +7684,7 @@ class JSONObject:
             own,
             key=key,
             model=model,
-            lookup=lookup,
+            key_suffix=key_suffix,
         )
 
     @classmethod
@@ -7706,20 +7715,16 @@ class JSONObject:
             )
         key_field = _pk_property_of(cls)
         if key_field is not None:
-            # The key is also named by ``pk`` and by its JSON key, alone or
-            # with a value suffix.
+            # The key is also named by ``pk``, alone or with a value suffix,
+            # and sent under that name.
             head, _, tail = name.partition("__")
-            if (
-                head in ("pk", key_field.json_field)
-                and head != key_field.field
-                and (not tail or tail in _VALUE_LOOKUPS)
-            ):
+            if head == "pk" and (not tail or tail in _VALUE_LOOKUPS):
                 return cls._field_parameter(
                     key_field.field,
                     name,
                     several=several,
                     own=False,
-                    lookup=key_field.json_field + name[len(head) :],
+                    suffix=tail,
                 )
         found = cls._lookup_field(name)
         if found is None:
@@ -7730,7 +7735,7 @@ class JSONObject:
         if rest in _VALUE_LOOKUPS:
             # A value lookup compares the field's own values.
             return cls._field_parameter(
-                field, wire, several=several, own=False
+                field, wire, several=several, own=False, suffix=rest
             )
         # Any other path, such as one through a relation, compares something
         # that the class does not know, so its operands are sent as given.
@@ -7922,11 +7927,11 @@ class JSONObject:
             Operands by JSON key.
 
         Raises:
-            TypeError: If two parameters have the same JSON key.
-            ValueError: If a parameter has a value that requests would not send
-                intact, so the query would ignore or change its constraint, or
-                the client's ``list_lookup_style`` is not ``"comma"`` or
-                ``"repeat"``.
+            ValueError: If two parameters are sent under one name, or both
+                compare the model's key. Also if a parameter has a value that
+                requests would not send intact, so the query would ignore or
+                change its constraint, or the client's ``list_lookup_style`` is
+                not ``"comma"`` or ``"repeat"``.
         """
         style = client.list_lookup_style
         if style not in ("comma", "repeat"):
@@ -7934,18 +7939,24 @@ class JSONObject:
                 f"list_lookup_style must be 'comma' or 'repeat', not {style!r}"
             )
         payload: dict[str, Any] = {}
-        fields: dict[str, str | None] = {}
+        senders: dict[str, str] = {}
+        keys: dict[str, str] = {}
         for name, value in params.items():
             parameter = cls._parameter(name)
-            key = parameter.lookup or parameter.wire
-            if key in fields:
-                clash = TypeError(f"Multiple fields use the JSON key {key}")
-                for field in (fields[key], parameter.field):
-                    if field is not None:
-                        with _converting(cls, field):
-                            raise clash
-                raise clash
-            fields[key] = parameter.field
+            if parameter.wire in senders:
+                raise ValueError(
+                    f"Query parameters {senders[parameter.wire]} and {name} "
+                    f"for {cls.__name__} both send {parameter.wire}"
+                )
+            senders[parameter.wire] = name
+            if parameter.key_suffix is not None:
+                if parameter.key_suffix in keys:
+                    raise ValueError(
+                        f"Query parameters {keys[parameter.key_suffix]} and "
+                        f"{name} for {cls.__name__} both compare its key. "
+                        "Name the key once"
+                    )
+                keys[parameter.key_suffix] = name
             payload[parameter.wire] = cls._query_operands(name, value, style)
 
         return payload

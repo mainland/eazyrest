@@ -205,17 +205,23 @@ server names the resource, and these laws follow:
   does a mapping, which a relation never takes for the related object. That
   holds for a bare value of a lookup on a relation, such as
   `filter(owner__in=[7])`. A query that compares the key of the model itself,
-  whether by `id`, `pk`, or the key's JSON key, alone or with a value suffix,
-  as in `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
+  whether by `id` or `pk`, alone or with a value suffix, as in
+  `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
   `User.get_or_create(id=7)`, builds each value the same way, so `"7"` for an
   `int` key raises `FieldConversionError` naming the field before any request.
-  An object of the model itself, as in `User.filter(pk=user)`, is sent as its
-  key, and an object of another model raises `FieldConversionError`. A path
-  through a relation, such as `owner__name` or `owner__id`, compares something
-  that the class does not know, so its value is sent as given, with no check,
-  except that a related object in it is sent as its key, and one without a key
-  raises `ValueError` naming the parameter. Give the key in its field's type,
-  as the server returns it.
+  The key is named by `pk`, which is sent as `pk`, or by its field's Python
+  name, which is sent under the field's JSON key. The JSON key, such as
+  `postId` for a field `id`, is an ordinary name, sent as given. Two parameters
+  that compare the key the same way, as in `filter(pk=7, id=8)` or
+  `filter(pk__exact=7, id=8)`, raise `ValueError` naming both, and so do two
+  parameters that are sent under one name, as in `filter(id=7, postId=8)`. An
+  object of the model itself, as in `User.filter(pk=user)`, is sent as its key,
+  and an object of another model raises `FieldConversionError`. A path through
+  a relation, such as `owner__name` or `owner__id`, compares something that the
+  class does not know, so its value is sent as given, with no check, except
+  that a related object in it is sent as its key, and one without a key raises
+  `ValueError` naming the parameter. Give the key in its field's type, as the
+  server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, and one whose loaded
@@ -1223,13 +1229,11 @@ such as a model for a relation field or an instance of a class that
 value is refused if the conversion writes it as a list, as for a `NamedTuple`
 or fixed-length tuple field, because requests would send the list as separate
 values, which a server cannot tell from a filter on several values. No value
-can be sent under the field's own name. To filter on such a field, encode the
-value as the API expects and pass it under a name that names no field, such as
-a lookup on the field's JSON key like `point__exact="1,2"`, which is sent
-unchanged. A collection must be finite, because eazyrest reads all of it before
-it sends the request, so an endless generator never returns. Use the API's own
-null filter, such as `parent__isnull=True` in django-filter, to match objects
-whose field is null.
+can be sent under the field's own name. To filter on such a field, use a server
+filter under another name, as in `Todo.filter(point_text="1,2")`. A collection
+must be finite, because eazyrest reads all of it before it sends the request,
+so an endless generator never returns. Use the API's own null filter, such as
+`parent__isnull=True` in django-filter, to match objects whose field is null.
 
 `get_or_create()` returns the one object that matches its keyword arguments, or
 creates an object from them if none matches. Its keyword arguments are sent in

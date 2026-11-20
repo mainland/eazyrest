@@ -722,20 +722,6 @@ def test_a_lookup_on_the_key_field_refuses_a_key_that_cannot_be_built(
     assert requests_mock.call_count == 0
 
 
-def test_a_lookup_on_the_keys_json_name_builds_the_key(
-    requests_mock: Any,
-) -> None:
-    """A key read from another JSON key is compared under that key too."""
-    requests_mock.get("https://related.example/renamed/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"Renamed\.uid"):
-        list(Renamed.filter(params={"id__in": ["7"]}))
-    list(Renamed.filter(params={"id__in": [7]}))
-
-    assert requests_mock.call_count == 1
-    assert requests_mock.last_request.qs == {"id__in": ["7"]}
-
-
 def test_a_query_for_the_key_field_sends_the_built_key(
     requests_mock: Any,
 ) -> None:
@@ -1595,15 +1581,38 @@ def test_a_model_operand_of_its_own_key_is_refused_as_another_model(
         (User, {"pk__in": [7], "id__in": [8]}),
         (User, {"pk__gte": 7, "id__gte": 8}),
         (Renamed, {"uid": 7, "pk": 8}),
-        (Renamed, {"id": 7, "pk": 8}),
+        (User, {"pk__exact": 7, "id": 8}),
+        (User, {"id__exact": 7, "pk": 8}),
     ],
 )
 def test_two_parameters_that_name_one_key_are_refused(
     model: type[JSONObject], params: dict[str, Any], requests_mock: Any
 ) -> None:
     """A query that gave the key twice would send two filters on one key."""
-    with pytest.raises(FieldConversionError, match="JSON key"):
+    with pytest.raises(ValueError, match="both compare its key") as error:
         list(model.filter(**params))
+
+    assert all(name in str(error.value) for name in params)
+    assert requests_mock.call_count == 0
+
+
+def test_the_json_name_of_the_key_is_an_ordinary_name(
+    requests_mock: Any,
+) -> None:
+    """Only ``pk`` and the key field's name name the key."""
+    requests_mock.get("https://related.example/renamed/", json=[])
+
+    list(Renamed.filter(id="7", pk=8))
+
+    assert requests_mock.last_request.qs == {"id": ["7"], "pk": ["8"]}
+
+
+def test_two_parameters_that_send_one_name_are_refused(
+    requests_mock: Any,
+) -> None:
+    """The JSON name of the key and the field's name both send that name."""
+    with pytest.raises(ValueError, match=r"uid and id .* both send id"):
+        list(Renamed.filter(uid=7, id=8))
 
     assert requests_mock.call_count == 0
 

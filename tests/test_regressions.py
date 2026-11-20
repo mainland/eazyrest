@@ -294,7 +294,9 @@ def test_query_rejects_colliding_read_names(requests_mock: Any) -> None:
     class Mapped(MockedDoc):
         owner: MockedUser
 
-    with pytest.raises(TypeError, match="owner_id"):
+    with pytest.raises(
+        ValueError, match=r"owner and owner_id .* send owner_id"
+    ):
         Mapped.filter(owner=MockedUser(id=2), owner_id=3)
 
     assert not requests_mock.called
@@ -917,7 +919,7 @@ def test_single_collection_item_cannot_share_a_raw_key(
         id: int
         tags: list[str]
 
-    with pytest.raises(FieldConversionError, match="JSON key t"):
+    with pytest.raises(ValueError, match=r"tags and t .* send t"):
         Tagged.filter(tags="a", t="b")
 
     assert not requests_mock.called

@@ -25,6 +25,12 @@ describe them further.
   queried, and prefetched with `bulk_get_by_pks()`. An object that is known
   only by its URL no longer exists, except an object of a class that overrides
   `url`.
+- A query that compares the model's own key under two names, as in
+  `filter(pk=7, id=8)` or `filter(pk__exact=7, id=8)`, raises `ValueError`
+  naming both parameters before any request, and so do two parameters that are
+  sent under one name, as in `filter(id=7, postId=8)`. `create(id=7, postId=8)`
+  raises `TypeError` naming both. The key's JSON key, `postId` for a field
+  `id`, is an ordinary query name, sent as given.
 - The hooks `collection_items()`, `collection_items_from_response()`,
   `collection_page()`, and `bulk_get_by_pks()` must accept `api=` and
   `**kwargs`, and `object_json()`, `merge_response()`, and

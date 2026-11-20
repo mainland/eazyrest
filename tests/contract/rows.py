@@ -1302,7 +1302,7 @@ def an_object_of_another_model_is_refused_in_a_query(world: World) -> None:
     )
 
 
-@row(OWN, pending="Two parameters that name the key are refused by one name")
+@row(OWN)
 def two_parameters_naming_the_key_are_refused(world: World) -> None:
     refuses_query(world, Post, ValueError, "pk", "id", pk=7, id=8)
 
@@ -1312,7 +1312,7 @@ def the_json_name_is_an_ordinary_name(world: World) -> None:
     sends_query(world, Post, "postId=7", postId=7)
 
 
-@row(OWN, pending="A parameter by the key's JSON name is encoded as the key")
+@row(OWN)
 def an_ordinary_name_is_sent_as_given(world: World) -> None:
     sends_query(world, Post, "postId=7", postId="7")
 
@@ -1518,7 +1518,7 @@ def a_json_name_of_the_wrong_type_is_refused_on_create(world: World) -> None:
     )
 
 
-@row(CREATE, pending="The message names the JSON key, not both parameters")
+@row(CREATE)
 def two_names_of_one_key_are_refused_on_create(world: World) -> None:
     raises(
         world,
