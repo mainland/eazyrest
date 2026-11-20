@@ -57,7 +57,7 @@ class Post(RelatedBase):
 
 @json_object
 class Feed(RelatedBase):
-    """Model whose relations are read lazily and by a bulk hook."""
+    """Model with a sequence of relations."""
 
     class_url = "/feeds/"
 
@@ -1489,3 +1489,132 @@ def test_parameters_that_compare_one_key_differently_are_sent(
         "id__gte": ["3"],
         "pk__lt": ["9"],
     }
+
+
+@json_object
+class Roster(RelatedBase):
+    """Model with a list of relations, a set, and a plain field."""
+
+    class_url = "/rosters/"
+
+    id: int
+    title: str
+    staff: list[User]
+    crew: set[User]
+
+
+def _roster(requests_mock: Any, **over: Any) -> Roster:
+    """Return a lazy roster read from JSON, and serve its saves.
+
+    Args:
+        requests_mock: The mocked transport.
+        **over: Members of the JSON to replace.
+
+    Returns:
+        The roster.
+    """
+    requests_mock.patch("https://related.example/rosters/1/", json={})
+    return Roster(
+        json={
+            "id": 1,
+            "title": "t",
+            "staff": [1, 2],
+            "crew": [5, 6],
+            **over,
+        },
+        write_mode="lazy",
+    )
+
+
+def _sent_bodies(requests_mock: Any) -> list[Any]:
+    """Return the JSON body of each write that the transport received."""
+    return [
+        r.json() for r in requests_mock.request_history if r.method == "PATCH"
+    ]
+
+
+def test_an_item_without_a_key_names_its_position(
+    requests_mock: Any,
+) -> None:
+    """The error names the position, and a save of another field is sent."""
+    roster = _roster(requests_mock, staff=[1, {"x": 1}])
+
+    roster.title = "u"
+    roster.save()
+
+    assert _sent_bodies(requests_mock) == [{"title": "u"}]
+    with pytest.raises(
+        FieldConversionError, match=r"Roster\.staff: \[1\]: The item"
+    ):
+        roster.staff  # noqa: B018
+
+
+def test_a_saved_list_is_not_sent_with_the_next_save(
+    requests_mock: Any,
+) -> None:
+    """After a save, the list that was sent is the one that the server has."""
+    roster = _roster(requests_mock)
+
+    roster.staff.append(User(id=4))
+    roster.save()
+    roster.title = "z"
+    roster.save()
+
+    assert _sent_bodies(requests_mock) == [
+        {"staff": [1, 2, 4]},
+        {"title": "z"},
+    ]
+
+
+def test_a_set_member_removed_and_added_again_is_not_a_change(
+    requests_mock: Any,
+) -> None:
+    """A set is compared without order, so a new order sends nothing."""
+    roster = _roster(requests_mock)
+
+    for key in (5, 6):
+        roster.crew.discard(User(id=key))
+        roster.crew.add(User(id=key))
+    roster.save()
+
+    assert _sent_bodies(requests_mock) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("owner__id__isnull", "true"), ("pk__icontains", "7")]
+)
+def test_a_name_that_is_no_value_lookup_of_a_key_is_sent_as_given(
+    name: str, value: str, requests_mock: Any
+) -> None:
+    """Only a suffix that compares values is built as the key."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    list(Post.filter(params={name: value}))
+
+    assert requests_mock.last_request.qs == {name: [value]}
+
+
+def test_a_copy_that_reads_changes_and_saves_leaves_the_original_alone(
+    requests_mock: Any,
+) -> None:
+    """The copy's reads, saves, and first key are the copy's own."""
+    roster = _roster(requests_mock)
+    copied = copy.copy(roster)
+
+    copied.staff.append(User(id=9))
+    copied.save()
+    roster.save()
+
+    assert _sent_bodies(requests_mock) == [{"staff": [1, 2, 9]}]
+    assert [user.pk for user in roster.staff] == [1, 2]
+
+
+def test_a_copy_that_is_given_a_key_leaves_the_original_json_alone() -> None:
+    """The first key that a copy takes is not the original's."""
+    original = User(json={"name": "x"})
+    copied = copy.copy(original)
+
+    copied.id = 5
+
+    assert copied.json["id"] == 5
+    assert "id" not in original.json
