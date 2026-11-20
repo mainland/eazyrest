@@ -3001,6 +3001,10 @@ class _Parameter:
     """The relation by which an object of the model itself is built, for the
     model's own key field, which gives its own key."""
 
+    lookup: str | None = None
+    """The name that the key's JSON key gives the same lookup, for ``pk``,
+    which another parameter may also name."""
+
 
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
     """Return a key that orders the operands of a lookup given a set.
@@ -8063,7 +8067,13 @@ class JSONObject:
 
     @classmethod
     def _field_parameter(
-        cls, field: str, wire: str, *, several: bool, own: bool
+        cls,
+        field: str,
+        wire: str,
+        *,
+        several: bool,
+        own: bool,
+        lookup: str | None = None,
     ) -> _Parameter:
         """Resolve a parameter that compares the values of a field.
 
@@ -8072,6 +8082,7 @@ class JSONObject:
             wire: The name that the parameter is sent under.
             several: Whether it is a lookup that takes several values.
             own: Whether it is the field's own parameter.
+            lookup: The name that the key's JSON key gives the same lookup.
 
         Returns:
             The parameter. A field that writes every value as a list or an
@@ -8109,6 +8120,7 @@ class JSONObject:
             own,
             key=key,
             model=model,
+            lookup=lookup,
         )
 
     @classmethod
@@ -8150,7 +8162,11 @@ class JSONObject:
                 and (not tail or tail in _VALUE_LOOKUPS)
             ):
                 return cls._field_parameter(
-                    key_field.field, name, several=several, own=False
+                    key_field.field,
+                    name,
+                    several=several,
+                    own=False,
+                    lookup=key_field.json_field + name[len(head) :],
                 )
         found = cls._lookup_field(name)
         if found is None:
@@ -8433,18 +8449,19 @@ class JSONObject:
                 f"list_lookup_style must be 'comma' or 'repeat', not {style!r}"
             )
         payload: dict[str, Any] = {}
-        names: dict[str, str] = {}
+        fields: dict[str, str | None] = {}
         for name, value in params.items():
-            key = cls._parameter(name).wire
-            if key in payload:
+            parameter = cls._parameter(name)
+            key = parameter.lookup or parameter.wire
+            if key in fields:
                 clash = TypeError(f"Multiple fields use the JSON key {key}")
-                for field in (names[key], name):
-                    if isinstance(getattr(cls, field, None), JSONProperty):
+                for field in (fields[key], parameter.field):
+                    if field is not None:
                         with _converting(cls, field):
                             raise clash
                 raise clash
-            names[key] = name
-            payload[key] = cls._query_operands(name, value, style)
+            fields[key] = parameter.field
+            payload[parameter.wire] = cls._query_operands(name, value, style)
 
         return payload
 

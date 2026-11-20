@@ -2612,3 +2612,39 @@ def test_a_model_operand_of_its_own_key_is_refused_as_another_model(
         list(Account.filter(pk=Team(id=4)))
 
     assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("model", "params"),
+    [
+        (User, {"pk": 7, "id": 8}),
+        (User, {"id": 8, "pk": 7}),
+        (User, {"pk__in": [7], "id__in": [8]}),
+        (User, {"pk__gte": 7, "id__gte": 8}),
+        (Renamed, {"uid": 7, "pk": 8}),
+        (Renamed, {"id": 7, "pk": 8}),
+    ],
+)
+def test_two_parameters_that_name_one_key_are_refused(
+    model: type[JSONObject], params: dict[str, Any], requests_mock: Any
+) -> None:
+    """A query that gave the key twice would send two filters on one key."""
+    with pytest.raises(FieldConversionError, match="JSON key"):
+        list(model.filter(**params))
+
+    assert requests_mock.call_count == 0
+
+
+def test_parameters_that_compare_one_key_differently_are_sent(
+    requests_mock: Any,
+) -> None:
+    """Another lookup on the key is another filter."""
+    requests_mock.get("https://related.example/users/", json=[])
+
+    list(User.filter(pk=7, id__gte=3, pk__lt=9))
+
+    assert requests_mock.last_request.qs == {
+        "pk": ["7"],
+        "id__gte": ["3"],
+        "pk__lt": ["9"],
+    }
