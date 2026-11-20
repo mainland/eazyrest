@@ -670,17 +670,22 @@ database N+1 queries.
 A field annotated with `Hyperlinked()` holds URLs, so prefetching it calls
 `bulk_get_by_urls()` on the related model instead of `bulk_get_by_pks()`. With
 DRF's default `lookup_field`, each URL ends with the primary key, so the hook
-can take the keys from the URLs and reuse the bulk lookup by key:
+can take the keys from the URLs and reuse the bulk lookup by key. A URL holds
+text, so the hook converts each key to the key's type, here `int` for
+`id: int`, and skips one that does not convert:
 
 ```python
 @classmethod
 def bulk_get_by_urls(cls, urls, *, api, **kwargs):
     prefix = api.resolve_url(cls.class_url)
-    pks = {
-        url.removeprefix(prefix).strip("/")
-        for url in urls
-        if url.startswith(prefix)
-    }
+    pks = set()
+    for url in urls:
+        if not url.startswith(prefix):
+            continue
+        try:
+            pks.add(int(url.removeprefix(prefix).strip("/")))
+        except ValueError:
+            continue
     if not pks:
         return {}
     objects = cls.bulk_get_by_pks(pks, api=api, **kwargs)
@@ -696,8 +701,13 @@ it is read. The recipe returns `{}` for a batch in which no URL is under
 case from the base URL's is not loaded here either.
 
 A serializer with another `lookup_field` gives URLs under `class_url`, such as
-`/users/ada/`, and the recipe would take `ada` for a primary key. For such a
-serializer, look the objects up in bulk by that field instead.
+`/users/ada/`. The recipe skips a URL whose last segment is not an `int`, so
+that object loads lazily when it is read. For such a serializer, look the
+objects up in bulk by that field instead.
+
+`bulk_get_by_pks()` takes keys of the key's type, as prefetch passes them, so
+`filter(id=sorted(pks))` builds each key and refuses a text `"3"` for an `int`
+key.
 
 ## Preserve laziness with batch prefetch
 

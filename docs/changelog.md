@@ -484,21 +484,24 @@ describe them further.
   given, and a query that compares the model's own key, such as
   `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
   `User.filter(id__range=["1", "9"])`, raises before its request, where it sent
-  the request first or sent the text as given. A write of a `Hyperlinked()`
-  relation checks the class of the object it is given, as a query does, so an
-  object of a subclass that redeclares the key field with another type is
-  refused when it is written, as it already was in a query, where `v1.0.0a5`
-  wrote its URL. The check is by class whether or not the object knows its key,
-  and no load or key build is needed, so an object whose loaded key the related
-  model cannot read is written as its URL, which a read of the field accepts. A
-  class is refused unless its key type is an `int` or a `str`, or a `NewType`,
-  an `Annotated`, or an `Optional` of one, that the related model's key reads
-  for every value of that JSON type, or a `Literal` of keys that the model
-  builds. A URL written as a string is checked as a read checks it, against the
-  API that the owner reads with, so one on an origin that API does not allow
-  raises `FieldConversionError` naming the field, where `v1.0.0a5` sent it and
-  the read raised. The URL of a related object that is written is checked the
-  same way.
+  the request first or sent the text as given. The Django REST Framework
+  guide's recipe for prefetching hyperlinks converts each key that it reads
+  from a URL to the key's type and skips one that does not convert, since a
+  bulk lookup by key now refuses text for an `int` key. A write of a
+  `Hyperlinked()` relation checks the class of the object it is given, as a
+  query does, so an object of a subclass that redeclares the key field with
+  another type is refused when it is written, as it already was in a query,
+  where `v1.0.0a5` wrote its URL. The check is by class whether or not the
+  object knows its key, and no load or key build is needed, so an object whose
+  loaded key the related model cannot read is written as its URL, which a read
+  of the field accepts. A class is refused unless its key type is an `int` or a
+  `str`, or a `NewType`, an `Annotated`, or an `Optional` of one, that the
+  related model's key reads for every value of that JSON type, or a `Literal`
+  of keys that the model builds. A URL written as a string is checked as a read
+  checks it, against the API that the owner reads with, so one on an origin
+  that API does not allow raises `FieldConversionError` naming the field, where
+  `v1.0.0a5` sent it and the read raised. The URL of a related object that is
+  written is checked the same way.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601

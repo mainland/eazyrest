@@ -930,6 +930,22 @@ def test_hyperlink_prefetch_recipe_loads_relations_in_one_request(
     )
 
 
+def test_hyperlink_prefetch_recipe_skips_a_url_whose_key_does_not_convert(
+    api: API,
+) -> None:
+    """A URL such as ``/contenttypes/ada/`` is left to load lazily."""
+    stored = ContentType.objects.first()
+    assert stored is not None
+    prefix = api.resolve_url(LinkedContentTypeModel.class_url)
+    good = f"{prefix}{stored.pk}/"
+
+    loaded = LinkedContentTypeModel.bulk_get_by_urls(
+        {good, f"{prefix}ada/", f"{prefix}1/2/"}, api=api
+    )
+
+    assert list(loaded) == [good]
+
+
 def test_get_page_navigates_a_drf_page_number_collection(api: API) -> None:
     """Pages of a DRF collection link both ways, and end at both ends."""
     total = Permission.objects.count()
