@@ -706,18 +706,25 @@ objects, and JSON strings in `statuses` become `IssueStatus` values. Assigning
 or creating objects with those typed values encodes the nested items back to
 JSON.
 
-An `Iterable` field of related objects, such as `members: Iterable[User]`, is
-lazy. Reading it creates no related objects, and each is created when iteration
-reaches it. The field can be iterated only once, so that each related object,
-and any change you make to it while iterating, exists only once. A second
-iteration raises `UsageError`, which is a `RuntimeError`. To iterate more than
-once, call `list()` on the field, or annotate it as `list[User]` or
-`tuple[User, ...]`, which create the related objects when the field is first
-read and keep them. An item of such a field that the server embeds without a
-key reads as an object whose `pk` is `None`, as a single relation does. Saving
-a change made in place to the list raises `FieldConversionError` while an item
-has no key, because a list is sent as keys, and a save of another field does
-not send the list.
+A field that is a collection of related objects, such as `members: list[User]`,
+reads each item as a related object, and `save()` finds a change made in place
+by comparing the items' keys, which is what it would send. The annotation must
+say whether the order of the items counts. A sequence, a `list`, a `tuple`, a
+`deque`, `Sequence`, or `MutableSequence`, compares its keys in order. A set,
+`set`, `frozenset`, `Set`, or `MutableSet`, compares them without order and is
+sent as its distinct keys, sorted. A set field may hold two objects of one key,
+such as `User(id=7)` and `Admin(id=7)`, and sends the key once. Replacing an
+item with an object of the same key, such as one of a subclass, is not a
+change. `Collection[User]` and `Iterable[User]`, also optional or in a
+`NewType`, raise `TypeError` when the class is decorated, naming the field,
+because neither says. Declare `list[User]` or `set[User]` instead. `Iterable`
+is left for a related collection that a query loads. Every item has a key. An
+item that the server embeds without one raises `FieldConversionError` naming
+the field and the item's position when the field is read, and so does
+assigning, saving, or giving to `create()` a collection that holds an object
+without a key. A save of another field does not read or send a collection that
+you did not read. Declare items that have no key as a `TypedDict` or a
+dataclass, which need none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
@@ -2064,8 +2071,7 @@ exception type that it replaced, so code written for that type keeps working:
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
   the expected shape. Its message does not quote the body.
-- `UsageError`, a `RuntimeError`, for a model without a registered API or a
-  second iteration of a lazy related collection.
+- `UsageError`, a `RuntimeError`, for a model without a registered API.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
 

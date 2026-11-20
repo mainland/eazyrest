@@ -246,55 +246,6 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
-def _holds_relations(analyzed: AnalyzedType) -> bool:
-    """Return whether a field's collections hold related objects.
-
-    Args:
-        analyzed: The field's analyzed type.
-
-    Returns:
-        Whether the field, inside any optional or ``NewType``, is a collection
-        whose items, at any depth of collections, are relations.
-    """
-    while isinstance(analyzed, OptionalType | NewTypeType):
-        analyzed = (
-            analyzed.inner_type
-            if isinstance(analyzed, OptionalType)
-            else analyzed.inner
-        )
-    if isinstance(analyzed, CollectionType):
-        item = analyzed.item_type
-        return isinstance(_unwrap_optional_type(item), RelatedType) or (
-            _holds_relations(item)
-        )
-    return False
-
-
-def _relation_items(value: Any) -> Any:
-    """Return the items of a collection of related objects, in its shape.
-
-    A change made in place to such a collection is found by comparing these
-    items with the ones that were read or assigned. ``==`` compares related
-    objects by their canonical key, and an object whose key is not known by
-    identity, so an object without a key needs no encoding to be compared.
-
-    Args:
-        value: A collection of related objects, at any depth, or one item.
-
-    Returns:
-        Nested tuples of the same objects, and frozensets for sets. A value
-        that is not a sized collection, or is text or a mapping, is returned as
-        it is.
-    """
-    if not isinstance(value, Collection) or isinstance(
-        value, (str, bytes, Mapping, JSONObject)
-    ):
-        return value
-    if isinstance(value, AbstractSet):
-        return frozenset(value)
-    return tuple(_relation_items(item) for item in value)
-
-
 @contextlib.contextmanager
 def _of_the_relation() -> Generator[None, None, None]:
     """Report a conversion error of a related object as the relation's own.
@@ -666,19 +617,6 @@ def _is_collection_value(value: Any) -> bool:
     return isinstance(value, Iterable) and not isinstance(
         value, (str, bytes, Mapping)
     )
-
-
-def _is_lazy_collection_type(collection_type: type[Any] | None) -> bool:
-    """Return whether a related collection should stay lazy.
-
-    Args:
-        collection_type: Collection type declared for the related field, or
-            ``None``.
-
-    Returns:
-        Whether ``collection_type`` is ``Iterable``.
-    """
-    return collection_type is Iterable
 
 
 @dataclass(frozen=True)
@@ -3114,94 +3052,6 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 T = TypeVar("T", bound="JSONObject")
 
 
-class RelatedCollection(Iterable[T]):
-    """Lazy, single-pass iterable of related objects backed by JSON values.
-
-    Each related object is created when iteration reaches it. The collection
-    can be iterated only once, so each related object is created only once, and
-    changes made to it while iterating are not lost to a second set of objects.
-    """
-
-    _owner: JSONObject
-    """Object that owns the related field."""
-
-    _values: tuple[Any, ...]
-    """Raw JSON values for the related objects."""
-
-    _related_type: type[T]
-    """Model type for each related object."""
-
-    _field: str | None
-    """Owning field name used to resolve prefetched related objects."""
-
-    _iterated: bool
-    """Whether ``__iter__()`` has been called."""
-
-    def __init__(
-        self,
-        owner: JSONObject,
-        values: Iterable[Any],
-        related_type: type[T],
-        field: str | None = None,
-    ) -> None:
-        """Initialize a lazy related-object collection.
-
-        Args:
-            owner: Object that owns the related field.
-            values: Raw JSON values of the related objects.
-            related_type: Model class of the related objects.
-            field: Name of the owning field, which finds the related objects
-                that a prefetch loaded, or ``None`` for a collection without
-                one.
-        """
-        self._owner = owner
-        self._values = tuple(values)
-        self._related_type = related_type
-        self._field = field
-        self._iterated = False
-
-    def __iter__(self) -> Iterator[T]:
-        """Return an iterator that creates related objects as it advances.
-
-        Returns:
-            Iterator over the related objects.
-
-        Raises:
-            UsageError: If the collection has already been iterated.
-        """
-        if self._iterated:
-            name = type(self._owner).__name__
-            if self._field is not None:
-                name = f"{name}.{self._field}"
-
-            raise UsageError(
-                f"{name} is a lazy related collection, which can be iterated "
-                "only once. Call list() on it to iterate more than once, or "
-                "annotate the field as list[...] or tuple[..., ...] to keep "
-                "its related objects."
-            )
-
-        self._iterated = True
-        return self._related_objects()
-
-    def _related_objects(self) -> Iterator[T]:
-        """Yield the related objects without marking the collection used.
-
-        Yields:
-            Each related object, created from the next raw JSON value.
-        """
-        for index, value in enumerate(self._values):
-            try:
-                yield self._owner._create_related(
-                    value,
-                    self._related_type,
-                    field=self._field,
-                )
-            except FieldConversionError as err:
-                positioned = _at_position(err, index)
-                raise positioned from positioned.__cause__
-
-
 def _declared_fields(
     cls: type[JSONObject], exclude: AbstractSet[str]
 ) -> list[str]:
@@ -3702,6 +3552,86 @@ def _check_key_is_leaf_or_relation(
     raise _key_type_error(cls, field)
 
 
+def _require_item_key(item: Any, model: type[JSONObject]) -> None:
+    """Refuse an embedded item of a collection of relations that has no key.
+
+    A collection of relations is compared and written by its items' keys, so an
+    item that is a JSON object must name its own.
+
+    Args:
+        item: The item's JSON.
+        model: The model that the collection's items relate to.
+
+    Raises:
+        ValueError: If the item is an object without the model's key, or with a
+            key of ``null``.
+    """
+    prop = _pk_property_of(model)
+    if (
+        isinstance(item, dict)
+        and prop is not None
+        and item.get(prop.json_field) is None
+    ):
+        raise ValueError(
+            f"The item has no {model.__name__} key, so it is not a "
+            f"{model.__name__}. Declare items that have no key as a "
+            "TypedDict or a dataclass, which need none"
+        )
+
+
+def _check_relation_collection(
+    cls: type[JSONObject], field: str, analyzed: AnalyzedType
+) -> None:
+    """Refuse a collection of relations that does not say if order counts.
+
+    A change made in place to a collection of relations is found by comparing
+    the items' keys, in order for a sequence and without order for a set, so
+    the annotation must name one of the two. ``Collection`` and ``Iterable`` do
+    not, and ``Iterable`` is left free for a related collection that a query
+    loads.
+
+    Args:
+        cls: Model class that declares the field.
+        field: Name of the field.
+        analyzed: Analyzed type of the field.
+
+    Raises:
+        TypeError: If the field, inside any optional or ``NewType``, or an item
+            of it, is a ``Collection`` or an ``Iterable`` of relations.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    while isinstance(analyzed, NewTypeType):
+        analyzed = _unwrap_optional_type(analyzed.inner)
+    if not isinstance(analyzed, CollectionType):
+        return
+    item = _unwrap_optional_type(analyzed.item_type)
+    if not isinstance(item, RelatedType):
+        _check_relation_collection(cls, field, item)
+        return
+    kind = analyzed.collection_type
+    if kind not in (Collection, Iterable):
+        return
+    model = item.model_type.__name__
+    name, article = (
+        ("Collection", "a") if kind is Collection else ("Iterable", "an")
+    )
+    advice = (
+        f"a sequence, such as list[{model}], or a set, such as set[{model}]"
+        if kind is Collection
+        else f"a sequence, such as Sequence[{model}], or a set, such as "
+        f"set[{model}]"
+    )
+    error = TypeError(
+        f"{cls.__name__}.{field} is {article} {name} of {model}, which does "
+        "not say whether the order of its items counts, so eazyrest cannot "
+        f"tell a change made in place from none. Declare {advice}."
+    )
+    # A conversion reports the error as a plain TypeError, as decorating the
+    # class does, not as the conversion of a value.
+    setattr(error, _DECLARATION_ERROR, True)
+    raise error
+
+
 def _analyze_field(
     prop: JSONProperty,
     resolved: Any,
@@ -3750,6 +3680,7 @@ def _analyze_field(
         _check_key_is_leaf_or_relation(
             owner, prop.field, analyzed, strict=strict
         )
+    _check_relation_collection(prop.cls, prop.field, analyzed)
     return analyzed
 
 
@@ -4195,9 +4126,11 @@ def json_object(
             Also raised if a field's type is a model without a primary-key
             field, alone or inside an optional, a collection, or a ``NewType``.
             Declare nested JSON without a key as a ``TypedDict`` or a
-            dataclass. A class defined later raises when the field is first
-            used. A key whose type is not yet defined raises when the key is
-            first used.
+            dataclass. Also raised if a field is a ``Collection`` or an
+            ``Iterable`` of a model, alone or inside an optional or a
+            ``NewType``, which does not say whether order counts. A class
+            defined later raises when the field is first used. A key whose type
+            is not yet defined raises when the key is first used.
     """
     if field_map is None:
         field_map = {}
@@ -4218,7 +4151,7 @@ def json_object(
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
             TypeError: If a field's type is a model without a primary-key
-                field.
+                field, or a ``Collection`` or an ``Iterable`` of a model.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
@@ -4551,6 +4484,8 @@ def _json_schema_of(
     defs: dict[str, Any],
     seen: frozenset[type],
     table: Mapping[Any, Conversion],
+    *,
+    keyed: bool = False,
 ) -> Any:
     """Return the JSON schema of a field's analyzed type.
 
@@ -4562,6 +4497,8 @@ def _json_schema_of(
             schema is, to stop a cycle of related primary keys or of a
             structure inside itself.
         table: Conversion table of the model whose field it is.
+        keyed: Whether the type is an item of a collection of relations, whose
+            embedded object must hold the related model's key.
 
     Returns:
         The schema of the JSON value that the field reads or writes.
@@ -4574,18 +4511,22 @@ def _json_schema_of(
         return _schema_of_entry(found.entry, found.declared, mode)
     match analyzed:
         case NewTypeType(_, inner):
-            return _json_schema_of(inner, mode, defs, seen, table)
+            return _json_schema_of(inner, mode, defs, seen, table, keyed=keyed)
         case OptionalType(inner):
             return {
                 "anyOf": [
-                    _json_schema_of(inner, mode, defs, seen, table),
+                    _json_schema_of(
+                        inner, mode, defs, seen, table, keyed=keyed
+                    ),
                     {"type": "null"},
                 ]
             }
         case CollectionType(collection_type, item_type):
             schema: dict[str, Any] = {
                 "type": "array",
-                "items": _json_schema_of(item_type, mode, defs, seen, table),
+                "items": _json_schema_of(
+                    item_type, mode, defs, seen, table, keyed=True
+                ),
             }
             if _READ_AS[collection_type] in (set, frozenset):
                 schema["uniqueItems"] = True
@@ -4604,9 +4545,14 @@ def _json_schema_of(
                         seen | {model_type},
                         _table_of(model_type),
                     )
-            # A read also accepts the related object embedded as JSON.
+            # A read also accepts the related object embedded as JSON, which
+            # names its key if it is an item of a collection.
             if mode == "read":
-                return {"anyOf": [key, {"type": "object"}]}
+                embedded: dict[str, Any] = {"type": "object"}
+                if keyed:
+                    embedded["required"] = [pk.json_field]
+                    embedded["properties"] = {pk.json_field: key}
+                return {"anyOf": [key, embedded]}
             return key
         case TypedDictType(typed_dict):
             if typed_dict in seen:
@@ -5168,10 +5114,9 @@ class JSONProperty:
         # sent, so a change made to it in place is not tracked, and it would
         # otherwise make every later write fail.
         changeable = not self.read_only and not isinstance(
-            value, (*_UNCHANGEABLE_VALUES, JSONObject, RelatedCollection)
+            value, (*_UNCHANGEABLE_VALUES, JSONObject)
         )
-        items = changeable and _holds_relations(self.analyzed_type)
-        if changeable and not items:
+        if changeable:
             # The caller can change this value in place. Record its encoding,
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
@@ -5183,11 +5128,7 @@ class JSONProperty:
         # whose value cannot be encoded fails on every read, rather than
         # returning a value whose changes save() would miss.
         obj._field_cache[self.field] = value
-        if items:
-            # Related objects are compared by what they are, not by how they
-            # encode, so the snapshot keeps the objects themselves.
-            obj._field_snapshots[self.field] = _relation_items(value)
-        elif changeable:
+        if changeable:
             obj._field_snapshots[self.field] = _copy_json(encoded)
 
         return value
@@ -5272,11 +5213,7 @@ class JSONProperty:
             if not isinstance(kept, JSONObject):
                 # The caller can change a collection in place, as one read
                 # from JSON.
-                obj._field_snapshots[self.field] = (
-                    _relation_items(kept)
-                    if _holds_relations(self.analyzed_type)
-                    else _copy_json(new_value)
-                )
+                obj._field_snapshots[self.field] = _copy_json(new_value)
 
     def _set_key(self, obj: JSONObject, value: Any) -> None:
         """Give an object its key, or check that an assignment keeps it.
@@ -5362,10 +5299,9 @@ class JSONProperty:
 
         Returns:
             ``value``, if it is a related object for a related field. For a
-            collection of related objects that is not read lazily, a new
-            collection of the field's type that holds the same objects.
-            ``_MISSING`` for any other value, which the field reads from its
-            JSON instead.
+            collection of related objects, a new collection of the field's type
+            that holds the same objects. ``_MISSING`` for any other value,
+            which the field reads from its JSON instead.
         """
         conversion = _unwrap_optional_type(self.analyzed_type)
         if isinstance(conversion, RelatedType):
@@ -5378,13 +5314,9 @@ class JSONProperty:
         item_type = conversion.item_type
         if (
             not isinstance(_unwrap_optional_type(item_type), RelatedType)
-            or (
-                _is_lazy_collection_type(collection_type)
-                and isinstance(item_type, RelatedType)
-            )
             # A one-shot iterable was used up by encoding it.
             or not isinstance(value, Collection)
-            or isinstance(value, (str, bytes, Mapping, RelatedCollection))
+            or isinstance(value, (str, bytes, Mapping))
             or not all(
                 item is None or isinstance(item, JSONObject) for item in value
             )
@@ -6148,20 +6080,14 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                if _is_lazy_collection_type(collection_type) and isinstance(
-                    item_type, RelatedType
-                ):
-                    return RelatedCollection(
-                        self,
-                        value,
-                        item_type.model_type,
-                        field=field,
-                    )
+                related = _unwrap_optional_type(item_type)
 
-                converted_items = _each_item(
-                    lambda item: self._from_json(item, item_type, field=field),
-                    value,
-                )
+                def read_item(item: Any) -> Any:
+                    if isinstance(related, RelatedType):
+                        _require_item_key(item, related.model_type)
+                    return self._from_json(item, item_type, field=field)
+
+                converted_items = _each_item(read_item, value)
 
                 return _READ_AS[collection_type](converted_items)
 
@@ -6239,11 +6165,7 @@ class JSONObject:
                 # rather than in json.dumps() when it is sent.
                 return _checked_json(value)
             case CollectionType(collection_type, item_type):
-                if isinstance(value, RelatedCollection):
-                    # Encoding the collection must not use up its single
-                    # traversal.
-                    value = value._related_objects()
-                elif not _is_collection_value(value):
+                if not _is_collection_value(value):
                     raise TypeError(
                         "Collection field values must be collections, "
                         f"got {type(value).__name__}"
@@ -6256,8 +6178,16 @@ class JSONObject:
                     # A set's iteration order depends on how it was built, and
                     # a string's hash on the process, so a set writes its items
                     # sorted by their JSON. Equal sets then write equal JSON,
-                    # and replacing one with another is not a change.
+                    # and replacing one with another is not a change. Two
+                    # members can write one JSON value, as objects of two
+                    # classes that have one key do, so each value is once.
                     items.sort(key=_json_order)
+                    items = [
+                        item
+                        for index, item in enumerate(items)
+                        if index == 0
+                        or not _json_equal(items[index - 1], item)
+                    ]
                 return items
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
@@ -6627,15 +6557,9 @@ class JSONObject:
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
             current = self._field_cache[field]
-            compared_by_items = _holds_relations(descriptor.analyzed_type)
-            if compared_by_items and _relation_items(current) == snapshot:
-                continue
             with _converting(type(self), field):
                 # An object without a key cannot be written.
                 encoded = self._to_json(current, descriptor.analyzed_type)
-            if compared_by_items:
-                changed.append((field, descriptor, encoded))
-                continue
             if descriptor._is_key_of(self):
                 # A key is the same key if its canonical text is. Python
                 # equality is not the test, since it equates 1 with 1.0.
@@ -6680,11 +6604,7 @@ class JSONObject:
         """
         for field, descriptor, encoded in changed:
             self._queue_update(descriptor.json_field, _copy_json(encoded))
-            self._field_snapshots[field] = (
-                _relation_items(self._field_cache[field])
-                if _holds_relations(descriptor.analyzed_type)
-                else _copy_json(encoded)
-            )
+            self._field_snapshots[field] = _copy_json(encoded)
 
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.
@@ -7840,10 +7760,6 @@ class JSONObject:
             ):
                 operands, repeated = [convert(value)], False
             else:
-                if isinstance(value, RelatedCollection):
-                    # Reading the collection must not use up its single
-                    # traversal.
-                    value = value._related_objects()
                 operands, repeated = _each_item(convert, value), True
                 if parameter.collection is not None and _READ_AS[
                     parameter.collection.collection_type

@@ -329,7 +329,7 @@ class Team(ModelBase):
     class_url = "/teams/"
 
     id: int
-    members: Iterable[User]
+    members: Sequence[User]
 
 
 @json_object
@@ -870,7 +870,7 @@ def test_create_uses_object_json_hook_for_response(
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
-    """Iterable relations should not fetch nested objects until iterated."""
+    """Related objects are not fetched until a field of one is read."""
     requests_mock.get(
         "https://example.com/v1/teams/1/",
         json={"id": 1, "members": [2, 3]},
@@ -887,43 +887,12 @@ def test_related_collection_is_loaded_lazily(
     members = team.members
 
     assert requests_mock.call_count == 1
-    assert isinstance(members, Iterable)
+    assert isinstance(members, tuple)
 
     loaded = list(members)
 
     assert [member.name for member in loaded] == ["Ada", "Grace"]
     assert requests_mock.call_count == 3
-
-
-def test_lazy_related_collection_is_single_pass() -> None:
-    """A second traversal raises instead of creating new members."""
-    team = Team(json={"id": 1, "members": [2, 3]})
-
-    members = iter(team.members)
-    first = next(members)
-    rest = list(members)
-
-    assert first.pk == 2
-    assert [member.pk for member in rest] == [3]
-    with pytest.raises(RuntimeError, match=r"Team\.members is a lazy related"):
-        iter(team.members)
-
-
-def test_encoding_lazy_related_collection_keeps_its_traversal(
-    requests_mock: Any,
-) -> None:
-    """Assigning or creating from the field does not use it up."""
-    post = requests_mock.post(
-        "https://example.com/v1/teams/", json={"id": 2, "members": [2, 3]}
-    )
-    team = Team(json={"id": 1, "members": [2, 3]})
-
-    team.members = team.members
-    Team.create(members=team.members)
-
-    assert post.last_request.json() == {"members": [2, 3]}
-    assert team._pending_updates == {}
-    assert [member.pk for member in team.members] == [2, 3]
 
 
 def test_related_tuple_is_materialized(
@@ -2340,7 +2309,7 @@ def test_prefetches_related_collections_via_bulk_get(
     team = next(iter(Team.filter(prefetch=["members"])))
     members = team.members
 
-    assert isinstance(members, Iterable)
+    assert isinstance(members, tuple)
     assert requests_mock.call_count == 2
     assert [member.name for member in members] == ["Ada", "Grace"]
     assert users.last_request.qs == {"id": ["2", "3"]}
@@ -9969,7 +9938,14 @@ def test_json_schema_of_a_self_relation_has_the_models_key_schema() -> None:
         "items": {"type": "integer"},
     }
     assert Employee.json_schema()["properties"]["reports"]["items"] == {
-        "anyOf": [{"type": "integer"}, {"type": "object"}]
+        "anyOf": [
+            {"type": "integer"},
+            {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "integer"}},
+            },
+        ]
     }
 
 

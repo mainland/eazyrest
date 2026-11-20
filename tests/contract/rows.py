@@ -483,17 +483,17 @@ def refused_form(annotation: Any, *named: str) -> None:
     assert "items" in str(error)
 
 
-@row(DECL, pending="Collection of relations is still admitted")
+@row(DECL)
 def collection_refused(world: World) -> None:
     refused_form(Collection[Tag], "sequence", "set", "list[Tag]", "set[Tag]")
 
 
-@row(DECL, pending="Iterable of relations is still admitted")
+@row(DECL)
 def iterable_refused(world: World) -> None:
     refused_form(Iterable[Tag], "Sequence[Tag]", "set[Tag]")
 
 
-@row(DECL, pending="A NewType or Optional of a refused form is admitted")
+@row(DECL)
 def wrapped_refused_forms_refused(world: World) -> None:
     refused_form(Optional[Collection[Tag]], "sequence", "set")
     refused_form(Optional[Iterable[Tag]], "Sequence[Tag]")
@@ -887,7 +887,7 @@ def an_embedded_item_is_read_by_its_key(world: World) -> None:
     assert pks(obj.tags) == ["a"]
 
 
-@row(COLL, pending="An item without a key is read as an object")
+@row(COLL)
 def an_item_without_a_key_is_refused_when_read(world: World) -> None:
     obj = post(tags=["a", {"x": 1}])
     error = raises(
@@ -1002,7 +1002,7 @@ def a_new_object_of_the_same_key_sends_nothing(world: World) -> None:
     assert patch_after(world, obj, change) is None
 
 
-@row(COLL, pending="A change in place is found by comparing snapshots")
+@row(COLL)
 def a_subclass_object_of_the_same_key_sends_nothing(world: World) -> None:
     obj = post()
 
@@ -1081,10 +1081,7 @@ def a_repeated_key_is_one_member(world: World) -> None:
         assert pks(obj.tagset) == ["a"]
 
 
-@row(
-    SET,
-    pending="An item without a key is read as an error without its position",
-)
+@row(SET)
 def a_set_item_without_a_key_is_refused_when_read(world: World) -> None:
     obj = post(tagset=["a", {"x": 1}])
     raises(
@@ -1195,9 +1192,7 @@ def a_saved_set_change_is_not_sent_again(world: World) -> None:
     assert world.count == before
 
 
-@row(
-    SET, pending="A set is sent as the keys of its members, not distinct keys"
-)
+@row(SET)
 def members_of_one_key_are_sent_once(world: World) -> None:
     obj = post(watchers=[])
     assert patch_after(
@@ -1207,7 +1202,7 @@ def members_of_one_key_are_sent_once(world: World) -> None:
     ) == {"watchers": [7]}
 
 
-@row(SET, pending="A set change is found by comparing snapshots")
+@row(SET)
 def replacing_a_member_by_a_subclass_object_sends_nothing(
     world: World,
 ) -> None:
@@ -1855,7 +1850,7 @@ def a_relation_is_written_as_a_key(world: World) -> None:
     }
 
 
-@row(SCHEMA, pending="An item of a collection may be any object")
+@row(SCHEMA)
 def a_collection_item_read_has_a_key(world: World) -> None:
     assert schema_property(Post, "read", "tags") == {
         "type": "array",

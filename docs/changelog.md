@@ -25,6 +25,22 @@ describe them further.
   queried, and prefetched with `bulk_get_by_pks()`. An object that is known
   only by its URL no longer exists, except an object of a class that overrides
   `url`.
+- A field that is a collection of related objects must say whether the order of
+  its items counts. `Collection[User]` and `Iterable[User]`, also optional or
+  in a `NewType`, raise `TypeError` when the class is decorated, naming the
+  field, where `v1.0.0a5` read the first as a tuple and the second as a lazy
+  collection that could be iterated once. Declare a sequence, such as
+  `list[User]` or `Sequence[User]`, or a set, such as `set[User]`. A change
+  made in place is found by comparing the items' keys, in order for a sequence
+  and without order for a set, so replacing an item with an object of the same
+  key is not a change. A set is sent as its distinct keys, sorted.
+- An item of a collection of relations has a key. An item that the server
+  embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
+  `FieldConversionError` naming the field and the item's position when the
+  field is read, where `v1.0.0a5` read it as an object whose `pk` was `None`.
+  Assigning or saving a collection that holds an object without a key raises
+  too. Declare items that have no key as a `TypedDict` or a dataclass. The read
+  JSON schema of such an item requires the related model's key.
 - A query that compares the model's own key under two names, as in
   `filter(pk=7, id=8)` or `filter(pk__exact=7, id=8)`, raises `ValueError`
   naming both parameters before any request, and so do two parameters that are
@@ -504,15 +520,6 @@ describe them further.
 - `copy.copy()` of a model object gives an object that owns its pending
   updates, cached values, and JSON, where it shared them with the original, so
   an assignment to the copy was sent by the original's `save()`.
-- A list of relations, such as `list[User]`, reads an item that the server
-  embeds without a key as an object whose `pk` is `None`, as a single relation
-  does. It raised `FieldConversionError` with a message about writing a
-  relation. Saving a change made in place to such a list raises while an item
-  has no key. A list of related objects is checked for a change by comparing
-  its items with `==`, by key, not by encoding them, so a list whose item
-  loaded a key that the related model cannot read still saves another field,
-  and replacing an item with an object of another class or without a key is a
-  change.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

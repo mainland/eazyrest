@@ -4,14 +4,9 @@ from __future__ import annotations
 
 import copy
 import enum
-import gc
-import os
 import pickle
-import subprocess
-import sys
 import uuid
-import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar, Literal, NewType, TypedDict
 
 import pytest
@@ -67,7 +62,7 @@ class Feed(RelatedBase):
     class_url = "/feeds/"
 
     id: int
-    readers: Iterable[User]
+    readers: Sequence[User]
 
 
 @json_object(pk="user")
@@ -530,32 +525,30 @@ def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
     )
 
 
-def test_a_list_relation_reads_an_embedded_object_without_a_key() -> None:
-    """A list reads an item as a single relation does, with no key."""
-    post = Post(
-        json={
-            "id": 1,
-            "owner": {"x": 1},
-            "readers": [{"x": 1}, 3, {"x": 2}],
-        }
-    )
-    feed = Feed(json={"id": 1, "readers": [{"x": 1}, 3]})
+def test_a_list_relation_refuses_an_embedded_object_without_a_key() -> None:
+    """An item of a collection has a key, though a single relation need not."""
+    post = Post(json={"id": 1, "owner": {"x": 1}, "readers": [3, {"x": 1}]})
+    feed = Feed(json={"id": 1, "readers": [{"id": None}]})
 
     assert repr(post.owner) == "<User id=None>"
-    assert [reader.pk for reader in post.readers] == [None, 3, None]
-    assert [reader.pk for reader in feed.readers] == [None, 3]
+    with pytest.raises(
+        FieldConversionError,
+        match=r"Post\.readers: \[1\]: The item has no User key",
+    ):
+        post.readers  # noqa: B018
+    with pytest.raises(FieldConversionError, match=r"Feed\.readers: \[0\]"):
+        feed.readers  # noqa: B018
 
 
-def test_a_keyless_item_of_a_list_does_not_stop_a_save_of_another_field(
+def test_an_unread_list_with_a_keyless_item_does_not_stop_a_save(
     requests_mock: Any,
 ) -> None:
-    """An item that the program did not change is not sent."""
+    """A list that the program did not read is not sent."""
     patch = requests_mock.patch("https://related.example/posts/1/", json={})
     post = Post(
         json={"id": 1, "owner": 2, "readers": [{"x": 1}, 3]},
         write_mode="lazy",
     )
-    assert len(post.readers) == 2
 
     post.owner = User(id=5)
     post.save()
@@ -569,18 +562,19 @@ def test_a_list_that_changed_in_place_refuses_a_keyless_item_when_saved(
     """A change to the list sends it, so every item must have a key."""
     patch = requests_mock.patch("https://related.example/posts/1/", json={})
     post = Post(
-        json={"id": 1, "owner": 2, "readers": [{"x": 1}, 3]},
+        json={"id": 1, "owner": 2, "readers": [2, 3]},
         write_mode="lazy",
     )
-    post.readers.append(User(id=4))
+    post.readers.append(User())
 
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+    with pytest.raises(FieldConversionError, match=r"Post\.readers: \[2\]"):
         post.save()
-    del post.readers[0]
+    del post.readers[2]
+    post.readers.append(User(id=4))
     post.save()
 
     assert patch.call_count == 1
-    assert patch.last_request.json() == {"readers": [3, 4]}
+    assert patch.last_request.json() == {"readers": [2, 3, 4]}
 
 
 BAD_BARE_KEYS = [
@@ -1170,181 +1164,46 @@ def test_a_relation_refuses_a_mapping_that_a_key_conversion_would_encode(
     assert requests_mock.call_count == 0
 
 
-"""An API on another origin than the registered one."""
-
-
-def _post_with_keyless_reader() -> Post:
-    """Return a lazy post whose first reader has no key."""
+def _post_with_readers() -> Post:
+    """Return a lazy post that holds two readers."""
     post = Post(
-        json={"id": 1, "owner": 2, "readers": [{"name": "x"}, 3]},
-        write_mode="lazy",
+        json={"id": 1, "owner": 2, "readers": [4, 3]}, write_mode="lazy"
     )
     assert len(post.readers) == 2
     return post
 
 
-def test_replacing_a_keyless_item_with_another_is_a_change(
-    requests_mock: Any,
-) -> None:
-    """The new item has no key either, but it is not the old one."""
-    requests_mock.patch("https://related.example/posts/1/", json={})
-    post = _post_with_keyless_reader()
-    post.readers.pop(0)
-    post.readers.insert(0, User(json={"name": "y"}))
-
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        post.save()
-
-
-def test_a_replaced_keyless_item_stays_alive_until_the_next_save() -> None:
-    """No new object can take the address of an item that the check names."""
-    post = _post_with_keyless_reader()
-    old = weakref.ref(post.readers[0])
-
-    post.readers.pop(0)
-    gc.collect()
-
-    assert old() is not None
-
-
-@pytest.mark.parametrize(
-    "replacement",
-    [
-        copy.copy,
-        copy.deepcopy,
-        lambda item: _renamed(copy.deepcopy(item)),
-    ],
-    ids=["copy", "deepcopy", "changed deepcopy"],
-)
-def test_replacing_a_keyless_item_with_a_copy_of_it_is_a_change(
-    replacement: Any, requests_mock: Any
-) -> None:
-    """A copy is another object, though it holds the same JSON."""
-    patch = requests_mock.patch("https://related.example/posts/1/", json={})
-    post = _post_with_keyless_reader()
-    post.readers[0] = replacement(post.readers[0])
-
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        post.save()
-
-    assert patch.call_count == 0
-
-
-def _renamed(user: User) -> User:
-    """Change the name that a keyless user holds in its JSON.
-
-    Args:
-        user: A user without a key.
-
-    Returns:
-        ``user``.
-    """
-    user._json["name"] = "changed"
-    return user
-
-
-_PICKLE_SCRIPT = """
-import pickle, socket, sys
-import test_related_keys as t
-
-
-def no_network(*args, **kwargs):
-    raise OSError("the network is not reachable")
-
-
-socket.socket.connect = no_network
-socket.getaddrinfo = no_network
-
-path = sys.argv[2]
-if sys.argv[1] == "dump":
-    post = t._post_with_keyless_reader()
-    with open(path, "wb") as out:
-        pickle.dump(post, out)
-else:
-    with open(path, "rb") as source:
-        post = pickle.load(source)
-    post.readers.pop(0)
-    post.readers.insert(0, t.User(json={"name": "y"}))
-    try:
-        post.save()
-    except t.FieldConversionError:
-        print("refused")
-    else:
-        print("saved")
-"""
-
-
-def _run_pickle_script(mode: str, path: Any) -> str:
-    """Run the pickling script in a new process.
-
-    Args:
-        mode: ``"dump"`` to pickle an owner, or ``"load"`` to change one.
-        path: File of the pickle.
-
-    Returns:
-        What the script printed.
-    """
-    done = subprocess.run(
-        [sys.executable, "-c", _PICKLE_SCRIPT, mode, str(path)],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
-    )
-    return done.stdout.strip()
-
-
-def test_a_keyless_item_that_a_pickled_owner_holds_is_not_a_new_one(
-    tmp_path: Any,
-) -> None:
-    """Another process unpickles the owner and makes its own objects."""
-    path = tmp_path / "post.pickle"
-    _run_pickle_script("dump", path)
-
-    assert _run_pickle_script("load", path) == "refused"
-
-
 @pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
-def test_an_owner_with_a_keyless_item_pickles_at_every_protocol(
+def test_an_owner_of_readers_pickles_at_every_protocol(
     protocol: int, requests_mock: Any
 ) -> None:
-    """An unchanged owner that is unpickled saves nothing."""
-    post = _post_with_keyless_reader()
+    """An unpickled owner saves nothing unchanged, and sends a change."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = _post_with_readers()
 
     loaded = pickle.loads(pickle.dumps(post, protocol=protocol))
     loaded.save()
-
     assert requests_mock.call_count == 0
+    loaded.readers.reverse()
+    loaded.save()
+
+    assert patch.last_request.json() == {"readers": [3, 4]}
 
 
-def test_an_unchanged_copy_of_an_object_with_a_keyless_item_saves(
+def test_a_copy_of_an_owner_saves_apart_from_its_original(
     requests_mock: Any,
 ) -> None:
-    """A copy holds the copied items that its snapshot holds."""
+    """A copy holds the readers that its snapshot holds."""
     patch = requests_mock.patch("https://related.example/posts/1/", json={})
-    post = _post_with_keyless_reader()
+    post = _post_with_readers()
     copied = copy.deepcopy(post)
 
-    copied.owner = User(id=5)
+    copied.readers.pop()
     copied.save()
+    post.save()
 
-    assert patch.last_request.json() == {"owner": 5}
-
-
-def test_two_keyless_items_differ_in_the_change_check(
-    requests_mock: Any,
-) -> None:
-    """A keyless object equals only itself, so swapping two is a change."""
-    requests_mock.patch("https://related.example/posts/1/", json={})
-    post = Post(
-        json={"id": 1, "owner": 2, "readers": [{"name": "x"}, {"name": "y"}]},
-        write_mode="lazy",
-    )
-    assert len(post.readers) == 2
-    post.readers.reverse()
-
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        post.save()
+    assert patch.call_count == 1
+    assert patch.last_request.json() == {"readers": [4]}
 
 
 @pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
