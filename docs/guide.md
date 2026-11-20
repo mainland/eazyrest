@@ -203,25 +203,24 @@ server names the resource, and these laws follow:
   so `"7"`, `True`, or `1.5` given for an `int` key raises
   `FieldConversionError` naming the relation field before any request, and so
   does a mapping, which a relation never takes for the related object. That
-  holds for a bare value of a lookup that compares the relation's key, such as
-  `filter(owner__in=[7])`, `filter(owner__id__in=[7])`, or
-  `filter(owner__pk=7)`, which may name the key by `pk`, its Python name, or
-  its JSON key. A query that compares the key of the model itself, whether by
-  `id`, `pk`, or the key's JSON key, alone or with a value suffix, as in
-  `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
+  holds for a bare value of a lookup on a relation, such as
+  `filter(owner__in=[7])`. A query that compares the key of the model itself,
+  whether by `id`, `pk`, or the key's JSON key, alone or with a value suffix,
+  as in `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
   `User.get_or_create(id=7)`, builds each value the same way, so `"7"` for an
   `int` key raises `FieldConversionError` naming the field before any request.
   An object of the model itself, as in `User.filter(pk=user)`, is sent as its
-  key, and an object of another model raises `FieldConversionError`. Another
-  lookup, such as `owner__name`, compares something else, and its value is sent
-  as given, except that a related object in it is checked as above and sent as
-  its key. Give the key in its field's type, as the server returns it.
+  key, and an object of another model raises `FieldConversionError`. A path
+  through a relation, such as `owner__name` or `owner__id`, compares something
+  that the class does not know, so its value is sent as given, with no check,
+  except that a related object in it is sent as its key, and one without a key
+  raises `ValueError` naming the parameter. Give the key in its field's type,
+  as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
-a key field, one built without a key, such as `User()`, one known only by its
-URL that has not loaded, and one whose loaded JSON lacks the key, holds `null`,
-or holds a key that the field cannot convert, such as `"not-a-uuid"` for a
-`UUID` key, which `repr()` still shows.
+a key field, one built without a key, such as `User()`, and one whose loaded
+JSON lacks the key, holds `null`, or holds a key that the field cannot convert,
+such as `"not-a-uuid"` for a `UUID` key, which `repr()` still shows.
 
 An object hashes by its model and canonical key, so objects that are equal are
 one member of a set or one key of a dict. An object of a model without a key
@@ -614,10 +613,9 @@ hook chose, but for one case: a next-page link that eazyrest refuses to send or
 stops on is quoted by its origin alone. A message about a redirect says what
 happened, as that a request "was redirected to another origin", and the URL
 stays on the error's `response`. The `repr()` of a `Page` shows the URL that it
-was asked for, and not the one that a redirect chose, and the `repr()` of an
-object known only by its URL leaves out a user and password too. An exception
-that requests itself raises, such as `requests.ConnectionError`, quotes the URL
-as requests does, with its path and query, also for the host that a redirect
+was asked for, and not the one that a redirect chose. An exception that
+requests itself raises, such as `requests.ConnectionError`, quotes the URL as
+requests does, with its path and query, also for the host that a redirect
 reached. A conversion error says which field and which key or position of it is
 invalid, and why, without the input. A mapping key that the input chose appears
 as `[key]`. The error that eazyrest replaced remains the `__cause__`, and it
@@ -1157,7 +1155,10 @@ instance of the field's own class, or a collection given to a lookup of one
 value, raises `ValueError`, since the lookup would not send it as the field
 writes it. A lookup is sent under the field's JSON key, with any suffix, so
 `field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
-starts with the name of no field, followed by `__`, is sent as given. If two
+starts with the name of no field, followed by `__`, is sent as given, and so is
+a path through a relation, such as `owner__id` or `owner__pk`, which names a
+field of the related model. A related model object in it is sent as its primary
+key, and one without a key raises `ValueError` naming the parameter. If two
 fields' names fit, the longer one is the field. Any other keyword argument, and
 a lookup whose suffix does not compare values of its field, such as `ordering`,
 `title__iexact`, `due__isnull`, or `created__date__gte`, is sent unchanged, as

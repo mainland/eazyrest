@@ -453,9 +453,7 @@ def test_the_error_of_a_list_relation_names_the_field_once(
     assert not put.called
 
 
-@pytest.mark.parametrize(
-    "lookup", ["owner__in", "owner__id__in", "owner__exact"]
-)
+@pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
 def test_a_lookup_refuses_a_related_object_without_a_key(
     lookup: str, requests_mock: Any
 ) -> None:
@@ -820,28 +818,6 @@ def test_a_lookup_that_does_not_compare_the_key_is_not_converted(
         "owner__name": ["x"],
         "owner__isnull": ["true"],
     }
-
-
-@pytest.mark.parametrize(
-    ("lookup", "value"),
-    [
-        ("owner__id__in", ["7"]),
-        ("owner__pk", "7"),
-        ("owner__pk__in", ["7"]),
-        ("owner__id__exact", True),
-        ("owner__id", 1.5),
-    ],
-)
-def test_a_bare_value_on_a_path_to_the_key_is_built_by_the_keys_model(
-    lookup: str, value: Any, requests_mock: Any
-) -> None:
-    """The path compares the key, so a key of another JSON type is refused."""
-    requests_mock.get("https://related.example/posts/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(params={lookup: value}))
-
-    assert requests_mock.call_count == 0
 
 
 def test_a_bare_key_on_a_path_to_the_key_is_sent_as_the_relation_sends_it(
@@ -1385,20 +1361,11 @@ def test_two_keyless_items_differ_in_the_change_check(
         post.save()
 
 
-@pytest.mark.parametrize(
-    "lookup",
-    [
-        "owner__in",
-        "owner__id__in",
-        "owner__pk__in",
-        "owner__id__exact",
-        "owner__pk",
-    ],
-)
-def test_a_lookup_on_a_relation_key_refuses_an_object_of_another_model(
+@pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
+def test_a_lookup_on_a_relation_refuses_an_object_of_another_model(
     lookup: str, requests_mock: Any
 ) -> None:
-    """The key of a relation is the key of its model, not of another."""
+    """A relation takes the key of its model, not of another."""
     requests_mock.get("https://related.example/posts/", json=[])
     other = Feed(id=4)
 
@@ -1412,13 +1379,11 @@ def test_a_lookup_on_a_relation_key_refuses_an_object_of_another_model(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize(
-    "lookup", ["owner__in", "owner__id__in", "owner__pk__in", "owner__id"]
-)
-def test_a_lookup_through_a_relation_refuses_an_object_of_another_key(
-    lookup: str, requests_mock: Any
+def test_a_lookup_on_a_relation_refuses_an_object_of_another_key(
+    requests_mock: Any,
 ) -> None:
-    """Every lookup on a relation refuses what the relation refuses."""
+    """A lookup on a relation refuses what the relation refuses."""
+    lookup = "owner__in"
     requests_mock.get("https://related.example/posts/", json=[])
     other = Badge(json={"slug": 4, "id": 9})
 
@@ -1428,8 +1393,6 @@ def test_a_lookup_through_a_relation_refuses_an_object_of_another_key(
                 params={lookup: [other] if lookup.endswith("in") else other}
             )
         )
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        list(Post.filter(readers__id__in=[other]))
 
     assert requests_mock.call_count == 0
 
@@ -1488,21 +1451,6 @@ def test_a_lookup_through_a_key_that_is_a_relation_takes_the_key_model(
     assert requests_mock.last_request.qs == {lookup: ["7"]}
 
 
-@pytest.mark.parametrize(
-    "lookup", ["account__user__in", "account__pk__in", "account__user__id__in"]
-)
-def test_a_lookup_through_a_key_that_is_a_relation_refuses_another_model(
-    lookup: str, requests_mock: Any
-) -> None:
-    """The key's model is checked, not the relation's own."""
-    requests_mock.get("https://related.example/tickets/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"Ticket\.account"):
-        list(Ticket.filter(params={lookup: [Team(id=4)]}))
-
-    assert requests_mock.call_count == 0
-
-
 def test_a_lookup_on_a_field_of_a_related_model_takes_that_models_objects(
     requests_mock: Any,
 ) -> None:
@@ -1512,19 +1460,6 @@ def test_a_lookup_on_a_field_of_a_related_model_takes_that_models_objects(
     list(Ticket.filter(owner__team__in=[Team(id=4)]))
 
     assert requests_mock.last_request.qs == {"owner__team__in": ["4"]}
-
-
-@pytest.mark.parametrize("lookup", ["renamed__id__in", "renamed__uid__in"])
-def test_a_lookup_names_the_key_by_its_json_key_or_its_name(
-    lookup: str, requests_mock: Any
-) -> None:
-    """A renamed key is the related key under either name."""
-    requests_mock.get("https://related.example/tickets/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"Ticket\.renamed"):
-        list(Ticket.filter(params={lookup: [Team(id=4)]}))
-
-    assert requests_mock.call_count == 0
 
 
 def test_a_lookup_that_compares_no_value_needs_no_type_of_its_field(

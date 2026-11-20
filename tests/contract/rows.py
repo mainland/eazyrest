@@ -1393,17 +1393,17 @@ def a_path_through_a_relation_is_sent(world: World) -> None:
     sends_query(world, Post, "owner__id=7", owner__id=7)
 
 
-@row(THROUGH, pending="A value through a relation is checked as the key")
+@row(THROUGH)
 def a_string_through_a_relation_is_sent_as_given(world: World) -> None:
     sends_query(world, Post, "owner__id=7", owner__id="7")
 
 
-@row(THROUGH, pending="A value through a relation is checked as the key")
+@row(THROUGH)
 def a_bool_through_a_relation_is_sent_as_given(world: World) -> None:
     sends_query(world, Post, "owner__id=True", owner__id=True)
 
 
-@row(THROUGH, pending="A value through a relation is checked as the key")
+@row(THROUGH)
 def several_values_through_a_relation_are_sent_as_given(
     world: World,
 ) -> None:
@@ -1415,14 +1415,14 @@ def an_object_through_a_relation_is_sent_as_its_key(world: World) -> None:
     sends_query(world, Post, "owner__pk=8", owner__pk=User(id=8))
 
 
-@row(THROUGH, pending="A value through a relation is checked as the key")
+@row(THROUGH)
 def an_object_of_another_model_through_a_relation_is_sent(
     world: World,
 ) -> None:
     sends_query(world, Post, "owner__id=8", owner__id=Other(id=8))
 
 
-@row(THROUGH, pending="A value through a relation is checked as the key")
+@row(THROUGH)
 def an_object_without_a_key_through_a_relation_is_refused(
     world: World,
 ) -> None:

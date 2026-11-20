@@ -2566,8 +2566,7 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
 
     Args:
         value: Related object, of ``model_type`` or a subclass that keeps its
-            key field. Reading its ``pk`` loads it if it is known only by its
-            URL.
+            key field.
         model_type: Model that the relation's field names.
 
     Returns:
@@ -2794,24 +2793,6 @@ _MISSING = object()
 """Stands for a key that a JSON object lacks."""
 
 
-def _relation_model(analyzed: AnalyzedType) -> type[Any] | None:
-    """Return the model that a field relates to, if it is a relation.
-
-    Args:
-        analyzed: The field's analyzed type.
-
-    Returns:
-        The model of a relation, or of the items of a collection of relations,
-        inside any optional, or ``None`` for any other field.
-    """
-    analyzed = _unwrap_optional_type(analyzed)
-    if isinstance(analyzed, CollectionType):
-        analyzed = _unwrap_optional_type(analyzed.item_type)
-    if isinstance(analyzed, RelatedType):
-        return analyzed.model_type
-    return None
-
-
 # The lookups whose operands are values of the field, as Django's lookups of
 # those names compare them.
 _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
@@ -2841,9 +2822,6 @@ class _Parameter:
 
     own: bool
     """Whether it is a field's own parameter, which a creation sends."""
-
-    deferred: bool = False
-    """Whether the field's relation could not be resolved yet."""
 
     key: RelatedType | None = None
     """The relation by which an operand that is no model is built, for the
@@ -7183,8 +7161,8 @@ class JSONObject:
                 JSON has it. An object of a model that is neither the
                 relation's nor a subclass of it is refused, and so is any
                 object when the key is not a relation, an object without a key,
-                and one known only by its URL or whose own key is a relation
-                that is not known. The assignment sends no request.
+                and one whose own key is a relation that is not known. The
+                assignment sends no request.
 
         Raises:
             AttributeError: If the model has no key field, or the object
@@ -7706,12 +7684,10 @@ class JSONObject:
         """Resolve a query parameter's name, once, to what its operands are.
 
         A field's own name compares the field's values. A lookup on a field,
-        ``<field>__<path>``, compares the field's values if the path is one
-        value suffix, and the related key's values if the field is a relation
-        and the path names the related key, through any key that is itself a
-        relation, followed by at most one value suffix. Any other lookup, and a
-        name that is no lookup, compares something else, and its operands are
-        sent as given, a model as its key.
+        ``<field>__<suffix>``, compares the field's values if the suffix is a
+        value suffix. Any other name, such as a path through a relation, or a
+        suffix that does not compare values, compares something else, and its
+        operands are sent as given, a model as its key.
 
         Args:
             name: Name of the parameter.
@@ -7752,44 +7728,14 @@ class JSONObject:
         field, rest = found
         descriptor = getattr(cls, field)
         wire = f"{descriptor.json_field}__{rest}"
-        path = rest.split("__")
-        if path[-1] in _VALUE_LOOKUPS:
-            path.pop()
-        if not path:
+        if rest in _VALUE_LOOKUPS:
             # A value lookup compares the field's own values.
             return cls._field_parameter(
                 field, wire, several=several, own=False
             )
-        try:
-            model = _relation_model(_analyzed_in_use(cls, descriptor))
-        except Exception:  # noqa: BLE001
-            # The relation is not defined yet. Only a model operand needs it.
-            return _Parameter(
-                wire, field, None, None, False, several, False, deferred=True
-            )
-        for position, segment in enumerate(path):
-            prop = None if model is None else _pk_property_of(model)
-            if prop is None or segment not in (
-                "pk",
-                prop.field,
-                prop.json_field,
-            ):
-                model = None
-                break
-            assert model is not None
-            related = _related_key_type(_analyzed_in_use(model, prop))
-            if related is None:
-                if position != len(path) - 1:
-                    model = None
-                break
-            model = related.model_type
-        if model is None:
-            return _Parameter(wire, field, None, None, False, several, False)
-        # The path compares the related key, so it takes what the relation
-        # takes: an object of the key's model, or its key.
-        return _Parameter(
-            wire, field, RelatedType(model), None, False, several, False
-        )
+        # Any other path, such as one through a relation, compares something
+        # that the class does not know, so its operands are sent as given.
+        return _Parameter(wire, None, None, None, False, several, False)
 
     @classmethod
     def _structured_value_error(cls, name: str, what: str) -> ValueError:
@@ -7909,11 +7855,14 @@ class JSONObject:
                 return _query_value(cls._to_json(item, conversion))
             if not isinstance(item, JSONObject):
                 return item
-            if parameter.deferred:
-                # Raise the error that resolving the relation raises.
-                assert parameter.field is not None
-                _analyzed_in_use(cls, getattr(cls, parameter.field))
-            return _related_wire_key(item, type(item))
+            try:
+                return _related_wire_key(item, type(item))
+            except (TypeError, ValueError) as err:
+                raise ValueError(
+                    f"Query parameter {name} for {cls.__name__} cannot be "
+                    f"sent, because its value is a {type(item).__name__} "
+                    f"object that has no key to send: {err}"
+                ) from err
 
         with guard:
             if (

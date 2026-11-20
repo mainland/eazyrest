@@ -222,21 +222,20 @@ describe them further.
   `ResponseShapeError`, and `LimitExceeded` leave out a user and password in
   the URL that they quote, so code that compared a message with a base URL such
   as `http://user:pass@host/` must compare it without them. The `repr()` of a
-  `Page`, and of an object known only by its URL, leaves them out too. A
-  message names a request by the URL that eazyrest was asked to send, such as
-  the one that you passed to `get()` or a next-page link that was sent, and
-  quotes no part of a URL that a response supplied. The one exception is a
-  next-page link that eazyrest refuses to send or stops on, because it has
-  another origin or names a page that was already read: the message quotes its
-  origin alone, without its query, which can hold a signature or a token, and
-  the whole link is on `Page.next_url`. After a followed redirect it names the
-  URL that was asked for, and not the one that the redirect reached, and a
-  refused redirect no longer names the origin that it was refused for, so code
-  that looked in a message for either must read the error's `response`, whose
-  `url` and `Location` header hold them. The `repr()` of a `Page` shows the URL
-  that it was asked for. An exception that requests itself raises, such as
-  `requests.ConnectionError`, quotes the URL of that host with its path and
-  query.
+  `Page` leaves them out too. A message names a request by the URL that
+  eazyrest was asked to send, such as the one that you passed to `get()` or a
+  next-page link that was sent, and quotes no part of a URL that a response
+  supplied. The one exception is a next-page link that eazyrest refuses to send
+  or stops on, because it has another origin or names a page that was already
+  read: the message quotes its origin alone, without its query, which can hold
+  a signature or a token, and the whole link is on `Page.next_url`. After a
+  followed redirect it names the URL that was asked for, and not the one that
+  the redirect reached, and a refused redirect no longer names the origin that
+  it was refused for, so code that looked in a message for either must read the
+  error's `response`, whose `url` and `Location` header hold them. The `repr()`
+  of a `Page` shows the URL that it was asked for. An exception that requests
+  itself raises, such as `requests.ConnectionError`, quotes the URL of that
+  host with its path and query.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
   arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
   authentication handler that reads the body, such as
@@ -465,10 +464,8 @@ describe them further.
   key, and read a mapping back as an embedded object, they now raise
   `FieldConversionError` naming the relation field before any request, and in
   the `__in` and `__exact` lookups of a relation, which sent a bare value as it
-  was given. A lookup that names the relation's key, such as `owner__id__in` or
-  `owner__pk`, builds its bare value the same way, where it sent `"7"` for an
-  `int` key as it was given, and a query that compares the model's own key,
-  such as `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
+  was given. A query that compares the model's own key, such as
+  `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
   `User.filter(id__range=["1", "9"])`, raises before its request, where it sent
   the request first or sent the text as given.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
