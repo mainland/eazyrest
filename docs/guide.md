@@ -1149,24 +1149,24 @@ enum member's `value`, `due__gte` sends an ISO 8601 string, and
 key of the wrong type among them, raises `FieldConversionError` naming the
 field, and one that the field accepts as it is, such as `"done"` for an enum,
 is sent as given. A field whose conversion writes every value as a list or an
-object takes no value under its own name, so a lookup on it is sent as given
-too: pass the text that the API expects, as in `point__exact="1,2"`. An
-instance of the field's own class, or a collection given to a lookup of one
-value, raises `ValueError`, since the lookup would not send it as the field
-writes it. A lookup is sent under the field's JSON key, with any suffix, so
-`field_map={"type_": "type"}` sends `type___in` as `type__in`. A name that
-starts with the name of no field, followed by `__`, is sent as given, and so is
-a path through a relation, such as `owner__id` or `owner__pk`, which names a
-field of the related model. A related model object in it is sent as its primary
-key, and one without a key raises `ValueError` naming the parameter. If two
-fields' names fit, the longer one is the field. Any other keyword argument, and
-a lookup whose suffix does not compare values of its field, such as `ordering`,
-`title__iexact`, `due__isnull`, or `created__date__gte`, is sent unchanged, as
-its `str()`, except that a model instance, also as an item of a collection, is
-sent as its primary key. A collection repeats the parameter, so
-`Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
-`QueryDict.getlist()` reads, as django-filter does for a filter on a
-many-to-many field.
+object has no query string for its value, so a lookup on it, such as
+`point__exact=Point(1, 2)`, raises `ValueError` naming the parameter, and text
+such as `point__exact="1,2"` raises `FieldConversionError`, since the field
+cannot read it. Filter such a field through a server filter under another name,
+as in `Todo.filter(point_text="1,2")`. A lookup is sent under the field's JSON
+key, with any suffix, so `field_map={"type_": "type"}` sends `type___in` as
+`type__in`. A name that starts with the name of no field, followed by `__`, is
+sent as given, and so is a path through a relation, such as `owner__id` or
+`owner__pk`, which names a field of the related model. A related model object
+in it is sent as its primary key, and one without a key raises `ValueError`
+naming the parameter. If two fields' names fit, the longer one is the field.
+Any other keyword argument, and a lookup whose suffix does not compare values
+of its field, such as `ordering`, `title__iexact`, `due__isnull`, or
+`created__date__gte`, is sent unchanged, as its `str()`, except that a model
+instance, also as an item of a collection, is sent as its primary key. A
+collection repeats the parameter, so `Todo.filter(tag=[a, b])` sends
+`tag=a&tag=b`, which a view that calls Django's `QueryDict.getlist()` reads, as
+django-filter does for a filter on a many-to-many field.
 
 A lookup whose name ends in `__in` or `__range`, such as `user__in` or
 `due__range`, takes an iterable of values that is not a string, bytes, a

@@ -1462,7 +1462,7 @@ def a_structured_value_is_refused_by_a_comparing_suffix(
         refuses_query(world, Post, ValueError, name, **{name: (1, 2)})
 
 
-@row(STRUCT, pending="A string operand of a structured field is sent as given")
+@row(STRUCT)
 def a_string_operand_is_refused_as_the_field_encodes_it(
     world: World,
 ) -> None:

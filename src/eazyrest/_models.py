@@ -7597,7 +7597,9 @@ class JSONObject:
         """
         parameter = cls._parameter(name)
         return parameter.conversion is not None and cls._takes_whole(
-            parameter.conversion, value, structured=parameter.structured
+            parameter.conversion,
+            value,
+            structured=parameter.structured and not parameter.several,
         )
 
     @classmethod
@@ -7641,10 +7643,9 @@ class JSONObject:
             lookup: The name that the key's JSON key gives the same lookup.
 
         Returns:
-            The parameter. A field that writes every value as a list or an
-            object takes no conversion in a lookup, which is sent as given. The
-            model's key field builds each operand that is no model with the key
-            constructor, in its own parameter and in a lookup on it.
+            The parameter. The model's key field builds each operand that is no
+            model with the key constructor, in its own parameter and in a
+            lookup on it.
 
         Raises:
             FieldConversionError: If the field's type cannot be resolved.
@@ -7652,8 +7653,6 @@ class JSONObject:
         descriptor = getattr(cls, field)
         with _converting(cls, field):
             structured = cls._writes_structure(field)
-            if structured and not own:
-                return _Parameter(wire, field, None, None, True, several, own)
             collection = cls._query_collection(descriptor)
             analyzed = (
                 _analyzed_in_use(cls, descriptor)
@@ -7738,24 +7737,6 @@ class JSONObject:
         return _Parameter(wire, None, None, None, False, several, False)
 
     @classmethod
-    def _structured_value_error(cls, name: str, what: str) -> ValueError:
-        """Return the error for a lookup on a structured field given a value.
-
-        Args:
-            name: Name of the parameter.
-            what: What the value is, such as ``"a collection"``.
-
-        Returns:
-            A ``ValueError`` that says to encode the value.
-        """
-        return ValueError(
-            f"Query parameter {name} for {cls.__name__} cannot be sent, "
-            f"because its value is {what}, and the field writes every value "
-            "as a list or an object, so a lookup on it is sent as given. "
-            "Encode the value as the API expects"
-        )
-
-    @classmethod
     def _query_operands(
         cls, name: str, value: Any, style: str = "comma"
     ) -> list[Any]:
@@ -7766,10 +7747,9 @@ class JSONObject:
         iterable that is not a string, bytes, or a mapping is read once and
         gives an operand for each of its items. A parameter that compares the
         values of a field encodes its operands as the field's own parameter
-        does, unless the field writes every value as a list or an object, whose
-        lookups are sent as given. One that compares a key builds each operand
-        with the key constructor. Any other parameter is not converted, except
-        that a model is its primary key.
+        does. One that compares a key builds each operand with the key
+        constructor. Any other parameter is not converted, except that a model
+        is its primary key.
 
         Args:
             name: Name of the parameter.
@@ -7791,11 +7771,7 @@ class JSONObject:
                 ignore or change its constraint. Also if a lookup that takes
                 several values is given anything but a collection, a
                 ``__range`` is given other than two operands, or an operand's
-                text is empty, or holds a comma under ``"comma"``. Also if a
-                lookup on a field that writes every value as a list or an
-                object is given an instance of the field's own class, an item
-                of one, or a collection for a lookup of one value, since the
-                caller must encode such a value.
+                text is empty, or holds a comma under ``"comma"``.
             FieldConversionError: If the parameter's conversion refuses an
                 operand.
         """
@@ -7805,21 +7781,7 @@ class JSONObject:
             if parameter.field is None
             else _converting(cls, parameter.field)
         )
-        own: type[Any] | None = None
-        if parameter.structured and not parameter.own:
-            assert parameter.field is not None
-            structure = cls._structure_of(parameter.field)
-            if isinstance(structure, NamedTupleType):
-                own = structure.named_tuple
-            elif isinstance(structure, DataclassType):
-                own = structure.dataclass_type
-            if own is not None and isinstance(value, own):
-                raise cls._structured_value_error(name, f"a {own.__name__}")
-            if not parameter.several and _is_collection_value(value):
-                raise cls._structured_value_error(name, "a collection")
-        whole = parameter.conversion is not None and cls._takes_whole(
-            parameter.conversion, value, structured=parameter.structured
-        )
+        whole = cls._takes_whole_value(name, value)
         several = parameter.several
         if several and (
             isinstance(value, JSONObject)
@@ -7882,10 +7844,6 @@ class JSONObject:
                     parameter.collection.collection_type
                 ] in (set, frozenset):
                     operands.sort(key=_json_order)
-        if own is not None and any(isinstance(item, own) for item in operands):
-            raise cls._structured_value_error(
-                name, f"a collection of {own.__name__} items"
-            )
         problem = None
         if not repeated and operands[0] is None:
             problem = "is None, and requests omits it"

@@ -4504,17 +4504,17 @@ def test_query_refuses_a_list_for_a_field_whose_conversion_writes_a_list(
     assert requests_mock.call_count == 0
 
 
-def test_query_sends_a_lookup_on_the_key_of_such_a_field_unchanged(
+def test_query_sends_a_lookup_that_does_not_compare_values_as_given(
     requests_mock: Any,
 ) -> None:
-    """A name that names no field is sent as given, as its ``str()``."""
+    """A suffix that compares no value is sent as given, as its ``str()``."""
     lookup = requests_mock.get("https://example.com/v1/placed/", json=[])
 
-    list(Placed.filter(point__exact="1,2", fixed__exact="3,4"))
+    list(Placed.filter(point__iexact="1,2", fixed__icontains="3,4"))
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "point__exact": ["1,2"],
-        "fixed__exact": ["3,4"],
+        "point__iexact": ["1,2"],
+        "fixed__icontains": ["3,4"],
     }
 
 

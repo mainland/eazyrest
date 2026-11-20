@@ -483,38 +483,35 @@ class Placed(LookupBase):
     "field", ["point", "maybe", "fixed", "corner", "size", "extra"]
 )
 @pytest.mark.parametrize("suffix", ["exact", "gt", "lte"])
-def test_a_value_lookup_on_a_structured_field_is_sent_as_given(
+def test_a_value_lookup_on_a_structured_field_refuses_text(
     field: str, suffix: str, requests_mock: Any
 ) -> None:
-    """Such a field's own parameter takes no value, so the caller encodes."""
+    """The field encodes the value, so text that it cannot read is refused."""
     requests_mock.get("https://lookups.example/placed/", json=[])
 
-    list(Placed.filter(params={f"{field}__{suffix}": "1,2"}))
+    with pytest.raises(FieldConversionError, match=rf"Placed\.{field}"):
+        list(Placed.filter(params={f"{field}__{suffix}": "1,2"}))
 
-    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
-        f"{field}__{suffix}": ["1,2"]
-    }
+    assert requests_mock.call_count == 0
 
 
-def test_an_in_lookup_on_a_structured_field_is_sent_as_given(
-    requests_mock: Any,
+@pytest.mark.parametrize("name", ["point__in", "point__range"])
+def test_a_lookup_of_several_values_on_a_structured_field_refuses_text(
+    name: str, requests_mock: Any
 ) -> None:
-    """The items of an ``in`` lookup are the caller's encodings."""
+    """Each item is encoded by the field, as the field's own value is."""
     requests_mock.get("https://lookups.example/placed/", json=[])
 
-    list(Placed.filter(point__in=["1-2", "3-4"]))
+    with pytest.raises(FieldConversionError, match=r"Placed\.point"):
+        list(Placed.filter(params={name: ["1-2", "3-4"]}))
 
-    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
-        "point__in": ["1-2,3-4"]
-    }
+    assert requests_mock.call_count == 0
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
     [
         ("point__exact", Point(1, 2)),
-        ("point__in", Point(1, 2)),
-        ("point__range", Point(1, 2)),
         ("maybe__exact", Point(1, 2)),
         ("size__exact", Size(3)),
         ("size__in", Size(3)),
@@ -522,48 +519,28 @@ def test_an_in_lookup_on_a_structured_field_is_sent_as_given(
         ("size__in", [Size(3), Size(4)]),
         ("point__exact", [1, 2]),
         ("fixed__exact", (1, 2)),
-        ("fixed__gt", iter([1, 2])),
-        ("size__exact", [3]),
+        ("point", Point(1, 2)),
     ],
 )
-def test_a_lookup_on_a_structured_field_refuses_a_value_to_encode(
+def test_a_lookup_refuses_a_value_that_the_field_does_not_write_as_a_scalar(
     name: str, value: Any, requests_mock: Any
 ) -> None:
-    """The caller encodes such a value, so it is not sent as its items."""
+    """An operand that is not a JSON scalar when encoded raises ``ValueError``.
+
+    The query string could not hold it, so the error names the parameter.
+    """
     requests_mock.get("https://lookups.example/placed/", json=[])
 
-    with pytest.raises(ValueError, match=rf"{name}.*Encode the value"):
+    with pytest.raises(ValueError, match=rf"{name}"):
         list(Placed.filter(params={name: value}))
 
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize(
-    ("name", "value", "sent"),
-    [
-        ("point__exact", "1,2", "1,2"),
-        ("point__in", ("1-2", "3-4"), "1-2,3-4"),
-        ("point__range", ["1-2", "3-4"], "1-2,3-4"),
-        ("size__in", ["a", "b"], "a,b"),
-    ],
-)
-def test_a_lookup_on_a_structured_field_sends_text_as_given(
-    name: str, value: Any, sent: str, requests_mock: Any
-) -> None:
-    """Text that the caller encoded, alone or in a collection, is sent."""
-    requests_mock.get("https://lookups.example/placed/", json=[])
-
-    list(Placed.filter(params={name: value}))
-
-    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
-        name: [sent]
-    }
-
-
 def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
     requests_mock: Any,
 ) -> None:
-    """Only a field that writes a list or an object takes the lookup as is."""
+    """A scalar field refuses an operand that it cannot encode."""
     requests_mock.get("https://lookups.example/placed/", json=[])
 
     with pytest.raises(FieldConversionError, match=r"Placed\.name"):
@@ -587,17 +564,16 @@ class Paired(LookupBase):
 
 
 @pytest.mark.parametrize("field", ["pair", "maybe"])
-def test_a_value_lookup_on_a_new_type_of_a_structure_is_sent_as_given(
+def test_a_value_lookup_on_a_new_type_of_a_structure_refuses_text(
     field: str, requests_mock: Any
 ) -> None:
-    """A ``NewType`` writes the structure that it names."""
+    """A ``NewType`` encodes as the structure that it names."""
     requests_mock.get("https://lookups.example/paired/", json=[])
 
-    list(Paired.filter(params={f"{field}__exact": "1,2"}))
+    with pytest.raises(FieldConversionError, match=rf"Paired\.{field}"):
+        list(Paired.filter(params={f"{field}__exact": "1,2"}))
 
-    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
-        f"{field}__exact": ["1,2"]
-    }
+    assert requests_mock.call_count == 0
 
 
 @json_object
