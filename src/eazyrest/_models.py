@@ -2997,6 +2997,10 @@ class _Parameter:
     """The relation by which an operand that is no model is built, for the
     model's own key field, so that the key constructor builds it."""
 
+    model: RelatedType | None = None
+    """The relation by which an object of the model itself is built, for the
+    model's own key field, which gives its own key."""
+
 
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
     """Return a key that orders the operands of a lookup given a set.
@@ -8090,11 +8094,11 @@ class JSONObject:
                 else collection.item_type
             )
             key = None
-            if (
-                descriptor is _pk_property_of(cls)
-                and _related_key_type(analyzed) is None
-            ):
-                key = RelatedType(cls)
+            model = None
+            if descriptor is _pk_property_of(cls):
+                model = RelatedType(cls)
+                if _related_key_type(analyzed) is None:
+                    key = model
         return _Parameter(
             wire,
             field,
@@ -8104,6 +8108,7 @@ class JSONObject:
             several,
             own,
             key=key,
+            model=model,
         )
 
     @classmethod
@@ -8291,6 +8296,14 @@ class JSONObject:
             conversion = parameter.conversion
             if conversion is not None:
                 if (
+                    parameter.model is not None
+                    and isinstance(item, JSONObject)
+                    and (parameter.key is not None or isinstance(item, cls))
+                ):
+                    # An object gives the key that its class builds, or is
+                    # refused as another model.
+                    conversion = parameter.model
+                elif (
                     parameter.key is not None
                     and item is not None
                     and not isinstance(item, (JSONObject, Mapping))

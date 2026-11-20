@@ -2575,3 +2575,40 @@ def test_a_hyperlink_string_is_refused_for_an_assigned_api_under_api(
 
     assert note._pending_updates == {}
     assert requests_mock.call_count == 0
+
+
+def test_a_model_operand_of_its_own_key_is_sent_as_its_key(
+    requests_mock: Any,
+) -> None:
+    """An object compares as its key, as a related object does."""
+    requests_mock.get("https://related.example/users/", json=[{"id": 7}])
+    requests_mock.get("https://related.example/accounts/", json=[])
+
+    list(User.filter(pk__in=[User(id=7), User(id=8)]))
+    User.get(pk=User(id=7))
+    list(User.filter(id=User(id=7)))
+    list(Account.filter(pk=Account(json={"user": 7, "token": "t"})))
+
+    assert [r.qs for r in requests_mock.request_history] == [
+        {"pk__in": ["7,8"]},
+        {"pk": ["7"]},
+        {"id": ["7"]},
+        {"pk": ["7"]},
+    ]
+
+
+def test_a_model_operand_of_its_own_key_is_refused_as_another_model(
+    requests_mock: Any,
+) -> None:
+    """The class check of a related object applies to the key's lookups."""
+    requests_mock.get("https://related.example/users/", json=[])
+    requests_mock.get("https://related.example/accounts/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"User\.id.*another model"):
+        list(User.filter(pk__in=[Team(id=4)]))
+    with pytest.raises(
+        FieldConversionError, match=r"Account\.user.*another model"
+    ):
+        list(Account.filter(pk=Team(id=4)))
+
+    assert requests_mock.call_count == 0

@@ -220,9 +220,11 @@ server names the resource, and these laws follow:
   `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
   `User.get_or_create(id=7)`, builds each value the same way, so `"7"` for an
   `int` key raises `FieldConversionError` naming the field before any request.
-  Another lookup, such as `owner__name`, compares something else, and its value
-  is sent as given, except that a related object in it is checked as above and
-  sent as its key. Give the key in its field's type, as the server returns it.
+  An object of the model itself, as in `User.filter(pk=user)`, is sent as its
+  key, and an object of another model raises `FieldConversionError`. Another
+  lookup, such as `owner__name`, compares something else, and its value is sent
+  as given, except that a related object in it is checked as above and sent as
+  its key. Give the key in its field's type, as the server returns it.
 
 Any other object equals only itself. That includes an object of a model without
 a key field, one built without a key, such as `User()`, one known only by its
