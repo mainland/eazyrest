@@ -18,7 +18,6 @@ from ._errors import (
 )
 from ._models import (
     FieldConversionError,
-    Hyperlinked,
     JSONObject,
     encode_json,
     json_object,
@@ -51,7 +50,6 @@ __all__ = [
     "DoesNotExist",
     "EazyrestError",
     "FieldConversionError",
-    "Hyperlinked",
     "JSONObject",
     "LimitExceeded",
     "MultipleObjectsReturned",

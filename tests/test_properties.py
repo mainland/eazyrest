@@ -254,10 +254,10 @@ def test_built_in_conversions_read_back_what_they_write(
     )
     if offset is not None and offset % datetime.timedelta(minutes=1):
         with pytest.raises(ValueError, match="whole minutes"):
-            Codecs._to_json(value, conversion, api=None)
+            Codecs._to_json(value, conversion)
         return
 
-    encoded = Codecs._to_json(value, conversion, api=None)
+    encoded = Codecs._to_json(value, conversion)
     json.dumps(encoded)
 
     decoded = getattr(Codecs(json={"id": 1, field: encoded}), field)

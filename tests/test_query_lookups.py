@@ -7,7 +7,6 @@ import datetime
 import enum
 from collections.abc import Iterator, Mapping
 from typing import (
-    Annotated,
     Any,
     ClassVar,
     NamedTuple,
@@ -23,7 +22,6 @@ from eazyrest import (
     API,
     Conversion,
     FieldConversionError,
-    Hyperlinked,
     JSONObject,
     json_object,
 )
@@ -66,7 +64,6 @@ class Task(LookupBase):
     flag: bool
     labels: list[Status]
     owner: Owner
-    linked: Annotated[Owner, Hyperlinked()]
     type_: str
     type: str
 
@@ -135,17 +132,17 @@ def test_a_lookup_on_a_collection_field_encodes_the_items(
     assert sent == {"labels__exact": ["open"]}
 
 
-@pytest.mark.parametrize("name", ["owner__gt", "linked__lte"])
 def test_a_value_lookup_on_a_relation_builds_the_key(
-    name: str, requests_mock: Any
+    requests_mock: Any,
 ) -> None:
     """A related object, or a key, is sent as the relation's key."""
+    name = "owner__gt"
     first = _sent(requests_mock, **{name: Owner(id=4)})
     second = _sent(requests_mock, **{name: 5})
 
     assert first == {name: ["4"]}
     assert second == {name: ["5"]}
-    with pytest.raises(FieldConversionError, match=r"Task\.(owner|linked)"):
+    with pytest.raises(FieldConversionError, match=r"Task\.owner"):
         _sent(requests_mock, **{name: "5"})
 
 
@@ -231,7 +228,6 @@ def _filter(requests_mock: Any, *, api: Any = None, **params: Any) -> Any:
             {"status__in": ["open,done"]},
         ),
         ({"owner__in": [Owner(id=3), 4]}, {"owner__in": ["3,4"]}),
-        ({"linked__in": [Owner(id=3), 4]}, {"linked__in": ["3,4"]}),
         ({"other__in": ("a", "b")}, {"other__in": ["a,b"]}),
         ({"owner__id__in": [3, 4]}, {"owner__id__in": ["3,4"]}),
         ({"id__range": (1, 9)}, {"id__range": ["1,9"]}),

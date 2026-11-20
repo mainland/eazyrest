@@ -216,22 +216,6 @@ class _BulkItem(JSONObject):
         """
         return {pk: cls(id=pk, api=api) for pk in pks}
 
-    @classmethod
-    def bulk_get_by_urls(
-        cls, urls: set[str], *, api: Client, **kwargs: Any
-    ) -> Mapping[str, Self]:
-        """Load objects by URL, returning what the default hook returns.
-
-        Args:
-            urls: URLs to load.
-            api: The client to load them with.
-            **kwargs: Context for later releases.
-
-        Returns:
-            The objects, by URL.
-        """
-        return super().bulk_get_by_urls(urls, api=api, **kwargs)
-
 
 def test_bulk_hooks_may_return_a_dict_of_their_class() -> None:
     """An override may narrow the ``Mapping`` of its model to a ``dict``.

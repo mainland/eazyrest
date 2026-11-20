@@ -18,14 +18,12 @@ from eazyrest import (
     APIError,
     Client,
     FieldConversionError,
-    Hyperlinked,
     JSONObject,
     LimitExceeded,
     RedirectError,
     Response,
     ResponseShapeError,
     UsageError,
-    WriteMode,
     follow_next_links,
     json_object,
 )
@@ -74,7 +72,6 @@ class MockedDoc(MockedBase):
     body: str
     tags: list[str]
     owner: MockedUser
-    linked: Annotated[MockedUser, Hyperlinked()]
     password: str
 
 
@@ -85,7 +82,6 @@ DOC_JSON = {
     "body": "keep",
     "tags": ["a"],
     "owner": 2,
-    "linked": "https://mocked.example/users/2/",
 }
 
 
@@ -125,7 +121,6 @@ def test_full_save_completes_partial_state(
         "body": "keep",
         "tags": ["a"],
         "owner_id": 2,
-        "linked": "https://mocked.example/users/2/",
     }
     assert doc._pending_updates == {}
 
@@ -305,34 +300,6 @@ def test_query_rejects_colliding_read_names(requests_mock: Any) -> None:
     assert not requests_mock.called
 
 
-@pytest.mark.parametrize("value", [2, MockedUser(id=2)])
-def test_hyperlinked_queries_use_primary_keys(
-    requests_mock: Any, value: Any
-) -> None:
-    """DRF filters use keys independently of hyperlinked write values.
-
-    Args:
-        value: Key or related resource to filter on.
-    """
-    query = requests_mock.get("https://mocked.example/docs/", json=[])
-
-    list(MockedDoc.filter(linked=value))
-
-    assert query.last_request.qs == {"linked": ["2"]}
-
-
-def test_hyperlinked_queries_refuse_a_key_given_as_text(
-    requests_mock: Any,
-) -> None:
-    """A key is built as a relation's model builds it, whatever the wire."""
-    query = requests_mock.get("https://mocked.example/docs/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"MockedDoc\.linked"):
-        list(MockedDoc.filter(linked="2"))
-
-    assert not query.called
-
-
 def test_non_field_queries_encode_model_keys(requests_mock: Any) -> None:
     """Lookup syntax must not send a model's display representation."""
     query = requests_mock.get("https://mocked.example/docs/", json=[])
@@ -449,41 +416,6 @@ def test_read_only_value_changed_in_place_is_not_sent(
     assert patch.last_request.json() == {"title": "new"}
 
 
-@pytest.mark.parametrize("mode", ["lazy", "eager"])
-def test_hyperlink_key_assignment_is_refused(
-    requests_mock: Any, mode: WriteMode
-) -> None:
-    """A URL identifies an existing resource, whose key is the server's.
-
-    Nothing is sent, and the object still names the resource that the URL
-    names.
-
-    Args:
-        mode: Write mode of the parent and related user.
-    """
-    user = MockedDoc(json=DOC_JSON, write_mode=mode).linked
-
-    with pytest.raises(AttributeError, match="hyperlink"):
-        user.id = 3
-
-    assert not requests_mock.called
-    assert user.absolute_url == "https://mocked.example/users/2/"
-    assert user._pending_updates == {}
-
-
-def test_hyperlink_accepts_pushed_identity_without_loading(
-    requests_mock: Any,
-) -> None:
-    """An authoritative push can establish a URL-only object's key."""
-    user = MockedDoc(json=DOC_JSON).linked
-
-    user.update_from_json({"id": 2, "name": "Ada"})
-
-    assert user.pk == 2
-    assert user.name == "Ada"
-    assert not requests_mock.called
-
-
 @pytest.mark.parametrize(
     "source", ["constructor", "push", "load", "create", "save"]
 )
@@ -596,42 +528,6 @@ def test_date_strings_use_the_same_format_on_every_python(value: str) -> None:
         _ = dated.date
 
 
-def test_hyperlink_refresh_does_not_load_unknown_identity(
-    requests_mock: Any,
-) -> None:
-    """Discarding a URL-only object's cache never requires a request."""
-    user = MockedDoc(json=DOC_JSON).linked
-
-    user.refresh()
-
-    assert user.absolute_url == "https://mocked.example/users/2/"
-    assert not requests_mock.called
-
-    user.update_from_json({"id": 2, "name": "Ada"})
-
-    assert user.pk == 2
-    assert not requests_mock.called
-
-
-def test_hyperlink_refresh_after_a_load_without_the_key(
-    requests_mock: Any,
-) -> None:
-    """A URL-only object loaded from JSON without its key can refresh.
-
-    A hyperlinked serializer sends ``url`` in place of the key.
-    """
-    url = "https://mocked.example/users/2/"
-    requests_mock.get(url, json={"url": url, "name": "Ada"})
-    user = MockedDoc(json=DOC_JSON).linked
-    assert user.name == "Ada"
-
-    user.refresh()
-
-    assert user.absolute_url == url
-    assert user.name == "Ada"
-    assert requests_mock.call_count == 2
-
-
 def test_mapped_write_only_field_stays_out_of_full_save_state(
     requests_mock: Any,
 ) -> None:
@@ -713,155 +609,6 @@ def test_mapped_write_only_field_is_created_under_its_write_key(
     assert "password" not in account.json
     with pytest.raises(AttributeError, match="write-only"):
         _ = account.password
-
-
-class TenantBase(JSONObject):
-    """Models whose hyperlinks may also name a second, allowed origin."""
-
-
-tenant_default = API("https://mocked.example/v1/")
-tenant_default.redirect_origins = ("https://files.mocked.example",)
-TenantBase.register_api(tenant_default)
-
-
-@json_object
-class LinkedUser(TenantBase):
-    """Related resource that hyperlinks name."""
-
-    class_url = "/users/"
-
-    id: int
-    name: str
-
-
-@json_object
-class Note(TenantBase):
-    """Resource with a hyperlink and a whole hyperlinked collection."""
-
-    class_url = "/notes/"
-
-    id: int
-    author: Annotated[LinkedUser, Hyperlinked()]
-    readers: Annotated[list[LinkedUser], Hyperlinked()]
-
-
-@json_object
-class Draft(Note):
-    """Subclass that inherits the hyperlinked fields."""
-
-    class_url = "/drafts/"
-
-    title: str
-
-
-def test_hyperlink_may_name_an_allowed_origin(requests_mock: Any) -> None:
-    """An origin in ``redirect_origins`` is followed like the API's own."""
-    requests_mock.get(
-        "https://files.mocked.example/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    note = Note(
-        json={
-            "id": 1,
-            "author": "https://files.mocked.example/users/2/",
-            "readers": [],
-        }
-    )
-
-    author = note.author
-
-    assert repr(author) == (
-        "<LinkedUser url='https://files.mocked.example/users/2/'>"
-    )
-    assert author.name == "Ada"
-    assert author.pk == 2
-
-
-@pytest.mark.parametrize(
-    "url", ["https://mocked.example:port/users/2/", "http://[::1/users/2/"]
-)
-def test_malformed_hyperlink_is_a_conversion_error(
-    requests_mock: Any, url: str
-) -> None:
-    """A hyperlink that is not a URL fails at the field, sending nothing.
-
-    Args:
-        url: Malformed hyperlink.
-    """
-    note = Note(json={"id": 1, "author": url, "readers": []})
-
-    with pytest.raises(FieldConversionError, match="valid"):
-        _ = note.author
-
-    assert not requests_mock.called
-
-
-def test_hyperlinked_collection_and_inherited_fields_use_urls(
-    requests_mock: Any,
-) -> None:
-    """``Hyperlinked()`` applies to a whole list and to inherited fields."""
-    patch = requests_mock.patch(
-        "https://mocked.example/v1/drafts/1/", status_code=204
-    )
-    draft = Draft(
-        json={
-            "id": 1,
-            "title": "t",
-            "author": "/v1/users/2/",
-            "readers": ["/v1/users/3/", "https://mocked.example/v1/users/4/"],
-        }
-    )
-
-    assert draft.author.url == "https://mocked.example/v1/users/2/"
-    assert [reader.url for reader in draft.readers] == [
-        "https://mocked.example/v1/users/3/",
-        "https://mocked.example/v1/users/4/",
-    ]
-
-    draft.author = LinkedUser(id=7)
-    draft.readers = [LinkedUser(id=8)]
-    draft.save()
-
-    assert patch.last_request.json() == {
-        "author": "https://mocked.example/v1/users/7/",
-        "readers": ["https://mocked.example/v1/users/8/"],
-    }
-
-
-def test_query_api_reaches_hyperlinked_objects(requests_mock: Any) -> None:
-    """A tenant API passed to a query checks and loads its hyperlinks."""
-    tenant = API("https://tenant.example/v1/")
-    requests_mock.get(
-        "https://tenant.example/v1/notes/",
-        json=[
-            {
-                "id": 1,
-                "author": "https://tenant.example/v1/users/2/",
-                "readers": [],
-            }
-        ],
-    )
-    requests_mock.get(
-        "https://tenant.example/v1/users/2/", json={"id": 2, "name": "T"}
-    )
-
-    (note,) = Note.filter(api=tenant)
-
-    assert note.author.api is tenant
-    assert note.author.name == "T"
-    assert {r.hostname for r in requests_mock.request_history} == {
-        "tenant.example"
-    }
-
-    foreign = Note(
-        json={
-            "id": 2,
-            "author": "https://mocked.example/v1/users/2/",
-            "readers": [],
-        },
-        api=tenant,
-    )
-    with pytest.raises(FieldConversionError, match="origin"):
-        _ = foreign.author
 
 
 class PagedMockedBase(MockedBase):
@@ -1002,18 +749,6 @@ def test_write_refuses_an_unreadable_port_that_it_does_not_follow(
 
     with pytest.raises(RedirectError, match="answered with status 302"):
         MockedDoc.create(title="new", api=api)
-
-
-def test_repr_leaves_out_the_credentials_of_a_hyperlink() -> None:
-    """A related object known only by its URL is shown without credentials."""
-    doc = MockedDoc(
-        json={
-            **DOC_JSON,
-            "linked": "https://user:dummy-pass@mocked.example/u/",
-        }
-    )
-
-    assert repr(doc.linked) == "<MockedUser url='https://mocked.example/u/'>"
 
 
 def test_unfollowed_redirects_allow_a_completed_write(
@@ -1235,27 +970,6 @@ def test_write_only_save_with_empty_body_leaves_object_unloaded(
     assert "password" not in doc.json
 
 
-def test_url_only_object_loads_a_body_without_its_key(
-    requests_mock: Any,
-) -> None:
-    """A detail body may omit the key, since the URL identifies it."""
-    requests_mock.get(
-        "https://mocked.example/v1/users/2/", json={"name": "Ada"}
-    )
-    note = Note(
-        json={
-            "id": 1,
-            "author": "https://mocked.example/v1/users/2/",
-            "readers": [],
-        }
-    )
-    author = note.author
-
-    assert author.name == "Ada"
-    assert author.url == "https://mocked.example/v1/users/2/"
-    assert requests_mock.call_count == 1
-
-
 @json_object
 class Team(MockedBase):
     """Resource with a to-one and a to-many prefetchable relation."""
@@ -1341,94 +1055,6 @@ def test_failed_in_place_encoding_queues_nothing(
 
     assert patch.last_request.json() == {"tags": ["a", "b"]}
     assert diary._pending_updates == {}
-
-
-@json_object
-class Dispatch(TenantBase):
-    """Resource that holds users by key, and reads them by hyperlink."""
-
-    class_url = "/dispatches/"
-
-    id: int
-    linked: Annotated[LinkedUser, Hyperlinked()]
-    sender: LinkedUser | None
-    recipients: list[LinkedUser]
-
-
-def _unloadable_user(requests_mock: Any) -> Any:
-    """Return a hyperlinked user whose load gets a body that is not JSON.
-
-    Args:
-        requests_mock: Fixture that serves the responses.
-
-    Returns:
-        The user, which knows only its URL.
-    """
-    requests_mock.get(
-        "https://mocked.example/v1/users/9/", text="<html>", status_code=200
-    )
-    dispatch = Dispatch(
-        json={
-            "id": 5,
-            "linked": "/v1/users/9/",
-            "sender": None,
-            "recipients": [],
-        }
-    )
-    return dispatch.linked
-
-
-def _dispatch() -> Any:
-    """Return a dispatch that holds no user.
-
-    Returns:
-        The dispatch.
-    """
-    return Dispatch(
-        json={
-            "id": 1,
-            "linked": "/v1/users/2/",
-            "sender": None,
-            "recipients": [],
-        }
-    )
-
-
-def test_related_object_that_does_not_load_raises_response_shape_error(
-    requests_mock: Any,
-) -> None:
-    """An assigned relation whose load is not JSON raises the load's error."""
-    user = _unloadable_user(requests_mock)
-    dispatch = _dispatch()
-
-    with pytest.raises(ResponseShapeError):
-        dispatch.sender = user
-
-
-def test_list_relation_that_does_not_load_raises_response_shape_error(
-    requests_mock: Any,
-) -> None:
-    """Saving a list relation whose item fails to load raises its error."""
-    user = _unloadable_user(requests_mock)
-    requests_mock.patch(
-        "https://mocked.example/v1/dispatches/1/", status_code=204
-    )
-    dispatch = _dispatch()
-
-    dispatch.recipients.append(user)
-    with pytest.raises(ResponseShapeError):
-        dispatch.save()
-
-
-def test_query_by_related_object_that_does_not_load_raises_shape_error(
-    requests_mock: Any,
-) -> None:
-    """A query that names an object that fails to load raises its error."""
-    user = _unloadable_user(requests_mock)
-    requests_mock.get("https://mocked.example/v1/dispatches/", json=[])
-
-    with pytest.raises(ResponseShapeError):
-        Dispatch.filter(sender=user)
 
 
 def test_a_shallow_copy_changes_and_saves_apart_from_its_original(

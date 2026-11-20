@@ -47,13 +47,7 @@ ones, map to the same JSON key, because each field caches its own value and
 assigning one would leave the other stale.
 
 A primary key can be a relation to another model, as in `pk="user"` with
-`user: User`, but it cannot be a `Hyperlinked()` relation. Decorating a model
-whose key is one raises `TypeError`, naming the field, because the key reads as
-the related object's own key, which is no URL, so the model's own URL could not
-be built from it. A key whose type is defined later in the module raises the
-same `TypeError`, not `FieldConversionError`, when the key is first read,
-written, or used for the URL, also when the model is an item of another model's
-collection field. Annotate the key as a relation without `Hyperlinked()`.
+`user: User`.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`,
 or `save`, and `@json_object` raises `ValueError` for such a field. Use
@@ -159,10 +153,9 @@ cannot be renamed through the object either:
 - An object that names no resource yet takes the key that it is given, and
   giving it sends nothing. That is an object with no key and no URL of its own,
   including one built from JSON that lacks the key or holds `null`. An object
-  read from a hyperlink already names a resource and learns its key at its
-  first load, so assigning it a key raises `AttributeError` too. So does
-  assigning one to an object of a class that overrides `url`, which has a URL
-  of its own, unless the key is given as the object is built, as in
+  of a class that overrides `url` has a URL of its own and already names a
+  resource. It learns its key at its first load, so assigning it a key raises
+  `AttributeError`, unless the key is given as the object is built, as in
   `Slot(id=3)` for a class that formats its URL from the key. A class whose URL
   does not use the key should not be given one, because eazyrest cannot tell
   that the URL ignores it, and the object's first load raises
@@ -181,9 +174,8 @@ key's field type, and written as text. A key's wire value is a string, or an
 integer that is not a `bool`, whatever codec writes it. So it is the key as the
 server names the resource, and these laws follow:
 
-- Equal objects have the same `url`, unless one has its own URL, as an object
-  read through a `Hyperlinked()` relation has, or its class overrides `url`.
-  Keys that spell one value alike, such as `2026-01-01T00:00:00Z` and
+- Equal objects have the same `url`, unless their class overrides `url`. Keys
+  that spell one value alike, such as `2026-01-01T00:00:00Z` and
   `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key of a type
   that a conversion converts, even one that compares by identity or cannot be
   hashed, still gives equal objects when the encoded keys are equal.
@@ -211,8 +203,7 @@ server names the resource, and these laws follow:
   so `"7"`, `True`, or `1.5` given for an `int` key raises
   `FieldConversionError` naming the relation field before any request, and so
   does a mapping, which a relation never takes for the related object. That
-  holds for a filter on a `Hyperlinked()` relation too, which sends the key,
-  and for a bare value of a lookup that compares the relation's key, such as
+  holds for a bare value of a lookup that compares the relation's key, such as
   `filter(owner__in=[7])`, `filter(owner__id__in=[7])`, or
   `filter(owner__pk=7)`, which may name the key by `pk`, its Python name, or
   its JSON key. A query that compares the key of the model itself, whether by
@@ -282,8 +273,8 @@ and nothing changes the canonical key:
 An object whose key is not known takes the key that the server first names, so
 its hash is the one that raises until then. `update_from_json()` also refuses a
 payload that names a key when the object has no key and no URL of its own. An
-object that has its own URL, as one read from a hyperlink has, takes the key
-that its payload names if its saved key is absent or `null`.
+object of a class that overrides `url` takes the key that its payload names if
+its saved key is absent or `null`.
 
 ### What a key may be
 
@@ -295,11 +286,11 @@ class that a conversion of the model converts. The conversions include
 eazyrest's own, for `UUID`, `datetime`, `date`, `time`, `timedelta`, and
 `Decimal`, and any that the model declares, such as one for `bytes` to and from
 base64. The key may be one of these inside `T | None`, a `NewType`, or
-`Annotated`. A relation is allowed unless it is `Hyperlinked()`. However the
-key is converted, the value that it is written as must be a string or an
-integer that is not a `bool`. A conversion that writes a number with a
-fraction, a `bool`, a list, or a mapping makes a key that is refused where it
-is given or read, as a key of another JSON type is.
+`Annotated`. A relation is allowed. However the key is converted, the value
+that it is written as must be a string or an integer that is not a `bool`. A
+conversion that writes a number with a fraction, a `bool`, a list, or a mapping
+makes a key that is refused where it is given or read, as a key of another JSON
+type is.
 
 Any other key raises `TypeError` when the class is decorated, naming the field.
 That includes a subclass of `str` or `int` that no conversion converts, as a
@@ -350,10 +341,9 @@ convert, raises `TypeError` when the class is decorated. The message is
 `Model.field:` and the reason, which is also the error's `__cause__`. Such
 types are `Counter[str]`, `int | list[int]`, a mapping whose keys are not
 strings, a model inside a mapping or a fixed-length tuple, a type alias that
-refers to itself, and `Hyperlinked()` on a type that is not a relation. A
-member of a `TypedDict`, dataclass, or `NamedTuple` is analyzed when the field
-is first used, so that a structure can name itself, and raises
-`FieldConversionError` then.
+refers to itself. A member of a `TypedDict`, dataclass, or `NamedTuple` is
+analyzed when the field is first used, so that a structure can name itself, and
+raises `FieldConversionError` then.
 
 ### Differences from Django
 
@@ -400,21 +390,21 @@ embed as the related object but a program does not give, and a related object
 whose key the related model would not read. The model holds the related
 object's key, not the object, so the related object must have its key without a
 request: it holds the key, as `User(id=1)` does, or its JSON has the key field.
-A related object that is known only by its URL, as one named by a
-`Hyperlinked()` relation is until it loads, raises `FieldConversionError`,
-whose message says to load or save it first. So does one whose own key is a
-relation that is not known. Once such an object has loaded, it is accepted if
-its JSON has the key. If its JSON lacks the key field, loading again cannot
-help, and the message says that the key is missing from its JSON. If it holds
-the key as `null`, the message says that the key is `None`. A related object
-without a key, such as `User()`, raises `FieldConversionError` too, as a
-relation write does. The constructor and the `pk` setter therefore never send a
-request, and neither do `repr()` and `update_from_json()` of such a model.
-Reading the field returns a new related object that holds the key, not the
-object that was given, though it equals that object, also after `refresh()`. An
-object constructed from `json=` starts with that payload already loaded. It
-keeps a deep copy of the payload, as `update_from_json()` does, so changing the
-payload or its nested values afterward does not change the object.
+A related object whose key is not known without a request, as one of a class
+that overrides `url` is until it loads, raises `FieldConversionError`, whose
+message says to load or save it first. So does one whose own key is a relation
+that is not known. Once such an object has loaded, it is accepted if its JSON
+has the key. If its JSON lacks the key field, loading again cannot help, and
+the message says that the key is missing from its JSON. If it holds the key as
+`null`, the message says that the key is `None`. A related object without a
+key, such as `User()`, raises `FieldConversionError` too, as a relation write
+does. The constructor and the `pk` setter therefore never send a request, and
+neither do `repr()` and `update_from_json()` of such a model. Reading the field
+returns a new related object that holds the key, not the object that was given,
+though it equals that object, also after `refresh()`. An object constructed
+from `json=` starts with that payload already loaded. It keeps a deep copy of
+the payload, as `update_from_json()` does, so changing the payload or its
+nested values afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -529,18 +519,13 @@ raises `ValueError` because those keys could address the collection or another
 resource. An object built without a key, or read from JSON that lacks the key
 field, has the key `None`, so `url`, `save()`, `delete()`, and `refresh()`
 raise `ValueError` for it, and a relation write raises `FieldConversionError`.
-An object read through a `Hyperlinked()` relation has the URL that the relation
-named, so its `url`, `save()`, `delete()`, and `refresh()` work.
 
 Reading `pk` is like reading any field. If the object holds partial JSON that
 lacks the key, as after `update_from_json()` with a payload that omits it, the
-read loads the object first when it can load, because it has a key or its own
-URL. A key that is a relation never loads the related object, because the
-object holds the related key. The key is `None` only if the object's complete
-JSON lacks it, and then the object behaves as one built without a key. For an
-object read through a `Hyperlinked()` relation, that means a relation write by
-key raises `FieldConversionError`, but a `Hyperlinked()` relation write still
-sends its URL.
+read loads the object first when it can load, because it has a key. A key that
+is a relation never loads the related object, because the object holds the
+related key. The key is `None` only if the object's complete JSON lacks it, and
+then the object behaves as one built without a key.
 
 ## Field conversion
 
@@ -666,10 +651,10 @@ Related-object writes encode primary keys using the related model's primary-key
 annotation. An object whose class is neither the field's model nor a subclass
 of it raises `FieldConversionError`, naming the field, the expected model, and
 the given class, when it is assigned, given to `create()` or a query, or is an
-item of a collection of relations or the value of a `Hyperlinked()` relation.
-An object without a key is refused with `FieldConversionError`, rather than
-written as `null`. Prefetch lookups and `update_from_json()` compare canonical
-keys, so equivalent UUID spellings identify the same object.
+item of a collection of relations. An object without a key is refused with
+`FieldConversionError`, rather than written as `null`. Prefetch lookups and
+`update_from_json()` compare canonical keys, so equivalent UUID spellings
+identify the same object.
 
 Collection annotations are converted recursively, so item annotations are
 honored inside `list`, `tuple`, `set`, `frozenset`, and `deque` fields, and
@@ -677,20 +662,19 @@ inside the abstract `Iterable`, `Collection`, `Sequence`, `MutableSequence`,
 `Set`, and `MutableSet` from `collections.abc`. An abstract type reads as a
 concrete one: `Iterable`, `Collection`, and `Sequence` as a tuple,
 `MutableSequence` as a list, `Set` as a `frozenset`, and `MutableSet` as a
-`set`. A set of `Hyperlinked()` relations is refused, so declare a `list` or a
-`tuple` of them. A set writes its items in one order, whatever order it
-iterates them in: numbers by value, strings by code point, and arrays and
-objects by their JSON text. Equal sets therefore write equal JSON, and
-replacing a set with an equal one is not a change that `save()` sends, even
-when the server lists the items in another order. That holds for a field
-annotated as a set or frozenset, an optional one, or a `NewType` of either. A
-set nested in a list, tuple, or mapping field is compared in the server's
-order. Any other parameterized type, such as `Counter[str]`, raises `TypeError`
-when the class is decorated, because its items would otherwise pass through
-unconverted. Annotate a tuple of any length as `tuple[T, ...]`. As Python's
-types say, `tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a
-tuple of any length whose items read as they are. A bare alias from `typing`,
-such as `typing.List` or `typing.Dict`, reads as its class, `list` or `dict`:
+`set`. A set writes its items in one order, whatever order it iterates them in:
+numbers by value, strings by code point, and arrays and objects by their JSON
+text. Equal sets therefore write equal JSON, and replacing a set with an equal
+one is not a change that `save()` sends, even when the server lists the items
+in another order. That holds for a field annotated as a set or frozenset, an
+optional one, or a `NewType` of either. A set nested in a list, tuple, or
+mapping field is compared in the server's order. Any other parameterized type,
+such as `Counter[str]`, raises `TypeError` when the class is decorated, because
+its items would otherwise pass through unconverted. Annotate a tuple of any
+length as `tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of
+exactly one item, and a bare `tuple` is a tuple of any length whose items read
+as they are. A bare alias from `typing`, such as `typing.List` or
+`typing.Dict`, reads as its class, `list` or `dict`:
 
 ```python
 import datetime
@@ -730,44 +714,6 @@ key reads as an object whose `pk` is `None`, as a single relation does. Saving
 a change made in place to the list raises `FieldConversionError` while an item
 has no key, because a list is sent as keys, and a save of another field does
 not send the list.
-
-A relation that the API represents by the related object's URL rather than its
-primary key, as Django REST Framework's hyperlinked fields do, is annotated
-with `Hyperlinked()`, as in `owner: Annotated[User, Hyperlinked()]`. Reading it
-gives an object that loads from that URL, and writing it sends the object's
-absolute URL, or a URL assigned as a string as given. Queries send its primary
-key, as DRF relation filters expect. A URL on an origin that the API of its
-owner does not allow raises `FieldConversionError`, also when it is written as
-a string. That API is the one that reading the field uses: the `api=` that the
-owner was loaded or created with, and otherwise the related model's. That check
-is of the origin only, so a key written as a string, such as `"2"`, is sent as
-a relative URL, which a DRF server refuses with a 400. An object known only by
-its URL has no hash until it loads, so a set of them cannot exist. A field of
-type `set`, `frozenset`, `Set`, or `MutableSet` whose items are `Hyperlinked()`
-relations raises `TypeError` when the class is decorated. Declare a `list` or a
-`tuple` instead. The
-[Django REST Framework guide](drf.md#use-absolute-urls-for-hyperlinked-apis)
-gives the details.
-
-Writing a `Hyperlinked()` relation checks the object's class as a relation
-written by key is checked. An object that the relation's model would not read,
-because it is of a subclass that chose another key or redeclared the key field
-with another type, raises `FieldConversionError` naming the field, as it does
-in a query. The write sends the object's URL, so it neither loads the object
-nor builds its key, and the class decides whether or not the key is known: one
-of a subclass that redeclares the key field with another type raises
-`FieldConversionError`, unless that type is accepted without a load. Those are
-a key type that is an `int` or a `str`, or a `NewType`, an `Annotated`, or an
-`Optional` of one, when the related model's key reads every value of that JSON
-type, and a `Literal` each of whose members the related model builds. A
-subclass keyed by a plain `int` is accepted for a model keyed by
-`NewType("UID", int)`. A key type that is an enum, or that a registered
-conversion owns, is refused even if the related model builds every value of it.
-
-A class that overrides `url` writes that URL whatever its key. One that formats
-the URL from the key must be given the key before such an object is written, or
-the URL holds `None`. One whose URL ignores the key, such as a singleton at
-`/me/`, needs none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
@@ -1120,15 +1066,14 @@ members, and a `Literal` gives its members' JSON values. A read schema also
 allows a number for `datetime.datetime` and `datetime.timedelta`, which read a
 Unix timestamp and a number of seconds, and for `decimal.Decimal`. `T | None`
 also allows `null`, and a collection is an array, whose items are unique for a
-set. A relation is the related model's primary key, or a URL for a
-`Hyperlinked()` relation, and a read also accepts the related object embedded
-as JSON. The definitions of a conversion's schema move into the schema's
-`$defs`, renamed with the references to them when two share a name. A plain
-`TypedDict` is an object with a property for each declared key that allows
-other properties, and one inside itself is any object. A `NamedTuple` or
-dataclass inside itself is likewise any array or object. `dict[str, T]` is an
-object whose properties all have `T`'s schema. A type whose JSON form
-`eazyrest` does not check, such as `Any`, allows any value.
+set. A relation is the related model's primary key, and a read also accepts the
+related object embedded as JSON. The definitions of a conversion's schema move
+into the schema's `$defs`, renamed with the references to them when two share a
+name. A plain `TypedDict` is an object with a property for each declared key
+that allows other properties, and one inside itself is any object. A
+`NamedTuple` or dataclass inside itself is likewise any array or object.
+`dict[str, T]` is an object whose properties all have `T`'s schema. A type
+whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
 
 `eazyrest` has no required fields, so the schema lists none. Every field reads
 `null` as `None`, but the schema allows `null` only where the annotation does,
@@ -1390,15 +1335,6 @@ related model, or of a subclass of it that keeps the related model's key,
 raises `TypeError` that names the hook, the model, the field, and the class
 returned, since a parent would otherwise read an object of another resource.
 
-A field annotated with `Hyperlinked()` holds URLs rather than primary keys, so
-its related model implements `bulk_get_by_urls(cls, urls, *, api, **kwargs)`
-instead, which receives the absolute URLs and returns the objects keyed by URL.
-A URL is checked as reading the field checks it, so a URL on an origin that the
-API does not allow is not loaded, and reading the field still raises
-`FieldConversionError`. Two spellings of one URL, such as a relative and an
-absolute one, name the same object. Prefetch raises `TypeError` for an object
-of another model that `bulk_get_by_urls()` returns, in the same way.
-
 Related objects inherit their parent's write mode, including when they are
 prefetched. Enabling prefetch preserves when assignments are saved, even if the
 related model's API has a different default write mode. A prefetched object is
@@ -1459,12 +1395,12 @@ the view. A query without options passes its API itself.
 Every hook may receive more keyword arguments in later 1.x releases, to tell it
 more about the query or the write: those that take `api`, which are
 `collection_items()`, `collection_items_from_response()`, `collection_page()`,
-`bulk_get_by_pks()`, and `bulk_get_by_urls()`, and also `object_json()`,
-`merge_response()`, and `API.raise_for_response()`. An override must therefore
-accept `**kwargs`, and pass them on when it calls another hook or `super()`, as
-the examples here do. A class that overrides a hook without `**kwargs`, also an
-undecorated base class, raises `TypeError` when it is defined, rather than when
-a query first calls the hook.
+`bulk_get_by_pks()`, and also `object_json()`, `merge_response()`, and
+`API.raise_for_response()`. An override must therefore accept `**kwargs`, and
+pass them on when it calls another hook or `super()`, as the examples here do.
+A class that overrides a hook without `**kwargs`, also an undecorated base
+class, raises `TypeError` when it is defined, rather than when a query first
+calls the hook.
 
 The hooks are typed by two protocols rather than by requests' classes, so that
 a later 1.x release can send requests with another HTTP library without
@@ -1765,13 +1701,10 @@ request, the requests for later pages that a collection hook sends with its
 when its API has the origin of the query's own, so that a header such as
 `Authorization` does not reach another model's host. The options otherwise go
 where the session's own headers go: a collection hook that reads pages with
-`allow_other_origins=True` sends them to the pages' origin, and
-`bulk_get_by_urls()` may send them to an origin in its API's
-`redirect_origins`, as reading a hyperlinked field sends the session's headers
-there. A query sends no body and builds its own parameters, so its options
-cannot set `json`, `data`, `files`, or `params`, and it reads every response,
-so they cannot enable `stream=True`. The objects that a query returns do not
-keep its options:
+`allow_other_origins=True` sends them to the pages' origin. A query sends no
+body and builds its own parameters, so its options cannot set `json`, `data`,
+`files`, or `params`, and it reads every response, so they cannot enable
+`stream=True`. The objects that a query returns do not keep its options:
 
 ```python
 todos = Todo.filter(

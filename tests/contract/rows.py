@@ -402,7 +402,7 @@ def relation_key_refused(world: World) -> None:
     assert "key" in str(error)
 
 
-@row(KEY, pending="Hyperlinked() still exists")
+@row(KEY)
 def hyperlinked_does_not_exist(world: World) -> None:
     assert not hasattr(eazyrest, "Hyperlinked")
 
@@ -1720,7 +1720,7 @@ def an_object_without_a_key_from_the_hook_is_ignored(world: World) -> None:
     assert parent.owner.pk == 7
 
 
-@row(PREFETCH, pending="bulk_get_by_urls() is a hook")
+@row(PREFETCH)
 def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
     prefetched(world, 7)
     assert ("urls", {7}) not in hook_calls

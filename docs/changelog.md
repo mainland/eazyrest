@@ -18,14 +18,21 @@ The items below change what code written for the alpha `v1.0.0a5` does, or
 whether it type-checks. The 0.9.0 items, the new features below, and the guide
 describe them further.
 
+- `Hyperlinked()` and the hook `bulk_get_by_urls()` no longer exist, so
+  importing `Hyperlinked` raises `ImportError`. Declare the relation by key, as
+  `owner: User`, which the server's serializer sends as the related object's
+  primary key, or as an embedded object. A relation by key is read, written,
+  queried, and prefetched with `bulk_get_by_pks()`. An object that is known
+  only by its URL no longer exists, except an object of a class that overrides
+  `url`.
 - The hooks `collection_items()`, `collection_items_from_response()`,
-  `collection_page()`, `bulk_get_by_pks()`, and `bulk_get_by_urls()` must
-  accept `api=` and `**kwargs`, and `object_json()`, `merge_response()`, and
+  `collection_page()`, and `bulk_get_by_pks()` must accept `api=` and
+  `**kwargs`, and `object_json()`, `merge_response()`, and
   `API.raise_for_response()` must accept `**kwargs`. A class that overrides one
   of them without, also an undecorated base class, raises `TypeError`, naming
-  the hook, when it is defined. `api` is required in the bulk hooks too, so
-  code that calls them itself must pass it. The bulk hooks return a `Mapping`
-  of the model's objects.
+  the hook, when it is defined. `api` is required in `bulk_get_by_pks()` too,
+  so code that calls it itself must pass it. It returns a `Mapping` of the
+  model's objects.
 - Annotate a hook's response as `eazyrest.Response` and its client as
   `eazyrest.Client`. An override annotated `requests.Response` or `API` fails
   type checking.
@@ -305,16 +312,14 @@ describe them further.
   where `v1.0.0a5` accepted it and `url` raised `ValueError`. The model holds
   the related object's key, so the object must have its key without a request,
   as an object built from a key or loaded from JSON that has it does. A related
-  object that `Hyperlinked()` named and that has not loaded, or whose own key
-  is a relation that is not known, raises `FieldConversionError`, where
-  `v1.0.0a5` accepted it and loaded it when the key was first read, even for
-  `repr()` and `update_from_json()`. Load or save it first. If it has loaded
-  and its JSON lacks the key field, the message says that the key is missing
-  from its JSON, and if the JSON holds the key as `null`, that the key is
-  `None`. The constructor, the setter, `repr()`, and `update_from_json()` send
-  no request, and the field reads as a new related object that holds the key,
-  also after `refresh()`, where `v1.0.0a5` returned the object that was given,
-  and the plain key after `refresh()`.
+  object of a class that overrides `url` and has not loaded raises
+  `FieldConversionError`. Load or save it first. If it has loaded and its JSON
+  lacks the key field, the message says that the key is missing from its JSON,
+  and if the JSON holds the key as `null`, that the key is `None`. The
+  constructor, the setter, `repr()`, and `update_from_json()` send no request,
+  and the field reads as a new related object that holds the key, also after
+  `refresh()`, where `v1.0.0a5` returned the object that was given, and the
+  plain key after `refresh()`.
 - A primary key that is a relation reads as a related object after `refresh()`,
   however it was set: as a related object, as a plain value such as
   `Profile(user=2)`, or from JSON. `v1.0.0a5` read the plain key, an `int` for
@@ -326,17 +331,7 @@ describe them further.
   `v1.0.0a5` raised `AttributeError` from `pk`, `url`, `save()`, `delete()`,
   `refresh()`, and a relation write. `url`, `save()`, `delete()`, and
   `refresh()` raise `ValueError`, and a relation write raises
-  `FieldConversionError`. That includes an object read through a
-  `Hyperlinked()` relation, whose `pk` is `None` once it loads and still lacks
-  the key, where `v1.0.0a5` raised `AttributeError`. Reading `pk` loads an
-  object that holds partial JSON without the key, as reading any field does.
-- A model whose primary key is a `Hyperlinked()` relation raises `TypeError`
-  when it is decorated, naming the field, where `v1.0.0a5` defined it and
-  raised a bare `TypeError` from `url`, `save()`, and `delete()`. Annotate the
-  key as a relation without `Hyperlinked()`. A key whose type is not defined
-  yet when the class is decorated raises the same `TypeError`, not
-  `FieldConversionError`, when the key is first used, also when the model is an
-  item of another model's collection field.
+  `FieldConversionError`.
 - A model whose primary key is neither one value nor a relation to a model
   keyed by one raises `TypeError` when it is decorated, naming the field, where
   `v1.0.0a5` defined it. One value is `int`, `str`, `bool`, `float`, `UUID`,
@@ -352,20 +347,12 @@ describe them further.
   `TypeError` when the key is first used. Declare the key as one value, or as a
   relation to a model keyed by one. To key a model by another model, use a
   relation to it, or the type of its key.
-- A field whose type is a set of `Hyperlinked()` relations, as
-  `set[Annotated[User, Hyperlinked()]]`, also as a `frozenset`, `Set`, or
-  `MutableSet`, and inside an optional, raises `TypeError` when the class is
-  decorated, where `v1.0.0a5` defined it. An object known only by its URL has
-  no hash, so a set of them could not be read. Declare a `list` or a `tuple`.
-  Assigning to a set field raises before it sends or queues anything, when the
-  field cannot keep the assigned objects.
 - A field whose annotation resolves and whose own type eazyrest does not
   convert, such as `Counter[str]`, `int | list[int]`, a type alias that refers
-  to itself, or `Hyperlinked()` on a type that is not a relation, raises
-  `TypeError` when the class is decorated, naming the field, where earlier
-  releases raised `FieldConversionError` when the field was first used. A name
-  that is not defined yet, and a member of a `TypedDict`, dataclass,
-  `NamedTuple`, still raise when the field is first used.
+  to itself, raises `TypeError` when the class is decorated, naming the field,
+  where earlier releases raised `FieldConversionError` when the field was first
+  used. A name that is not defined yet, and a member of a `TypedDict`,
+  dataclass, `NamedTuple`, still raise when the field is first used.
 - A field whose own type is a union with a member that converts, such as
   `str | datetime.datetime`, also inside an optional, a collection, a mapping,
   a fixed-length tuple, or a `NewType`, raises `TypeError` when the class is
@@ -440,11 +427,11 @@ describe them further.
   key of the returned dictionary. A key that hashes by identity is found
   without a load, and `Decimal` keys spelled `1.0` and `1.00` get two objects,
   where `v1.0.0a5` gave both the same one.
-- Prefetch raises `TypeError` when `bulk_get_by_pks()` or `bulk_get_by_urls()`
-  returns an object that is not an instance of the related model or of a
-  subclass of it, naming the hook, the model, the field, and the class
-  returned. A parent whose key matched such an object used to read it, an
-  object of another model and resource.
+- Prefetch raises `TypeError` when `bulk_get_by_pks()` returns an object that
+  is not an instance of the related model or of a subclass of it, naming the
+  hook, the model, the field, and the class returned. A parent whose key
+  matched such an object used to read it, an object of another model and
+  resource.
 - A relation refuses an object of a subclass that chose another primary key
   with `pk=`, with `FieldConversionError` naming the field, in an assignment,
   `create()`, a query, and a key that is a relation. Prefetch raises
@@ -476,32 +463,14 @@ describe them further.
   in `post.owner = 7`, `create(owner=7)`, or `filter(owner=7)`, is built by the
   same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
   key, and read a mapping back as an embedded object, they now raise
-  `FieldConversionError` naming the relation field before any request, in a
-  filter on a `Hyperlinked()` relation too, and in the `__in` and `__exact`
-  lookups of a relation, which sent a bare value as it was given. A lookup that
-  names the relation's key, such as `owner__id__in` or `owner__pk`, builds its
-  bare value the same way, where it sent `"7"` for an `int` key as it was
-  given, and a query that compares the model's own key, such as
-  `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
+  `FieldConversionError` naming the relation field before any request, and in
+  the `__in` and `__exact` lookups of a relation, which sent a bare value as it
+  was given. A lookup that names the relation's key, such as `owner__id__in` or
+  `owner__pk`, builds its bare value the same way, where it sent `"7"` for an
+  `int` key as it was given, and a query that compares the model's own key,
+  such as `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
   `User.filter(id__range=["1", "9"])`, raises before its request, where it sent
-  the request first or sent the text as given. The Django REST Framework
-  guide's recipe for prefetching hyperlinks converts each key that it reads
-  from a URL to the key's type and skips one that does not convert, since a
-  bulk lookup by key now refuses text for an `int` key. A write of a
-  `Hyperlinked()` relation checks the class of the object it is given, as a
-  query does, so an object of a subclass that redeclares the key field with
-  another type is refused when it is written, as it already was in a query,
-  where `v1.0.0a5` wrote its URL. The check is by class whether or not the
-  object knows its key, and no load or key build is needed, so an object whose
-  loaded key the related model cannot read is written as its URL, which a read
-  of the field accepts. A class is refused unless its key type is an `int` or a
-  `str`, or a `NewType`, an `Annotated`, or an `Optional` of one, that the
-  related model's key reads for every value of that JSON type, or a `Literal`
-  of keys that the model builds. A URL written as a string is checked as a read
-  checks it, against the API that the owner reads with, so one on an origin
-  that API does not allow raises `FieldConversionError` naming the field, where
-  `v1.0.0a5` sent it and the read raised. The URL of a related object that is
-  written is checked the same way.
+  the request first or sent the text as given.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601
@@ -639,12 +608,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   before anything is sent. An object that has no key and no URL of its own
   takes the key that it is given, as before, and so does one built from JSON
   that lacks the key or holds `null`, which `v1.0.0a5` queued as a change that
-  `save()` could not send. An object read from a hyperlink learns its key at
-  its first load, so assigning it a key raises `AttributeError`, and so does
-  assigning one to an object of a class that overrides `url`, unless the key is
-  given as the object is built, where `v1.0.0a5` accepted it and the next load
-  could name another key and raise `ResponseShapeError`. To rename a resource
-  on a server that allows it, send the write with the raw API, as
+  `save()` could not send. An object of a class that overrides `url` learns its
+  key at its first load, so assigning it a key raises `AttributeError`, unless
+  the key is given as the object is built, where `v1.0.0a5` accepted it and the
+  next load could name another key and raise `ResponseShapeError`. To rename a
+  resource on a server that allows it, send the write with the raw API, as
   `api.patch(obj.url, json={"id": 2})`, and build the object again from the
   response. A known key is also kept when the server names another one. A load,
   a write's response, and `update_from_json()` raise `ResponseShapeError`, a
@@ -957,15 +925,13 @@ that can break code written for 0.9.0, followed by what to do about it.
   detection of in-place changes to field values, and `merge_response()`.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and
   written by key, `write_only=` for a field such as a password, `read_only=`
-  for returned values that writes omit, `Hyperlinked()` for relations
-  represented by URLs, which `bulk_get_by_urls()` can prefetch, file uploads
-  with `files=` on `create()` and `save()`, full updates with
-  `save(full=True)`, request options such as headers with `request_options=` on
-  `save()`, `create()`, `delete()`, and the query methods, which send them with
-  every request of the query, and `write_options()` for the writes of an
-  object, eager ones included, the collection's size as `count`, and `APIError`
-  with the parsed error body. Hyperlinked writes send URLs and relation queries
-  send primary keys.
+  for returned values that writes omit, file uploads with `files=` on
+  `create()` and `save()`, full updates with `save(full=True)`, request options
+  such as headers with `request_options=` on `save()`, `create()`, `delete()`,
+  and the query methods, which send them with every request of the query, and
+  `write_options()` for the writes of an object, eager ones included, the
+  collection's size as `count`, and `APIError` with the parsed error body.
+  Relation queries send primary keys.
 - `API.put()`, use of `API` as a context manager, `raise_for_response()`,
   `resolve_url()`, `trailing_slash`, `redirect_origins`, `reset_session()` that
   keeps the session's configuration, `register_api()`, and `api=` on queries
@@ -987,11 +953,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   parameters as `eazyrest.Response` and `eazyrest.Client`, because an override
   annotated `requests.Response` or `API` fails type checking, and cast them to
   use anything else, such as `resp.links` or `api.session`. `bulk_get_by_pks()`
-  and `bulk_get_by_urls()` return a `Mapping` of objects of the model, so an
-  override may return a `dict` of its own class. The query methods, `create()`,
-  and the model constructor take a `Client` as `api=`. The names that
-  `request_options=` accepts and the exceptions for a failed connection are
-  those of the client's HTTP library, requests for `API`.
+  returns a `Mapping` of objects of the model, so an override may return a
+  `dict` of its own class. The query methods, `create()`, and the model
+  constructor take a `Client` as `api=`. The names that `request_options=`
+  accepts and the exceptions for a failed connection are those of the client's
+  HTTP library, requests for `API`.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
@@ -1046,8 +1012,7 @@ that can break code written for 0.9.0, followed by what to do about it.
 - The adapters that `API` creates read a response's body within the response
   limits before any response hook runs, so an authentication handler cannot
   read the body of a challenge past `max_response_bytes` or `total_timeout`.
-- A hyperlinked relation is followed only to an origin that the related model's
-  API allows, and `APIError` messages do not quote the error body, which can
-  quote submitted values.
+- `APIError` messages do not quote the error body, which can quote submitted
+  values.
 - Releases are built and published from a tag by a workflow that uses trusted
   publishing, with the workflow's actions pinned by commit.

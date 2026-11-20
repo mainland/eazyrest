@@ -50,7 +50,7 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 
 import requests
 
@@ -74,7 +74,6 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _asked_url,
-    _redact_url,
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
@@ -82,11 +81,9 @@ from .api import (
     API,
     _AnyAPI,
     _as_client,
-    _canonical_url,
     _check_final_response,
     _merge_request_options,
     _origin,
-    _permitted_origins,
     _registered_api,
     _takes_kwargs,
 )
@@ -368,8 +365,7 @@ def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
 """Prefetched related objects, by field name and then by canonical key.
 
-The key is the text of the canonical key of a key, or the canonical URL of a
-hyperlink.
+The key is the text of the canonical key of a key.
 """
 
 PrefetchFields: TypeAlias = str | Sequence[str] | None
@@ -397,10 +393,7 @@ class _Query:
         The lookup uses the query's ``api=``, or else the related model's own
         API. It gets the query's request options only when that API has the
         origin of the query's own client, so that credentials in them, such as
-        an ``Authorization`` header, do not reach another model's host. A
-        hyperlink lookup may still send them to an origin in that API's
-        ``redirect_origins``, as reading the field sends the session's
-        headers there.
+        an ``Authorization`` header, do not reach another model's host.
 
         Args:
             model: Class of the related objects.
@@ -700,28 +693,6 @@ class RelatedType:
     """Leaf type metadata for a related ``JSONObject`` type."""
 
     model_type: type[JSONObject]
-    hyperlinked: bool = False
-    """Whether the JSON value is the related object's URL, not its key."""
-
-
-@dataclass(frozen=True)
-class Hyperlinked:
-    """Annotation metadata for a relation whose JSON value is a URL.
-
-    Django REST Framework's ``HyperlinkedRelatedField`` and
-    ``HyperlinkedModelSerializer`` represent a related object by its URL,
-    such as ``"https://api.example.com/users/2/"``, rather than its primary
-    key. Annotate such a field as ``Annotated[User, Hyperlinked()]``, or a
-    collection as ``list[Annotated[User, Hyperlinked()]]``. Reading it gives a
-    related object that loads from that URL, and writing it sends the related
-    object's absolute URL. The related model needs a primary-key field, as an
-    object's key comes from its JSON once it loads.
-
-    A URL is followed only if its origin is the related model's API's, or one
-    of that API's ``redirect_origins``. Otherwise reading the field raises
-    ``FieldConversionError``, so a server cannot point the client, with its
-    credentials, at another host.
-    """
 
 
 @dataclass(frozen=True)
@@ -1095,29 +1066,6 @@ def _check_not_pydantic_metadata(metadata: Any) -> None:
         )
 
 
-def _hyperlinked(analyzed: AnalyzedType) -> AnalyzedType:
-    """Return type metadata whose related types are hyperlinked.
-
-    Args:
-        analyzed: Metadata of the type that ``Hyperlinked()`` annotates.
-
-    Returns:
-        ``analyzed`` with each related type, also an optional one or the item
-        type of a collection, marked as hyperlinked.
-
-    Raises:
-        TypeError: If ``analyzed`` holds no related type.
-    """
-    match analyzed:
-        case RelatedType(model_type):
-            return RelatedType(model_type, hyperlinked=True)
-        case OptionalType(inner_type):
-            return OptionalType(_hyperlinked(inner_type))
-        case CollectionType(collection_type, item_type):
-            return CollectionType(collection_type, _hyperlinked(item_type))
-    raise TypeError("Hyperlinked() applies only to a related model type")
-
-
 def analyze_type(ty: type[Any]) -> AnalyzedType:
     """Analyze a declared field type into recursive type metadata.
 
@@ -1166,10 +1114,7 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
     if ty_origin is Annotated:
         for metadata in ty_args[1:]:
             _check_not_pydantic_metadata(metadata)
-        inner = analyze_type(ty_args[0])
-        if any(isinstance(metadata, Hyperlinked) for metadata in ty_args[1:]):
-            return _hyperlinked(inner)
-        return inner
+        return analyze_type(ty_args[0])
 
     if ty_origin in (Union, types.UnionType):
         non_none_args = tuple(arg for arg in ty_args if arg is not type(None))
@@ -2070,97 +2015,6 @@ def _check_related_key(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
-_KEY_TYPES_BUILT: weakref.WeakKeyDictionary[
-    type, weakref.WeakKeyDictionary[type, bool]
-] = weakref.WeakKeyDictionary()
-"""Whether a model builds every key of a subclass's key type, by class pair."""
-
-
-def _builds_every_key_of(model_type: type[Any], sub_type: type[Any]) -> bool:
-    """Return whether a model builds every value of a subclass's key type.
-
-    A key of ``int`` or ``str``, inside ``NewType`` and ``Annotated``, is built
-    from every value of its JSON type. A ``Literal`` key is built from each of
-    its members that the model's constructor builds. A key under a registered
-    conversion, or of any other type, is not decided.
-
-    Args:
-        model_type: Model that a relation names, with the constructor.
-        sub_type: Subclass that redeclares the key field.
-
-    Returns:
-        Whether every value that ``sub_type`` allows as a key is built by
-        ``model_type``'s key constructor.
-
-    Raises:
-        Exception: If a key's type cannot be resolved yet, whatever resolving
-            it raises.
-    """
-    key = _pk_property_of(sub_type)
-    related_key = _pk_property_of(model_type)
-    if key is None or related_key is None:
-        return False
-    sub_native = _native_key_values(sub_type, key.analyzed_type)
-    related_native = _native_key_values(model_type, related_key.analyzed_type)
-    if sub_native is None or related_native is None:
-        return False
-    sub_kinds, sub_members = sub_native
-    kinds, members = related_native
-    if sub_members is None:
-        # Every int or str is a key of the subclass, so the related model must
-        # read every one.
-        return members is None and sub_kinds <= kinds
-    for _, wire in sub_members:
-        try:
-            _build_key(object.__new__(model_type), wire)
-        except (TypeError, ValueError):
-            return False
-    return True
-
-
-def _check_related_key_type(value: JSONObject, model_type: type[Any]) -> None:
-    """Refuse a related object whose class redeclares the key's type.
-
-    The object's key is not known without a request, so its class decides: a
-    subclass that redeclares the key field with another type has keys that
-    ``model_type`` may not read, which a query on the object would find out by
-    loading it. A redeclared type whose every value ``model_type`` builds, such
-    as a ``NewType`` or an ``Annotated`` of its key's type, or a ``Literal`` of
-    values that it builds, is accepted without a load.
-
-    Args:
-        value: Object written as a relation whose class is ``model_type`` or a
-            subclass that keeps its key field.
-        model_type: Model that the relation's field names.
-
-    Raises:
-        TypeError: If the type of the key field of ``value``'s class is not the
-            type of ``model_type``'s, and ``model_type`` does not build every
-            value of it. The field's name is added where the conversion runs.
-        Exception: If a key's type cannot be resolved yet, whatever resolving
-            it raises.
-    """
-    key = _pk_property_of(type(value))
-    related_key = _pk_property_of(model_type)
-    if (
-        key is not None
-        and related_key is not None
-        and key is not related_key
-        and key.analyzed_type != related_key.analyzed_type
-    ):
-        built = _KEY_TYPES_BUILT.setdefault(
-            model_type, weakref.WeakKeyDictionary()
-        )
-        if type(value) not in built:
-            built[type(value)] = _builds_every_key_of(model_type, type(value))
-        if not built[type(value)]:
-            raise TypeError(
-                f"A relation to {model_type.__name__} cannot take an object "
-                f"of {type(value).__name__}, which redeclares the type of the "
-                "primary key"
-            )
-
-
 def _check_prefetched_class(
     obj: Any,
     model_type: type[Any],
@@ -2583,7 +2437,7 @@ def _build_key(obj: JSONObject, key: Any) -> tuple[Any, str] | None:
             )
     host = obj if owner is type(obj) else object.__new__(owner)
     decoded = host._from_json(value, conversion)
-    encoded = owner._to_json(decoded, conversion, api=None)
+    encoded = owner._to_json(decoded, conversion)
     if encoded is None:
         return None
     if _json_kind(encoded) is None:
@@ -2684,7 +2538,7 @@ def _known_key(obj: JSONObject) -> Any:
     value = _held_key(obj)
     if value is not None:
         return value
-    has_own_url = obj._url_override is not None or _url_is_overridden(cls)
+    has_own_url = _url_is_overridden(cls)
     problem = _key_problem(obj)
     if has_own_url and problem == "unloaded":
         raise ValueError(
@@ -2731,10 +2585,10 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
     with _of_the_relation():
         key = value.pk
     if key is None:
-        if _key_problem(value) == "unloaded" and (
-            value._url_override is not None or _url_is_overridden(type(value))
+        if _key_problem(value) == "unloaded" and _url_is_overridden(
+            type(value)
         ):
-            # Loading may give the key, which the object's own URL allows.
+            # Loading may give the key, which the class's own URL allows.
             _known_key(value)
         # Writing None would clear the relation.
         raise ValueError(
@@ -2842,9 +2696,7 @@ def _bare_wire_key(value: Any, model_type: type[Any]) -> Any:
         raise TypeError(
             "A relation takes a related object or its key, not a mapping"
         )
-    encoded = model_type._to_json(
-        value, model_type._pk.analyzed_type, api=None
-    )
+    encoded = model_type._to_json(value, model_type._pk.analyzed_type)
     named = _build_key(object.__new__(model_type), encoded)
     if named is None:
         raise ValueError(
@@ -3248,25 +3100,6 @@ def _form_value(name: str, value: Any) -> Any:
     )
 
 
-def _query_type(conversion: AnalyzedType) -> AnalyzedType:
-    """Use primary keys for related query values, including hyperlinks.
-
-    Args:
-        conversion: Field's read/write conversion.
-
-    Returns:
-        The same conversion with each hyperlink represented by a key.
-    """
-    match conversion:
-        case RelatedType(model_type):
-            return RelatedType(model_type)
-        case OptionalType(inner_type):
-            return OptionalType(_query_type(inner_type))
-        case CollectionType(collection_type, item_type):
-            return CollectionType(collection_type, _query_type(item_type))
-    return conversion
-
-
 def _copy_json(value: Any) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
 
@@ -3302,61 +3135,6 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 T = TypeVar("T", bound="JSONObject")
 
 
-def _checked_hyperlink(api: _AnyAPI, url: str) -> str:
-    """Return a hyperlink as an absolute URL, after checking its origin.
-
-    Args:
-        api: API that the related object uses.
-        url: URL that the JSON holds, absolute or relative to the API's base
-            URL.
-
-    Returns:
-        The absolute URL.
-
-    Raises:
-        ValueError: If the URL's origin is neither the API's nor one of its
-            ``redirect_origins``. The message does not quote the URL.
-    """
-    allowed = _permitted_origins(api.base_url, api.redirect_origins)
-    # urljoin() also rejects some URLs, such as one whose host is "[bad]", with
-    # a message that quotes part of the URL.
-    try:
-        absolute = urljoin(api.base_url, url)
-        origin = _origin(absolute)
-    except (ValueError, requests.RequestException) as err:
-        raise ValueError("Hyperlinked field value is not a valid URL") from err
-    if origin not in allowed:
-        raise ValueError(
-            "Hyperlinked field value names an origin other than the API's. "
-            "Add the origin to API.redirect_origins to follow it."
-        )
-    return absolute
-
-
-def _hyperlink_api(
-    model_type: type[Any], owner_api: _AnyAPI | None
-) -> _AnyAPI:
-    """Return the API that checks a hyperlinked relation's URLs.
-
-    Reading the field, writing it, and prefetching it check a URL against the
-    same API, so the three accept the same URLs.
-
-    Args:
-        model_type: Model that the relation's field names.
-        owner_api: The API that the owner reads with, or ``None`` for an owner
-            that has none of its own, whose related objects use the model's.
-
-    Returns:
-        ``owner_api``, or the related model's API if there is none.
-
-    Raises:
-        UsageError: If a class in the MRO of ``model_type`` had ``api``
-            assigned.
-    """
-    _check_api_attribute(model_type, UsageError)
-    return model_type.api if owner_api is None else owner_api
-
-
 class RelatedCollection(Iterable[T]):
     """Lazy, single-pass iterable of related objects backed by JSON values.
 
@@ -3386,7 +3164,6 @@ class RelatedCollection(Iterable[T]):
         values: Iterable[Any],
         related_type: type[T],
         field: str | None = None,
-        hyperlinked: bool = False,
     ) -> None:
         """Initialize a lazy related-object collection.
 
@@ -3397,14 +3174,11 @@ class RelatedCollection(Iterable[T]):
             field: Name of the owning field, which finds the related objects
                 that a prefetch loaded, or ``None`` for a collection without
                 one.
-            hyperlinked: Whether the raw values are the related objects'
-                URLs.
         """
         self._owner = owner
         self._values = tuple(values)
         self._related_type = related_type
         self._field = field
-        self._hyperlinked = hyperlinked
         self._iterated = False
 
     def __iter__(self) -> Iterator[T]:
@@ -3443,7 +3217,6 @@ class RelatedCollection(Iterable[T]):
                     value,
                     self._related_type,
                     field=self._field,
-                    hyperlinked=self._hyperlinked,
                 )
             except FieldConversionError as err:
                 positioned = _at_position(err, index)
@@ -3618,7 +3391,6 @@ def _check_options(
 
 _API_HOOKS = (
     "bulk_get_by_pks",
-    "bulk_get_by_urls",
     "collection_page",
     "collection_items_from_response",
     "collection_items",
@@ -3764,85 +3536,6 @@ def _refuse_keyless_request(cls: type[JSONObject], verb: str) -> None:
         )
 
 
-def _holds_hyperlinked_set(analyzed: AnalyzedType) -> bool:
-    """Return whether a type is a set of ``Hyperlinked()`` relations.
-
-    The walk goes through optional wrappers and the items of collections, so a
-    set inside a list is found, and so is a set of optional relations.
-
-    Args:
-        analyzed: Analyzed type of a field.
-
-    Returns:
-        Whether a set type, as ``set``, ``frozenset``, ``AbstractSet``, or
-        ``MutableSet``, has hyperlinked related objects as its items.
-    """
-    analyzed = _unwrap_optional_type(analyzed)
-    if not isinstance(analyzed, CollectionType):
-        return False
-    item = _unwrap_optional_type(analyzed.item_type)
-    if _READ_AS[analyzed.collection_type] in (set, frozenset):
-        return isinstance(item, RelatedType) and item.hyperlinked
-    return _holds_hyperlinked_set(item)
-
-
-def _check_not_hyperlinked_set(
-    cls: type[JSONObject], field: str, analyzed: AnalyzedType
-) -> None:
-    """Refuse a field that is a set of ``Hyperlinked()`` relations.
-
-    An object known only by its URL has no hash until it loads, and a set needs
-    one for each member, so such a set could not be read.
-
-    Args:
-        cls: Model class that declares the field.
-        field: Name of the field.
-        analyzed: Analyzed type of the field.
-
-    Raises:
-        TypeError: If ``analyzed`` is a set of ``Hyperlinked()`` relations.
-    """
-    if _holds_hyperlinked_set(analyzed):
-        error = TypeError(
-            f"{cls.__name__}.{field} is a set of hyperlinked relations, and "
-            "an object that is known only by its URL has no hash, so it "
-            "cannot be in a set. Declare a list or a tuple instead."
-        )
-        # A conversion reports the error as a plain TypeError, as decorating
-        # the class does, not as the conversion of a value.
-        setattr(error, _DECLARATION_ERROR, True)
-        raise error
-
-
-def _check_key_not_hyperlinked(
-    cls: type[JSONObject], field: str, analyzed: AnalyzedType
-) -> None:
-    """Refuse a primary key whose type is a hyperlinked relation.
-
-    A key that is a hyperlinked relation reads as the related object's own key,
-    which is no URL, so the model's own URL could not be built from it.
-
-    Args:
-        cls: Model class that declares the key.
-        field: Name of the primary-key field.
-        analyzed: Analyzed type of the field.
-
-    Raises:
-        TypeError: If ``analyzed`` is a ``Hyperlinked()`` relation.
-    """
-    related = _related_key_type(analyzed)
-    if related is not None and related.hyperlinked:
-        error = TypeError(
-            f"{cls.__name__}.{field} is the primary key, and a primary key "
-            "cannot be a hyperlinked relation. Declare it as a relation to "
-            "the model without Hyperlinked()."
-        )
-        # A conversion reports the error as a plain TypeError, as decorating
-        # the class does, not as the conversion of a value.
-        setattr(error, _DECLARATION_ERROR, True)
-        raise error
-
-
 def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
     """Return the refusal of a primary key that is not a leaf or a relation.
 
@@ -3858,7 +3551,7 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         f"{cls.__name__}.{field} is the primary key, and a primary key must "
         "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
         "an enum, or a class that a conversion of the model converts, or a "
-        "relation without Hyperlinked() to a model whose key is one. It "
+        "relation to a model whose key is one. It "
         "cannot be a float, a bool, a collection, a mapping, a tuple, a "
         "TypedDict, a NamedTuple, a dataclass, a union, a relation to a "
         "model keyed by a relation, a Literal or an enum with a string and an "
@@ -3995,9 +3688,9 @@ def _check_key_is_leaf_or_relation(
 ) -> None:
     """Refuse a primary key that is neither a leaf nor a relation to one.
 
-    A key is a leaf, or a relation that is not ``Hyperlinked()`` to a model
-    whose own key is a leaf. A chain of relations is refused, and so is a
-    cycle, which is a chain that never ends.
+    A key is a leaf, or a relation to a model whose own key is a leaf. A chain
+    of relations is refused, and so is a cycle, which is a chain that never
+    ends.
 
     Args:
         cls: Model class whose key it is, which is the class that decorates or
@@ -4055,9 +3748,7 @@ def _analyze_field(
     Raises:
         TypeError: If the annotation is ``None`` as a whole, or the type is
             refused, such as a model without a key, a primary key that is not
-            one value or a relation to a model keyed by one, a
-            ``Hyperlinked()`` primary key, or a set of ``Hyperlinked()``
-            relations.
+            one value or a relation to a model keyed by one.
         Exception: If a name in a type alias or a related model's key type is
             not defined yet, whatever evaluating it raises.
     """
@@ -4077,11 +3768,9 @@ def _analyze_field(
             raise _key_type_error(prop.cls, prop.field) from err
         raise
     if prop.is_primary_key:
-        _check_key_not_hyperlinked(owner, prop.field, analyzed)
         _check_key_is_leaf_or_relation(
             owner, prop.field, analyzed, strict=strict
         )
-    _check_not_hyperlinked_set(prop.cls, prop.field, analyzed)
     return analyzed
 
 
@@ -4179,11 +3868,10 @@ def _refuse_declared_types(
     Raises:
         TypeError: If a field's type is refused, such as ``Counter[str]``, a
             union of a scalar and a list, a mapping whose keys are not strings,
-            a model without a primary-key field, a set of ``Hyperlinked()``
-            relations, or a primary key that is a ``Hyperlinked()`` relation,
-            is not one value, or is neither a leaf nor a relation to a model
-            keyed by one. The first field in declaration order raises, and then
-            the primary key.
+            a model without a primary-key field, a primary key that is not one
+            value, or is neither a leaf nor a relation to a model keyed by one.
+            The first field in declaration order raises, and then the primary
+            key.
     """
     own = [*declared]
     props = [*own]
@@ -4311,7 +3999,7 @@ def encode_json(
         )
     analyzed = analyze_type(annotation)
     _check_admitted(analyzed, _table_of(model), late=True)
-    encoded = model._to_json(value, analyzed, api=None)
+    encoded = model._to_json(value, analyzed)
     _check_json(encoded, "")
     return encoded
 
@@ -4529,11 +4217,8 @@ def json_object(
             field, alone or inside an optional, a collection, or a ``NewType``.
             Declare nested JSON without a key as a ``TypedDict`` or a
             dataclass. A class defined later raises when the field is first
-            used. Also raised if the primary key is a ``Hyperlinked()``
-            relation, which cannot form the model's URL. A key whose type is
-            not yet defined raises when the key is first used. Also raised if a
-            field is a set of ``Hyperlinked()`` relations, since an object
-            known only by its URL has no hash. Declare a list or a tuple.
+            used. A key whose type is not yet defined raises when the key is
+            first used.
     """
     if field_map is None:
         field_map = {}
@@ -4554,7 +4239,7 @@ def json_object(
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
             TypeError: If a field's type is a model without a primary-key
-                field, or the primary key is a ``Hyperlinked()`` relation.
+                field.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
@@ -4926,22 +4611,20 @@ def _json_schema_of(
             if _READ_AS[collection_type] in (set, frozenset):
                 schema["uniqueItems"] = True
             return schema
-        case RelatedType(model_type, hyperlinked):
-            if hyperlinked:
-                key: Any = {"type": "string", "format": "uri"}
+        case RelatedType(model_type):
+            pk = model_type._pk
+            key: Any
+            if model_type in seen:
+                key = {}
             else:
-                pk = model_type._pk
-                if model_type in seen:
-                    key = {}
-                else:
-                    with _converting(model_type, pk.field):
-                        key = _json_schema_of(
-                            pk.analyzed_type,
-                            "write",
-                            defs,
-                            seen | {model_type},
-                            _table_of(model_type),
-                        )
+                with _converting(model_type, pk.field):
+                    key = _json_schema_of(
+                        pk.analyzed_type,
+                        "write",
+                        defs,
+                        seen | {model_type},
+                        _table_of(model_type),
+                    )
             # A read also accepts the related object embedded as JSON.
             if mode == "read":
                 return {"anyOf": [key, {"type": "object"}]}
@@ -5412,9 +5095,9 @@ class JSONProperty:
 
         Raises:
             TypeError: If the type is refused, such as a primary key that is
-                not one value or a relation to a model keyed by one, or is a
-                ``Hyperlinked()`` relation, or a set of them. A type that names
-                a class defined later is refused here, when it is first used.
+                not one value or a relation to a model keyed by one. A type
+                that names a class defined later is refused here, when it is
+                first used.
             NameError: If a field's annotation names a class that is not
                 defined. It is raised as it is, for a primary key too.
             Exception: If a primary key's type, or the key type of a model that
@@ -5478,22 +5161,17 @@ class JSONProperty:
 
         raw = obj._working_value(self.json_field)
         if raw is _MISSING:
-            # The field is not in loaded JSON. The key is read like any other
-            # field, which loads the object when it can load, except that an
-            # object that has recorded its key reads it from there without a
-            # load, and a key that the object lacks even when it is loaded or
-            # cannot load reads as None, because an object may have no key.
-            is_key = self._is_key_of(obj)
-            if is_key and obj._saved_key_json is not None:
+            # The field is not in loaded JSON. An object that has recorded its
+            # key reads it from there, and one that has not reads None without
+            # a load, which would need a URL, which needs the key, because an
+            # object may have no key. Any other field loads the object.
+            if self._is_key_of(obj):
+                if obj._saved_key_json is None:
+                    return None
                 raw = obj._saved_key_json
             else:
-                if is_key and obj._url_override is None:
-                    # Loading would need a URL, which needs the key.
-                    return None
                 raw = obj._json_having(self.json_field)
                 if raw is _MISSING:
-                    if is_key:
-                        return None
                     raise _missing_field_error(
                         obj, self.field, self.json_field
                     )
@@ -5520,9 +5198,7 @@ class JSONProperty:
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
             with _converting(type(obj), self.field):
-                encoded = obj._to_json(
-                    value, self.analyzed_type, api=obj._api_override
-                )
+                encoded = obj._to_json(value, self.analyzed_type)
 
         # Cache the value only once its encoding is known, so that a field
         # whose value cannot be encoded fails on every read, rather than
@@ -5562,9 +5238,7 @@ class JSONProperty:
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
             with _converting(type(obj), self.field):
-                encoded = obj._to_json(
-                    value, self.analyzed_type, api=obj._api_override
-                )
+                encoded = obj._to_json(value, self.analyzed_type)
             obj._update_json_field(self.json_field, _copy_json(encoded))
             return
 
@@ -5578,9 +5252,7 @@ class JSONProperty:
             )
         stored = obj._json_with_field(self.json_field, self.field)
         with _converting(type(obj), self.field):
-            new_value = obj._to_json(
-                value, self.analyzed_type, api=obj._api_override
-            )
+            new_value = obj._to_json(value, self.analyzed_type)
             # Build the collection that the field keeps before anything is sent
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
@@ -5589,9 +5261,7 @@ class JSONProperty:
             # keeps. Then the write and the snapshot agree, and a later write
             # of another field does not send this one again.
             if isinstance(kept, AbstractSet):
-                new_value = obj._to_json(
-                    kept, self.analyzed_type, api=obj._api_override
-                )
+                new_value = obj._to_json(kept, self.analyzed_type)
 
         # A pending update is not on the server, even though the working JSON
         # holds it. In eager mode, assigning the same value must send it.
@@ -5634,8 +5304,8 @@ class JSONProperty:
 
         An object that names no resource yet, with no key and no URL of its
         own, takes the key and sends nothing. An object whose key is known, or
-        that has its own URL and so names a resource, keeps its key. Assigning
-        the same key does nothing.
+        whose class overrides ``url`` and so names a resource, keeps its key.
+        Assigning the same key does nothing.
 
         Args:
             obj: Object whose key is assigned.
@@ -5643,9 +5313,8 @@ class JSONProperty:
 
         Raises:
             AttributeError: If the object already names a resource and the
-                value names another key, or any key for an object that has its
-                own URL, as one read from a hyperlink has, or one of a class
-                that overrides ``url``, and has not learned its key.
+                value names another key, or any key for an object of a class
+                that overrides ``url`` that has not learned its key.
             FieldConversionError: If the value cannot be converted to the key's
                 JSON value, is of another JSON type than a key of type ``int``
                 or ``str`` has, is not written as a string or an integer, or a
@@ -5673,7 +5342,7 @@ class JSONProperty:
                 _known_key(value)
                 value = _related_wire_key(value, related.model_type)
             value = obj._key_as_read_from_json(value)
-            encoded = obj._to_json(value, conversion, api=None)
+            encoded = obj._to_json(value, conversion)
             named = _build_key(obj, encoded)
 
         name = type(obj).__name__
@@ -5692,11 +5361,9 @@ class JSONProperty:
             )
         if obj._key_is_unknown() and not obj._is_being_built:
             raise AttributeError(
-                f"A {name} object that has its own URL, as one read from a "
-                "hyperlink does and one of a class that overrides url does, "
-                f"learns its key when it loads, so {name}.{self.field} cannot "
-                f"be assigned. Name another object as "
-                f"{name}({self.field}=...)"
+                f"A {name} object whose class overrides url learns its key "
+                f"when it loads, so {name}.{self.field} cannot be assigned. "
+                f"Name another object as {name}({self.field}=...)"
             )
 
         obj._record_saved_key(encoded)
@@ -5870,9 +5537,6 @@ class JSONObject:
 
     _json_is_partial: bool
     """Whether ``_json`` holds only some of the object's fields."""
-
-    _url_override: str | None = None
-    """The URL of an object that a hyperlinked relation named, if any."""
 
     _is_being_built: bool = False
     """Whether the constructor is assigning the object's field values.
@@ -6067,9 +5731,8 @@ class JSONObject:
         encode alike, such as ``Z`` and ``+00:00`` for a ``datetime``, are one
         key, and so are a bare key and an embedded object of a relation. Keys
         that encode differently are two keys, as ``Decimal`` keys of different
-        precision are. Equal objects have the same ``url``, unless one has its
-        own URL, as an object read through a ``Hyperlinked()`` relation has, or
-        its class overrides ``url``. A refresh leaves the saved key as it was.
+        precision are. Equal objects have the same ``url``, unless their class
+        overrides ``url``. A refresh leaves the saved key as it was.
 
         An object whose saved key is not known, or is ``None``, or cannot be
         converted, or whose model has no key field, equals only itself. So does
@@ -6151,8 +5814,7 @@ class JSONObject:
         related object's key, not the related object that the JSON may embed,
         so a log of the object holds none of its fields. If that key is not a
         string or an integer, or cannot be read yet, the value is shown as
-        ``...``. An object known only by its URL shows the URL, without any
-        user and password.
+        ``...``.
 
         Returns:
             The class name and primary key in angle brackets, or the class name
@@ -6169,8 +5831,6 @@ class JSONObject:
         else:
             value = self._saved_key_json
 
-        if value is None and self._url_override is not None:
-            return f"<{name} url={_redact_url(self._url_override)!r}>"
         if isinstance(value, dict | list):
             try:
                 reduced = _reduce_key(type(self), value)
@@ -6193,7 +5853,7 @@ class JSONObject:
         Args:
             prefetched_related: Mapping from each prefetched field name to the
                 related objects loaded for it, keyed by the text of their
-                canonical key, or by canonical URL for a hyperlinked field.
+                canonical key.
         """
         # Copy the outer mapping so each parent can drop an entire prefetched
         # field cache independently while still sharing the related objects.
@@ -6268,32 +5928,25 @@ class JSONObject:
         ty: type[T],
         *,
         field: str | None = None,
-        hyperlinked: bool = False,
     ) -> T:
-        """Create a related object from embedded JSON, a key, or a URL.
+        """Create a related object from embedded JSON or a key.
 
         Args:
-            arg: Either a JSON mapping for eager object creation, a primary
-                key value for lazy lookup, or, for a hyperlinked relation, the
-                related object's URL.
+            arg: Either a JSON mapping for eager object creation, or a primary
+                key value for lazy lookup.
             ty: Related ``JSONObject`` subclass type.
             field: Optional owning field name for prefetch lookup and for the
                 error that a wrong key raises.
-            hyperlinked: Whether a string value is the related object's URL.
 
         Returns:
             Instance of ``ty``.
 
         Raises:
-            TypeError: If a hyperlinked value is neither a URL nor a mapping.
-            ValueError: If a URL's origin is not one that the related model's
-                API allows.
             UsageError: If a class in the MRO of ``ty`` had ``api`` assigned.
             FieldConversionError: If a key is of another JSON type than the
                 related model's key. It names ``field`` when that is given.
         """
-        # A hyperlink is checked against the related model's API before the
-        # object is built, so refuse an assigned ``api`` first.
+        # Refuse an assigned ``api`` before the object is built.
         _check_api_attribute(ty, UsageError)
         # Pass on only an instance override. Without one, the related object
         # uses the API registered for its own class.
@@ -6306,23 +5959,6 @@ class JSONObject:
             return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
-
-        if hyperlinked:
-            if not isinstance(arg, str):
-                raise TypeError(
-                    "Hyperlinked field values must be URLs or objects, got "
-                    f"{type(arg).__name__}"
-                )
-            url = _checked_hyperlink(_hyperlink_api(ty, api), arg)
-            if field is not None and field in self._prefetched_related:
-                prefetched = self._prefetched_related[field].get(
-                    _canonical_url(url)
-                )
-                if prefetched is not None:
-                    return cast(T, prefetched)
-            related = ty(api=api, write_mode=self.write_mode)
-            related._url_override = url
-            return related
 
         related = ty(api=api, write_mode=self.write_mode)
         related._is_being_built = True
@@ -6374,8 +6010,6 @@ class JSONObject:
         where: str,
         value: Any,
         conversion: AnalyzedType,
-        *,
-        api: _AnyAPI | None,
     ) -> Any:
         """Write one item of a structure, naming it in a conversion error.
 
@@ -6383,13 +6017,12 @@ class JSONObject:
             where: The item's position or declared key, such as ``[0]``.
             value: The item's value.
             conversion: The item's analyzed type.
-            api: The API that the owner reads with, as for ``_to_json()``.
 
         Returns:
             The item's JSON value.
         """
         with _at_key(where):
-            return cls._to_json(value, conversion, api=api)
+            return cls._to_json(value, conversion)
 
     def _from_json(
         self,
@@ -6446,13 +6079,8 @@ class JSONObject:
                 # object's JSON without recording an update.
                 return _copy_json(value)
 
-            case RelatedType(model_type, hyperlinked):
-                return self._create_related(
-                    value,
-                    model_type,
-                    field=field,
-                    hyperlinked=hyperlinked,
-                )
+            case RelatedType(model_type):
+                return self._create_related(value, model_type, field=field)
 
             case TypedDictType():
                 keys = conversion.keys
@@ -6549,7 +6177,6 @@ class JSONObject:
                         value,
                         item_type.model_type,
                         field=field,
-                        hyperlinked=item_type.hyperlinked,
                     )
 
                 converted_items = _each_item(
@@ -6569,8 +6196,6 @@ class JSONObject:
         cls,
         value: Any,
         conversion: AnalyzedType,
-        *,
-        api: _AnyAPI | None,
     ) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
@@ -6581,10 +6206,6 @@ class JSONObject:
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
-            api: The API that the owner of the value reads with, which checks
-                the origin of a URL written to a ``Hyperlinked()`` relation, as
-                reading the field checks it. ``None`` for the related model's
-                API, which a value with no owner, such as a key, uses.
 
         Returns:
             JSON-serializable representation of ``value``.
@@ -6610,28 +6231,9 @@ class JSONObject:
 
         match conversion:
             case OptionalType(inner_type):
-                return cls._to_json(value, inner_type, api=api)
+                return cls._to_json(value, inner_type)
             case NewTypeType(_, inner_type):
-                return cls._to_json(value, inner_type, api=api)
-            case RelatedType(model_type, hyperlinked=True):
-                # A hyperlink writes a URL, never a key. An object's class must
-                # be one whose objects the relation reads, and its URL, like a
-                # string, must be one that reading the field accepts.
-                if isinstance(value, JSONObject):
-                    _check_related_class(value, model_type)
-                    _check_related_key(value, model_type)
-                    _check_related_key_type(value, model_type)
-                    with _of_the_relation():
-                        url = value.absolute_url
-                elif isinstance(value, str):
-                    url = value
-                else:
-                    raise TypeError(
-                        "Hyperlinked field values must be objects or URLs, "
-                        f"got {type(value).__name__}"
-                    )
-                _checked_hyperlink(_hyperlink_api(model_type, api), url)
-                return url
+                return cls._to_json(value, inner_type)
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
@@ -6669,7 +6271,7 @@ class JSONObject:
                     )
 
                 items = _each_item(
-                    lambda item: cls._to_json(item, item_type, api=api), value
+                    lambda item: cls._to_json(item, item_type), value
                 )
                 if _READ_AS[collection_type] in (set, frozenset):
                     # A set's iteration order depends on how it was built, and
@@ -6681,7 +6283,7 @@ class JSONObject:
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
                 return [
-                    cls._write_at(f"[{index}]", item, item_type, api=api)
+                    cls._write_at(f"[{index}]", item, item_type)
                     for index, (item, item_type) in enumerate(
                         zip(items, item_types, strict=True)
                     )
@@ -6690,7 +6292,7 @@ class JSONObject:
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "write")
                 return [
-                    cls._write_at(f"[{name!r}]", item, item_type, api=api)
+                    cls._write_at(f"[{name!r}]", item, item_type)
                     for item, (name, item_type) in zip(
                         items, positions, strict=True
                     )
@@ -6717,7 +6319,6 @@ class JSONObject:
                         f"[{name!r}]",
                         getattr(value, name),
                         item_type,
-                        api=api,
                     )
                     for name, item_type, _ in conversion.fields
                 }
@@ -6730,9 +6331,7 @@ class JSONObject:
                 for key, item in value.items():
                     if key in keys:
                         with _at_key(f"[{key!r}]"):
-                            written[key] = cls._to_json(
-                                item, keys[key], api=api
-                            )
+                            written[key] = cls._to_json(item, keys[key])
                     else:
                         # An undeclared key is written as it is, so it must
                         # already be JSON.
@@ -6745,7 +6344,7 @@ class JSONObject:
                 written = {}
                 for key, item in value.items():
                     with _at_key("[key]"):
-                        written[key] = cls._to_json(item, value_type, api=api)
+                        written[key] = cls._to_json(item, value_type)
                 return written
             case _:
                 raise TypeError(
@@ -6981,8 +6580,7 @@ class JSONObject:
             only until it can be, and the next call tries again.
 
         Raises:
-            TypeError: If the model's key declaration is refused, as for a
-                hyperlinked key whose model is defined after it.
+            TypeError: If the model's key declaration is refused.
             UsageError: If the key is a relation whose model's ``api`` was
                 assigned after the class was defined.
             Exception: Any exception other than ``TypeError`` or ``ValueError``
@@ -7055,9 +6653,7 @@ class JSONObject:
                 continue
             with _converting(type(self), field):
                 # An object without a key cannot be written.
-                encoded = self._to_json(
-                    current, descriptor.analyzed_type, api=self._api_override
-                )
+                encoded = self._to_json(current, descriptor.analyzed_type)
             if compared_by_items:
                 changed.append((field, descriptor, encoded))
                 continue
@@ -7414,7 +7010,6 @@ class JSONObject:
                         json[descriptor.json_field], conversion, field=field
                     ),
                     conversion,
-                    api=self._api_override,
                 )
         write_only = self._write_only_keys()
         payload.update(
@@ -7447,10 +7042,9 @@ class JSONObject:
                 or the object's saved key, is not known, or the two have
                 different canonical keys, so that the payload does not name
                 this object. A key is not known if it is ``None`` or cannot be
-                converted. An object that has its own URL, as one read from a
-                hyperlink has, takes the payload's key if its saved key is
-                absent or ``None``. It is a ``ValueError``, and nothing is
-                merged.
+                converted. An object whose class overrides ``url`` takes the
+                payload's key if its saved key is absent or ``None``. It is a
+                ``ValueError``, and nothing is merged.
             TypeError: If the model's key declaration is refused when the key
                 is first used.
             Exception: If the key's type cannot be resolved yet, whatever
@@ -7465,10 +7059,10 @@ class JSONObject:
         # Resolve the key's type first, so that a declaration that the key
         # refuses is refused here, as every other use of the key refuses it.
         _ = type(self)._pk.analyzed_type
-        # A payload without the key names no other object. An object known only
-        # by its URL takes the key that the payload names. Two keys that are
-        # not known name no common resource, and an object whose key is not
-        # known equals only itself.
+        # A payload without the key names no other object. An object whose
+        # class overrides url takes the key that the payload names. Two keys
+        # that are not known name no common resource, and an object whose key
+        # is not known equals only itself.
         if self._pk_json_field in payload:
             self._refuse_other_key(
                 payload[self._pk_json_field], adopt=self._key_is_unknown()
@@ -7487,22 +7081,18 @@ class JSONObject:
             self._record_saved_key(payload[self._pk_json_field])
 
     def _key_is_unknown(self) -> bool:
-        """Return whether an object with its own URL does not know its key.
+        """Return whether an object lacks the key that its own URL needs.
 
-        An object has its own URL if it was read from a hyperlink or its class
-        overrides ``url``. It knows its key if it has recorded one, and its URL
-        does not say. A saved key of ``None`` is the same as none recorded.
-        Whether the object has loaded is not the question, so a key that a
+        Such an object knows its key if it has recorded one, and its URL does
+        not say. A saved key of ``None`` is the same as none recorded. Whether
+        the object has loaded is not the question, so a key that a
         ``refresh()`` kept stays known across another.
 
         Returns:
-            Whether the object has its own URL and its saved key is absent or
-            ``None``.
+            Whether the object's class overrides ``url`` and its saved key is
+            absent or ``None``.
         """
-        has_own_url = self._url_override is not None or _url_is_overridden(
-            type(self)
-        )
-        return has_own_url and self._saved_key_json is None
+        return _url_is_overridden(type(self)) and self._saved_key_json is None
 
     def _merge_json(self, payload: dict[str, Any]) -> None:
         """Merge authoritative JSON members into this object's JSON.
@@ -7628,7 +7218,7 @@ class JSONObject:
         """
         conversion = type(self)._pk.analyzed_type
         value = self._from_json(
-            self._to_json(key, conversion, api=None),
+            self._to_json(key, conversion),
             conversion,
             field=type(self)._pk.field,
         )
@@ -7667,9 +7257,6 @@ class JSONObject:
             Relative URL for this object. It ends with ``/`` unless the API's
             ``trailing_slash`` is ``False``.
 
-        An object read from a hyperlinked relation has the URL that the
-        relation named, as an absolute URL.
-
         Raises:
             ValueError: If the primary key is ``None``, empty, or a dot
                 segment, or the class has no primary-key field. The URL would
@@ -7682,8 +7269,6 @@ class JSONObject:
                 not set, and a ``FieldConversionError`` for a form whose
                 annotations cannot be resolved.
         """
-        if self._url_override is not None:
-            return self._url_override
         if getattr(type(self), "_pk", None) is None:
             raise ValueError(
                 f"{type(self).__name__} has no primary-key field, so it has "
@@ -7864,7 +7449,6 @@ class JSONObject:
         fields: Mapping[str, Any],
         *,
         query: bool = False,
-        api: _AnyAPI | None,
     ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
@@ -7872,8 +7456,6 @@ class JSONObject:
             fields: Values keyed by Python attribute name for JSON-backed
                 fields, or by JSON key for other values.
             query: Whether to encode a query, whose related values use keys.
-            api: The API that the object being written reads with, as for
-                ``_to_json()``.
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
@@ -7898,11 +7480,7 @@ class JSONObject:
                     )
                 with _converting(cls, field):
                     conversion = descriptor.analyzed_type
-                    payload[key] = cls._to_json(
-                        value,
-                        _query_type(conversion) if query else conversion,
-                        api=api,
-                    )
+                    payload[key] = cls._to_json(value, conversion)
             else:
                 payload[key] = value
 
@@ -8113,7 +7691,7 @@ class JSONObject:
         return _Parameter(
             wire,
             field,
-            _query_type(analyzed),
+            analyzed,
             collection if own else None,
             structured,
             several,
@@ -8328,7 +7906,7 @@ class JSONObject:
                     # A value that no key could be is left to the checks of
                     # what a query can send.
                     conversion = parameter.key
-                return _query_value(cls._to_json(item, conversion, api=None))
+                return _query_value(cls._to_json(item, conversion))
             if not isinstance(item, JSONObject):
                 return item
             if parameter.deferred:
@@ -8525,7 +8103,6 @@ class JSONObject:
             _query_params(
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             ),
-            api=api,
         )
         cls._check_created_key(payload)
         # A class's api can be assigned after the class is defined, and the
@@ -8605,45 +8182,6 @@ class JSONObject:
         del pks, api, kwargs
         raise PrefetchNotSupported(
             f"{cls.__name__} does not support bulk prefetch"
-        )
-
-    @classmethod
-    def bulk_get_by_urls(
-        cls: type[Self],
-        urls: set[str],
-        *,
-        api: Client,
-        **kwargs: Any,
-    ) -> Mapping[str, Self]:
-        """Bulk-load objects by URL to prefetch a hyperlinked relation.
-
-        Prefetching a field annotated ``Annotated[Model, Hyperlinked()]``
-        calls this hook on ``Model`` with the URLs that the parent objects
-        hold, after checking their origins as reading the field does. An
-        object returned without a URL of its own takes the URL that named
-        it. Prefetch keeps the objects under the API of the query that
-        prefetches, whatever API they were created with.
-
-        Args:
-            urls: Absolute URLs of the objects to load.
-            api: The client to send the bulk request with, as for
-                ``bulk_get_by_pks()``.
-            **kwargs: Context that later 1.x releases may pass, as for
-                ``bulk_get_by_pks()``.
-
-        Returns:
-            The loaded objects, in a mapping keyed by URL. URLs are matched
-            after resolving them against the API's base URL and normalizing
-            case and default ports, and objects under URLs that were not
-            requested are ignored. An object of another model, which is not an
-            instance of this class or of a subclass, raises ``TypeError``.
-
-        Raises:
-            PrefetchNotSupported: Always, unless overridden by a subclass.
-        """
-        del urls, api, kwargs
-        raise PrefetchNotSupported(
-            f"{cls.__name__} does not support bulk prefetch by URL"
         )
 
     @classmethod
@@ -8779,12 +8317,11 @@ class JSONObject:
         A built-in conversion gives its JSON form, such as a string with
         ``format`` ``date-time`` for ``datetime.datetime``. ``T | None`` allows
         ``null``, a collection is an array, and a relation is the related
-        model's primary key, or its URL for ``Hyperlinked()``, which a read
-        also accepts as an embedded object. The definitions of a conversion's
-        schema move into the schema's ``$defs``, renamed with the references to
-        them when two share a name. A ``TypedDict`` or ``dict[str, T]`` is an
-        object. A type whose JSON form eazyrest does not check, such as
-        ``Any``, allows any value.
+        model's primary key, which a read also accepts as an embedded object.
+        The definitions of a conversion's schema move into the schema's
+        ``$defs``, renamed with the references to them when two share a name. A
+        ``TypedDict`` or ``dict[str, T]`` is an object. A type whose JSON form
+        eazyrest does not check, such as ``Any``, allows any value.
 
         eazyrest has no required fields, so the schema lists none, and allows
         other properties, which a server may send. The schema is a JSON Schema
@@ -8937,8 +8474,7 @@ class JSONObject:
         Raises:
             ValueError: If ``field`` is not a JSON-backed related-object field.
             PrefetchNotSupported: If the related model does not override
-                ``bulk_get_by_pks()``, or ``bulk_get_by_urls()`` for a
-                hyperlinked field.
+                ``bulk_get_by_pks()``.
             UsageError: If a class in the MRO of the related model had ``api``
                 assigned, because the bulk request would be sent through it.
         """
@@ -8964,15 +8500,10 @@ class JSONObject:
                 f"{cls.__name__}.{field} is not a related-object field"
             )
         model_type = analyzed_type.model_type
-        hook = (
-            "bulk_get_by_urls"
-            if analyzed_type.hyperlinked
-            else "bulk_get_by_pks"
-        )
-        if not model_type._overrides_hook(hook):
+        if not model_type._overrides_hook("bulk_get_by_pks"):
             raise PrefetchNotSupported(
                 f"{cls.__name__}.{field} cannot be prefetched, because "
-                f"{model_type.__name__} does not implement {hook}()"
+                f"{model_type.__name__} does not implement bulk_get_by_pks()"
             )
         # The bulk request goes through the related model's class API, which an
         # assignment to its ``api`` would replace.
@@ -9009,10 +8540,9 @@ class JSONObject:
             query: The query that prefetches.
 
         Returns:
-            Mapping of each prefetched field name to related objects. A key
-            that is not hyperlinked is keyed by the text of its canonical key,
-            as ``==`` compares keys, and a hyperlink by its canonical URL.
-            Fields with no primary keys to fetch are omitted.
+            Mapping of each prefetched field name to related objects, keyed by
+            the text of their canonical keys, as ``==`` compares keys. Fields
+            with no primary keys to fetch are omitted.
 
         Raises:
             ValueError: If any field is not a JSON-backed related-object field.
@@ -9066,11 +8596,6 @@ class JSONObject:
             # The related model loads through its own registered API, unless
             # the query passed api=.
             model_type = related_type.model_type
-            if related_type.hyperlinked:
-                prefetched_related[field] = cls._prefetch_hyperlinks(
-                    model_type, list(raw_keys.values()), query, cls, field
-                )
-                continue
             # The objects that the bulk request returns match their parents by
             # key. A key that cannot be read yet matches none, so raise before
             # the request rather than keep an empty prefetch.
@@ -9099,65 +8624,6 @@ class JSONObject:
             }
 
         return prefetched_related
-
-    @staticmethod
-    def _prefetch_hyperlinks(
-        model_type: type[JSONObject],
-        values: Iterable[Any],
-        query: _Query,
-        owner: type[JSONObject],
-        field: str,
-    ) -> dict[str, JSONObject]:
-        """Bulk-load the objects that a hyperlinked field's URLs name.
-
-        Each URL is checked as reading the field checks it, against the API
-        that the parent objects give their related objects. A value that is
-        not a URL, or not one that the API allows, is not loaded, so reading
-        the field still raises.
-
-        Args:
-            model_type: Class of the related objects.
-            values: Hyperlinks that the parent objects hold.
-            query: The query that prefetches.
-            owner: Class of the parent objects, for the message.
-            field: Name of the relation's field, for the message.
-
-        Returns:
-            The loaded objects, keyed by canonical absolute URL. Each has the
-            URL that named it, as an object that a hyperlink names does.
-
-        Raises:
-            TypeError: If the hook returns an object that is not a
-                ``model_type``.
-        """
-        check_api = _hyperlink_api(model_type, query.api)
-        urls: dict[str, str] = {}
-        for value in values:
-            if not isinstance(value, str):
-                continue
-            try:
-                url = _checked_hyperlink(check_api, value)
-            except ValueError:
-                continue
-            urls[_canonical_url(url)] = url
-        if not urls:
-            return {}
-
-        loaded = model_type.bulk_get_by_urls(
-            set(urls.values()), api=query.related_client(model_type)
-        )
-        prefetched: dict[str, JSONObject] = {}
-        for url, obj in loaded.items():
-            _check_prefetched_class(
-                obj, model_type, "bulk_get_by_urls", owner, field
-            )
-            key = _canonical_url(urljoin(check_api.base_url, url))
-            if key not in urls:
-                continue
-            if obj._url_override is None:
-                obj._url_override = urls[key]
-            prefetched[key] = obj
-        return prefetched
 
     @classmethod
     def _prefetched_filter(

@@ -13,7 +13,6 @@ from urllib.parse import (
     urljoin,
     urlparse,
     urlsplit,
-    urlunsplit,
 )
 
 import requests
@@ -156,34 +155,6 @@ def _prepare_server_url(
         return prepared
     except (ValueError, requests.RequestException):
         return None
-
-
-def _canonical_url(url: str) -> str:
-    """Return an absolute URL in one spelling for each resource it names.
-
-    The URL is prepared as Requests would send it, and its scheme and host
-    are lowercased, a default port is dropped, and a fragment is removed, so
-    that two spellings of one hyperlink compare equal.
-
-    Args:
-        url: Absolute URL.
-
-    Returns:
-        The URL in its canonical spelling.
-    """
-    request = requests.PreparedRequest()
-    request.prepare_url(url, None)
-    assert request.url is not None
-    parts = urlsplit(request.url)
-    scheme = parts.scheme.lower()
-    host = parts.hostname or ""
-    if ":" in host:
-        host = f"[{host}]"
-    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(scheme):
-        host = f"{host}:{parts.port}"
-    userinfo, _, _ = parts.netloc.rpartition("@")
-    netloc = f"{userinfo}@{host}" if userinfo else host
-    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
 
 def _redirect_destination(resp: requests.Response, target: str) -> str:

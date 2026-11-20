@@ -190,54 +190,10 @@ release may let a model use its URL as its identity.
 
 A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every
 relation, represents a related object by its URL rather than its primary key.
-Annotate such a field with `Hyperlinked()`:
-
-```python
-from typing import Annotated
-
-from eazyrest import Hyperlinked
-
-
-@json_object
-class Todo(DRFObject):
-    class_url = "/todos/"
-
-    id: int
-    owner: Annotated[User, Hyperlinked()]
-    watchers: list[Annotated[User, Hyperlinked()]]
-
-
-todo.owner.name  # GET https://api.example.com/users/2/
-todo.owner = User(id=3)
-todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
-```
-
-Reading the field gives a related object that loads from the URL when one of
-its other fields is read. Writing it sends the related object's absolute URL. A
-URL assigned as a string is sent as given, without resolving it, after the
-check that reading the field makes of its origin, so one that the API of the
-owner does not allow raises `FieldConversionError` before any request. That is
-the `api=` that the owner was loaded or created with, and otherwise the related
-model's. That check is of the origin only. A key written as a string, such as
-`"2"`, is a relative URL, which is sent as it is, and a DRF server refuses it
-with a 400. Assign a related object, or the URL. A query sends its primary key,
-as django-filter's relation filters expect. Pass a related model instance or a
-bare primary key to the query. A relative URL is resolved against the API that
-reading the field uses. A URL whose origin is neither that API's nor one of its
-`redirect_origins` raises `FieldConversionError` when the field is read, so a
-server cannot send the client, with its credentials, to another host. A
-hyperlinked field can be prefetched when the related model implements
-`bulk_get_by_urls()`, which receives the URLs rather than primary keys, as
-[Prefetch hyperlinked relations](#prefetch-hyperlinked-relations) shows.
-
-A primary key cannot be a `Hyperlinked()` relation. A model whose key is one,
-whether `pk=` names it or it is the default `id`, raises `TypeError` when it is
-decorated, because the key reads as the related object's own key and cannot
-form the model's URL. If the key's type is defined later in the module, the
-model raises the same `TypeError` when the key is first used, whether read,
-written, or needed for the URL, also when the model is an item of another
-model's collection field. Annotate the key as a relation without
-`Hyperlinked()`.
+eazyrest reads a relation by key, so it does not read a URL as a related
+object. Configure the serializer to send the related object's primary key, with
+a `PrimaryKeyRelatedField` for the field, and annotate it as the related model,
+as in `owner: User`. A field that must keep the URL is annotated as `str`.
 
 ## Match DRF serializer fields
 
@@ -294,8 +250,8 @@ class Todo(DRFObject):
 
 Related fields can be represented as primary keys, embedded objects, or
 hyperlinks depending on the serializer. Primary keys and embedded objects work
-naturally with `JSONObject` annotations, and hyperlinks with
-[`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
+naturally with `JSONObject` annotations. A hyperlink reads as a `str`, as the
+section on [absolute URLs](#use-absolute-urls-for-hyperlinked-apis) explains.
 
 A nested serializer without an `id`, such as one for an address, is declared as
 a `TypedDict` or a dataclass, not as a `JSONObject`. A model without a
@@ -664,46 +620,6 @@ def bulk_get_by_pks(cls, pks, *, api, **kwargs):
 Server-side, continue using Django ORM `select_related()` and
 `prefetch_related()` inside the bulk endpoint when it helps serializers avoid
 database N+1 queries.
-
-## Prefetch hyperlinked relations
-
-A field annotated with `Hyperlinked()` holds URLs, so prefetching it calls
-`bulk_get_by_urls()` on the related model instead of `bulk_get_by_pks()`. With
-DRF's default `lookup_field`, each URL ends with the primary key, so the hook
-can take the keys from the URLs and reuse the bulk lookup by key. A URL holds
-text, so the hook converts each key to the key's type, here `int` for
-`id: int`, and skips one that does not convert:
-
-```python
-@classmethod
-def bulk_get_by_urls(cls, urls, *, api, **kwargs):
-    prefix = api.resolve_url(cls.class_url)
-    pks = set()
-    for url in urls:
-        if not url.startswith(prefix):
-            continue
-        try:
-            pks.add(int(url.removeprefix(prefix).strip("/")))
-        except ValueError:
-            continue
-    if not pks:
-        return {}
-    objects = cls.bulk_get_by_pks(pks, api=api, **kwargs)
-    return {obj.absolute_url: obj for obj in objects.values()}
-```
-
-Return the objects keyed by URL. eazyrest matches the keys after resolving them
-against the API's base URL and normalizing their case and default ports. A URL
-outside the model's `class_url`, such as `/members/7/` for a model whose
-`class_url` is `/users/`, is not loaded here, and the object loads lazily when
-it is read. The recipe returns `{}` for a batch in which no URL is under
-`class_url`. It compares the prefix as text, so a URL whose host differs in
-case from the base URL's is not loaded here either.
-
-A serializer with another `lookup_field` gives URLs under `class_url`, such as
-`/users/ada/`. The recipe skips a URL whose last segment is not an `int`, so
-that object loads lazily when it is read. For such a serializer, look the
-objects up in bulk by that field instead.
 
 `bulk_get_by_pks()` takes keys of the key's type, as prefetch passes them, so
 `filter(id=sorted(pks))` builds each key and refuses a text `"3"` for an `int`

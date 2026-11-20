@@ -24,7 +24,6 @@ from requests_mock import Mocker, create_response
 
 from eazyrest import API, JSONObject, LimitExceeded, RedirectError, Response
 from eazyrest.api import (
-    _canonical_url,
     _prepare_server_url,
     _redirect_destination,
     _ScopedAPI,
@@ -1531,27 +1530,6 @@ def test_redirect_error_of_a_write_leaves_out_the_location() -> None:
     assert "forged" not in message
     assert info.value.response is not None
     assert info.value.response.headers["Location"] == location
-
-
-@pytest.mark.parametrize(
-    ("url", "canonical"),
-    [
-        ("HTTPS://Example.COM:443/a/?b=1#c", "https://example.com/a/?b=1"),
-        ("http://example.com:8080", "http://example.com:8080/"),
-        ("https://[::1]:443/x", "https://[::1]/x"),
-        ("https://user@Example.com/x", "https://user@example.com/x"),
-    ],
-)
-def test_canonical_url_spells_one_resource_one_way(
-    url: str, canonical: str
-) -> None:
-    """Spellings of one URL that differ in case, port, or fragment agree.
-
-    Args:
-        url: URL to canonicalize.
-        canonical: Expected canonical spelling.
-    """
-    assert _canonical_url(url) == canonical
 
 
 def test_raise_for_response_without_kwargs_is_refused() -> None:
