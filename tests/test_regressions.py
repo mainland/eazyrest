@@ -1090,3 +1090,43 @@ def test_a_shallow_copy_of_a_saved_object_keeps_its_original_unchanged(
     original.save()
 
     assert not patch.called
+
+
+@pytest.mark.parametrize("duplicate", [copy.copy, copy.deepcopy])
+def test_a_copy_shares_the_api_it_was_given_with_its_related_objects(
+    duplicate: Any,
+) -> None:
+    """The API is a client, which a copy has no reason to own."""
+    api = API("https://tenant.mocked.example/")
+    doc = MockedDoc(json=DOC_JSON, api=api)
+    owner = doc.owner
+
+    copied = duplicate(doc)
+
+    assert copied.api is api
+    assert copied.owner.api is api
+    assert copied.owner is not owner
+
+
+def test_a_deep_copy_of_a_container_copies_an_api_beside_the_object() -> None:
+    """The copy of an object leaves the memo of an enclosing copy alone."""
+    api = API("https://tenant.mocked.example/")
+    doc = MockedDoc(json=DOC_JSON, api=api)
+
+    copied: dict[str, Any] = copy.deepcopy({"a": api, "o": doc, "b": api})
+
+    assert copied["o"].api is api
+    assert copied["a"] is copied["b"]
+    assert copied["a"] is not api
+
+
+def test_a_deep_copy_of_a_list_copies_an_api_after_the_object() -> None:
+    """An API listed after an object is copied, as it is before one."""
+    api = API("https://tenant.mocked.example/")
+    doc = MockedDoc(json=DOC_JSON, api=api)
+
+    copied: list[Any] = copy.deepcopy([doc, api])
+    copied_doc, copied_api = copied
+
+    assert copied_doc.api is api
+    assert copied_api is not api

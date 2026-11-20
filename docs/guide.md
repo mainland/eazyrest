@@ -436,10 +436,13 @@ nothing or the wrong fields. Assign fields to change an object, and copy the
 payload with `copy.deepcopy()` before changing a value in it for another
 purpose.
 
-`copy.copy()` of an object gives an object that changes and saves apart from
-the original: an assignment to one is neither read from nor sent by the other.
-The copy shares the related objects, and any value that was changed in place,
-as a shallow copy does. `copy.deepcopy()` shares nothing.
+`copy.copy()` of an object gives the same copy as `copy.deepcopy()`, which
+shares nothing with the original but its API, whether the class registers it or
+the object was given it as `api=`. The related objects, the values that you
+read before the copy, and the pending updates are the copy's own, so a change
+made to one object, by assignment or in place, is neither read from nor sent by
+the other. An object that is unpickled is such a copy too, so a pickle round
+trip copies the API that was given as `api=`, which a pickle cannot share.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that

@@ -517,9 +517,11 @@ describe them further.
   text is empty, and an item whose text holds a comma do. A set is sent in
   sorted order. Join no values yourself: the guide advised that for
   django-filter's lookups, and it is no longer needed.
-- `copy.copy()` of a model object gives an object that owns its pending
-  updates, cached values, and JSON, where it shared them with the original, so
-  an assignment to the copy was sent by the original's `save()`.
+- `copy.copy()` of a model object gives the same copy as `copy.deepcopy()`,
+  which owns its related objects, pending updates, cached values, and JSON,
+  where `v1.0.0a5` shared them with the original, so an assignment to the copy
+  was sent by the original's `save()`. Code that relied on a copy sharing the
+  related objects of the original must keep the original.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

@@ -676,7 +676,7 @@ def assert_copy_as_deepcopy(original: Post, duplicate: Post) -> None:
     assert duplicate == original
 
 
-@row(EQ, pending="copy.copy() shares the related objects")
+@row(EQ)
 def a_shallow_copy_is_a_deep_copy(world: World) -> None:
     original = post()
     assert original.owner is not None

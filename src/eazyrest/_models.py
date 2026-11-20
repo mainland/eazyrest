@@ -5602,30 +5602,41 @@ class JSONObject:
             self._is_being_built = False
 
     def __copy__(self) -> Self:
-        """Return a copy that changes and saves apart from this object.
+        """Return a copy that shares only the API with this object.
 
-        The copy has the same JSON, pending updates, cached values, snapshots,
-        and prefetched related objects, each in a container of its own, so an
-        assignment to one object is neither read from nor sent by the other.
-        The containers are copied one level deep, as ``copy.copy()`` copies a
-        dict, so the related objects, and any value that was changed in place,
-        are shared. Use ``copy.deepcopy()`` to share nothing.
+        A copy is made as ``copy.deepcopy()`` makes one, so the related
+        objects, the values read before the copy, the pending updates, and the
+        JSON are the copy's own. An assignment or a change made in place to one
+        object is neither read from nor sent by the other.
+
+        Returns:
+            A new object of the same class.
+        """
+        return copy.deepcopy(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
+        """Return a deep copy that shares only the API with this object.
+
+        The API that the object was given as ``api=`` is shared, as the API
+        that the class registers is, because a client holds a session, which a
+        copy of the object has no reason to own. A related object that holds
+        the same API shares it too.
+
+        Args:
+            memo: The copies that ``copy.deepcopy()`` has made so far.
 
         Returns:
             A new object of the same class.
         """
         copied = object.__new__(type(self))
+        memo[id(self)] = copied
         state = vars(copied)
-        state.update(vars(self))
-        for name in (
-            "_pending_updates",
-            "_field_cache",
-            "_field_snapshots",
-            "_prefetched_related",
-        ):
-            state[name] = dict(state[name])
-        if state["_json"] is not None:
-            state["_json"] = dict(state["_json"])
+        for name, value in vars(self).items():
+            state[name] = (
+                value
+                if name == "_api_override"
+                else copy.deepcopy(value, memo)
+            )
         return copied
 
     def __eq__(self, other: object) -> bool:

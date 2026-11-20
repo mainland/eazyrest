@@ -621,9 +621,11 @@ Server-side, continue using Django ORM `select_related()` and
 `prefetch_related()` inside the bulk endpoint when it helps serializers avoid
 database N+1 queries.
 
-`bulk_get_by_pks()` takes keys of the key's type, as prefetch passes them, so
-`filter(id=sorted(pks))` builds each key and refuses a text `"3"` for an `int`
-key.
+Prefetch passes `bulk_get_by_pks()` each key in the form that the related model
+writes, which is the value that the server sent for an `int` or `str` key and
+the canonical text for a `UUID`. The method receives a `UUID` key as `str`, and
+`filter(id=sorted(pks))` builds each key, so it takes that text for a `UUID`
+key and refuses a text `"3"` for an `int` key.
 
 ## Preserve laziness with batch prefetch
 
