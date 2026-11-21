@@ -140,6 +140,18 @@ convention = "google"
 "tests/**" = ["D417"]
 # Django must be configured before its models and DRF can be imported.
 "tests/test_drf_*.py" = ["D417", "E402"]
+# A row of the contract is named for the cell that it checks, so it has no
+# docstring. It declares annotations with both spellings of an optional type,
+# and calls the closures that it builds within the loop that binds them.
+"tests/contract/rows.py" = [
+  "B023",
+  "D101",
+  "D102",
+  "D103",
+  "D107",
+  "UP007",
+  "UP045",
+]
 
 [tool.ruff.format]
 docstring-code-format = true

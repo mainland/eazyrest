@@ -12,13 +12,11 @@ import datetime
 import decimal
 import threading
 from collections.abc import Generator, Iterator
-from typing import Annotated, Any, ClassVar
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
 import pytest
-
-import eazyrest
 
 pytest.importorskip("django")
 pytest.importorskip("rest_framework")
@@ -53,7 +51,6 @@ from eazyrest import (
     API,
     APIError,
     DoesNotExist,
-    Hyperlinked,
     JSONObject,
     NotFound,
     json_object,
@@ -87,29 +84,6 @@ class PermissionSerializer(serializers.ModelSerializer):
 
         model = Permission
         fields = ("id", "name", "codename", "content_type", "content_type_id")
-
-
-class HyperPermissionSerializer(serializers.HyperlinkedModelSerializer):
-    """Permission whose content type is a hyperlink."""
-
-    class Meta:
-        """Model and fields."""
-
-        model = Permission
-        fields = ("id", "name", "codename", "content_type")
-
-
-class StockPermissionSerializer(serializers.HyperlinkedModelSerializer):
-    """Permission as DRF's quickstart writes one, with its key added."""
-
-    class Meta:
-        """Model, fields, and the view of each object's own URL."""
-
-        model = Permission
-        fields = ("url", "id", "name", "codename", "content_type")
-        extra_kwargs: ClassVar[dict[str, Any]] = {
-            "url": {"view_name": "stockpermission-detail"}
-        }
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -147,22 +121,6 @@ class PermissionViewSet(viewsets.ModelViewSet):
     queryset = Permission.objects.order_by("id")
     serializer_class = PermissionSerializer
     pagination_class = Pages
-
-
-class HyperPermissionViewSet(viewsets.ModelViewSet):
-    """Permissions with hyperlinked relations."""
-
-    queryset = Permission.objects.order_by("id")
-    serializer_class = HyperPermissionSerializer
-    filter_backends = (DjangoFilterBackend,)
-    filterset_fields = ("content_type",)
-
-
-class StockPermissionViewSet(viewsets.ModelViewSet):
-    """Permissions from a stock hyperlinked serializer."""
-
-    queryset = Permission.objects.order_by("id")
-    serializer_class = StockPermissionSerializer
 
 
 class UserViewSet(viewsets.ModelViewSet):
@@ -279,8 +237,7 @@ FilteredUserViewSet = run_guide_example(
 BulkActionUserViewSet = run_guide_example(
     'url_path="bulk"', doc=DRF, User=User, UserSerializer=UserSerializer
 )["UserViewSet"]
-# The same list view for content types, which the hyperlink prefetch recipe
-# reads by key.
+# The same list view for content types.
 ContentTypeViewSet = run_guide_example(
     "queryset = queryset.filter(pk__in=ids)",
     doc=DRF,
@@ -310,7 +267,8 @@ class TeamViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TeamSerializer
     filter_backends = (DjangoFilterBackend,)
     filterset_fields: ClassVar[dict[str, list[str]]] = {
-        "name": ["exact", "startswith"]
+        "id": ["in"],
+        "name": ["exact", "startswith"],
     }
 
 
@@ -343,12 +301,6 @@ class SessionWriteView(APIView):
 router = routers.DefaultRouter()
 router.register("contenttypes", ContentTypeViewSet, basename="contenttype")
 router.register("permissions", PermissionViewSet, basename="permission")
-router.register(
-    "hyper-permissions", HyperPermissionViewSet, basename="hyperpermission"
-)
-router.register(
-    "stock-permissions", StockPermissionViewSet, basename="stockpermission"
-)
 router.register("users", UserViewSet, basename="user")
 router.register("filtered-users", FilteredUserViewSet, basename="filtereduser")
 router.register("teams", TeamViewSet, basename="team")
@@ -424,75 +376,6 @@ class PermissionModel(DRFBase):
     content_type: ContentTypeModel
 
 
-@json_object
-class HyperPermissionModel(DRFBase):
-    """Permission whose content type is a hyperlink."""
-
-    class_url = "/hyper-permissions/"
-
-    id: int
-    name: str
-    codename: str
-    content_type: Annotated[ContentTypeModel, Hyperlinked()]
-
-
-# The DRF guide's client recipe for bulk_get_by_urls(), run as the guide
-# writes it.
-bulk_by_urls_recipe = run_guide_example(
-    "def bulk_get_by_urls(cls, urls, *, api, **kwargs):", doc=DRF
-)["bulk_get_by_urls"]
-
-
-@json_object
-class LinkedContentTypeModel(ContentTypeModel):
-    """Content type whose hyperlinks prefetch through the guide's recipe."""
-
-    @classmethod
-    def bulk_get_by_pks(
-        cls,
-        pks: set[Any],
-        *,
-        api: eazyrest.Client | None = None,
-        **kwargs: Any,
-    ) -> dict[Any, LinkedContentTypeModel]:
-        """Load content types by key from the list view.
-
-        Args:
-            pks: Keys of the content types.
-            api: Client to send the request with.
-
-        Returns:
-            The content types, keyed by primary key.
-        """
-        return {obj.pk: obj for obj in cls.filter(id=sorted(pks), api=api)}
-
-    bulk_get_by_urls = bulk_by_urls_recipe
-
-
-@json_object
-class LinkedPermissionModel(DRFBase):
-    """Permission whose hyperlinked content type can be prefetched."""
-
-    class_url = "/hyper-permissions/"
-
-    id: int
-    codename: str
-    content_type: Annotated[LinkedContentTypeModel, Hyperlinked()]
-
-
-@json_object(field_map={"resource_url": "url"}, read_only={"resource_url"})
-class StockPermissionModel(DRFBase):
-    """The DRF guide's model of a stock hyperlinked serializer."""
-
-    class_url = "/stock-permissions/"
-
-    id: int
-    resource_url: str
-    name: str
-    codename: str
-    content_type: Annotated[ContentTypeModel, Hyperlinked()]
-
-
 @json_object(write_only={"password"})
 class UserModel(DRFBase):
     """User whose password is write-only."""
@@ -532,7 +415,7 @@ class PriceModel(DRFBase):
 # writes them. The first is a model whose hook filters by repeated ids. The
 # second is a hook that requests the bulk action.
 FilteredUserRecipe = run_guide_example(
-    "users = list(cls.filter(id=sorted(pks), api=api))",
+    "users = list(cls.filter(id__in=sorted(pks), api=api))",
     doc=DRF,
     DRFObject=DRFBase,
     json_object=json_object,
@@ -631,66 +514,6 @@ def test_write_map_writes_the_key_and_reads_the_nested_object(
     permission.save(full=True)
 
     assert Permission.objects.get(pk=permission.id).name == "Can test fully"
-
-
-def test_hyperlinked_relation_reads_and_writes_urls(api: API) -> None:
-    """A hyperlinked relation loads from its URL and writes one."""
-    group_type, user_type = _content_types()
-    stored = Permission.objects.create(
-        name="Can link",
-        codename="can_link",
-        content_type_id=group_type,
-    )
-    permission = HyperPermissionModel(id=stored.pk)
-
-    assert permission.content_type.model == "group"
-    assert permission.content_type.url.startswith(api.base_url)
-
-    permission.content_type = ContentTypeModel(id=user_type)
-    permission.save()
-
-    assert Permission.objects.get(pk=stored.pk).content_type_id == user_type
-
-    for value in (user_type, str(user_type), ContentTypeModel(id=user_type)):
-        results = list(HyperPermissionModel.filter(content_type=value))
-        assert stored.pk in {result.pk for result in results}
-        assert all(result.content_type.pk == user_type for result in results)
-
-
-def test_stock_hyperlinked_serializer_with_its_key(api: API) -> None:
-    """A stock hyperlinked serializer that adds the key reads and writes.
-
-    Its objects name their own URL in ``url``, which the guide maps to
-    ``resource_url``, and their relations by URL.
-    """
-    group_type, user_type = _content_types()
-    stored = Permission.objects.create(
-        name="Can stock", codename="can_stock", content_type_id=group_type
-    )
-
-    listed = [
-        item for item in StockPermissionModel.filter() if item.pk == stored.pk
-    ]
-    assert len(listed) == 1
-    permission = listed[0]
-    assert permission.resource_url == api.resolve_url(
-        f"/stock-permissions/{stored.pk}/"
-    )
-    assert permission.content_type.model == "group"
-
-    permission.name = "Can stock more"
-    permission.content_type = ContentTypeModel(id=user_type)
-    permission.save()
-
-    saved = Permission.objects.get(pk=stored.pk)
-    assert saved.name == "Can stock more"
-    assert saved.content_type_id == user_type
-    created = StockPermissionModel.create(
-        name="Can make",
-        codename="can_make",
-        content_type=ContentTypeModel(id=user_type),
-    )
-    assert created.resource_url.endswith(f"/stock-permissions/{created.id}/")
 
 
 def test_write_only_password_is_set_but_never_read(api: API) -> None:
@@ -804,20 +627,28 @@ def _recorded_urls(api: API) -> Generator[list[str], None, None]:
 
 
 @pytest.mark.parametrize(
-    ("team_model", "bulk_path"),
+    ("team_model", "bulk_path", "name", "separator"),
     [
-        (FilteredTeamModel, "/filtered-users/"),
-        (ActionTeamModel, "/users/bulk/"),
+        (FilteredTeamModel, "/filtered-users/", "id__in", ","),
+        (ActionTeamModel, "/users/bulk/", "id", None),
     ],
 )
 def test_bulk_recipes_prefetch_members_in_one_request(
-    api: API, team_member_keys: list[int], team_model: Any, bulk_path: str
+    api: API,
+    team_member_keys: list[int],
+    team_model: Any,
+    bulk_path: str,
+    name: str,
+    separator: str | None,
 ) -> None:
     """Each bulk recipe, client and server, loads every member at once.
 
     Args:
         team_model: Team model whose member model uses one recipe.
         bulk_path: Path that the recipe's bulk request reads.
+        name: Query parameter that carries the keys.
+        separator: What joins the keys in one value of the parameter, or
+            ``None`` if the parameter is repeated.
     """
     with _recorded_urls(api) as urls:
         teams = list(
@@ -831,7 +662,32 @@ def test_bulk_recipes_prefetch_members_in_one_request(
     assert len(urls) == 2
     bulk = urlsplit(urls[1])
     assert bulk.path == bulk_path
-    assert sorted(map(int, parse_qs(bulk.query)["id"])) == team_member_keys
+    values = parse_qs(bulk.query)[name]
+    if separator is not None:
+        (joined,) = values
+        values = joined.split(separator)
+    assert sorted(map(int, values)) == team_member_keys
+
+
+def test_an_in_lookup_matches_every_listed_object(
+    api: API, team_member_keys: list[int]
+) -> None:
+    """django-filter reads the comma-joined value that the default sends.
+
+    Args:
+        team_member_keys: Creates the teams that the query reads.
+    """
+    teams = list(FilteredTeamModel.filter(name__startswith="bulk-"))
+    keys = sorted(team.id for team in teams)
+    assert len(keys) == 2
+
+    with _recorded_urls(api) as urls:
+        found = list(FilteredTeamModel.filter(id__in=reversed(keys)))
+
+    assert sorted(team.id for team in found) == keys
+    assert parse_qs(urlsplit(urls[0]).query) == {
+        "id__in": [",".join(map(str, reversed(keys)))]
+    }
 
 
 def test_token_recipe_authenticates(api: API) -> None:
@@ -877,33 +733,6 @@ def test_session_csrf_recipe_allows_unsafe_requests(api: API) -> None:
 
     assert response.status_code == 201
     assert client.json(response) == {"username": "session-user"}
-
-
-def test_hyperlink_prefetch_recipe_loads_relations_in_one_request(
-    api: API,
-) -> None:
-    """The guide's URL recipe loads every hyperlinked relation at once."""
-    stored = list(Permission.objects.select_related("content_type"))
-    expected = {
-        permission.pk: permission.content_type.model for permission in stored
-    }
-
-    with _recorded_urls(api) as urls:
-        permissions = list(
-            LinkedPermissionModel.filter(prefetch="content_type")
-        )
-        models = {
-            permission.pk: permission.content_type.model
-            for permission in permissions
-        }
-
-    assert models == expected
-    assert len(urls) == 2
-    bulk = urlsplit(urls[1])
-    assert bulk.path == "/contenttypes/"
-    assert sorted(map(int, parse_qs(bulk.query)["id"])) == sorted(
-        {permission.content_type_id for permission in stored}
-    )
 
 
 def test_get_page_navigates_a_drf_page_number_collection(api: API) -> None:

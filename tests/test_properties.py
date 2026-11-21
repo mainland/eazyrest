@@ -18,6 +18,7 @@ import json
 import re
 import threading
 import time
+import types
 import typing
 import uuid
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
@@ -874,6 +875,65 @@ def _aliased(pair: _TypePair, how: str) -> _TypePair:
     return pair
 
 
+def _holds_relation(ty: Any) -> bool:
+    """Return whether a type is a relation, or holds one at any depth.
+
+    Args:
+        ty: A type built from ``_LEAF_TYPES`` and the type constructors.
+
+    Returns:
+        Whether ``ty`` mentions ``Owner``.
+    """
+    return ty is Owner or any(
+        _holds_relation(arg) for arg in typing.get_args(ty)
+    )
+
+
+def _is_declarable(ty: Any) -> bool:
+    """Return whether a class may declare a field of a type.
+
+    A collection of relations holds relations that are not optional, and no
+    collection of relations, so such a type is refused when its class is
+    decorated.
+
+    Args:
+        ty: A type built from ``_LEAF_TYPES`` and the type constructors.
+
+    Returns:
+        Whether the type holds no optional relation or collection of relations
+        as an item of a collection.
+    """
+    args = typing.get_args(ty)
+    if typing.get_origin(ty) in (list, tuple, set):
+        item = args[0]
+        inside = [a for a in typing.get_args(item) if a is not type(None)]
+        if typing.get_origin(item) in (typing.Union, types.UnionType):
+            if any(_holds_relation(a) for a in inside):
+                return False
+        elif typing.get_origin(item) in (list, tuple, set) and (
+            _holds_relation(item)
+        ):
+            return False
+    return all(_is_declarable(arg) for arg in args)
+
+
+def _declarable(
+    trees: st.SearchStrategy[_TypePair],
+) -> st.SearchStrategy[_TypePair]:
+    """Return the pairs of a strategy that a class may declare.
+
+    Args:
+        trees: Strategy for type pairs.
+
+    Returns:
+        The pairs that are recursive, which have no expansion to check, or
+        whose expanded type ``_is_declarable()``.
+    """
+    return trees.filter(
+        lambda pair: pair.recursive or _is_declarable(pair.expanded)
+    )
+
+
 def _alias_trees() -> st.SearchStrategy[_TypePair]:
     """Return type pairs of up to three levels, with aliases at any level.
 
@@ -882,12 +942,14 @@ def _alias_trees() -> st.SearchStrategy[_TypePair]:
     """
     hows = st.sampled_from(["plain", "generic", "none", "none"])
     leaves = st.one_of(_LEAF_TYPES, _RECURSIVE_LEAVES)
-    return st.recursive(
-        st.tuples(leaves, hows).map(lambda t: _aliased(*t)),
-        lambda children: st.tuples(_type_nodes(children), hows).map(
-            lambda t: _aliased(*t)
-        ),
-        max_leaves=3,
+    return _declarable(
+        st.recursive(
+            st.tuples(leaves, hows).map(lambda t: _aliased(*t)),
+            lambda children: st.tuples(_type_nodes(children), hows).map(
+                lambda t: _aliased(*t)
+            ),
+            max_leaves=3,
+        )
     )
 
 
@@ -963,7 +1025,7 @@ def _read_outcome(model: Any, value: Any) -> tuple[str, Any]:
     conversion = model.value.analyzed_type
     try:
         read = obj.value
-        written = model._to_json(read, conversion)
+        written = model._to_json(read, conversion, api=None)
         reread = model(json={"id": 1, "value": written}).value
         return "ok", (_plain(read), _plain(reread))
     except (FieldConversionError, TypeError, ValueError) as err:
@@ -1042,12 +1104,14 @@ def _annotated_trees() -> st.SearchStrategy[_TypePair]:
         type is the bare type.
     """
     metadata = st.lists(_NEUTRAL_METADATA, max_size=2)
-    return st.recursive(
-        st.tuples(_LEAF_TYPES, metadata).map(lambda t: _annotated(*t)),
-        lambda children: st.tuples(_type_nodes(children), metadata).map(
-            lambda t: _annotated(*t)
-        ),
-        max_leaves=3,
+    return _declarable(
+        st.recursive(
+            st.tuples(_LEAF_TYPES, metadata).map(lambda t: _annotated(*t)),
+            lambda children: st.tuples(_type_nodes(children), metadata).map(
+                lambda t: _annotated(*t)
+            ),
+            max_leaves=3,
+        )
     )
 
 

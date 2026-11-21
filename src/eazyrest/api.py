@@ -7,13 +7,12 @@ import time
 from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
-from typing import Any, Self, TypeAlias
+from typing import Any, Literal, Self, TypeAlias
 from urllib.parse import (
     parse_qsl,
     urljoin,
     urlparse,
     urlsplit,
-    urlunsplit,
 )
 
 import requests
@@ -156,34 +155,6 @@ def _prepare_server_url(
         return prepared
     except (ValueError, requests.RequestException):
         return None
-
-
-def _canonical_url(url: str) -> str:
-    """Return an absolute URL in one spelling for each resource it names.
-
-    The URL is prepared as Requests would send it, and its scheme and host
-    are lowercased, a default port is dropped, and a fragment is removed, so
-    that two spellings of one hyperlink compare equal.
-
-    Args:
-        url: Absolute URL.
-
-    Returns:
-        The URL in its canonical spelling.
-    """
-    request = requests.PreparedRequest()
-    request.prepare_url(url, None)
-    assert request.url is not None
-    parts = urlsplit(request.url)
-    scheme = parts.scheme.lower()
-    host = parts.hostname or ""
-    if ":" in host:
-        host = f"[{host}]"
-    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(scheme):
-        host = f"{host}:{parts.port}"
-    userinfo, _, _ = parts.netloc.rpartition("@")
-    netloc = f"{userinfo}@{host}" if userinfo else host
-    return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
 
 def _redirect_destination(resp: requests.Response, target: str) -> str:
@@ -1056,6 +1027,17 @@ class API:
 
     A traversal raises ``LimitExceeded`` rather than yield more. ``None``
     removes the limit.
+    """
+
+    list_lookup_style: Literal["comma", "repeat"] = "comma"
+    """How a lookup that takes several values sends them.
+
+    A lookup whose name ends in ``__in`` or ``__range`` sends its values as one
+    comma-separated parameter, ``?id__in=1,2``, which django-filter reads, or,
+    with ``"repeat"``, as the parameter repeated, ``?id__in=1&id__in=2``, which
+    ``QueryDict.getlist()`` reads. Set it on an instance or in a subclass. A
+    field's own parameter, such as ``tag=[a, b]``, is always repeated. Any
+    other value raises ``ValueError`` when a query is encoded.
     """
 
     trailing_slash: bool = True
@@ -1955,6 +1937,11 @@ class _ScopedAPI:
     def max_items(self) -> int | None:
         """The API's ``max_items``."""
         return self._api.max_items
+
+    @property
+    def list_lookup_style(self) -> Literal["comma", "repeat"]:
+        """The API's ``list_lookup_style``."""
+        return self._api.list_lookup_style
 
     def resolve_url(self, uri: str) -> str:
         """Resolve a request URI against the API's ``base_url``.

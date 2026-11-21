@@ -190,50 +190,10 @@ release may let a model use its URL as its identity.
 
 A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every
 relation, represents a related object by its URL rather than its primary key.
-Annotate such a field with `Hyperlinked()`:
-
-```python
-from typing import Annotated
-
-from eazyrest import Hyperlinked
-
-
-@json_object
-class Todo(DRFObject):
-    class_url = "/todos/"
-
-    id: int
-    owner: Annotated[User, Hyperlinked()]
-    watchers: list[Annotated[User, Hyperlinked()]]
-
-
-todo.owner.name  # GET https://api.example.com/users/2/
-todo.owner = User(id=3)
-todo.save()  # PATCH {"owner": "https://api.example.com/users/3/"}
-```
-
-Reading the field gives a related object that loads from the URL when one of
-its other fields is read. Writing it sends the related object's absolute URL. A
-URL assigned as a string is sent as given, without resolving or checking it,
-because writing it sends no request there. Reading the field afterward checks
-it as usual. A query sends its primary key, as django-filter's relation filters
-expect. Pass a related model instance or a bare primary key to the query. A
-relative URL is resolved against the related model's API. A URL whose origin is
-neither that API's nor one of its `redirect_origins` raises
-`FieldConversionError` when the field is read, so a server cannot send the
-client, with its credentials, to another host. A hyperlinked field can be
-prefetched when the related model implements `bulk_get_by_urls()`, which
-receives the URLs rather than primary keys, as
-[Prefetch hyperlinked relations](#prefetch-hyperlinked-relations) shows.
-
-A primary key cannot be a `Hyperlinked()` relation. A model whose key is one,
-whether `pk=` names it or it is the default `id`, raises `TypeError` when it is
-decorated, because the key reads as the related object's own key and cannot
-form the model's URL. If the key's type is defined later in the module, the
-model raises the same `TypeError` when the key is first used, whether read,
-written, or needed for the URL, also when the model is an item of another
-model's collection field. Annotate the key as a relation without
-`Hyperlinked()`.
+eazyrest reads a relation by key, so it does not read a URL as a related
+object. Configure the serializer to send the related object's primary key, with
+a `PrimaryKeyRelatedField` for the field, and annotate it as the related model,
+as in `owner: User`. A field that must keep the URL is annotated as `str`.
 
 ## Match DRF serializer fields
 
@@ -290,8 +250,8 @@ class Todo(DRFObject):
 
 Related fields can be represented as primary keys, embedded objects, or
 hyperlinks depending on the serializer. Primary keys and embedded objects work
-naturally with `JSONObject` annotations, and hyperlinks with
-[`Hyperlinked()`](#use-absolute-urls-for-hyperlinked-apis).
+naturally with `JSONObject` annotations. A hyperlink reads as a `str`, as the
+section on [absolute URLs](#use-absolute-urls-for-hyperlinked-apis) explains.
 
 A nested serializer without an `id`, such as one for an address, is declared as
 a `TypedDict` or a dataclass, not as a `JSONObject`. A model without a
@@ -567,7 +527,8 @@ it across your models.
 `bulk_get_by_pks()`, and that should map to a real DRF endpoint shape rather
 than guessing.
 
-For example, if your DRF viewset supports repeated query parameters:
+For example, if your DRF viewset has a django-filter `id__in` filter, which
+reads one comma-separated parameter:
 
 ```python
 @json_object
@@ -579,7 +540,7 @@ class User(DRFObject):
 
     @classmethod
     def bulk_get_by_pks(cls, pks, *, api, **kwargs):
-        users = list(cls.filter(id=sorted(pks), api=api))
+        users = list(cls.filter(id__in=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
 
@@ -590,14 +551,20 @@ server, such as the same tenant's. They keep the query's API.
 That works well when the DRF endpoint accepts requests like:
 
 ```text
-/users/?id=2&id=3
+/users/?id__in=2,3
 ```
 
-If your API uses a different shape, such as `id__in=2,3` or a custom bulk
-action, implement that shape directly in `bulk_get_by_pks()`.
+`filter()` does not send a collection for `id` itself, as in
+`cls.filter(id=sorted(pks))`, because django-filter applies only the last of a
+repeated `id`, so it raises `ValueError`. If your API reads repeated
+parameters, such as `id=2&id=3`, or uses a custom bulk action, request that
+shape directly in `bulk_get_by_pks()`, as the example below does.
+`id__in=2&id__in=3` needs `list_lookup_style = "repeat"` on the `API`, and
+django-filter reads only the last of those.
 
 On the DRF server side, the simplest pattern is to expose a normal list
-endpoint that accepts repeated query parameters and filters by primary key:
+endpoint that accepts a comma-separated `id__in` parameter and filters by
+primary key:
 
 ```python
 from rest_framework import viewsets
@@ -609,8 +576,8 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        ids = self.request.query_params.getlist("id")
-        if ids:
+        ids = self.request.query_params.get("id__in", "").split(",")
+        if ids != [""]:
             queryset = queryset.filter(pk__in=ids)
         return queryset
 ```
@@ -618,7 +585,7 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 That gives the client a bulk lookup shape like:
 
 ```text
-/users/?id=2&id=3&id=5
+/users/?id__in=2,3,5
 ```
 
 If you need tighter control, you can also expose a dedicated DRF action for
@@ -658,39 +625,11 @@ Server-side, continue using Django ORM `select_related()` and
 `prefetch_related()` inside the bulk endpoint when it helps serializers avoid
 database N+1 queries.
 
-## Prefetch hyperlinked relations
-
-A field annotated with `Hyperlinked()` holds URLs, so prefetching it calls
-`bulk_get_by_urls()` on the related model instead of `bulk_get_by_pks()`. With
-DRF's default `lookup_field`, each URL ends with the primary key, so the hook
-can take the keys from the URLs and reuse the bulk lookup by key:
-
-```python
-@classmethod
-def bulk_get_by_urls(cls, urls, *, api, **kwargs):
-    prefix = api.resolve_url(cls.class_url)
-    pks = {
-        url.removeprefix(prefix).strip("/")
-        for url in urls
-        if url.startswith(prefix)
-    }
-    if not pks:
-        return {}
-    objects = cls.bulk_get_by_pks(pks, api=api, **kwargs)
-    return {obj.absolute_url: obj for obj in objects.values()}
-```
-
-Return the objects keyed by URL. eazyrest matches the keys after resolving them
-against the API's base URL and normalizing their case and default ports. A URL
-outside the model's `class_url`, such as `/members/7/` for a model whose
-`class_url` is `/users/`, is not loaded here, and the object loads lazily when
-it is read. The recipe returns `{}` for a batch in which no URL is under
-`class_url`. It compares the prefix as text, so a URL whose host differs in
-case from the base URL's is not loaded here either.
-
-A serializer with another `lookup_field` gives URLs under `class_url`, such as
-`/users/ada/`, and the recipe would take `ada` for a primary key. For such a
-serializer, look the objects up in bulk by that field instead.
+Prefetch passes `bulk_get_by_pks()` each key in the form that the related model
+writes, which is the value that the server sent for an `int` or `str` key and
+the canonical text for a `UUID`. The method receives a `UUID` key as `str`, and
+`filter(id__in=sorted(pks))` builds each key, so it takes that text for a
+`UUID` key and refuses a text `"3"` for an `int` key.
 
 ## Preserve laziness with batch prefetch
 

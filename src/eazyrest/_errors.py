@@ -148,8 +148,7 @@ class ResponseShapeError(EazyrestError, TypeError, ValueError):
 class UsageError(EazyrestError, RuntimeError):
     """Raised when eazyrest is used in a way it does not support.
 
-    For example, a model has no registered API, or a lazy related collection
-    is iterated a second time.
+    For example, a model has no registered API.
     """
 
 

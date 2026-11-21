@@ -337,6 +337,80 @@ def test_a_key_changed_in_place_to_the_same_text_is_no_change(
     assert requests_mock.call_count == 0
 
 
+def test_a_key_that_a_codec_reads_from_two_spellings_is_one_key(
+    requests_mock: Any,
+) -> None:
+    """The canonical text decides, not the equality of the encodings."""
+    model = _declare_key(
+        Key,
+        conversions={
+            Key: Conversion(
+                decode=lambda value, _: Key(int(value)),
+                encode=lambda key, _: str(key.value),
+            )
+        },
+    )
+    obj = model(json={"id": "1"}, write_mode="lazy")
+
+    assert obj.id.value == 1
+    obj.id.value = "01"
+
+    obj.save()
+    assert obj.url == "/things/1/"
+    assert requests_mock.call_count == 0
+
+
+class LoudString(str):
+    """String whose ``str()`` is another text."""
+
+    def __str__(self) -> str:
+        """Return another text."""
+        return "other"
+
+
+class LoudInt(int):
+    """Integer whose ``str()`` is another text."""
+
+    def __str__(self) -> str:
+        """Return another text."""
+        return "other"
+
+
+@pytest.mark.parametrize(
+    ("written", "url"),
+    [
+        pytest.param(LoudString("abc"), "/things/abc/", id="str"),
+        pytest.param(LoudInt(7), "/things/7/", id="int"),
+    ],
+)
+def test_a_codec_that_writes_a_subclass_gives_the_plain_key(
+    written: Any, url: str
+) -> None:
+    """The URL does not depend on how a ``str`` or ``int`` subclass prints."""
+    model = _key_model(
+        decode=lambda value, _: Key(value),
+        encode=lambda key, _: written,
+    )
+
+    assert model(id=Key(1)).url == url
+    assert model(json={"id": 1}).url == url
+
+
+def test_a_codec_that_writes_none_for_a_key_gives_no_key() -> None:
+    """A key that encodes as ``None`` is no key, as ``null`` is not."""
+    model = _key_model(
+        decode=lambda value, _: Key(value),
+        encode=lambda key, _: None,
+    )
+
+    obj = model(json={"id": 5})
+
+    assert obj != model(json={"id": 5})
+    with pytest.raises(ValueError, match="primary key None") as raised:
+        _ = obj.url
+    assert not isinstance(raised.value, FieldConversionError)
+
+
 @pytest.mark.parametrize(
     ("model", "key", "url"),
     [

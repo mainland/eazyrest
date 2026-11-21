@@ -23,10 +23,8 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
-    MutableSet,
     Sequence,
 )
-from collections.abc import Set as AbstractSet
 from copy import deepcopy
 from typing import (
     Annotated,
@@ -54,7 +52,6 @@ from eazyrest import (
     DoesNotExist,
     EazyrestError,
     FieldConversionError,
-    Hyperlinked,
     JSONObject,
     MultipleObjectsReturned,
     PrefetchNotSupported,
@@ -107,7 +104,7 @@ class User(ModelBase):
         Returns:
             The loaded users, keyed by primary key.
         """
-        users = list(cls.filter(id=sorted(pks), api=api))
+        users = list(cls.filter(id__in=sorted(pks), api=api))
         return {user.pk: user for user in users}
 
 
@@ -332,7 +329,7 @@ class Team(ModelBase):
     class_url = "/teams/"
 
     id: int
-    members: Iterable[User]
+    members: Sequence[User]
 
 
 @json_object
@@ -873,7 +870,7 @@ def test_create_uses_object_json_hook_for_response(
 def test_related_collection_is_loaded_lazily(
     requests_mock: Any,
 ) -> None:
-    """Iterable relations should not fetch nested objects until iterated."""
+    """Related objects are not fetched until a field of one is read."""
     requests_mock.get(
         "https://example.com/v1/teams/1/",
         json={"id": 1, "members": [2, 3]},
@@ -890,43 +887,12 @@ def test_related_collection_is_loaded_lazily(
     members = team.members
 
     assert requests_mock.call_count == 1
-    assert isinstance(members, Iterable)
+    assert isinstance(members, tuple)
 
     loaded = list(members)
 
     assert [member.name for member in loaded] == ["Ada", "Grace"]
     assert requests_mock.call_count == 3
-
-
-def test_lazy_related_collection_is_single_pass() -> None:
-    """A second traversal raises instead of creating new members."""
-    team = Team(json={"id": 1, "members": [2, 3]})
-
-    members = iter(team.members)
-    first = next(members)
-    rest = list(members)
-
-    assert first.pk == 2
-    assert [member.pk for member in rest] == [3]
-    with pytest.raises(RuntimeError, match=r"Team\.members is a lazy related"):
-        iter(team.members)
-
-
-def test_encoding_lazy_related_collection_keeps_its_traversal(
-    requests_mock: Any,
-) -> None:
-    """Assigning or creating from the field does not use it up."""
-    post = requests_mock.post(
-        "https://example.com/v1/teams/", json={"id": 2, "members": [2, 3]}
-    )
-    team = Team(json={"id": 1, "members": [2, 3]})
-
-    team.members = team.members
-    Team.create(members=team.members)
-
-    assert post.last_request.json() == {"members": [2, 3]}
-    assert team._pending_updates == {}
-    assert [member.pk for member in team.members] == [2, 3]
 
 
 def test_related_tuple_is_materialized(
@@ -1523,7 +1489,7 @@ class UUIDUser(ModelBase):
             The loaded users, keyed by decoded primary key.
         """
         del api
-        return {user.pk: user for user in cls.filter(key=sorted(pks))}
+        return {user.pk: user for user in cls.filter(key__in=sorted(pks))}
 
 
 @json_object
@@ -2011,7 +1977,7 @@ def test_filter_prefetches_related_objects_via_bulk_get(
 
     assert [todo.user.name for todo in todos] == ["Ada", "Grace"]
     assert requests_mock.call_count == 2
-    assert users.last_request.qs == {"id": ["2", "3"]}
+    assert users.last_request.qs == {"id__in": ["2,3"]}
 
 
 def test_prefetch_refuses_an_object_of_another_model_from_bulk_get_by_pks(
@@ -2343,10 +2309,10 @@ def test_prefetches_related_collections_via_bulk_get(
     team = next(iter(Team.filter(prefetch=["members"])))
     members = team.members
 
-    assert isinstance(members, Iterable)
+    assert isinstance(members, tuple)
     assert requests_mock.call_count == 2
     assert [member.name for member in members] == ["Ada", "Grace"]
-    assert users.last_request.qs == {"id": ["2", "3"]}
+    assert users.last_request.qs == {"id__in": ["2,3"]}
 
 
 def test_prefetches_scalar_members_from_mixed_related_collection(
@@ -2366,44 +2332,43 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
 
     assert [member.name for member in team.members] == ["Ada", "Grace"]
     assert requests_mock.call_count == 2
-    assert users.last_request.qs == {"id": ["3"]}
+    assert users.last_request.qs == {"id__in": ["3"]}
 
 
 @pytest.mark.parametrize(
     ("members", "expected_names", "expected_ids"),
     [
-        ([None], [None], []),
+        ([{"id": 3, "name": "Grace"}], ["Grace"], []),
         (
-            [2, None, {"id": 3, "name": "Grace"}, 2],
-            ["Ada", None, "Grace", "Ada"],
+            [2, {"id": 3, "name": "Grace"}, 2],
+            ["Ada", "Grace", "Ada"],
             ["2"],
         ),
     ],
 )
-def test_prefetch_skips_null_collection_members(
+def test_prefetch_skips_embedded_collection_members(
     requests_mock: Any,
     members: list[Any],
-    expected_names: list[str | None],
+    expected_names: list[str],
     expected_ids: list[str],
 ) -> None:
-    """Null and embedded members need no primary-key lookup.
+    """Embedded members need no primary-key lookup.
 
     Args:
         members: JSON value of the team's ``members`` collection.
-        expected_names: Names of the loaded members, with ``None`` for a null
-            member.
+        expected_names: Names of the loaded members.
         expected_ids: Primary keys that the prefetch request should ask for, as
             query-string values.
     """
 
     @json_object
     class MaybeTeam(ModelBase):
-        """Model with nullable members in a related collection."""
+        """Model with a related collection that embeds some members."""
 
         class_url = "/maybe-teams/"
 
         id: int
-        members: list[User | None]
+        members: list[User]
 
     requests_mock.get(
         "https://example.com/v1/maybe-teams/",
@@ -2415,12 +2380,10 @@ def test_prefetch_skips_null_collection_members(
 
     team = next(MaybeTeam.filter(prefetch="members"))
 
-    assert [
-        member.name if member is not None else None for member in team.members
-    ] == expected_names
+    assert [member.name for member in team.members] == expected_names
     assert users.call_count == bool(expected_ids)
     if expected_ids:
-        assert users.last_request.qs == {"id": expected_ids}
+        assert users.last_request.qs == {"id__in": [",".join(expected_ids)]}
         assert team.members[0] is team.members[-1]
     assert requests_mock.call_count == 1 + bool(expected_ids)
 
@@ -2548,7 +2511,8 @@ def test_object_read_without_its_key_behaves_as_built_without_one(
 ) -> None:
     """An item whose JSON lacks the key field has the key ``None``.
 
-    The server's serializer may omit the key, such as a hyperlinked one.
+    The server's serializer may omit the key, such as one that names each
+    object by its URL.
     """
     requests_mock.get(
         "https://example.com/v1/todos/",
@@ -4268,7 +4232,9 @@ def test_query_rejects_unsendable_iterables(
 def test_query_sends_every_item_of_an_iterable(
     requests_mock: Any, make: Any
 ) -> None:
-    """An iterable query value is read once and sent as repeated parameters.
+    """An iterable query value is read once and sent as its items.
+
+    A field's parameter repeats, and a lookup of several values joins them.
 
     Args:
         make: Callable that returns a fresh iterable of two items.
@@ -4279,7 +4245,7 @@ def test_query_sends_every_item_of_an_iterable(
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
         "userId": ["1", "2"],
-        "id__in": ["1", "2"],
+        "id__in": ["1,2"],
     }
 
 
@@ -4291,22 +4257,22 @@ def test_query_sends_every_item_of_an_iterable(
         lambda: range(1, 3),
     ],
 )
-def test_query_sends_every_item_of_an_iterable_for_a_field(
+def test_query_refuses_an_iterable_for_a_field_that_compares_one_value(
     requests_mock: Any, make: Any
 ) -> None:
-    """An iterable for a field's name is repeated, encoded as the field is.
+    """A parameter that compares one value takes no collection of them.
 
     Args:
         make: Callable that returns a fresh iterable of two items.
     """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(id=make(), title=(str(n) for n in make())))
+    with pytest.raises(ValueError, match="parameter id for Todo"):
+        list(Todo.filter(id=make()))
+    with pytest.raises(ValueError, match="parameter title for Todo"):
+        list(Todo.filter(title=(str(n) for n in make())))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "id": ["1", "2"],
-        "title": ["1", "2"],
-    }
+    assert lookup.call_count == 0
 
 
 @pytest.mark.parametrize(
@@ -4318,52 +4284,87 @@ def test_query_sends_every_item_of_an_iterable_for_a_field(
         lambda: {"a": 1, "b": 2}.values(),
     ],
 )
-@pytest.mark.parametrize("name", ["id", "ordering"])
-def test_query_repeats_a_set_or_view_the_same_for_a_field_and_not(
-    requests_mock: Any, make: Any, name: str
+def test_query_repeats_a_set_or_view_for_a_name_that_is_no_field(
+    requests_mock: Any, make: Any
 ) -> None:
-    """A set or a dictionary view repeats a parameter, whether a field or not.
+    """A set or a dictionary view repeats a parameter that names no field.
 
     Args:
         make: Callable that returns a fresh set or view of two integers.
-        name: Parameter name, a field or a name that is not a field.
     """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(**{name: make()}))
+    list(Todo.filter(ordering=make()))
 
     sent = parse_qs(urlparse(lookup.last_request.url).query)
-    assert sorted(sent[name]) == ["1", "2"]
+    assert sorted(sent["ordering"]) == ["1", "2"]
 
 
 @pytest.mark.parametrize(
-    ("make", "match"),
+    "make",
     [
-        (lambda: iter(()), "empty collection"),
-        (deque, "empty collection"),
-        (lambda: range(0), "empty collection"),
-        (lambda: None, "is None"),
-        (dict, "is a mapping"),
-        (lambda: {"a": 1}, "is a mapping"),
-        (lambda: iter([None]), "contains None"),
-        (lambda: [[1]], "contains a collection"),
-        (lambda: ({"a": 1},), "contains a collection"),
+        lambda: {1, 2},
+        lambda: frozenset({1, 2}),
+        lambda: {1: "a", 2: "b"}.keys(),
+        lambda: {"a": 1, "b": 2}.values(),
     ],
 )
-@pytest.mark.parametrize("name", ["id", "title"])
+def test_query_refuses_a_set_or_view_for_a_field_that_compares_one_value(
+    requests_mock: Any, make: Any
+) -> None:
+    """A set or a dictionary view is a collection, as a list is.
+
+    Args:
+        make: Callable that returns a fresh set or view of two integers.
+    """
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(ValueError, match="parameter id for Todo"):
+        list(Todo.filter(id=make()))
+
+    assert lookup.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("make", "match", "collection"),
+    [
+        (lambda: iter(()), "empty collection", True),
+        (deque, "empty collection", True),
+        (lambda: range(0), "empty collection", True),
+        (lambda: None, "is None", False),
+        (dict, "is a mapping", False),
+        (lambda: {"a": 1}, "is a mapping", False),
+        (lambda: iter([None]), "contains None", True),
+        (lambda: [[1]], "contains a collection", True),
+        (lambda: ({"a": 1},), "contains a collection", True),
+    ],
+)
+@pytest.mark.parametrize("name", ["id", "title", "ordering"])
 @pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
 def test_query_rejects_unsendable_values_for_a_field(
-    requests_mock: Any, make: Any, match: str, name: str, method: str
+    requests_mock: Any,
+    make: Any,
+    match: str,
+    collection: bool,
+    name: str,
+    method: str,
 ) -> None:
     """A field's parameter is refused as one that names no field is.
 
+    A collection for a field that compares one value is refused as a
+    collection, whatever its items are.
+
     Args:
         make: Callable that returns a fresh query value.
-        match: Pattern that the ``ValueError`` message should match.
-        name: Name of a field.
+        match: Pattern that the ``ValueError`` message should match for a name
+            that is no field.
+        collection: Whether the value is a collection.
+        name: Name of a field, or of a parameter that is no field.
         method: Name of the query method.
     """
     requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
+    if collection and name != "ordering":
+        match = "compares one value"
 
     with pytest.raises(ValueError, match=match):
         getattr(Todo, method)(**{name: make()})
@@ -4504,31 +4505,30 @@ def test_query_refuses_a_list_for_a_field_whose_conversion_writes_a_list(
     assert requests_mock.call_count == 0
 
 
-def test_query_sends_a_lookup_on_the_key_of_such_a_field_unchanged(
+def test_query_sends_a_lookup_that_does_not_compare_values_as_given(
     requests_mock: Any,
 ) -> None:
-    """A name that names no field is sent as given, as its ``str()``."""
+    """A suffix that compares no value is sent as given, as its ``str()``."""
     lookup = requests_mock.get("https://example.com/v1/placed/", json=[])
 
-    list(Placed.filter(point__exact="1,2", fixed__exact="3,4"))
+    list(Placed.filter(point__iexact="1,2", fixed__icontains="3,4"))
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "point__exact": ["1,2"],
-        "fixed__exact": ["3,4"],
+        "point__iexact": ["1,2"],
+        "fixed__icontains": ["3,4"],
     }
 
 
-def test_query_sends_the_key_of_each_model_for_a_relation_field(
+def test_query_refuses_a_collection_of_models_for_a_single_relation(
     requests_mock: Any,
 ) -> None:
-    """A collection of models for a relation repeats each primary key."""
+    """A relation to one object compares one key, so it takes no collection."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(user=(User(id=pk) for pk in (2, 3))))
+    with pytest.raises(ValueError, match="user"):
+        list(Todo.filter(user=(User(id=pk) for pk in (2, 3))))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "userId": ["2", "3"]
-    }
+    assert lookup.call_count == 0
 
 
 def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
@@ -4932,15 +4932,12 @@ def test_default_hooks_accept_and_pass_on_keyword_arguments(
     assert page.items == [{"id": 1}]
     with pytest.raises(PrefetchNotSupported):
         Probe.bulk_get_by_pks({1}, api=test_api, hint=1)
-    with pytest.raises(PrefetchNotSupported):
-        Probe.bulk_get_by_urls({"https://example.com/"}, api=test_api, hint=1)
 
 
 @pytest.mark.parametrize(
     "hook",
     [
         "bulk_get_by_pks",
-        "bulk_get_by_urls",
         "collection_page",
         "collection_items_from_response",
         "collection_items",
@@ -5030,7 +5027,7 @@ def test_prefetch_loads_related_objects_from_the_query_api(
 
     (todo,) = Todo.filter(api=tenant, prefetch="user")
 
-    assert users.last_request.qs == {"id": ["2"]}
+    assert users.last_request.qs == {"id__in": ["2"]}
     assert todo.user.api is tenant
     assert todo.user.name == "Ada"
     assert {r.hostname for r in requests_mock.request_history} == {
@@ -5567,7 +5564,7 @@ def test_query_encoding_sends_constraint_or_raises(
         name: Parameter name, a JSON key or a name that is not a field.
     """
     try:
-        params = Todo._encode_query({name: value})
+        params = Todo._encode_query({name: value}, test_api)
     except ValueError:
         return
 
@@ -5968,7 +5965,7 @@ def test_prefetch_skips_missing_null_and_malformed_relations(
         ],
     )
     users = requests_mock.get(
-        "https://example.com/v1/users/?id=5",
+        "https://example.com/v1/users/?id__in=5",
         json=[{"id": 5, "name": "Eve"}],
         complete_qs=True,
     )
@@ -6657,26 +6654,6 @@ def test_values_that_a_form_cannot_hold_raise(
     assert photo._pending_updates == {field: value}
 
 
-@json_object
-class Note(ModelBase):
-    """Model whose relations are hyperlinks, as DRF's hyperlinked fields."""
-
-    class_url = "/notes/"
-
-    id: int
-    author: Annotated[User, Hyperlinked()]
-    readers: list[Annotated[User, Hyperlinked()]]
-    editor: Annotated[User | None, Hyperlinked()]
-
-
-NOTE_JSON = {
-    "id": 1,
-    "author": "https://example.com/v1/users/2/",
-    "readers": ["https://example.com/v1/users/3/", "/v1/users/4/"],
-    "editor": None,
-}
-
-
 _RELATIONS = [
     (
         Todo,
@@ -6687,15 +6664,13 @@ _RELATIONS = [
     (TodoNote, {"id": 1, "todo": 2}, "todo", "Todo"),
     (TupleTeam, {"id": 1, "members": []}, "members", "User"),
     (SetTeam, {"id": 1, "members": []}, "members", "User"),
-    (Note, NOTE_JSON, "author", "User"),
-    (Note, NOTE_JSON, "readers", "User"),
 ]
 
 
 @pytest.mark.parametrize(
     ("model", "json", "field", "expected"),
     _RELATIONS,
-    ids=["renamed", "related", "tuple", "set", "hyperlinked", "hyperlinks"],
+    ids=["renamed", "related", "tuple", "set"],
 )
 def test_a_relation_refuses_an_object_of_another_model(
     requests_mock: Any,
@@ -7102,13 +7077,6 @@ def test_a_key_that_a_conversion_converts_may_name_a_model(
     crate.label = "b"
     crate.save()
     assert patch.call_count == 1
-
-
-@dataclasses.dataclass
-class _EntryWrapper:
-    """A dataclass with a field of a class that a conversion converts."""
-
-    entry: _UserEntry
 
 
 @pytest.mark.parametrize(
@@ -7599,19 +7567,19 @@ def test_equality_and_hash_raise_a_key_declaration_refused_on_first_use(
     class Anchor(ModelBase):
         class_url = "/anchors/"
 
-        later: Annotated[Later, Hyperlinked()]
+        later: Later
         x: str
 
-    @json_object
+    @json_object(pk="user")
     class Later(ModelBase):
         class_url = "/laters/"
 
-        id: int
+        user: User
 
     monkeypatch.setitem(globals(), "Later", Later)
     first = Anchor(json={"later": 1, "x": "p"})
     second = Anchor(json={"later": 1, "x": "q"})
-    message = r"Anchor\.later is the primary key.*hyperlinked"
+    message = r"Anchor\.later is the primary key.*keyed by a relation"
 
     with pytest.raises(TypeError, match=message):
         first == second  # noqa: B015
@@ -7887,38 +7855,6 @@ def test_a_key_of_a_later_class_that_is_not_one_value_is_refused_on_first_use(
         hash(RosterNote(json={"roster": [1]}))
 
 
-def test_a_primary_key_cannot_be_a_hyperlinked_relation() -> None:
-    """Decorating a model whose key is a hyperlinked relation is refused.
-
-    The key reads as the related object's own key, which is no URL, so the
-    model's URL could not be built from it.
-    """
-    message = (
-        r"Profile\.user is the primary key, and a primary key cannot be a "
-        "hyperlinked relation"
-    )
-    with pytest.raises(TypeError, match=message):
-
-        @json_object(pk="user")
-        class Profile(ModelBase):
-            class_url = "/profiles/"
-
-            user: Annotated[User, Hyperlinked()]
-            bio: str
-
-    with pytest.raises(TypeError, match=message):
-
-        @json_object(pk="user")
-        class OptionalProfile(ModelBase):
-            class_url = "/profiles/"
-
-            user: Annotated[User | None, Hyperlinked()]
-            bio: str
-
-
-_HYPERLINKED_USER = Annotated[User, Hyperlinked()]
-
-
 def _model_with_field(annotation: Any) -> Any:
     """Decorate a model whose ``links`` field has the given annotation.
 
@@ -7939,45 +7875,11 @@ def _model_with_field(annotation: Any) -> Any:
 
 
 @pytest.mark.parametrize(
-    "annotation",
-    [
-        set[_HYPERLINKED_USER],
-        frozenset[_HYPERLINKED_USER],
-        typing.AbstractSet[_HYPERLINKED_USER],
-        AbstractSet[_HYPERLINKED_USER],
-        MutableSet[_HYPERLINKED_USER],
-        typing.MutableSet[_HYPERLINKED_USER],
-        set[Annotated[User | None, Hyperlinked()]],
-        Optional[set[_HYPERLINKED_USER]],  # noqa: UP045
-        Annotated[frozenset[_HYPERLINKED_USER], "note"],
-        list[set[_HYPERLINKED_USER]],
-    ],
-)
-def test_a_set_of_hyperlinked_relations_is_refused(annotation: Any) -> None:
-    """A set cannot hold objects known only by their URLs, which have no hash.
-
-    The message says to declare a list or a tuple.
-
-    Args:
-        annotation: A set type of hyperlinked relations, as one spelling.
-    """
-    message = (
-        r"LinkedTeam\.links is a set of hyperlinked relations.*"
-        "Declare a list or a tuple"
-    )
-    with pytest.raises(TypeError, match=message):
-        _model_with_field(annotation)
-
-
-_USER_URL = "https://example.com/v1/users/2/"
-
-
-@pytest.mark.parametrize(
     ("annotation", "links"),
     [
-        (list[_HYPERLINKED_USER], [_USER_URL]),
-        (tuple[_HYPERLINKED_USER, ...], [_USER_URL]),
-        (Optional[list[_HYPERLINKED_USER]], [_USER_URL]),  # noqa: UP045
+        (list[User], [2]),
+        (tuple[User, ...], [2]),
+        (Optional[list[User]], [2]),  # noqa: UP045
         (set[User], [2]),
         (frozenset[User], [2]),
     ],
@@ -7985,7 +7887,7 @@ _USER_URL = "https://example.com/v1/users/2/"
 def test_other_collections_of_relations_are_accepted(
     annotation: Any, links: list[Any], requests_mock: Any
 ) -> None:
-    """A list or tuple of hyperlinked relations, and sets by key, are fine.
+    """A list, a tuple, and a set of relations are fine.
 
     Args:
         annotation: A collection type of relations.
@@ -8058,121 +7960,6 @@ def test_a_key_that_is_a_relation_reads_as_an_object_after_refresh(
         assert profile.pk == 2
         assert get.call_count == count
         assert profile.user.name == "Ada"
-
-
-def test_a_key_that_is_a_relation_refuses_an_object_known_only_by_its_url(
-    requests_mock: Any,
-) -> None:
-    """A related object whose key needs a request is refused.
-
-    The message says to load or save the object first. Once it has loaded, the
-    object is accepted.
-    """
-    get = requests_mock.get(
-        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    author = Note(json=NOTE_JSON).author
-    message = r"UserProfile\.user: .*not known without a request, so load"
-
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=author)
-    profile = UserProfile()
-    with pytest.raises(FieldConversionError, match=message):
-        profile.pk = author
-    assert get.call_count == 0
-    assert profile.pk is None
-
-    assert author.name == "Ada"
-    assert UserProfile(user=author).pk == 2
-    assert get.call_count == 1
-
-
-def test_a_key_that_is_a_relation_refuses_a_loaded_object_without_a_key(
-    requests_mock: Any,
-) -> None:
-    """A loaded object whose JSON lacks its key is not told to load first.
-
-    Loading again cannot supply the key, so the message says that the JSON
-    lacks it.
-    """
-    get = requests_mock.get(
-        "https://example.com/v1/users/4/", json={"name": "NoId"}
-    )
-    author = Note(
-        json={"id": 1, "author": "https://example.com/v1/users/4/"}
-    ).author
-    message = r"UserProfile\.user: .*key is missing from its JSON"
-
-    assert author.name == "NoId"
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=author)
-    profile = UserProfile()
-    with pytest.raises(FieldConversionError, match=message):
-        profile.pk = author
-    assert get.call_count == 1
-    assert profile.pk is None
-
-
-def test_a_key_that_is_a_relation_refuses_an_object_with_partial_json(
-    requests_mock: Any,
-) -> None:
-    """An object that holds partial JSON without its key is told to load.
-
-    Loading would supply the key, so the message does not say that the JSON
-    lacks it.
-    """
-    author = Note(
-        json={"id": 1, "author": "https://example.com/v1/users/4/"}
-    ).author
-    author.update_from_json({"name": "x"})
-    message = r"UserProfile\.user: .*load or save the object first"
-
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=author)
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_is_a_relation_refuses_a_loaded_object_with_a_null_key(
-    requests_mock: Any,
-) -> None:
-    """A loaded object whose JSON holds its key as null has a key of None."""
-    requests_mock.get(
-        "https://example.com/v1/users/4/", json={"id": None, "name": "Null"}
-    )
-    author = Note(
-        json={"id": 1, "author": "https://example.com/v1/users/4/"}
-    ).author
-    assert author.name == "Null"
-
-    with pytest.raises(
-        FieldConversionError, match=r"UserProfile\.user: .*key is None"
-    ):
-        UserProfile(user=author)
-
-
-def test_a_key_that_is_a_relation_refuses_a_related_key_that_is_unknown(
-    requests_mock: Any,
-) -> None:
-    """A related object that is known only by its URL is refused.
-
-    Its key needs a request.
-    """
-
-    @json_object
-    class Card(ModelBase):
-        """Model that names a user by hyperlink."""
-
-        class_url = "/cards/"
-
-        id: int
-        user: Annotated[User, Hyperlinked()]
-
-    user = Card(json={"id": 1, "user": "https://example.com/v1/users/2/"}).user
-    message = r"UserProfile\.user: .*not known without a request"
-
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=user)
-    assert requests_mock.call_count == 0
 
 
 def test_objects_of_one_model_with_equal_known_keys_are_equal(
@@ -8288,7 +8075,7 @@ def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
     assert user != admin
     assert admin != user
     assert user != UserProfile(user=User(id=1))
-    assert user != Note(id=1)
+    assert user != Todo(id=1)
     assert admin == Admin(id=1)
     assert requests_mock.call_count == 0
 
@@ -8377,11 +8164,6 @@ def _objects_with_unknown_keys() -> list[Callable[[], JSONObject]]:
         lambda: User(),
         lambda: User(json={"name": "No key"}),
         lambda: User(json={"id": None, "name": "Null key"}),
-        lambda: (
-            Note(
-                json={"id": 1, "author": "https://example.com/v1/users/4/"}
-            ).author
-        ),
         lambda: UserProfile(),
     ]
 
@@ -8393,8 +8175,7 @@ def test_an_object_whose_key_is_not_known_equals_only_itself(
     """Without a known key, equality is identity, and no request is sent.
 
     The cases are an object built without a key, complete JSON that lacks the
-    key or holds ``null``, an object known only by its URL, and a key that is a
-    relation and was not given.
+    key or holds ``null``, and a key that is a relation and was not given.
     """
     obj = make()
     twin = make()
@@ -8413,7 +8194,6 @@ _UNKNOWN_KEY_HASH_MESSAGES = [
     _ADVISED,
     r"key is missing from its JSON, so it cannot be hashed$",
     r"key is None, so it cannot be hashed$",
-    _ADVISED,
     _ADVISED,
 ]
 """The message for each object of ``_objects_with_unknown_keys()``."""
@@ -8714,26 +8494,6 @@ def test_a_related_key_of_another_json_type_from_the_server_is_refused(
 
     assert field not in crew._field_cache
     assert requests_mock.call_count == 0
-
-
-def test_an_object_read_from_a_hyperlink_keeps_its_key_across_refreshes(
-    requests_mock: Any,
-) -> None:
-    """Once loaded, the object holds its key, however often it is refreshed."""
-    get = requests_mock.get(
-        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    author = Note(json=NOTE_JSON).author
-    assert author.name == "Ada"
-
-    author.refresh()
-    author.refresh()
-
-    assert get.call_count == 1
-    assert author == User(id=2)
-    assert hash(author) == hash(User(id=2))
-    assert author in {User(id=2)}
-    assert get.call_count == 1
 
 
 class Cell:
@@ -9791,65 +9551,6 @@ def test_a_load_that_spells_a_datetime_key_another_way_keeps_the_url(
     assert url.endswith("%2B00%3A00/")
 
 
-def test_an_object_known_by_its_url_equals_its_key_after_update_from_json(
-    requests_mock: Any,
-) -> None:
-    """An object known by its URL equals its key once a payload gives it.
-
-    Before the payload it equals only itself and cannot be hashed.
-    """
-    author = Note(json=NOTE_JSON).author
-    assert author != User(id=2)
-    with pytest.raises(TypeError):
-        hash(author)
-
-    author.update_from_json({"id": 2, "name": "Ada"})
-
-    assert author == User(id=2)
-    assert hash(author) == hash(User(id=2))
-    assert requests_mock.call_count == 0
-
-
-def test_an_object_read_from_a_hyperlink_equals_its_key_and_keeps_its_url(
-    requests_mock: Any,
-) -> None:
-    """An object read through a hyperlink keeps the URL that named it.
-
-    It equals the object that its key names. When the hyperlink is the key's
-    own URL, both name one resource, though ``url`` is the hyperlink for one
-    and the key's path for the other.
-    """
-    author = Note(json=NOTE_JSON).author
-    author.update_from_json({"id": 2, "name": "Ada"})
-    twin = User(id=2)
-
-    assert author == twin
-    assert author.url == "https://example.com/v1/users/2/"
-    assert twin.url == "/users/2/"
-    assert author.absolute_url == twin.absolute_url
-    assert requests_mock.call_count == 0
-
-
-def test_an_object_with_its_own_url_and_a_null_key_takes_the_payloads_key(
-    requests_mock: Any,
-) -> None:
-    """A saved key of ``None`` is as unknown as none recorded.
-
-    An object that has its own URL takes the payload's key then, where an
-    object without one refuses a payload that names a key.
-    """
-    author = Note(json=NOTE_JSON).author
-    author.update_from_json({"id": None, "name": "Ada"})
-    author.update_from_json({"id": 2, "name": "Ada"})
-    plain = User(json={"id": None, "name": "Ada"})
-
-    assert author.pk == 2
-    assert author == User(id=2)
-    with pytest.raises(ValueError, match="does not match"):
-        plain.update_from_json({"id": 2})
-    assert requests_mock.call_count == 0
-
-
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
     requests_mock: Any,
 ) -> None:
@@ -9925,52 +9626,9 @@ def test_equality_of_objects_by_key_is_reflexive_symmetric_and_hashable(
         assert hash(a) == hash(b)
 
 
-def test_hyperlinked_relation_loads_from_its_url(requests_mock: Any) -> None:
-    """A hyperlinked field reads as an object that loads from the URL."""
-    get = requests_mock.get(
-        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    note = Note(json=NOTE_JSON)
-
-    author = note.author
-
-    assert not get.called
-    assert author.url == "https://example.com/v1/users/2/"
-    assert author.name == "Ada"
-    assert author.pk == 2
-    assert [reader.url for reader in note.readers] == [
-        "https://example.com/v1/users/3/",
-        "https://example.com/v1/users/4/",
-    ]
-    assert note.editor is None
-
-
-def test_hyperlinked_object_without_a_key_has_a_key_of_none(
-    requests_mock: Any,
-) -> None:
-    """A loaded hyperlinked object whose JSON lacks its key has no key."""
-    requests_mock.get("https://example.com/v1/users/2/", json={"name": "Ada"})
-    note = Note(json=NOTE_JSON)
-    author = note.author
-    todo = Todo(json={"id": 1, "userId": 3, "title": "t", "completed": False})
-
-    assert author.pk is None
-    assert hasattr(author, "pk")
-    assert author.url == "https://example.com/v1/users/2/"
-    with pytest.raises(FieldConversionError, match="primary key is None"):
-        todo.user = author
-    with pytest.raises(FieldConversionError, match="primary key is None"):
-        Todo.filter(user=author)
-
-    note.editor = author
-    assert note._pending_updates == {
-        "editor": "https://example.com/v1/users/2/"
-    }
-
-
 @json_object(write_only={"password"})
 class Operator(ModelBase):
-    """Model with a write-only field, named by a hyperlinked relation."""
+    """Model with a write-only field."""
 
     class_url = "/operators/"
 
@@ -9979,86 +9637,7 @@ class Operator(ModelBase):
     password: str
 
 
-@json_object
-class Ticket(ModelBase):
-    """Model that names an operator by a hyperlink."""
-
-    class_url = "/tickets/"
-
-    id: int
-    operator: Annotated[Operator, Hyperlinked()]
-
-
-@json_object
-class Order(ModelBase):
-    """Model that names an operator by its key."""
-
-    class_url = "/orders/"
-
-    id: int
-    operator: Operator
-
-
 OPERATOR_URL = "https://example.com/v1/operators/4/"
-
-
-def _unloaded(operator: Operator, requests_mock: Any) -> None:
-    """Leave ``operator`` unloaded."""
-
-
-def _pushed(operator: Operator, requests_mock: Any) -> None:
-    """Give ``operator`` partial JSON that lacks its key by a push."""
-    operator.update_from_json({"name": "Pushed"})
-
-
-def _eager_write_only(operator: Operator, requests_mock: Any) -> None:
-    """Give ``operator`` partial JSON that lacks its key by an eager write."""
-    requests_mock.patch(OPERATOR_URL, json={"name": "Ada"})
-    operator.set_write_mode("eager")
-    operator.password = "secret"
-
-
-@pytest.mark.parametrize(
-    "make_partial", [_unloaded, _pushed, _eager_write_only]
-)
-@pytest.mark.parametrize("server_has_key", [True, False])
-def test_key_read_loads_partial_json_that_lacks_it(
-    requests_mock: Any,
-    make_partial: Any,
-    server_has_key: bool,
-) -> None:
-    """Reading the key loads partial JSON that lacks it, like any field.
-
-    The key is ``None`` only if the loaded JSON lacks it too, and the object
-    then behaves as one built without a key.
-    """
-    requests_mock.get(
-        OPERATOR_URL,
-        json={"id": 4, "name": "Ada"} if server_has_key else {"name": "Ada"},
-    )
-    requests_mock.get("https://example.com/v1/orders/", json=[])
-    operator = Ticket(json={"id": 1, "operator": OPERATOR_URL}).operator
-    make_partial(operator, requests_mock)
-    order = Order(json={"id": 5, "operator": 3})
-    gets = [r.url for r in requests_mock.request_history if r.method == "GET"]
-    assert gets == []
-
-    expected = 4 if server_has_key else None
-    assert operator.pk == expected
-    assert operator.pk == expected
-    gets = [r.url for r in requests_mock.request_history if r.method == "GET"]
-    assert gets == [OPERATOR_URL]
-
-    if server_has_key:
-        order.operator = operator
-        assert order._pending_updates == {"operator": 4}
-        assert list(Order.filter(operator=operator)) == []
-        assert requests_mock.last_request.qs == {"operator": ["4"]}
-    else:
-        with pytest.raises(FieldConversionError, match="primary key is None"):
-            order.operator = operator
-        with pytest.raises(FieldConversionError, match="primary key is None"):
-            Order.filter(operator=operator)
 
 
 def test_write_only_write_to_an_unloaded_object_leaves_nothing_pending(
@@ -10118,326 +9697,6 @@ def test_giving_a_key_to_a_keyless_object_keeps_the_prefetched_related(
     assert second.user is first.user
     assert second.user.name == "Ada"
     assert requests_mock.call_count == 2
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://other.example.net/users/2/",
-        "http://example.com/v1/users/2/",
-        "https://example.com:8443/v1/users/2/",
-    ],
-)
-def test_hyperlink_to_another_origin_is_refused(
-    requests_mock: Any, url: str
-) -> None:
-    """A URL on another origin raises rather than receive credentials.
-
-    Args:
-        url: Hyperlink on an origin that the API does not allow.
-    """
-    note = Note(json={**NOTE_JSON, "author": url})
-
-    with pytest.raises(FieldConversionError, match="origin") as info:
-        _ = note.author
-
-    assert url not in str(info.value)
-    assert requests_mock.call_count == 0
-
-
-def test_malformed_hyperlink_is_not_quoted(requests_mock: Any) -> None:
-    """A hyperlink that urllib cannot join raises without quoting it.
-
-    urllib's own message for a host such as ``[secret]`` quotes the host,
-    which the server chose.
-    """
-    note = Note(json={**NOTE_JSON, "author": "https://[secret]/users/2/"})
-
-    with pytest.raises(FieldConversionError, match="not a valid URL") as info:
-        _ = note.author
-
-    assert "secret" not in str(info.value)
-    assert requests_mock.call_count == 0
-
-
-def test_hyperlinked_relation_writes_urls_and_queries_keys(
-    requests_mock: Any,
-) -> None:
-    """A related object writes its URL and uses its key in a query."""
-    patch = requests_mock.patch(
-        "https://example.com/v1/notes/1/", status_code=204
-    )
-    lookup = requests_mock.get("https://example.com/v1/notes/", json=[])
-    note = Note(json=NOTE_JSON)
-
-    note.author = User(id=5)
-    note.readers = [note.author, User(id=6)]
-    note.save()
-    list(Note.filter(author=User(id=5)))
-
-    assert patch.last_request.json() == {
-        "author": "https://example.com/v1/users/5/",
-        "readers": [
-            "https://example.com/v1/users/5/",
-            "https://example.com/v1/users/6/",
-        ],
-    }
-    assert lookup.last_request.qs == {"author": ["5"]}
-
-
-def test_hyperlinked_prefetch_needs_bulk_get_by_urls(
-    requests_mock: Any,
-) -> None:
-    """A hyperlinked field prefetches through ``bulk_get_by_urls()``.
-
-    ``User`` implements only ``bulk_get_by_pks()``, so prefetching fails
-    before any request.
-    """
-    with pytest.raises(PrefetchNotSupported, match="bulk_get_by_urls"):
-        Note.filter(prefetch="author")
-
-    assert requests_mock.call_count == 0
-
-
-def _user_from_url(url: str, api: API | None) -> User:
-    """Return the user that a hyperlink names, as a bulk lookup would.
-
-    Args:
-        url: Absolute URL of the user.
-        api: API to create the user with.
-
-    Returns:
-        A loaded user whose key is the URL's last path segment.
-    """
-    pk = int(url.rstrip("/").rsplit("/", 1)[1])
-    return User(json={"id": pk, "name": f"user{pk}"}, api=api)
-
-
-def test_hyperlinked_prefetch_loads_each_url_once(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Hyperlinks load in one bulk call per field and read without a request.
-
-    Relative links and spellings that differ in host case or default port
-    name the same object. A link to another origin is not loaded, and
-    reading it still raises.
-    """
-    calls: list[tuple[set[str], API | None]] = []
-
-    def bulk_get_by_urls(
-        cls: type[User],
-        /,
-        urls: set[str],
-        *,
-        api: API | None = None,
-        **kwargs: Any,
-    ) -> dict[str, User]:
-        calls.append((urls, api))
-        # Return each URL in another spelling, to check matching.
-        return {
-            url.replace("https://example.com/", "HTTPS://EXAMPLE.COM:443/"): (
-                _user_from_url(url, api)
-            )
-            for url in urls
-        }
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get(
-        "https://example.com/v1/notes/",
-        json=[
-            NOTE_JSON,
-            {
-                **NOTE_JSON,
-                "id": 2,
-                "author": "/v1/users/2/",
-                "readers": ["https://other.example/users/5/"],
-            },
-        ],
-    )
-
-    first, second = Note.filter(prefetch=["author", "readers"])
-
-    assert [sorted(urls) for urls, _ in calls] == [
-        ["https://example.com/v1/users/2/"],
-        ["https://example.com/v1/users/3/", "https://example.com/v1/users/4/"],
-    ]
-    assert all(api is User.api for _, api in calls)
-    assert first.author is second.author
-    assert first.author.name == "user2"
-    assert first.author.url == "https://example.com/v1/users/2/"
-    assert first.author._api_override is None
-    assert [reader.name for reader in first.readers] == ["user3", "user4"]
-    with pytest.raises(FieldConversionError, match="origin"):
-        _ = second.readers
-    assert requests_mock.call_count == 1
-
-
-def test_hyperlinked_prefetch_skips_values_it_cannot_load(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An embedded object, a key, and refused URLs send no bulk lookup.
-
-    The embedded author is read as the object it is, and the refused reader
-    still raises when it is read.
-    """
-    calls: list[set[str]] = []
-
-    def bulk_get_by_urls(
-        cls: type[User],
-        /,
-        urls: set[str],
-        *,
-        api: API | None = None,
-        **kwargs: Any,
-    ) -> dict[str, User]:
-        calls.append(urls)
-        return {}
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get(
-        "https://example.com/v1/notes/",
-        json=[
-            {
-                **NOTE_JSON,
-                "author": {"id": 2, "name": "Ada"},
-                "readers": ["https://other.example/users/5/", "mailto:x", 7],
-            }
-        ],
-    )
-
-    (note,) = Note.filter(prefetch=["author", "readers"])
-
-    assert calls == []
-    assert note.author.name == "Ada"
-    with pytest.raises(FieldConversionError):
-        _ = note.readers
-    assert requests_mock.call_count == 1
-
-
-def test_hyperlinked_prefetch_ignores_urls_it_did_not_request(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lookup's extra objects are dropped, and an object keeps its own URL.
-
-    An object that a lookup returns with a URL of its own, such as one it
-    read from a hyperlink, keeps that URL rather than the requested one.
-    """
-
-    def bulk_get_by_urls(
-        cls: type[User],
-        /,
-        urls: set[str],
-        *,
-        api: API | None = None,
-        **kwargs: Any,
-    ) -> dict[str, User]:
-        found = {url: _user_from_url(url, api) for url in urls}
-        for user in found.values():
-            user._url_override = f"https://example.com/v1/people/{user.id}/"
-        found["https://example.com/v1/users/99/"] = _user_from_url(
-            "https://example.com/v1/users/99/", api
-        )
-        return found
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
-
-    (note,) = Note.filter(prefetch="author")
-
-    assert note.author.name == "user2"
-    assert note.author.url == "https://example.com/v1/people/2/"
-    assert requests_mock.call_count == 1
-
-
-def test_hyperlinked_prefetch_refuses_an_object_of_another_model(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A hook that returns an object of another model raises ``TypeError``.
-
-    The message names the hook, the model, the field, and the class returned.
-    """
-
-    def bulk_get_by_urls(
-        cls: type[User], /, urls: set[str], *, api: Client, **kwargs: Any
-    ) -> dict[str, Any]:
-        return {url: Team(json={"id": 2}, api=api) for url in urls}
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
-
-    with pytest.raises(
-        TypeError,
-        match=(
-            r"User\.bulk_get_by_urls\(\) returned an object of Team for "
-            r"Note\.author, which is not a User"
-        ),
-    ):
-        list(Note.filter(prefetch="author"))
-
-
-def test_hyperlinked_prefetch_accepts_a_subclass_of_the_model(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An object of a subclass of the related model is a related object."""
-
-    def bulk_get_by_urls(
-        cls: type[User], /, urls: set[str], *, api: Client, **kwargs: Any
-    ) -> dict[str, User]:
-        return {
-            url: Admin(json={"id": 2, "name": "root"}, api=api) for url in urls
-        }
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get("https://example.com/v1/notes/", json=[NOTE_JSON])
-
-    (note,) = Note.filter(prefetch="author")
-
-    assert isinstance(note.author, Admin)
-    assert requests_mock.call_count == 1
-
-
-def test_hyperlinked_applies_only_to_related_types() -> None:
-    """``Hyperlinked()`` on a type without a related model raises."""
-    with pytest.raises(TypeError, match="related model") as refused:
-
-        @json_object
-        class Wrong(ModelBase):
-            id: int
-            name: Annotated[str, Hyperlinked()]
-
-    assert str(refused.value).startswith("Wrong.name: ")
-
-
-def test_hyperlinked_field_takes_urls_and_objects_only(
-    requests_mock: Any,
-) -> None:
-    """A hyperlink is a URL or an object, never a bare key."""
-    patch = requests_mock.patch(
-        "https://example.com/v1/notes/1/", status_code=204
-    )
-    note = Note(json={**NOTE_JSON, "author": 2})
-
-    with pytest.raises(FieldConversionError, match="must be URLs"):
-        _ = note.author
-    with pytest.raises(FieldConversionError, match="must be objects or URLs"):
-        note.author = 5  # type: ignore[assignment]
-
-    note.author = "https://example.com/v1/users/7/"  # type: ignore[assignment]
-    note.save()
-
-    assert patch.last_request.json() == {
-        "author": "https://example.com/v1/users/7/"
-    }
 
 
 @pytest.mark.parametrize("status", [300, 304])
@@ -10571,54 +9830,6 @@ def test_save_rejects_unknown_request_option(requests_mock: Any) -> None:
     assert todo._pending_updates == {"title": "b"}
 
 
-@json_object
-class Review(ModelBase):
-    """Model with an optional and a lazy hyperlinked relation."""
-
-    class_url = "/reviews/"
-
-    id: int
-    editor: Annotated[User | None, Hyperlinked()]
-    watchers: Iterable[Annotated[User, Hyperlinked()]]
-
-
-def test_hyperlinked_prefetch_covers_optional_and_lazy_fields(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Optional and lazy hyperlinked fields read prefetched objects too."""
-
-    def bulk_get_by_urls(
-        cls: type[User],
-        /,
-        urls: set[str],
-        *,
-        api: API | None = None,
-        **kwargs: Any,
-    ) -> dict[str, User]:
-        return {url: _user_from_url(url, api) for url in urls}
-
-    monkeypatch.setattr(
-        User, "bulk_get_by_urls", classmethod(bulk_get_by_urls)
-    )
-    requests_mock.get(
-        "https://example.com/v1/reviews/",
-        json=[
-            {
-                "id": 1,
-                "editor": "/v1/users/7/",
-                "watchers": ["/v1/users/8/", "/v1/users/9/"],
-            }
-        ],
-    )
-
-    (review,) = Review.filter(prefetch=["editor", "watchers"])
-
-    assert review.editor is not None
-    assert review.editor.name == "user7"
-    assert [user.name for user in review.watchers] == ["user8", "user9"]
-    assert requests_mock.call_count == 1
-
-
 class Shade(enum.Enum):
     """Enum whose JSON values are strings."""
 
@@ -10652,7 +9863,6 @@ class Specimen(ModelBase):
     note: str | None
     extra: dict[str, Any]
     owner: User
-    link: Annotated[User, Hyperlinked()]
     secret: str
     created: datetime.datetime
 
@@ -10660,7 +9870,6 @@ class Specimen(ModelBase):
 def test_json_schema_describes_what_a_model_reads() -> None:
     """The read schema uses read keys and omits write-only fields."""
     owner = {"anyOf": [{"type": "integer"}, {"type": "object"}]}
-    link = {"anyOf": [{"type": "string", "format": "uri"}, {"type": "object"}]}
 
     assert Specimen.json_schema() == {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -10696,7 +9905,6 @@ def test_json_schema_describes_what_a_model_reads() -> None:
             "note": {"anyOf": [{"type": "string"}, {"type": "null"}]},
             "extra": {"type": "object", "additionalProperties": {}},
             "owner": owner,
-            "link": link,
             "created": {
                 "anyOf": [
                     {"type": "string", "format": "date-time"},
@@ -10716,7 +9924,6 @@ def test_json_schema_describes_what_a_model_writes() -> None:
     assert properties["secret"] == {"type": "string"}
     assert properties["owner_id"] == {"type": "integer"}
     assert "owner" not in properties
-    assert properties["link"] == {"type": "string", "format": "uri"}
     assert list(properties)[:3] == ["id", "name", "score"]
 
 
@@ -10762,7 +9969,14 @@ def test_json_schema_of_a_self_relation_has_the_models_key_schema() -> None:
         "items": {"type": "integer"},
     }
     assert Employee.json_schema()["properties"]["reports"]["items"] == {
-        "anyOf": [{"type": "integer"}, {"type": "object"}]
+        "anyOf": [
+            {"type": "integer"},
+            {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "integer"}},
+            },
+        ]
     }
 
 
@@ -11129,13 +10343,12 @@ class Writer(WriterBase):
 
 @json_object
 class Article(ArticleBase):
-    """Model with a plain and a hyperlinked relation to a ``Writer``."""
+    """Model with a relation to a ``Writer``."""
 
     class_url = "/articles/"
 
     id: int
     author: Writer
-    link: Annotated[Writer, Hyperlinked()]
 
 
 @pytest.mark.parametrize("query", ["filter", "get_page"])
@@ -11167,21 +10380,6 @@ def test_a_prefetch_of_a_model_with_an_assigned_api_is_refused(
         del WriterBase.api
 
     assert requests_mock.call_count == 0
-
-
-def test_a_hyperlinked_read_of_a_model_with_an_assigned_api_is_refused() -> (
-    None
-):
-    """The assignment is reported, not the origin of the hyperlink."""
-    obj = Article(
-        json={"id": 1, "author": 1, "link": "https://alice.example.com/u/1/"}
-    )
-    WriterBase.api = API("https://mallory.example.com")
-    try:
-        with pytest.raises(UsageError, match=r"Base\.register_api\(api\)"):
-            _ = obj.link
-    finally:
-        del WriterBase.api
 
 
 _READ_ONLY_VALUE = (
@@ -11234,7 +10432,6 @@ AddressAlias = NewType("AddressAlias", Address)
         list[Address | None],
         AddressAlias,
         Annotated[Address, "note"],
-        Annotated[Address, Hyperlinked()],
         "Address",
         "list[Address]",
     ],
@@ -11387,179 +10584,6 @@ class LateKeyless(ModelBase):
     """Model without a key, defined after the model that names it."""
 
     name: str
-
-
-def test_a_hyperlinked_key_defined_later_is_refused_when_first_used(
-    requests_mock: Any,
-) -> None:
-    """A key whose type is defined after its holder is refused on first use.
-
-    The holder cannot resolve the name when it is decorated, so the refusal
-    that decoration gives waits for the key's first read, write, or URL.
-    """
-    message = (
-        r"LateBadge\.owner is the primary key, and a primary key cannot be "
-        "a hyperlinked relation"
-    )
-    url = "https://example.com/v1/late-members/3/"
-
-    with pytest.raises(TypeError, match=message):
-        LateBadge(owner=url)
-    with pytest.raises(TypeError, match=message):
-        _ = LateBadge(json={"owner": url, "label": "x"}).pk
-    with pytest.raises(TypeError, match=message):
-        _ = LateBadge(json={"owner": url, "label": "x"}).url
-    badge = LateBadge()
-    with pytest.raises(TypeError, match=message):
-        badge.pk = url
-    assert requests_mock.call_count == 0
-
-
-def test_a_late_hyperlinked_key_refusal_is_a_plain_type_error(
-    requests_mock: Any,
-) -> None:
-    """Every use of the key raises the error that decoration gives.
-
-    It is a plain ``TypeError`` that names the field once, not a conversion
-    error of a value.
-    """
-    url = "https://example.com/v1/late-members/3/"
-    json = {"owner": url, "label": "x"}
-    changed = LateBadge(json=json)
-    changed.label = "y"
-    uses: list[Callable[[], Any]] = [
-        lambda: LateBadge(json=json).pk,
-        lambda: LateBadge(json=json).owner,
-        lambda: LateBadge(json=json).url,
-        changed.save,
-        LateBadge(json=json).delete,
-        LateBadge(json=json).refresh,
-        lambda: LateBadge(json=json).update_from_json({"label": "z"}),
-        lambda: LateBadge.create(owner=url, label="x"),
-    ]
-
-    for use in uses:
-        with pytest.raises(TypeError) as caught:
-            use()
-        assert type(caught.value) is TypeError
-        assert str(caught.value).count("LateBadge.owner") == 1
-    assert requests_mock.call_count == 0
-
-
-def test_a_late_hyperlinked_key_refusal_in_a_collection_is_a_type_error(
-    requests_mock: Any,
-) -> None:
-    """A model in a collection field raises the refusal without a position."""
-    url = "https://example.com/v1/late-members/3/"
-    json = {"owner": url, "label": "x"}
-    badge = LateBadge(json=json)
-    holder = LateHolder(json={"id": 1, "badges": [json]})
-    written = LateHolder(json={"id": 2, "badges": []})
-    uses: list[Callable[[], Any]] = [
-        lambda: holder.badges,
-        lambda: setattr(written, "badges", [badge]),
-        lambda: LateHolder.filter(badges=[badge]),
-        lambda: LateHolder.create(badges=[badge]),
-    ]
-
-    for use in uses:
-        with pytest.raises(TypeError) as caught:
-            use()
-        assert type(caught.value) is TypeError
-        assert str(caught.value).count("LateBadge.owner") == 1
-        assert "[0]" not in str(caught.value)
-    assert requests_mock.call_count == 0
-
-
-class BadgeRef:
-    """Value that a conversion builds from the key of a badge."""
-
-    def __init__(self, owner: Any) -> None:
-        """Keep the key that the conversion read."""
-        self.owner = owner
-
-
-class BadgeRefTD(TypedDict):
-    """Mapping with a field that a conversion reads a badge's key for."""
-
-    ref: BadgeRef
-
-
-class BadgeRefBase(JSONObject):
-    """Base whose conversion reads the key of the badge that it decodes."""
-
-    conversions: ClassVar[dict[type, Conversion]] = {
-        BadgeRef: Conversion(
-            decode=lambda value, cls: cls(LateBadge(json=value).pk),
-            encode=lambda value, cls: {"owner": value.owner},
-        )
-    }
-
-
-@json_object
-class BadgeRefHolder(BadgeRefBase):
-    """Model with fields that decode a badge reference in a container."""
-
-    class_url = "/badge-ref-holders/"
-
-    id: int
-    typed: BadgeRefTD
-    mapped: dict[str, BadgeRef]
-    listed: list[BadgeRef]
-
-
-def test_a_late_hyperlinked_key_refusal_in_a_conversion_is_a_type_error(
-    requests_mock: Any,
-) -> None:
-    """A conversion that reads a late key raises the refusal as it is."""
-    BadgeRefBase.register_api(test_api)
-    badge = {"owner": "https://example.com/v1/late-members/3/", "label": "x"}
-    holder = BadgeRefHolder(
-        json={
-            "id": 1,
-            "typed": {"ref": badge},
-            "mapped": {"k": badge},
-            "listed": [badge],
-        }
-    )
-
-    for field in ("typed", "mapped", "listed"):
-        with pytest.raises(TypeError) as caught:
-            getattr(holder, field)
-        assert type(caught.value) is TypeError
-        assert str(caught.value).count("LateBadge.owner") == 1
-        assert "['ref']" not in str(caught.value)
-        assert "[k]" not in str(caught.value)
-    assert requests_mock.call_count == 0
-
-
-@json_object(pk="owner")
-class LateBadge(ModelBase):
-    """Model whose key is a hyperlinked relation to a later model."""
-
-    class_url = "/late-badges/"
-
-    owner: Annotated[LateMember, Hyperlinked()]
-    label: str
-
-
-@json_object
-class LateHolder(ModelBase):
-    """Model that holds a collection of models with a late key."""
-
-    class_url = "/late-holders/"
-
-    id: int
-    badges: list[LateBadge]
-
-
-@json_object
-class LateMember(ModelBase):
-    """Model that a hyperlinked key names, defined after its holder."""
-
-    class_url = "/late-members/"
-
-    id: int
 
 
 @json_object
