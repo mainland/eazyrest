@@ -520,6 +520,8 @@ def test_a_lookup_of_several_values_on_a_structured_field_refuses_text(
         ("point__exact", [1, 2]),
         ("fixed__exact", (1, 2)),
         ("point", Point(1, 2)),
+        ("fixed__gt", [(1, 2), (3, 4)]),
+        ("point__gte", [Point(1, 2), Point(3, 4)]),
     ],
 )
 def test_a_lookup_refuses_a_value_that_the_field_does_not_write_as_a_scalar(

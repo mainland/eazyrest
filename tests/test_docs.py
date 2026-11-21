@@ -108,7 +108,7 @@ def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
 
     DRFObject.register_api(API("https://registered.example.com/"))
     example = run_guide_example(
-        "cls.filter(id=sorted(pks)",
+        "cls.filter(id__in=sorted(pks)",
         doc=DRF,
         json_object=json_object,
         DRFObject=DRFObject,
@@ -120,7 +120,7 @@ def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
 
     users = example["User"].bulk_get_by_pks({2}, api=override)
 
-    assert lookup.last_request.qs == {"id": ["2"]}
+    assert lookup.last_request.qs == {"id__in": ["2"]}
     assert users[2].name == "Ada"
     assert users[2].api is override
 

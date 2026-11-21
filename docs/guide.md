@@ -1156,6 +1156,16 @@ field with the same JSON field name and conversion as `create()`. For example,
 key, a `datetime.datetime` value is sent as an ISO 8601 string, and a boolean
 is sent as `true` or `false`, as JSON writes it.
 
+A parameter that compares one value of a field, which is the field's name or a
+lookup with the suffix `exact`, `gt`, `gte`, `lt`, or `lte`, takes no
+collection, as in `Todo.filter(id=[1, 2])` or `Todo.filter(due__gt=[a, b])`.
+The query would send the parameter repeated, and django-filter applies only the
+last value, so the call raises `ValueError` naming the parameter before any
+request. Use a lookup that takes several values, such as `id__in`. A value that
+the field's conversion takes whole, such as an iterable class that
+`conversions` registers, is one value and is sent. The name of a field that is
+a collection takes a collection, and sends each item.
+
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,
 `range`, `gt`, `gte`, `lt`, and `lte` compare values of the field, so each
@@ -1333,9 +1343,10 @@ class User(JSONObject):
 ```
 
 The exact implementation depends on the API. Some APIs accept repeated
-parameters such as `?id=1&id=2`, and others use a comma-separated parameter
-such as `?id__in=1,2`, which `cls.filter(id__in=pks, api=api)` sends, or a
-dedicated bulk endpoint. Put that API-specific shape in `bulk_get_by_pks()`.
+parameters such as `?id=1&id=2`, which `filter()` does not send for `id`, and
+others use a comma-separated parameter such as `?id__in=1,2`, which
+`cls.filter(id__in=pks, api=api)` sends, or a dedicated bulk endpoint. Put that
+API-specific shape in `bulk_get_by_pks()`.
 
 Prefetch works for single related-object fields and typed related collections.
 Embedded related objects do not need prefetching, because `eazyrest` only

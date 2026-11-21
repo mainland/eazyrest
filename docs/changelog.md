@@ -34,6 +34,15 @@ describe them further.
   made in place is found by comparing the items' keys, in order for a sequence
   and without order for a set, so replacing an item with an object of the same
   key is not a change. A set is sent as its distinct keys, sorted.
+- A parameter that compares one value of a field, the field's name or a lookup
+  with the suffix `exact`, `gt`, `gte`, `lt`, or `lte`, raises `ValueError`
+  naming the parameter before any request when it is given a collection, as in
+  `filter(id=[7, 8])`, `filter(owner=[7, 8])`, or `filter(due__gt=[a, b])`.
+  `v1.0.0a5` sent such a collection repeated, which django-filter reads as its
+  last value, so the query matched fewer objects than it named. Use a lookup
+  that takes several values, as in `filter(id__in=[7, 8])`. The name of a field
+  that is a collection still sends each item, and so does a value that the
+  field's conversion takes whole.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the
@@ -581,13 +590,14 @@ describe them further.
 - A query argument is read the same way whether or not its name is a field's.
   An iterable other than a string, bytes, or a mapping repeats the parameter,
   and its items are encoded by the field's conversion. A generator, `deque`,
-  `range`, set, or dictionary view for a field's name now repeats the parameter
-  where it raised `FieldConversionError`, and a collection of models for a
-  relation field sends each primary key. An instance of a class that the
-  field's conversion registers is one value, not its items, even if the class
-  is iterable, and is refused if the conversion writes it as a list, where
-  before it repeated the parameter with each item. A query argument must be
-  finite, because the whole of it is read before the request is sent.
+  `range`, set, or dictionary view for the name of a collection field now
+  repeats the parameter where it raised `FieldConversionError`, and a
+  collection of models for a collection of related objects sends each primary
+  key. An instance of a class that the field's conversion registers is one
+  value, not its items, even if the class is iterable, and is refused if the
+  conversion writes it as a list, where before it repeated the parameter with
+  each item. A query argument must be finite, because the whole of it is read
+  before the request is sent.
 
 ### Migrating from 0.9.0
 

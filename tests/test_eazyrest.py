@@ -104,7 +104,7 @@ class User(ModelBase):
         Returns:
             The loaded users, keyed by primary key.
         """
-        users = list(cls.filter(id=sorted(pks), api=api))
+        users = list(cls.filter(id__in=sorted(pks), api=api))
         return {user.pk: user for user in users}
 
 
@@ -1489,7 +1489,7 @@ class UUIDUser(ModelBase):
             The loaded users, keyed by decoded primary key.
         """
         del api
-        return {user.pk: user for user in cls.filter(key=sorted(pks))}
+        return {user.pk: user for user in cls.filter(key__in=sorted(pks))}
 
 
 @json_object
@@ -1977,7 +1977,7 @@ def test_filter_prefetches_related_objects_via_bulk_get(
 
     assert [todo.user.name for todo in todos] == ["Ada", "Grace"]
     assert requests_mock.call_count == 2
-    assert users.last_request.qs == {"id": ["2", "3"]}
+    assert users.last_request.qs == {"id__in": ["2,3"]}
 
 
 def test_prefetch_refuses_an_object_of_another_model_from_bulk_get_by_pks(
@@ -2312,7 +2312,7 @@ def test_prefetches_related_collections_via_bulk_get(
     assert isinstance(members, tuple)
     assert requests_mock.call_count == 2
     assert [member.name for member in members] == ["Ada", "Grace"]
-    assert users.last_request.qs == {"id": ["2", "3"]}
+    assert users.last_request.qs == {"id__in": ["2,3"]}
 
 
 def test_prefetches_scalar_members_from_mixed_related_collection(
@@ -2332,7 +2332,7 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
 
     assert [member.name for member in team.members] == ["Ada", "Grace"]
     assert requests_mock.call_count == 2
-    assert users.last_request.qs == {"id": ["3"]}
+    assert users.last_request.qs == {"id__in": ["3"]}
 
 
 @pytest.mark.parametrize(
@@ -2386,7 +2386,7 @@ def test_prefetch_skips_null_collection_members(
     ] == expected_names
     assert users.call_count == bool(expected_ids)
     if expected_ids:
-        assert users.last_request.qs == {"id": expected_ids}
+        assert users.last_request.qs == {"id__in": [",".join(expected_ids)]}
         assert team.members[0] is team.members[-1]
     assert requests_mock.call_count == 1 + bool(expected_ids)
 
@@ -4260,22 +4260,22 @@ def test_query_sends_every_item_of_an_iterable(
         lambda: range(1, 3),
     ],
 )
-def test_query_sends_every_item_of_an_iterable_for_a_field(
+def test_query_refuses_an_iterable_for_a_field_that_compares_one_value(
     requests_mock: Any, make: Any
 ) -> None:
-    """An iterable for a field's name is repeated, encoded as the field is.
+    """A parameter that compares one value takes no collection of them.
 
     Args:
         make: Callable that returns a fresh iterable of two items.
     """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(id=make(), title=(str(n) for n in make())))
+    with pytest.raises(ValueError, match="parameter id for Todo"):
+        list(Todo.filter(id=make()))
+    with pytest.raises(ValueError, match="parameter title for Todo"):
+        list(Todo.filter(title=(str(n) for n in make())))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "id": ["1", "2"],
-        "title": ["1", "2"],
-    }
+    assert lookup.call_count == 0
 
 
 @pytest.mark.parametrize(
@@ -4287,52 +4287,87 @@ def test_query_sends_every_item_of_an_iterable_for_a_field(
         lambda: {"a": 1, "b": 2}.values(),
     ],
 )
-@pytest.mark.parametrize("name", ["id", "ordering"])
-def test_query_repeats_a_set_or_view_the_same_for_a_field_and_not(
-    requests_mock: Any, make: Any, name: str
+def test_query_repeats_a_set_or_view_for_a_name_that_is_no_field(
+    requests_mock: Any, make: Any
 ) -> None:
-    """A set or a dictionary view repeats a parameter, whether a field or not.
+    """A set or a dictionary view repeats a parameter that names no field.
 
     Args:
         make: Callable that returns a fresh set or view of two integers.
-        name: Parameter name, a field or a name that is not a field.
     """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(**{name: make()}))
+    list(Todo.filter(ordering=make()))
 
     sent = parse_qs(urlparse(lookup.last_request.url).query)
-    assert sorted(sent[name]) == ["1", "2"]
+    assert sorted(sent["ordering"]) == ["1", "2"]
 
 
 @pytest.mark.parametrize(
-    ("make", "match"),
+    "make",
     [
-        (lambda: iter(()), "empty collection"),
-        (deque, "empty collection"),
-        (lambda: range(0), "empty collection"),
-        (lambda: None, "is None"),
-        (dict, "is a mapping"),
-        (lambda: {"a": 1}, "is a mapping"),
-        (lambda: iter([None]), "contains None"),
-        (lambda: [[1]], "contains a collection"),
-        (lambda: ({"a": 1},), "contains a collection"),
+        lambda: {1, 2},
+        lambda: frozenset({1, 2}),
+        lambda: {1: "a", 2: "b"}.keys(),
+        lambda: {"a": 1, "b": 2}.values(),
     ],
 )
-@pytest.mark.parametrize("name", ["id", "title"])
+def test_query_refuses_a_set_or_view_for_a_field_that_compares_one_value(
+    requests_mock: Any, make: Any
+) -> None:
+    """A set or a dictionary view is a collection, as a list is.
+
+    Args:
+        make: Callable that returns a fresh set or view of two integers.
+    """
+    lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(ValueError, match="parameter id for Todo"):
+        list(Todo.filter(id=make()))
+
+    assert lookup.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("make", "match", "collection"),
+    [
+        (lambda: iter(()), "empty collection", True),
+        (deque, "empty collection", True),
+        (lambda: range(0), "empty collection", True),
+        (lambda: None, "is None", False),
+        (dict, "is a mapping", False),
+        (lambda: {"a": 1}, "is a mapping", False),
+        (lambda: iter([None]), "contains None", True),
+        (lambda: [[1]], "contains a collection", True),
+        (lambda: ({"a": 1},), "contains a collection", True),
+    ],
+)
+@pytest.mark.parametrize("name", ["id", "title", "ordering"])
 @pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
 def test_query_rejects_unsendable_values_for_a_field(
-    requests_mock: Any, make: Any, match: str, name: str, method: str
+    requests_mock: Any,
+    make: Any,
+    match: str,
+    collection: bool,
+    name: str,
+    method: str,
 ) -> None:
     """A field's parameter is refused as one that names no field is.
 
+    A collection for a field that compares one value is refused as a
+    collection, whatever its items are.
+
     Args:
         make: Callable that returns a fresh query value.
-        match: Pattern that the ``ValueError`` message should match.
-        name: Name of a field.
+        match: Pattern that the ``ValueError`` message should match for a name
+            that is no field.
+        collection: Whether the value is a collection.
+        name: Name of a field, or of a parameter that is no field.
         method: Name of the query method.
     """
     requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
+    if collection and name != "ordering":
+        match = "compares one value"
 
     with pytest.raises(ValueError, match=match):
         getattr(Todo, method)(**{name: make()})
@@ -4487,17 +4522,16 @@ def test_query_sends_a_lookup_that_does_not_compare_values_as_given(
     }
 
 
-def test_query_sends_the_key_of_each_model_for_a_relation_field(
+def test_query_refuses_a_collection_of_models_for_a_single_relation(
     requests_mock: Any,
 ) -> None:
-    """A collection of models for a relation repeats each primary key."""
+    """A relation to one object compares one key, so it takes no collection."""
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(user=(User(id=pk) for pk in (2, 3))))
+    with pytest.raises(ValueError, match="user"):
+        list(Todo.filter(user=(User(id=pk) for pk in (2, 3))))
 
-    assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "userId": ["2", "3"]
-    }
+    assert lookup.call_count == 0
 
 
 def test_get_or_create_sends_none_defaults(requests_mock: Any) -> None:
@@ -4996,7 +5030,7 @@ def test_prefetch_loads_related_objects_from_the_query_api(
 
     (todo,) = Todo.filter(api=tenant, prefetch="user")
 
-    assert users.last_request.qs == {"id": ["2"]}
+    assert users.last_request.qs == {"id__in": ["2"]}
     assert todo.user.api is tenant
     assert todo.user.name == "Ada"
     assert {r.hostname for r in requests_mock.request_history} == {
@@ -5934,7 +5968,7 @@ def test_prefetch_skips_missing_null_and_malformed_relations(
         ],
     )
     users = requests_mock.get(
-        "https://example.com/v1/users/?id=5",
+        "https://example.com/v1/users/?id__in=5",
         json=[{"id": 5, "name": "Eve"}],
         complete_qs=True,
     )

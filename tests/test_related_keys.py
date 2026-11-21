@@ -455,10 +455,11 @@ def test_a_lookup_refuses_a_related_object_without_a_key(
     """A lookup on a relation names the relation, as the plain one does."""
     requests_mock.get("https://related.example/posts/", json=[])
 
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(params={lookup: [_unkeyed("7")]}))
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(params={lookup: [SubUser(id="abc")]}))
+    several = lookup == "owner__in"
+    for related in (_unkeyed("7"), SubUser(id="abc")):
+        value = [related] if several else related
+        with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+            list(Post.filter(params={lookup: value}))
 
     assert requests_mock.call_count == 0
 
@@ -642,8 +643,8 @@ def test_a_query_refuses_a_bare_key_that_cannot_be_built(
     """The query sends no key that the related model would not read."""
     requests_mock.get("https://related.example/posts/", json=[])
 
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(owner=[2, key]))
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        list(Post.filter(readers=[2, key]))
 
     assert requests_mock.call_count == 0
 
@@ -765,8 +766,9 @@ def test_a_lookup_refuses_a_bare_key_that_cannot_be_built(
     refused = ValueError if lookup == "owner__in" else FieldConversionError
     with pytest.raises(refused, match=r"Post\.owner|owner__in"):
         list(Post.filter(params={lookup: key}))
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(params={lookup: [7, key]}))
+    if lookup == "owner__in":
+        with pytest.raises(FieldConversionError, match=r"Post\.owner"):
+            list(Post.filter(params={lookup: [7, key]}))
     with pytest.raises(FieldConversionError, match=r"Post\.readers"):
         list(Post.filter(readers__in=[key]))
 
@@ -1618,3 +1620,52 @@ def test_a_copy_that_is_given_a_key_leaves_the_original_json_alone() -> None:
 
     assert copied.json["id"] == 5
     assert "id" not in original.json
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "id",
+        "id__exact",
+        "id__gt",
+        "id__gte",
+        "id__lt",
+        "id__lte",
+        "pk",
+        "pk__exact",
+        "pk__gt",
+        "owner",
+        "owner__exact",
+        "owner__gt",
+    ],
+)
+@pytest.mark.parametrize("value", [[7, 8], (7, 8), {7, 8}])
+def test_a_lookup_of_one_value_refuses_a_collection(
+    name: str, value: Any, requests_mock: Any
+) -> None:
+    """A server applies one of a repeated parameter, so none is sent."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    for call in (
+        lambda: list(Post.filter(**{name: value})),
+        lambda: list(Post.filter(params={name: value})),
+        lambda: Post.get(**{name: value}),
+    ):
+        with pytest.raises(ValueError, match=rf"parameter {name} for Post"):
+            call()
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_lookup_of_several_values_and_a_collection_field_take_a_collection(
+    requests_mock: Any,
+) -> None:
+    """The refusal leaves the parameters that are meant to take several."""
+    requests_mock.get("https://related.example/posts/", json=[])
+
+    list(Post.filter(id__in=[7, 8], readers=[1, 2]))
+
+    assert requests_mock.last_request.qs == {
+        "id__in": ["7,8"],
+        "readers": ["1", "2"],
+    }

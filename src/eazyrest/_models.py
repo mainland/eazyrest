@@ -7521,6 +7521,35 @@ class JSONObject:
         return found is not None and _encodes(value, found)
 
     @classmethod
+    def _converts_whole(
+        cls,
+        conversion: AnalyzedType | None,
+        value: Any,
+        structured: bool,
+    ) -> bool:
+        """Return whether a conversion that takes a value whole converts it.
+
+        A field that writes every value as a list or an object takes any value
+        whole, but only a value that it can encode is one operand of it.
+
+        Args:
+            conversion: The conversion of each operand.
+            value: Query value that the conversion takes whole.
+            structured: Whether the field writes every value as a list or an
+                object.
+
+        Returns:
+            Whether the conversion encodes ``value``.
+        """
+        if not structured or conversion is None:
+            return True
+        try:
+            cls._to_json(value, conversion)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    @classmethod
     def _takes_whole_value(cls, name: str, value: Any) -> bool:
         """Return whether a parameter's conversion takes a value whole.
 
@@ -7699,7 +7728,11 @@ class JSONObject:
             its operands joined with commas, under ``"comma"``.
 
         Raises:
-            ValueError: If the value is a mapping or ``None``, an empty
+            ValueError: If the value is a collection and the parameter compares
+                one value of a field, as ``exact``, the bare name, ``gt``,
+                ``gte``, ``lt``, and ``lte`` do, unless the field's conversion
+                takes it whole or it is a collection field's own parameter.
+                Also if the value is a mapping or ``None``, an empty
                 collection, or holds ``None`` or another collection, which
                 requests would omit, flatten, or send as its keys, or is one
                 value that its field's conversion writes as a list, which
@@ -7719,6 +7752,28 @@ class JSONObject:
         )
         whole = cls._takes_whole_value(name, value)
         several = parameter.several
+        if (
+            not several
+            and parameter.field is not None
+            and parameter.collection is None
+            and _is_collection_value(value)
+            and not (
+                whole
+                and cls._converts_whole(
+                    parameter.conversion, value, parameter.structured
+                )
+            )
+        ):
+            # A server applies one value of a repeated parameter and ignores
+            # the others, so a query for several would change its meaning.
+            raise ValueError(
+                f"Query parameter {name} for {cls.__name__} cannot be sent, "
+                "because it compares one value and its value is a "
+                "collection, which requests would send as the parameter "
+                "repeated, and a server applies only one of those. Pass one "
+                "value, or use a lookup that takes several, such as "
+                f"{parameter.field}__in"
+            )
         if several and (
             isinstance(value, JSONObject)
             or not _is_collection_value(value)
@@ -8554,6 +8609,13 @@ class JSONObject:
         collections, so the query would ignore or change that constraint. Any
         iterable other than a string, bytes, or a mapping, such as a generator
         or a ``deque``, is a collection.
+
+        A parameter that compares one value of a field, which is the field's
+        name or a lookup with the suffix ``exact``, ``gt``, ``gte``, ``lt``, or
+        ``lte``, takes no collection, because a server applies only one of a
+        repeated parameter. Use ``id__in`` for several values of ``id``. A
+        collection field's name and a value that the field's conversion takes
+        whole are exempt.
 
         The keyword arguments ``api``, ``prefetch``, ``defaults``,
         ``request_options``, ``params``, and ``url`` of the query methods are

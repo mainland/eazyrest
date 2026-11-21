@@ -527,7 +527,8 @@ it across your models.
 `bulk_get_by_pks()`, and that should map to a real DRF endpoint shape rather
 than guessing.
 
-For example, if your DRF viewset supports repeated query parameters:
+For example, if your DRF viewset has a django-filter `id__in` filter, which
+reads one comma-separated parameter:
 
 ```python
 @json_object
@@ -539,7 +540,7 @@ class User(DRFObject):
 
     @classmethod
     def bulk_get_by_pks(cls, pks, *, api, **kwargs):
-        users = list(cls.filter(id=sorted(pks), api=api))
+        users = list(cls.filter(id__in=sorted(pks), api=api))
         return {user.pk: user for user in users}
 ```
 
@@ -550,17 +551,20 @@ server, such as the same tenant's. They keep the query's API.
 That works well when the DRF endpoint accepts requests like:
 
 ```text
-/users/?id=2&id=3
+/users/?id__in=2,3
 ```
 
-If your API uses a different shape, such as `id__in=2,3`, which
-`cls.filter(id__in=pks, api=api)` sends by default, or a custom bulk action,
-implement that shape directly in `bulk_get_by_pks()`. `id__in=2&id__in=3` needs
-`list_lookup_style = "repeat"` on the `API`, and django-filter reads only the
-last of those.
+`filter()` does not send a collection for `id` itself, as in
+`cls.filter(id=sorted(pks))`, because django-filter applies only the last of a
+repeated `id`, so it raises `ValueError`. If your API reads repeated
+parameters, such as `id=2&id=3`, or uses a custom bulk action, request that
+shape directly in `bulk_get_by_pks()`, as the example below does.
+`id__in=2&id__in=3` needs `list_lookup_style = "repeat"` on the `API`, and
+django-filter reads only the last of those.
 
 On the DRF server side, the simplest pattern is to expose a normal list
-endpoint that accepts repeated query parameters and filters by primary key:
+endpoint that accepts a comma-separated `id__in` parameter and filters by
+primary key:
 
 ```python
 from rest_framework import viewsets
@@ -572,8 +576,8 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        ids = self.request.query_params.getlist("id")
-        if ids:
+        ids = self.request.query_params.get("id__in", "").split(",")
+        if ids != [""]:
             queryset = queryset.filter(pk__in=ids)
         return queryset
 ```
@@ -581,7 +585,7 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 That gives the client a bulk lookup shape like:
 
 ```text
-/users/?id=2&id=3&id=5
+/users/?id__in=2,3,5
 ```
 
 If you need tighter control, you can also expose a dedicated DRF action for
@@ -624,8 +628,8 @@ database N+1 queries.
 Prefetch passes `bulk_get_by_pks()` each key in the form that the related model
 writes, which is the value that the server sent for an `int` or `str` key and
 the canonical text for a `UUID`. The method receives a `UUID` key as `str`, and
-`filter(id=sorted(pks))` builds each key, so it takes that text for a `UUID`
-key and refuses a text `"3"` for an `int` key.
+`filter(id__in=sorted(pks))` builds each key, so it takes that text for a
+`UUID` key and refuses a text `"3"` for an `int` key.
 
 ## Preserve laziness with batch prefetch
 

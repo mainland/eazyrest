@@ -415,7 +415,7 @@ class PriceModel(DRFBase):
 # writes them. The first is a model whose hook filters by repeated ids. The
 # second is a hook that requests the bulk action.
 FilteredUserRecipe = run_guide_example(
-    "users = list(cls.filter(id=sorted(pks), api=api))",
+    "users = list(cls.filter(id__in=sorted(pks), api=api))",
     doc=DRF,
     DRFObject=DRFBase,
     json_object=json_object,
@@ -627,20 +627,28 @@ def _recorded_urls(api: API) -> Generator[list[str], None, None]:
 
 
 @pytest.mark.parametrize(
-    ("team_model", "bulk_path"),
+    ("team_model", "bulk_path", "name", "separator"),
     [
-        (FilteredTeamModel, "/filtered-users/"),
-        (ActionTeamModel, "/users/bulk/"),
+        (FilteredTeamModel, "/filtered-users/", "id__in", ","),
+        (ActionTeamModel, "/users/bulk/", "id", None),
     ],
 )
 def test_bulk_recipes_prefetch_members_in_one_request(
-    api: API, team_member_keys: list[int], team_model: Any, bulk_path: str
+    api: API,
+    team_member_keys: list[int],
+    team_model: Any,
+    bulk_path: str,
+    name: str,
+    separator: str | None,
 ) -> None:
     """Each bulk recipe, client and server, loads every member at once.
 
     Args:
         team_model: Team model whose member model uses one recipe.
         bulk_path: Path that the recipe's bulk request reads.
+        name: Query parameter that carries the keys.
+        separator: What joins the keys in one value of the parameter, or
+            ``None`` if the parameter is repeated.
     """
     with _recorded_urls(api) as urls:
         teams = list(
@@ -654,7 +662,11 @@ def test_bulk_recipes_prefetch_members_in_one_request(
     assert len(urls) == 2
     bulk = urlsplit(urls[1])
     assert bulk.path == bulk_path
-    assert sorted(map(int, parse_qs(bulk.query)["id"])) == team_member_keys
+    values = parse_qs(bulk.query)[name]
+    if separator is not None:
+        (joined,) = values
+        values = joined.split(separator)
+    assert sorted(map(int, values)) == team_member_keys
 
 
 def test_an_in_lookup_matches_every_listed_object(
