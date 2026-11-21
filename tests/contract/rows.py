@@ -617,15 +617,39 @@ def key_read_from_json(world: World) -> None:
     BUILD,
     pending="a key of the wrong JSON type is built without an error",
 )
-def a_wrong_key_in_json_is_refused_when_read(world: World) -> None:
-    user = User(json={"id": "7"})
-    error = raises(world, FieldConversionError, lambda: user.pk, "User.id")
-    assert "json" in str(error)
-    raises(world, FieldConversionError, lambda: user.id, "User.id")
-    same = user
-    assert user == same
-    assert user != User(json={"id": "7"})
-    raises(world, TypeError, lambda: hash(user))
+def a_wrong_key_in_json_is_refused(world: World) -> None:
+    raises(
+        world,
+        FieldConversionError,
+        lambda: User(json={"id": "7"}),
+        "User.id",
+    )
+
+
+@row(BUILD, pending="an object is built without its key")
+def a_missing_key_is_refused(world: World) -> None:
+    for build in (lambda: User(), lambda: User(id=None)):
+        raises(world, TypeError, build, "User.id", "create()")
+
+
+@row(
+    BUILD,
+    pending="an object built from fields without its key raises ValueError "
+    "when it loads, not TypeError when it is built",
+)
+def fields_without_the_key_are_refused(world: World) -> None:
+    raises(world, TypeError, lambda: User(name="a"), "User.id", "create()")
+
+
+@row(BUILD, pending="an object is built from JSON without its key")
+def json_without_the_key_is_refused(world: World) -> None:
+    for body in ({}, {"id": None}):
+        raises(
+            world,
+            FieldConversionError,
+            lambda: User(json=body),
+            "User.id",
+        )
 
 
 @row(BUILD)
@@ -863,6 +887,17 @@ def an_embedded_object_is_read_without_a_request(world: World) -> None:
     assert obj.owner is not None
     assert obj.owner.name == "a"
     assert world.count == 0
+
+
+@row(
+    OWNER,
+    pending="an embedded object without a key is read without an error",
+)
+def an_embedded_object_without_a_key_is_refused_when_read(
+    world: World,
+) -> None:
+    obj = post(owner={"name": "a"})
+    raises(world, FieldConversionError, lambda: obj.owner, "Post.owner", "key")
 
 
 @row(OWNER)
@@ -1600,6 +1635,51 @@ def get_or_create_by_id_posts_the_key(world: World) -> None:
     assert unquote(urlsplit(world.requests[-2].url).query) == "id=7"
 
 
+RESPONSES_WITHOUT_THE_KEY: list[dict[str, Any]] = [
+    {},
+    {"id": None, "name": "a"},
+]
+
+
+@row(
+    CREATE,
+    pending="a response without the key builds an object without one",
+)
+def a_response_without_the_key_is_refused_after_create(
+    world: World,
+) -> None:
+    for body in RESPONSES_WITHOUT_THE_KEY:
+        world.mocker.post(requests_mock.ANY, json=body)
+        error = raises(
+            world,
+            ResponseShapeError,
+            lambda: User.create(name="a"),
+            "created",
+            requests=1,
+        )
+        names(str(error), "User.id")
+
+
+@row(
+    CREATE,
+    pending="a response without the key builds an object without one",
+)
+def a_response_without_the_key_is_refused_after_get_or_create(
+    world: World,
+) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    for body in RESPONSES_WITHOUT_THE_KEY:
+        world.mocker.post(requests_mock.ANY, json=body)
+        raises(
+            world,
+            ResponseShapeError,
+            lambda: User.get_or_create(name="a"),
+            "created",
+            "User.id",
+            requests=2,
+        )
+
+
 @row(CREATE)
 def a_model_without_a_key_cannot_be_created(world: World) -> None:
     raises(world, UsageError, lambda: Entry.create(name="x"))
@@ -1637,6 +1717,87 @@ def another_key_is_refused_when_merging(world: World) -> None:
             )
             assert user.pk == 7
             assert user.name == "a"
+
+
+@row(
+    FULL,
+    pending="a query item without the key builds an object without one",
+)
+def a_query_item_without_the_key_is_refused(world: World) -> None:
+    items = [{"id": 1, "name": "a"}, {"name": "a"}]
+    world.mocker.get(requests_mock.ANY, json=items)
+    for call in (
+        lambda: list(User.filter()),
+        lambda: list(User.all()),
+        lambda: User.get_page(),
+    ):
+        raises(
+            world,
+            ResponseShapeError,
+            call,
+            "User.id",
+            "[1]",
+            requests=1,
+        )
+    world.mocker.get(requests_mock.ANY, json=items[1:])
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: User.get(),
+        "User.id",
+        "[0]",
+        requests=1,
+    )
+
+
+@row(
+    FULL,
+    pending="a key of the wrong JSON type in a response is built "
+    "without an error",
+)
+def a_response_key_of_the_wrong_type_is_refused(world: World) -> None:
+    body = {"id": "7", "name": "a"}
+    world.mocker.post(requests_mock.ANY, json=body)
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: User.create(name="a"),
+        "User.id",
+        requests=1,
+    )
+    world.mocker.get(requests_mock.ANY, json=[])
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: User.get_or_create(name="a"),
+        "User.id",
+        requests=2,
+    )
+    world.mocker.get(requests_mock.ANY, json=[body])
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: list(User.filter()),
+        "User.id",
+        "[0]",
+        requests=1,
+    )
+
+
+@row(FULL)
+def a_loaded_response_without_the_key_keeps_the_key(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json={"name": "a"})
+    user = User(id=7)
+    assert user.name == "a"
+    assert user.pk == 7
+    assert world.requests[-1].path == "/users/7/"
+
+
+@row(FULL)
+def a_loaded_response_with_a_null_key_is_refused(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json={"id": None, "name": "a"})
+    user = User(id=7)
+    raises(world, ResponseShapeError, lambda: user.name, requests=1)
 
 
 PREFETCH = "prefetch"
@@ -1796,14 +1957,28 @@ def key_types_have_their_schema(world: World) -> None:
         }
 
 
-@row(SCHEMA)
-def a_relation_is_read_as_a_key_or_an_object(world: World) -> None:
-    assert schema_property(Post, "read", "owner") == {
-        "anyOf": [
-            {"anyOf": [{"type": "integer"}, {"type": "object"}]},
-            {"type": "null"},
-        ]
+def alternatives(schema: Any) -> list[Any]:
+    """Return the schemas that a schema allows, through nested ``anyOf``."""
+    if not isinstance(schema, dict) or "anyOf" not in schema:
+        return [schema]
+    return [alt for item in schema["anyOf"] for alt in alternatives(item)]
+
+
+@row(
+    SCHEMA,
+    pending="a relation's read schema allows an object without the key",
+)
+def a_relation_is_read_as_a_key_or_an_object_with_its_key(
+    world: World,
+) -> None:
+    keyed_object = {
+        "type": "object",
+        "required": ["id"],
+        "properties": {"id": {"type": "integer"}},
     }
+    found = alternatives(schema_property(Post, "read", "owner"))
+    expected = [{"type": "integer"}, keyed_object, {"type": "null"}]
+    assert sorted(found, key=json.dumps) == sorted(expected, key=json.dumps)
 
 
 @row(SCHEMA)
