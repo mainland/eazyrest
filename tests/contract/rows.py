@@ -502,6 +502,30 @@ def wrapped_refused_forms_refused(world: World) -> None:
 
 
 @row(DECL)
+def optional_items_refused(world: World) -> None:
+    for annotation in (
+        list[Optional[Tag]],
+        list[Tag | None],
+        set[Optional[Tag]],
+        tuple[Tag | None, ...],
+    ):
+        refused_form(annotation, "every item has a key")
+
+
+@row(DECL)
+def collections_of_relation_collections_refused(world: World) -> None:
+    for annotation in (
+        list[list[Tag]],
+        list[set[Tag]],
+        tuple[list[Tag], ...],
+        Collection[list[Tag]],
+        Iterable[set[Tag]],
+        list[Collection[Tag]],
+    ):
+        refused_form(annotation)
+
+
+@row(DECL)
 def collections_of_values_admitted(world: World) -> None:
     model = declare_field(list[int])
     assert model(json={"id": 1, "items": [1, 2]}).items == [1, 2]
@@ -660,6 +684,19 @@ def a_deep_copy_shares_only_the_api(world: World) -> None:
     original = post()
     assert original.owner is not None
     assert_copy_as_deepcopy(original, copy.deepcopy(original))
+
+
+@row(EQ)
+def a_copy_shares_the_api_given_as_api(world: World) -> None:
+    api = API("https://given.example/")
+    original = Post(json=BODY, api=api)
+    assert original.owner is not None
+    assert original.owner.api is api
+    for duplicate in (copy.copy(original), copy.deepcopy(original)):
+        assert_copy_as_deepcopy(original, duplicate)
+        assert duplicate.api is api
+        assert duplicate.owner is not None
+        assert duplicate.owner.api is api
 
 
 @row(EQ)
@@ -1194,6 +1231,29 @@ def an_object_of_another_model_is_refused_in_a_query(world: World) -> None:
 @row(OWN)
 def two_parameters_naming_the_key_are_refused(world: World) -> None:
     refuses_query(world, Post, ValueError, "pk", "id", pk=7, id=8)
+    refuses_query(
+        world, Post, ValueError, "pk__exact", "id", pk__exact=7, id=8
+    )
+    refuses_query(
+        world, Post, ValueError, "id__exact", "pk", id__exact=7, pk=8
+    )
+
+
+@row(OWN)
+def a_collection_for_a_lookup_of_one_value_is_refused(world: World) -> None:
+    for name in (
+        "id",
+        "id__exact",
+        "id__gt",
+        "id__gte",
+        "id__lt",
+        "id__lte",
+        "pk",
+        "pk__exact",
+        "pk__gt",
+    ):
+        for value in ([7, 8], (7, 8), {7, 8}):
+            refuses_query(world, Post, ValueError, name, **{name: value})
 
 
 @row(OWN)
@@ -1251,6 +1311,12 @@ def an_object_of_another_model_is_refused_for_the_relation(
 
 
 @row(REL)
+def a_collection_for_a_single_relation_is_refused(world: World) -> None:
+    for name in ("owner", "owner__exact", "owner__gt"):
+        refuses_query(world, Post, ValueError, name, **{name: [7, 8]})
+
+
+@row(REL)
 def several_keys_are_joined(world: World) -> None:
     sends_query(world, Post, "owner__in=7,8", owner__in=[7, User(id=8)])
 
@@ -1271,6 +1337,13 @@ def a_collection_relation_takes_a_key_or_an_object(world: World) -> None:
 @row(REL)
 def a_list_of_keys_repeats_the_parameter(world: World) -> None:
     sends_query(world, Post, "tags=a&tags=b", tags=["a", "b"])
+
+
+@row(REL)
+def a_list_of_keys_for_an_exact_lookup_is_refused(world: World) -> None:
+    refuses_query(
+        world, Post, ValueError, "tags__exact", tags__exact=["a", "b"]
+    )
 
 
 THROUGH = "queries-through-a-relation"
@@ -1341,6 +1414,17 @@ def a_structured_value_is_refused_by_a_comparing_suffix(
 ) -> None:
     for name in ("point__exact", "point__gt"):
         refuses_query(world, Post, ValueError, name, **{name: (1, 2)})
+
+
+@row(STRUCT)
+def a_collection_of_structured_values_is_refused(world: World) -> None:
+    refuses_query(
+        world,
+        Post,
+        ValueError,
+        "point__gt",
+        point__gt=[(1, 2), (3, 4)],
+    )
 
 
 @row(STRUCT)
