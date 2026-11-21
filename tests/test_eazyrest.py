@@ -2338,38 +2338,37 @@ def test_prefetches_scalar_members_from_mixed_related_collection(
 @pytest.mark.parametrize(
     ("members", "expected_names", "expected_ids"),
     [
-        ([None], [None], []),
+        ([{"id": 3, "name": "Grace"}], ["Grace"], []),
         (
-            [2, None, {"id": 3, "name": "Grace"}, 2],
-            ["Ada", None, "Grace", "Ada"],
+            [2, {"id": 3, "name": "Grace"}, 2],
+            ["Ada", "Grace", "Ada"],
             ["2"],
         ),
     ],
 )
-def test_prefetch_skips_null_collection_members(
+def test_prefetch_skips_embedded_collection_members(
     requests_mock: Any,
     members: list[Any],
-    expected_names: list[str | None],
+    expected_names: list[str],
     expected_ids: list[str],
 ) -> None:
-    """Null and embedded members need no primary-key lookup.
+    """Embedded members need no primary-key lookup.
 
     Args:
         members: JSON value of the team's ``members`` collection.
-        expected_names: Names of the loaded members, with ``None`` for a null
-            member.
+        expected_names: Names of the loaded members.
         expected_ids: Primary keys that the prefetch request should ask for, as
             query-string values.
     """
 
     @json_object
     class MaybeTeam(ModelBase):
-        """Model with nullable members in a related collection."""
+        """Model with a related collection that embeds some members."""
 
         class_url = "/maybe-teams/"
 
         id: int
-        members: list[User | None]
+        members: list[User]
 
     requests_mock.get(
         "https://example.com/v1/maybe-teams/",
@@ -2381,9 +2380,7 @@ def test_prefetch_skips_null_collection_members(
 
     team = next(MaybeTeam.filter(prefetch="members"))
 
-    assert [
-        member.name if member is not None else None for member in team.members
-    ] == expected_names
+    assert [member.name for member in team.members] == expected_names
     assert users.call_count == bool(expected_ids)
     if expected_ids:
         assert users.last_request.qs == {"id__in": [",".join(expected_ids)]}

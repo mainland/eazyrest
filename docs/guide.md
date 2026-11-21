@@ -721,13 +721,16 @@ item with an object of the same key, such as one of a subclass, is not a
 change. `Collection[User]` and `Iterable[User]`, also optional or in a
 `NewType`, raise `TypeError` when the class is decorated, naming the field,
 because neither says. Declare `list[User]` or `set[User]` instead. `Iterable`
-is left for a related collection that a query loads. Every item has a key. An
-item that the server embeds without one raises `FieldConversionError` naming
-the field and the item's position when the field is read, and so does
-assigning, saving, or giving to `create()` a collection that holds an object
-without a key. A save of another field does not read or send a collection that
-you did not read. Declare items that have no key as a `TypedDict` or a
-dataclass, which need none.
+is left for a related collection that a query loads. Every item has a key, so
+no item is `None` and no item is a collection of related objects:
+`list[User | None]` and `list[list[User]]`, also optional, in a `NewType`, or
+under another collection type, raise `TypeError` when the class is decorated,
+naming the field. An item that the server embeds without one raises
+`FieldConversionError` naming the field and the item's position when the field
+is read, and so does assigning, saving, or giving to `create()` a collection
+that holds an object without a key. A save of another field does not read or
+send a collection that you did not read. Declare items that have no key as a
+`TypedDict` or a dataclass, which need none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps

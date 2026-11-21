@@ -6,7 +6,7 @@ import copy
 import enum
 import pickle
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import Any, ClassVar, Literal, NewType, TypedDict
 
 import pytest
@@ -1669,3 +1669,78 @@ def test_a_lookup_of_several_values_and_a_collection_field_take_a_collection(
         "id__in": ["7,8"],
         "readers": ["1", "2"],
     }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        list[User | None],
+        set[User | None],
+        tuple[User | None, ...],
+        list[User | None] | None,
+    ],
+)
+def test_a_collection_of_optional_relations_is_refused(
+    annotation: Any,
+) -> None:
+    """Every item has a key, so no item is ``None``."""
+    with pytest.raises(TypeError, match=r"Bad\.items.*every item has a key"):
+        _declare_items(annotation)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        list[list[User]],
+        list[set[User]],
+        tuple[list[User], ...],
+        Collection[list[User]],
+        Iterable[set[User]],
+        list[Collection[User]],
+        list[list[User] | None],
+    ],
+)
+def test_a_collection_of_relation_collections_is_refused(
+    annotation: Any,
+) -> None:
+    """A collection of relations holds relations and nothing else."""
+    with pytest.raises(TypeError, match=r"Bad\.items.*collections of"):
+        _declare_items(annotation)
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        list[User] | None,
+        list[int],
+        list[int | None],
+        list[list[int]],
+        set[str | None],
+    ],
+)
+def test_a_collection_that_holds_no_optional_or_nested_relation_is_admitted(
+    annotation: Any,
+) -> None:
+    """The refusals are of relations, so values and outer optionals stay."""
+    _declare_items(annotation)
+
+
+def _declare_items(annotation: Any) -> Any:
+    """Decorate a model whose field ``items`` has the given annotation.
+
+    Args:
+        annotation: Type of the field.
+
+    Returns:
+        The decorated model.
+    """
+    return json_object(
+        type(
+            "Bad",
+            (RelatedBase,),
+            {
+                "class_url": "/bad/",
+                "__annotations__": {"id": int, "items": annotation},
+            },
+        )
+    )

@@ -3579,16 +3579,62 @@ def _require_item_key(item: Any, model: type[JSONObject]) -> None:
         )
 
 
+def _declaration_error(message: str) -> TypeError:
+    """Return the error for a field's declaration that is refused.
+
+    Args:
+        message: What is refused and what to declare instead.
+
+    Returns:
+        A ``TypeError`` that a conversion reports as a plain ``TypeError``, as
+        decorating the class does, not as the conversion of a value.
+    """
+    error = TypeError(message)
+    setattr(error, _DECLARATION_ERROR, True)
+    return error
+
+
+def _inside_wrappers(analyzed: AnalyzedType) -> AnalyzedType:
+    """Return a type without its optional and ``NewType`` wrappers.
+
+    Args:
+        analyzed: Analyzed type metadata.
+
+    Returns:
+        The type inside any ``OptionalType`` and ``NewTypeType`` wrappers.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    while isinstance(analyzed, NewTypeType):
+        analyzed = _unwrap_optional_type(analyzed.inner)
+    return analyzed
+
+
+def _holds_relations(analyzed: CollectionType) -> bool:
+    """Return whether a collection holds relations at any depth.
+
+    Args:
+        analyzed: A collection's analyzed type.
+
+    Returns:
+        Whether its items, or the items of its items, are relations.
+    """
+    item = _inside_wrappers(analyzed.item_type)
+    if isinstance(item, CollectionType):
+        return _holds_relations(item)
+    return isinstance(item, RelatedType)
+
+
 def _check_relation_collection(
     cls: type[JSONObject], field: str, analyzed: AnalyzedType
 ) -> None:
-    """Refuse a collection of relations that does not say if order counts.
+    """Refuse a collection of relations that cannot be compared by its keys.
 
     A change made in place to a collection of relations is found by comparing
     the items' keys, in order for a sequence and without order for a set, so
     the annotation must name one of the two. ``Collection`` and ``Iterable`` do
     not, and ``Iterable`` is left free for a related collection that a query
-    loads.
+    loads. Every item has a key, so an item is not optional, and an item is not
+    itself a collection of relations.
 
     Args:
         cls: Model class that declares the field.
@@ -3596,22 +3642,36 @@ def _check_relation_collection(
         analyzed: Analyzed type of the field.
 
     Raises:
-        TypeError: If the field, inside any optional or ``NewType``, or an item
-            of it, is a ``Collection`` or an ``Iterable`` of relations.
+        TypeError: If the field, inside any optional or ``NewType``, is a
+            ``Collection`` or an ``Iterable`` of relations, or its item type is
+            optional, or its item is a collection of relations.
     """
-    analyzed = _unwrap_optional_type(analyzed)
-    while isinstance(analyzed, NewTypeType):
-        analyzed = _unwrap_optional_type(analyzed.inner)
+    analyzed = _inside_wrappers(analyzed)
     if not isinstance(analyzed, CollectionType):
         return
-    item = _unwrap_optional_type(analyzed.item_type)
-    if not isinstance(item, RelatedType):
-        _check_relation_collection(cls, field, item)
+    item = _inside_wrappers(analyzed.item_type)
+    if isinstance(item, CollectionType):
+        if _holds_relations(item):
+            raise _declaration_error(
+                f"{cls.__name__}.{field} is a collection of collections of "
+                "relations. A collection of relations holds relations and "
+                "nothing else, so declare one collection, such as a list of "
+                "the related model."
+            )
         return
+    if not isinstance(item, RelatedType):
+        return
+    model = item.model_type.__name__
+    if isinstance(analyzed.item_type, OptionalType):
+        raise _declaration_error(
+            f"{cls.__name__}.{field} is a collection of optional {model}, "
+            f"but every item has a key, so no item is None. Declare "
+            f"{model} as the item type, and the collection optional if the "
+            "server may send none."
+        )
     kind = analyzed.collection_type
     if kind not in (Collection, Iterable):
         return
-    model = item.model_type.__name__
     name, article = (
         ("Collection", "a") if kind is Collection else ("Iterable", "an")
     )
@@ -3621,15 +3681,11 @@ def _check_relation_collection(
         else f"a sequence, such as Sequence[{model}], or a set, such as "
         f"set[{model}]"
     )
-    error = TypeError(
+    raise _declaration_error(
         f"{cls.__name__}.{field} is {article} {name} of {model}, which does "
         "not say whether the order of its items counts, so eazyrest cannot "
         f"tell a change made in place from none. Declare {advice}."
     )
-    # A conversion reports the error as a plain TypeError, as decorating the
-    # class does, not as the conversion of a value.
-    setattr(error, _DECLARATION_ERROR, True)
-    raise error
 
 
 def _analyze_field(
@@ -4128,9 +4184,11 @@ def json_object(
             Declare nested JSON without a key as a ``TypedDict`` or a
             dataclass. Also raised if a field is a ``Collection`` or an
             ``Iterable`` of a model, alone or inside an optional or a
-            ``NewType``, which does not say whether order counts. A class
-            defined later raises when the field is first used. A key whose type
-            is not yet defined raises when the key is first used.
+            ``NewType``, which does not say whether order counts, or a
+            collection of models whose item type is optional or is itself a
+            collection of models. A class defined later raises when the field
+            is first used. A key whose type is not yet defined raises when the
+            key is first used.
     """
     if field_map is None:
         field_map = {}
@@ -4151,7 +4209,9 @@ def json_object(
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
             TypeError: If a field's type is a model without a primary-key
-                field, or a ``Collection`` or an ``Iterable`` of a model.
+                field, a ``Collection`` or an ``Iterable`` of a model, or a
+                collection of models with an optional item or an item that is a
+                collection of models.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))

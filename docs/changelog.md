@@ -34,6 +34,13 @@ describe them further.
   made in place is found by comparing the items' keys, in order for a sequence
   and without order for a set, so replacing an item with an object of the same
   key is not a change. A set is sent as its distinct keys, sorted.
+- The items of a collection of related objects are not optional and are not
+  collections of related objects. `list[User | None]`, `set[User | None]`, and
+  `tuple[User | None, ...]` raise `TypeError` when the class is decorated,
+  naming the field, as do `list[list[User]]`, `list[set[User]]`, and any other
+  collection of such collections. `v1.0.0a5` admitted both, and read a `null`
+  item as `None`, though the server's serializer never sends one. Declare the
+  items as `User`, and the collection optional if the server may send none.
 - A parameter that compares one value of a field, the field's name or a lookup
   with the suffix `exact`, `gt`, `gte`, `lt`, or `lte`, raises `ValueError`
   naming the parameter before any request when it is given a collection, as in
