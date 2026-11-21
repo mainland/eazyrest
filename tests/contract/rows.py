@@ -6,9 +6,10 @@ class and by the field or parameter that it names. ``test_rows.py`` runs every
 row as one assertion.
 
 A row that raises means that it raises before any request, with nothing changed
-on the object. A row that names an exception class asserts that class by
-``isinstance``, so a ``FieldConversionError`` meets a row that asks for a
-``ValueError``.
+on the object. A row that names an exception class asserts exactly that class,
+so a ``FieldConversionError`` does not meet a row that asks for a
+``ValueError``. A name that a row asks the message to hold is matched as a
+whole name, so ``id`` is not found in ``Post.id`` or ``postId``.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import datetime
 import enum
 import json
 import pickle
+import re
 import uuid
 from collections import deque
 from collections.abc import (
@@ -186,28 +188,44 @@ class World:
         ]
 
 
+def names(message: str, *named: str) -> None:
+    """Assert that a message holds each text as a whole name.
+
+    A text is whole if no letter, digit, underscore, or dot comes before or
+    after it, so ``id`` is not found in ``Post.id`` and ``Post`` is not found
+    in ``Posts``.
+    """
+    for text in named:
+        found = re.search(rf"(?<![\w.]){re.escape(text)}(?!\w)", message)
+        assert found, (text, message)
+
+
 def raises(
     world: World,
-    exc: type[BaseException],
+    exc: type[Exception],
     call: Callable[[], Any],
     *named: str,
     requests: int = 0,
-) -> BaseException:
-    """Assert that a call raises ``exc``, naming each given text.
+) -> Exception:
+    """Assert that a call raises exactly ``exc``, naming each given text.
 
     The error is raised before any request, unless ``requests`` says how many
     have been sent by then.
     """
     before = world.count
-    caught: BaseException | None = None
+    caught: Exception | None = None
     try:
         call()
-    except exc as error:
+    except Exception as error:
+        if type(error) is not exc:
+            raise AssertionError(
+                f"{type(error).__name__} was raised, not {exc.__name__}: "
+                f"{error}"
+            ) from error
         caught = error
     if caught is None:
         raise AssertionError(f"{exc.__name__} was not raised")
-    for text in named:
-        assert text in str(caught), (text, str(caught))
+    names(str(caught), *named)
     assert world.count - before == requests
     return caught
 
@@ -219,6 +237,8 @@ def lookups(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
         lambda: model.get(**kw),
         lambda: model.get_or_create(**kw),
         lambda: list(model.filter(params=kw)),
+        lambda: model.get(params=kw),
+        lambda: model.get_or_create(params=kw),
     ]
 
 
@@ -233,7 +253,7 @@ def sends_query(
 def refuses_query(
     world: World,
     model: type[JSONObject],
-    exc: type[BaseException],
+    exc: type[Exception],
     *named: str,
     **kw: Any,
 ) -> None:
@@ -304,6 +324,26 @@ class Colour(enum.Enum):
 Wrapped = NewType("Wrapped", int)
 
 
+def refused_key(world: World, annotation: Any, **extra: Any) -> None:
+    """Assert that a key type is refused, and the types to declare named.
+
+    The message names the field and offers ``str``, ``int``, and ``UUID``, and
+    no type that a key may not be.
+    """
+    error = raises(
+        world,
+        TypeError,
+        lambda: declare_key(annotation, **extra),
+        "T.id",
+        "str",
+        "int",
+        "UUID",
+    )
+    for other in ("datetime", "Decimal", "enum"):
+        if other.lower() not in repr(annotation).lower():
+            assert other not in str(error), (other, str(error))
+
+
 @row(KEY)
 def int_str_uuid_admitted(world: World) -> None:
     for annotation in (int, str, uuid.UUID):
@@ -336,20 +376,13 @@ def converted_newtype_refused(world: World) -> None:
             encode=lambda value, _: int(value),
         )
     }
-    error = raises(
-        world,
-        TypeError,
-        lambda: declare_key(Wrapped, conversions=conversions),
-        "id",
-    )
-    assert "UUID" in str(error)
+    refused_key(world, Wrapped, conversions=conversions)
 
 
 @row(KEY, pending="a Literal is admitted as a key")
 def literal_key_refused(world: World) -> None:
     for annotation in (Literal["a", "b"], Literal[1, 2]):
-        error = raises(world, TypeError, lambda: declare_key(annotation), "id")
-        assert "UUID" in str(error)
+        refused_key(world, annotation)
 
 
 @row(KEY, pending="an enum, Decimal, or temporal type is admitted as a key")
@@ -362,8 +395,7 @@ def enum_decimal_temporal_key_refused(world: World) -> None:
         datetime.time,
         datetime.timedelta,
     ):
-        error = raises(world, TypeError, lambda: declare_key(annotation), "id")
-        assert "UUID" in str(error)
+        refused_key(world, annotation)
 
 
 @row(KEY)
@@ -371,15 +403,19 @@ def other_key_types_refused(world: World) -> None:
     class Slug(str):
         pass
 
+    class Count(int):
+        pass
+
     for annotation in (
         bool,
         float,
         Slug,
+        Count,
         list[int],
         dict[str, int],
         Union[int, str],
     ):
-        raises(world, TypeError, lambda: declare_key(annotation), "id")
+        raises(world, TypeError, lambda: declare_key(annotation), "T.id")
 
 
 @row(KEY, pending="a relation is admitted as the key")
@@ -398,8 +434,7 @@ def relation_key_refused(world: World) -> None:
             )
         )
 
-    error = raises(world, TypeError, build, "user")
-    assert "key" in str(error)
+    raises(world, TypeError, build, "Profile.user", "int")
 
 
 @row(KEY)
@@ -471,16 +506,24 @@ def frozen_set_forms_read_as_a_frozenset(world: World) -> None:
         reads_as(annotation, frozenset)
 
 
-def refused_form(annotation: Any, *named: str) -> None:
+def refused_form(annotation: Any, *named: str) -> str:
+    """Assert that a field type is refused, naming ``items`` and the texts.
+
+    Returns:
+        The message of the error.
+    """
     error = None
     try:
         declare_field(annotation)
     except TypeError as caught:
+        if type(caught) is not TypeError:
+            raise AssertionError(
+                f"{type(caught).__name__} was raised"
+            ) from caught
         error = caught
     assert error is not None, "the declaration was admitted"
-    for text in named:
-        assert text in str(error), (text, str(error))
-    assert "items" in str(error)
+    names(str(error), "T.items", *named)
+    return str(error)
 
 
 @row(DECL)
@@ -490,7 +533,8 @@ def collection_refused(world: World) -> None:
 
 @row(DECL)
 def iterable_refused(world: World) -> None:
-    refused_form(Iterable[Tag], "Sequence[Tag]", "set[Tag]")
+    message = refused_form(Iterable[Tag], "Sequence[Tag]", "set[Tag]")
+    assert message.index("Sequence[Tag]") < message.index("set[Tag]")
 
 
 @row(DECL)
@@ -538,7 +582,7 @@ def collections_of_values_admitted(world: World) -> None:
 @row(DECL)
 def fixed_tuples_and_mappings_refused(world: World) -> None:
     for annotation in (tuple[Tag, Tag], dict[str, Tag]):
-        raises(world, TypeError, lambda: declare_field(annotation), "items")
+        raises(world, TypeError, lambda: declare_field(annotation), "T.items")
 
 
 BUILD = "building-an-object"
@@ -658,7 +702,7 @@ def a_model_with_no_key_is_equal_only_to_itself(world: World) -> None:
     same = entry
     assert entry == same
     assert entry != Entry(json={"name": "x"})
-    assert hash(entry) == hash(entry)
+    assert hash(entry) == object.__hash__(entry)
 
 
 def assert_copy_as_deepcopy(original: Post, duplicate: Post) -> None:
@@ -728,6 +772,7 @@ def the_same_key_does_nothing(world: World) -> None:
     user = User(id=7)
     user.id = 7
     assert user.pk == 7
+    user.save()
     assert world.count == 0
 
 
@@ -829,6 +874,24 @@ def a_full_save_sends_an_embedded_owner_as_its_key(world: World) -> None:
 
 COLL = "a-collection-of-relations"
 
+SEQUENCES = ("tags", "tagt", "tagq")
+"""The sequence forms of a collection of tags: a list, a tuple, a deque."""
+
+CHANGED_IN_PLACE = ("tags", "tagq")
+"""The sequence forms that change in place."""
+
+SETS = ("tagset", "tagfs")
+"""The set forms of a collection of tags: a set and a frozenset."""
+
+FORM: dict[str, type] = {
+    "tags": list,
+    "tagt": tuple,
+    "tagq": deque,
+    "tagset": set,
+    "tagfs": frozenset,
+}
+"""The type that each collection field reads as."""
+
 
 def patch_after(world: World, obj: Post, change: Callable[[Post], Any]) -> Any:
     change(obj)
@@ -845,122 +908,126 @@ def pks(items: Iterable[Any]) -> list[Any]:
     return [item.pk for item in items]
 
 
+def tag(slug: str) -> Tag:
+    return Tag(slug=slug)
+
+
 @row(COLL)
-def a_list_is_read_as_a_list_and_a_tuple_as_a_tuple(world: World) -> None:
-    obj = post(tags=["a", "b"], tagt=["a", "b"])
-    assert obj.tags == [Tag(slug="a"), Tag(slug="b")]
-    assert type(obj.tags) is list
-    assert obj.tagt == (Tag(slug="a"), Tag(slug="b"))
-    assert type(obj.tagt) is tuple
+def sequences_are_read_as_the_declared_type(world: World) -> None:
+    obj = post(tags=["a", "b"], tagt=["a", "b"], tagq=["a", "b"])
+    for field in SEQUENCES:
+        value: Any = getattr(obj, field)
+        items = list(value)
+        assert type(value) is FORM[field]
+        assert items == [tag("a"), tag("b")]
 
 
 @row(COLL)
 def an_embedded_item_is_read_by_its_key(world: World) -> None:
-    obj = post(tags=[{"slug": "a"}])
-    assert pks(obj.tags) == ["a"]
+    for field in SEQUENCES:
+        obj = post(**{field: [{"slug": "a"}]})
+        assert pks(getattr(obj, field)) == ["a"]
 
 
 @row(COLL)
 def an_item_without_a_key_is_refused_when_read(world: World) -> None:
-    obj = post(tags=["a", {"x": 1}])
-    error = raises(
-        world,
-        FieldConversionError,
-        lambda: obj.tags,
-        "Post.tags",
-        "[1]",
-        "TypedDict",
-        "dataclass",
-    )
-    assert error is not None
+    for field in SEQUENCES:
+        obj = post(**{field: ["a", {"x": 1}]})
+        raises(
+            world,
+            FieldConversionError,
+            lambda: getattr(obj, field),
+            f"Post.{field}",
+            "[1]",
+            "TypedDict",
+            "dataclass",
+        )
 
 
 @row(COLL)
 def an_assigned_collection_is_sent_as_keys(world: World) -> None:
-    for value in ([Tag(slug="b")], (Tag(slug="b"),)):
-        obj = post()
-        assert patch_after(
-            world,
-            obj,
-            lambda p: setattr(p, "tags", value),
-        ) == {"tags": ["b"]}
-        assert type(obj.tags) is list
-
-
-@row(COLL)
-def an_assigned_collection_reads_as_the_declared_type(world: World) -> None:
-    obj = post()
-    obj.tagt = [Tag(slug="b")]  # type: ignore[assignment]
-    assert type(obj.tagt) is tuple
+    for field in SEQUENCES:
+        for value in ([tag("b")], (tag("b"),)):
+            obj = post()
+            assert patch_after(
+                world, obj, lambda p: setattr(p, field, value)
+            ) == {field: ["b"]}
+            assert type(getattr(obj, field)) is FORM[field]
 
 
 @row(COLL)
 def an_assigned_item_of_another_model_is_refused(world: World) -> None:
-    obj = post()
-    raises(
-        world,
-        FieldConversionError,
-        lambda: setattr(obj, "tags", [Other(id=1)]),
-        "Post.tags",
-    )
+    for field in SEQUENCES:
+        obj = post()
+        raises(
+            world,
+            FieldConversionError,
+            lambda: setattr(obj, field, [Other(id=1)]),
+            f"Post.{field}",
+        )
 
 
 @row(COLL)
 def an_assigned_object_that_is_no_collection_is_refused(
     world: World,
 ) -> None:
-    obj = post()
-    raises(
-        world,
-        FieldConversionError,
-        lambda: setattr(obj, "tags", Tag(slug="b")),
-        "Post.tags",
-        "collection",
-    )
+    for field in SEQUENCES:
+        obj = post()
+        raises(
+            world,
+            FieldConversionError,
+            lambda: setattr(obj, field, tag("b")),
+            f"Post.{field}",
+            "collections",
+        )
 
 
 @row(COLL)
 def an_appended_item_is_sent(world: World) -> None:
-    obj = post()
-    assert patch_after(world, obj, lambda p: p.tags.append(Tag(slug="b"))) == {
-        "tags": ["a", "b"]
-    }
+    for field in CHANGED_IN_PLACE:
+        obj = post()
+        sent = patch_after(
+            world, obj, lambda p: getattr(p, field).append(tag("b"))
+        )
+        assert sent == {field: ["a", "b"]}
 
 
 @row(COLL)
 def a_replaced_item_is_sent(world: World) -> None:
-    obj = post()
+    for field in CHANGED_IN_PLACE:
+        obj = post()
 
-    def change(p: Post) -> None:
-        p.tags[0] = Tag(slug="b")
+        def change(p: Post) -> None:
+            getattr(p, field)[0] = tag("b")
 
-    assert patch_after(world, obj, change) == {"tags": ["b"]}
+        assert patch_after(world, obj, change) == {field: ["b"]}
 
 
 @row(COLL)
-def a_reordered_list_is_sent(world: World) -> None:
-    obj = post(tags=["a", "b"])
-    assert patch_after(world, obj, lambda p: p.tags.reverse()) == {
-        "tags": ["b", "a"]
-    }
+def a_reordered_collection_is_sent(world: World) -> None:
+    for field in CHANGED_IN_PLACE:
+        obj = post(**{field: ["a", "b"]})
+        sent = patch_after(world, obj, lambda p: getattr(p, field).reverse())
+        assert sent == {field: ["b", "a"]}
 
 
 @row(COLL)
 def an_item_added_to_the_left_of_a_deque_is_sent(world: World) -> None:
     obj = post(tagq=["a"])
-    assert patch_after(
-        world, obj, lambda p: p.tagq.appendleft(Tag(slug="b"))
-    ) == {"tagq": ["b", "a"]}
+    assert patch_after(world, obj, lambda p: p.tagq.appendleft(tag("b"))) == {
+        "tagq": ["b", "a"]
+    }
 
 
 @row(COLL)
 def a_new_object_of_the_same_key_sends_nothing(world: World) -> None:
-    obj = post()
+    for field in CHANGED_IN_PLACE:
+        obj = post()
 
-    def change(p: Post) -> None:
-        p.tags[0] = Tag(slug="a")
+        def change(p: Post) -> None:
+            getattr(p, field)[0] = tag("a")
 
-    assert patch_after(world, obj, change) is None
+        assert patch_after(world, obj, change) is None
 
 
 @row(COLL)
@@ -975,129 +1042,131 @@ def a_subclass_object_of_the_same_key_sends_nothing(world: World) -> None:
 
 @row(COLL)
 def a_saved_change_is_not_sent_again(world: World) -> None:
-    obj = post()
-    obj.tags.append(Tag(slug="b"))
-    obj.save()
-    before = world.count
-    obj.save()
-    assert world.count == before
+    for field in CHANGED_IN_PLACE:
+        obj = post()
+        getattr(obj, field).append(tag("b"))
+        obj.save()
+        before = world.count
+        obj.save()
+        assert world.count == before
 
 
 @row(COLL)
 def an_assigned_collection_is_copied(world: World) -> None:
-    first, second = post(), post(postId=2)
-    second.tags = first.tags
-    first.tags.append(Tag(slug="c"))
-    assert patch_after(world, first, lambda p: None) == {"tags": ["a", "c"]}
-    assert patch_after(world, second, lambda p: None) is None
+    for field in CHANGED_IN_PLACE:
+        first, second = post(), post(postId=2)
+        setattr(second, field, getattr(first, field))
+        getattr(first, field).append(tag("c"))
+        assert patch_after(world, first, lambda p: None) == {field: ["a", "c"]}
+        assert patch_after(world, second, lambda p: None) is None
 
 
 @row(COLL)
 def an_unread_collection_without_keys_is_not_sent(world: World) -> None:
-    obj = post(tags=[{"x": 1}])
+    for field in SEQUENCES:
+        obj = post(**{field: [{"x": 1}]})
 
-    def change(p: Post) -> None:
-        p.title = "x"
+        def change(p: Post) -> None:
+            p.title = "x"
 
-    assert patch_after(world, obj, change) == {"title": "x"}
+        assert patch_after(world, obj, change) == {"title": "x"}
 
 
 @row(COLL)
 def a_full_save_refuses_a_collection_without_keys(world: World) -> None:
-    obj = post(tags=[{"x": 1}])
-    raises(
-        world,
-        FieldConversionError,
-        lambda: obj.save(full=True),
-        "Post.tags",
-    )
+    for field in SEQUENCES:
+        obj = post(**{field: [{"x": 1}]})
+        raises(
+            world,
+            FieldConversionError,
+            lambda: obj.save(full=True),
+            f"Post.{field}",
+        )
 
 
 SET = "a-set-of-relations"
 
 
 @row(SET)
-def a_set_is_read_as_a_set_and_a_frozenset_as_a_frozenset(
-    world: World,
-) -> None:
+def sets_are_read_as_the_declared_type(world: World) -> None:
     obj = post()
-    assert obj.tagset == {Tag(slug="a"), Tag(slug="b")}
-    assert type(obj.tagset) is set
-    assert obj.tagfs == frozenset({Tag(slug="a"), Tag(slug="b")})
-    assert type(obj.tagfs) is frozenset
+    for field in SETS:
+        value = getattr(obj, field)
+        assert type(value) is FORM[field]
+        assert value == {tag("a"), tag("b")}
 
 
 @row(SET)
 def a_repeated_key_is_one_member(world: World) -> None:
-    for items in (["a", "a"], [{"slug": "a"}, {"slug": "a"}]):
-        obj = post(tagset=items)
-        assert len(obj.tagset) == 1
-        assert pks(obj.tagset) == ["a"]
+    for field in SETS:
+        for items in (["a", "a"], [{"slug": "a"}, {"slug": "a"}]):
+            obj = post(**{field: items})
+            assert len(getattr(obj, field)) == 1
+            assert pks(getattr(obj, field)) == ["a"]
 
 
 @row(SET)
 def a_set_item_without_a_key_is_refused_when_read(world: World) -> None:
-    obj = post(tagset=["a", {"x": 1}])
-    raises(
-        world,
-        FieldConversionError,
-        lambda: obj.tagset,
-        "Post.tagset",
-        "[1]",
-        "TypedDict",
-        "dataclass",
-    )
-
-
-@row(SET)
-def an_equal_frozenset_sends_nothing(world: World) -> None:
-    obj = post()
-    assert (
-        patch_after(
+    for field in SETS:
+        obj = post(**{field: ["a", {"x": 1}]})
+        raises(
             world,
-            obj,
-            lambda p: setattr(
-                p, "tagfs", frozenset({Tag(slug="a"), Tag(slug="b")})
-            ),
+            FieldConversionError,
+            lambda: getattr(obj, field),
+            f"Post.{field}",
+            "[1]",
+            "TypedDict",
+            "dataclass",
         )
-        is None
-    )
 
 
 @row(SET)
-def another_frozenset_is_sent_sorted(world: World) -> None:
-    obj = post()
-    assert patch_after(
-        world,
-        obj,
-        lambda p: setattr(
-            p, "tagfs", frozenset({Tag(slug="c"), Tag(slug="a")})
-        ),
-    ) == {"tagfs": ["a", "c"]}
+def an_equal_set_sends_nothing(world: World) -> None:
+    for field in SETS:
+        for kind in (set, frozenset):
+            obj = post()
+            same = kind({tag("a"), tag("b")})
+            assert (
+                patch_after(world, obj, lambda p: setattr(p, field, same))
+                is None
+            )
+
+
+@row(SET)
+def another_set_is_sent_sorted(world: World) -> None:
+    for field in SETS:
+        for kind in (set, frozenset):
+            obj = post()
+            other = kind({tag("c"), tag("a")})
+            sent = patch_after(world, obj, lambda p: setattr(p, field, other))
+            assert sent == {field: ["a", "c"]}
 
 
 @row(SET)
 def a_list_assigned_to_a_set_field_is_deduplicated(world: World) -> None:
-    obj = post()
-    assert patch_after(
-        world,
-        obj,
-        lambda p: setattr(p, "tagfs", [Tag(slug="c"), Tag(slug="c")]),
-    ) == {"tagfs": ["c"]}
-    assert type(obj.tagfs) is frozenset
+    for field in SETS:
+        obj = post()
+        sent = patch_after(
+            world, obj, lambda p: setattr(p, field, [tag("c"), tag("c")])
+        )
+        assert sent == {field: ["c"]}
+        assert type(getattr(obj, field)) is FORM[field]
 
 
 @row(SET)
-def a_tuple_assigned_to_a_set_field_reads_as_a_set(world: World) -> None:
-    obj = post()
-    obj.tagset = (Tag(slug="c"),)  # type: ignore[assignment]
-    assert type(obj.tagset) is set
+def a_tuple_assigned_to_a_set_field_reads_as_the_declared_type(
+    world: World,
+) -> None:
+    for field in SETS:
+        obj = post()
+        setattr(obj, field, (tag("c"),))
+        assert type(getattr(obj, field)) is FORM[field]
 
 
 @row(SET)
 def an_added_member_is_sent_sorted(world: World) -> None:
     obj = post()
-    assert patch_after(world, obj, lambda p: p.tagset.add(Tag(slug="c"))) == {
+    assert patch_after(world, obj, lambda p: p.tagset.add(tag("c"))) == {
         "tagset": ["a", "b", "c"]
     }
 
@@ -1105,23 +1174,21 @@ def an_added_member_is_sent_sorted(world: World) -> None:
 @row(SET)
 def a_discarded_member_is_sent(world: World) -> None:
     obj = post()
-    assert patch_after(
-        world, obj, lambda p: p.tagset.discard(Tag(slug="a"))
-    ) == {"tagset": ["b"]}
+    assert patch_after(world, obj, lambda p: p.tagset.discard(tag("a"))) == {
+        "tagset": ["b"]
+    }
 
 
 @row(SET)
 def a_new_object_of_a_present_key_sends_nothing(world: World) -> None:
     obj = post()
-    assert (
-        patch_after(world, obj, lambda p: p.tagset.add(Tag(slug="a"))) is None
-    )
+    assert patch_after(world, obj, lambda p: p.tagset.add(tag("a"))) is None
 
 
 @row(SET)
 def a_saved_set_change_is_not_sent_again(world: World) -> None:
     obj = post()
-    obj.tagset.add(Tag(slug="c"))
+    obj.tagset.add(tag("c"))
     obj.save()
     before = world.count
     obj.save()
@@ -1131,11 +1198,11 @@ def a_saved_set_change_is_not_sent_again(world: World) -> None:
 @row(SET)
 def members_of_one_key_are_sent_once(world: World) -> None:
     obj = post(watchers=[])
-    assert patch_after(
-        world,
-        obj,
-        lambda p: setattr(p, "watchers", {User(id=7), Admin(id=7)}),
-    ) == {"watchers": [7]}
+    both = {User(id=7), Admin(id=7)}
+    assert patch_after(world, obj, lambda p: setattr(p, "watchers", both)) == {
+        "watchers": [7]
+    }
+    assert len(obj.watchers) == 2
 
 
 @row(SET)
@@ -1155,7 +1222,7 @@ def replacing_a_member_by_a_subclass_object_sends_nothing(
 def an_assigned_set_is_copied(world: World) -> None:
     first, second = post(), post(postId=2)
     second.tagset = first.tagset
-    first.tagset.add(Tag(slug="c"))
+    first.tagset.add(tag("c"))
     assert patch_after(world, first, lambda p: None) == {
         "tagset": ["a", "b", "c"]
     }
@@ -1203,7 +1270,7 @@ def a_key_of_the_wrong_type_is_refused_in_a_query(world: World) -> None:
 
 
 @row(OWN)
-def an_object_of_the_model_is_refused_as_the_key(world: World) -> None:
+def an_object_of_the_model_is_sent_as_the_key(world: World) -> None:
     other = Post(json={"postId": 3})
     sends_query(world, Post, "postId=3", id=other)
     sends_query(world, Post, "pk=3", pk=other)
@@ -1456,11 +1523,13 @@ def a_key_and_a_field_are_posted(world: World) -> None:
         "id": 7,
         "name": "a",
     }
+    assert world.requests[-1].path == "/users/"
 
 
 @row(CREATE, pending="create() sends pk under its own name in the body")
 def pk_is_posted_as_the_key(world: World) -> None:
     assert world.body(lambda: User.create(pk=7), "POST") == {"id": 7}
+    assert world.requests[-1].path == "/users/"
 
 
 @row(CREATE)
@@ -1518,6 +1587,7 @@ def get_or_create_posts_the_key_when_nothing_is_found(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
     sent = world.bodies(lambda: User.get_or_create(pk=7))
     assert sent == [("GET", None), ("POST", {"id": 7})]
+    assert [r.path for r in world.requests] == ["/users/", "/users/"]
     assert unquote(urlsplit(world.requests[-2].url).query) == "pk=7"
 
 
@@ -1526,6 +1596,7 @@ def get_or_create_by_id_posts_the_key(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
     sent = world.bodies(lambda: User.get_or_create(id=7))
     assert sent == [("GET", None), ("POST", {"id": 7})]
+    assert [r.path for r in world.requests] == ["/users/", "/users/"]
     assert unquote(urlsplit(world.requests[-2].url).query) == "id=7"
 
 
@@ -1549,18 +1620,23 @@ def a_matching_key_merges(world: World) -> None:
     user = User(json={"id": 7})
     user.update_from_json({"id": 7, "name": "a"})
     assert user.name == "a"
+    assert user.pk == 7
+    user.update_from_json({"name": "b"})
+    assert user.name == "b"
 
 
 @row(FULL)
 def another_key_is_refused_when_merging(world: World) -> None:
     for key in (8, None, "7"):
-        user = User(json={"id": 7})
-        raises(
-            world,
-            ResponseShapeError,
-            lambda: user.update_from_json({"id": key}),
-        )
-        assert user.pk == 7
+        for body in ({"id": key}, {"id": key, "name": "b"}):
+            user = User(json={"id": 7, "name": "a"})
+            raises(
+                world,
+                ResponseShapeError,
+                lambda: user.update_from_json(body),
+            )
+            assert user.pk == 7
+            assert user.name == "a"
 
 
 PREFETCH = "prefetch"
@@ -1659,9 +1735,9 @@ def an_object_of_another_model_from_the_hook_is_refused(
         world,
         TypeError,
         lambda: list(PPost.filter(prefetch=["owner"])),
-        "bulk_get_by_pks",
+        "PUser.bulk_get_by_pks",
         "PUser",
-        "owner",
+        "PPost.owner",
         "POther",
         requests=1,
     )
@@ -1670,7 +1746,8 @@ def an_object_of_another_model_from_the_hook_is_refused(
 @row(PREFETCH)
 def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
     prefetched(world, 7)
-    assert ("urls", {7}) not in hook_calls
+    assert hook_calls == [{7}]
+    assert not any(isinstance(call, tuple) for call in hook_calls)
     assert not hasattr(JSONObject, "bulk_get_by_urls")
 
 

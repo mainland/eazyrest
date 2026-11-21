@@ -20,7 +20,11 @@ def world() -> Iterator[World]:
 def _param(row: Row) -> Any:
     marks = []
     if row.pending is not None:
-        marks.append(pytest.mark.xfail(reason=row.pending, strict=True))
+        marks.append(
+            pytest.mark.xfail(
+                reason=row.pending, strict=True, raises=AssertionError
+            )
+        )
     return pytest.param(row, id=row.id, marks=marks)
 
 
