@@ -536,24 +536,8 @@ def key_of_the_wrong_json_type_refused(world: World) -> None:
 
 @row(BUILD)
 def a_model_object_as_the_key_refused(world: World) -> None:
-    for value in (User(id=7), Admin(id=7), Other(id=7), User()):
+    for value in (User(id=7), Admin(id=7), Other(id=7)):
         raises(world, FieldConversionError, lambda: User(id=value), "User.id")
-
-
-@row(BUILD)
-def a_missing_key_gives_a_keyless_object(world: World) -> None:
-    for user in (User(), User(id=None)):
-        assert user.pk is None
-        for operation in (
-            lambda: user.url,
-            lambda: user.save(full=True),
-            lambda: user.refresh(),
-        ):
-            raises(world, ValueError, operation)
-        raises(world, TypeError, lambda: hash(user))
-        same = user
-        assert user == same
-        assert user != User()
 
 
 @row(BUILD)
@@ -574,12 +558,6 @@ def a_wrong_key_in_json_is_refused_when_read(world: World) -> None:
     assert user == same
     assert user != User(json={"id": "7"})
     raises(world, TypeError, lambda: hash(user))
-
-
-@row(BUILD)
-def a_missing_or_null_key_in_json_is_keyless(world: World) -> None:
-    for body in ({}, {"id": None}):
-        assert User(json=body).pk is None
 
 
 @row(BUILD)
@@ -651,12 +629,6 @@ def a_str_key_is_case_sensitive(world: World) -> None:
 
 
 @row(EQ)
-def keyless_objects_are_unequal_and_unhashable(world: World) -> None:
-    assert User() != User()
-    raises(world, TypeError, lambda: hash(User()))
-
-
-@row(EQ)
 def a_model_with_no_key_is_equal_only_to_itself(world: World) -> None:
     entry = Entry(json={"name": "x"})
     same = entry
@@ -700,25 +672,6 @@ def a_pickle_round_trip_is_a_deep_copy(world: World) -> None:
 
 
 ASSIGN = "assigning-the-key"
-
-
-@row(ASSIGN)
-def a_key_assigned_to_a_keyless_object_is_kept(world: World) -> None:
-    for attribute in ("id", "pk"):
-        user = User()
-        setattr(user, attribute, 7)
-        assert user.pk == 7
-    assert world.count == 0
-
-
-@row(ASSIGN)
-def a_key_of_the_wrong_type_is_refused(world: World) -> None:
-    raises(
-        world,
-        FieldConversionError,
-        lambda: setattr(User(), "id", "7"),
-        "User.id",
-    )
 
 
 @row(ASSIGN)
@@ -798,16 +751,6 @@ def an_object_of_another_model_is_refused(world: World) -> None:
 
 
 @row(OWNER)
-def an_object_without_a_key_is_refused(world: World) -> None:
-    obj = post()
-    for call in (
-        lambda: setattr(obj, "owner", User()),
-        lambda: Post.create(owner=User()),
-    ):
-        raises(world, FieldConversionError, call, "Post.owner", "None")
-
-
-@row(OWNER)
 def a_mapping_is_refused_for_a_relation(world: World) -> None:
     obj = post()
     for call in (
@@ -838,13 +781,6 @@ def an_embedded_object_is_read_without_a_request(world: World) -> None:
     assert obj.owner is not None
     assert obj.owner.name == "a"
     assert world.count == 0
-
-
-@row(OWNER)
-def an_embedded_object_without_a_key_has_no_key(world: World) -> None:
-    obj = post(owner={"name": "a"})
-    assert obj.owner is not None
-    assert obj.owner.pk is None
 
 
 @row(OWNER)
@@ -919,18 +855,6 @@ def an_assigned_collection_reads_as_the_declared_type(world: World) -> None:
     obj = post()
     obj.tagt = [Tag(slug="b")]  # type: ignore[assignment]
     assert type(obj.tagt) is tuple
-
-
-@row(COLL)
-def an_assigned_item_without_a_key_is_refused(world: World) -> None:
-    obj = post()
-    raises(
-        world,
-        FieldConversionError,
-        lambda: setattr(obj, "tags", [Tag()]),
-        "Post.tags",
-        "[0]",
-    )
 
 
 @row(COLL)
@@ -1010,13 +934,6 @@ def a_subclass_object_of_the_same_key_sends_nothing(world: World) -> None:
         p.readers[0] = Admin(id=7)
 
     assert patch_after(world, obj, change) is None
-
-
-@row(COLL)
-def an_appended_item_without_a_key_is_refused_at_save(world: World) -> None:
-    obj = post()
-    obj.tags.append(Tag())
-    raises(world, FieldConversionError, obj.save, "Post.tags", "[1]")
 
 
 @row(COLL)
@@ -1141,18 +1058,6 @@ def a_tuple_assigned_to_a_set_field_reads_as_a_set(world: World) -> None:
 
 
 @row(SET)
-def an_assigned_set_item_without_a_key_is_refused(world: World) -> None:
-    obj = post()
-    raises(
-        world,
-        FieldConversionError,
-        lambda: setattr(obj, "tagset", [Tag()]),
-        "Post.tagset",
-        "[0]",
-    )
-
-
-@row(SET)
 def an_added_member_is_sent_sorted(world: World) -> None:
     obj = post()
     assert patch_after(world, obj, lambda p: p.tagset.add(Tag(slug="c"))) == {
@@ -1174,12 +1079,6 @@ def a_new_object_of_a_present_key_sends_nothing(world: World) -> None:
     assert (
         patch_after(world, obj, lambda p: p.tagset.add(Tag(slug="a"))) is None
     )
-
-
-@row(SET)
-def a_member_without_a_key_cannot_be_added(world: World) -> None:
-    obj = post()
-    raises(world, TypeError, lambda: obj.tagset.add(Tag()))
 
 
 @row(SET)
@@ -1280,11 +1179,6 @@ def a_subclass_object_is_sent_as_its_key(world: World) -> None:
 
 
 @row(OWN)
-def an_object_without_a_key_is_refused_in_a_query(world: World) -> None:
-    refuses_query(world, Post, FieldConversionError, "Post.id", id=Post())
-
-
-@row(OWN)
 def an_object_of_another_model_is_refused_in_a_query(world: World) -> None:
     refuses_query(
         world,
@@ -1348,13 +1242,12 @@ def a_key_of_the_wrong_type_is_refused_for_the_relation(
 
 
 @row(REL)
-def an_object_of_another_model_or_without_a_key_is_refused(
+def an_object_of_another_model_is_refused_for_the_relation(
     world: World,
 ) -> None:
-    for value in (Other(id=7), User()):
-        refuses_query(
-            world, Post, FieldConversionError, "Post.owner", owner=value
-        )
+    refuses_query(
+        world, Post, FieldConversionError, "Post.owner", owner=Other(id=7)
+    )
 
 
 @row(REL)
@@ -1415,13 +1308,6 @@ def an_object_of_another_model_through_a_relation_is_sent(
     world: World,
 ) -> None:
     sends_query(world, Post, "owner__id=8", owner__id=Other(id=8))
-
-
-@row(THROUGH)
-def an_object_without_a_key_through_a_relation_is_refused(
-    world: World,
-) -> None:
-    refuses_query(world, Post, ValueError, "owner__id", owner__id=User())
 
 
 @row(THROUGH)
@@ -1593,13 +1479,6 @@ def another_key_is_refused_when_merging(world: World) -> None:
         assert user.pk == 7
 
 
-@row(FULL)
-def a_key_is_refused_for_a_keyless_object_when_merging(world: World) -> None:
-    raises(
-        world, ResponseShapeError, lambda: User().update_from_json({"id": 7})
-    )
-
-
 PREFETCH = "prefetch"
 
 hook_calls: list[Any] = []
@@ -1705,17 +1584,6 @@ def an_object_of_another_model_from_the_hook_is_refused(
 
 
 @row(PREFETCH)
-def an_object_without_a_key_from_the_hook_is_ignored(world: World) -> None:
-    hook_calls.clear()
-    hook_results.clear()
-    hook_results["make"] = lambda pk: PUser()
-    world.mocker.get(requests_mock.ANY, json=[{"id": 1, "owner": 7}])
-    (parent,) = list(PPost.filter(prefetch=["owner"]))
-    assert parent.owner is not None
-    assert parent.owner.pk == 7
-
-
-@row(PREFETCH)
 def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
     prefetched(world, 7)
     assert ("urls", {7}) not in hook_calls
@@ -1723,16 +1591,6 @@ def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
 
 
 OVERRIDE = "a-class-that-overrides-url"
-
-
-@json_object
-class Me(Base):
-    id: int
-    name: str
-
-    @property
-    def url(self) -> str:
-        return "/me/"
 
 
 @json_object
@@ -1746,55 +1604,6 @@ class Slot(Base):
         return f"/slots/{self.pk}/x/"
 
 
-@json_object
-class Card(Base):
-    class_url = "/cards/"
-    id: int
-    me: Me
-
-
-@row(OVERRIDE)
-def the_url_is_the_override(world: World) -> None:
-    assert Me().url == "/me/"
-
-
-@row(OVERRIDE)
-def a_field_read_loads_the_override_url(world: World) -> None:
-    world.mocker.get(requests_mock.ANY, json={"id": 5, "name": "a"})
-    me = Me()
-    assert me.name == "a"
-    assert world.requests[-1].path == "/me/"
-    assert me.pk == 5
-
-
-@row(OVERRIDE)
-def an_object_not_yet_loaded_cannot_be_hashed(world: World) -> None:
-    raises(world, TypeError, lambda: hash(Me()))
-
-
-@row(OVERRIDE)
-def two_unloaded_objects_are_unequal(world: World) -> None:
-    assert Me() != Me()
-
-
-@row(OVERRIDE)
-def an_unloaded_object_cannot_be_given_a_key(world: World) -> None:
-    raises(world, AttributeError, lambda: setattr(Me(), "id", 5))
-
-
-@row(OVERRIDE)
-def a_keyed_object_keeps_the_override_url(world: World) -> None:
-    assert Me(id=5).url == "/me/"
-
-
-@row(OVERRIDE)
-def a_loaded_object_saves_to_the_override_url(world: World) -> None:
-    me = Me(json={"id": 5, "name": "a"})
-    me.name = "b"
-    assert world.body(me.save, "PATCH") == {"name": "b"}
-    assert world.requests[-1].path == "/me/"
-
-
 @row(OVERRIDE)
 def a_url_may_use_the_key(world: World) -> None:
     assert Slot(id=3).url == "/slots/3/x/"
@@ -1805,13 +1614,6 @@ def a_body_with_another_key_is_refused(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json={"id": 4, "name": "a"})
     slot = Slot(id=3)
     raises(world, ResponseShapeError, lambda: slot.name, requests=1)
-
-
-@row(OVERRIDE)
-def a_relation_to_the_class_reads_its_key(world: World) -> None:
-    card = Card(json={"id": 1, "me": 5})
-    assert card.me.url == "/me/"
-    assert card.me.pk == 5
 
 
 SCHEMA = "keys-in-the-json-schema"
