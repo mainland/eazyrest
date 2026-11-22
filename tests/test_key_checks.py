@@ -367,3 +367,56 @@ def test_a_subclass_whose_conversion_converts_a_late_key_class_is_refused(
                 {"__module__": __name__, "conversions": {late: LATE_CODE}},
             )
         )
+
+
+@json_object
+class Member(KeyBase):
+    """Model keyed by an ``int``, for subclasses."""
+
+    class_url = "/members/"
+
+    id: int
+    name: str
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(NewType("MemberId", int), id="new-type"),
+        pytest.param(int | None, id="optional"),
+        pytest.param(str, id="another-type"),
+        pytest.param("LaterMemberKey", id="name-not-defined-yet"),
+    ],
+)
+def test_a_subclass_that_redeclares_its_key_with_another_type_is_refused(
+    annotation: Any,
+) -> None:
+    """The subclass's objects would be the base's resources by another key.
+
+    The message names the subclass, the field, and the base's type.
+    """
+    namespace = {"__annotations__": {"id": annotation}}
+
+    with pytest.raises(
+        TypeError,
+        match=r"^Extra\.id redeclares the primary key that Member declares as "
+        r"int\b",
+    ) as error:
+        json_object(type("Extra", (Member,), namespace))
+    assert not isinstance(error.value, FieldConversionError)
+
+
+def test_a_subclass_that_keeps_its_key_type_is_admitted() -> None:
+    """A subclass that inherits the key, or redeclares it alike, decorates."""
+
+    @json_object
+    class Inheriting(Member):
+        pass
+
+    @json_object
+    class Redeclaring(Member):
+        id: int
+
+    assert Inheriting(id=1).pk == 1
+    assert Redeclaring(id=1).pk == 1
+    assert Redeclaring(id=1) != Member(id=1)

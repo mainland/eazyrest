@@ -36,13 +36,6 @@ class User(RelatedBase):
 
 
 @json_object
-class SubUser(User):
-    """Subclass that redeclares the key field with another type."""
-
-    id: str  # type: ignore[assignment]
-
-
-@json_object
 class Post(RelatedBase):
     """Model with a relation and a list of relations."""
 
@@ -170,24 +163,6 @@ def test_a_related_object_with_a_key_is_written_as_that_key(
     assert posted.last_request.json() == {"id": 2, "owner": 7, "readers": [8]}
 
 
-def test_a_subclass_that_redeclares_the_key_is_refused_by_the_relation(
-    requests_mock: Any,
-) -> None:
-    """The key is built under the relation's model, not the subclass's."""
-    posted = requests_mock.post("https://related.example/posts/", json={})
-    post = _loaded_post()
-
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        post.owner = SubUser(id="abc")
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        Post.create(id=2, owner=SubUser(id="abc"), readers=[])
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        Post.create(id=2, owner=User(id=1), readers=[SubUser(id="abc")])
-
-    assert post._pending_updates == {}
-    assert not posted.called
-
-
 def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
     """A URL that is formatted from the key needs the key given at once."""
     slot = Slot(id=3)
@@ -214,22 +189,6 @@ def test_the_error_of_a_list_relation_names_the_field_once(
 
     assert [message.count("Post.readers") for message in messages] == [1] * 2
     assert not put.called
-
-
-@pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
-def test_a_lookup_refuses_a_related_object_of_another_key_type(
-    lookup: str, requests_mock: Any
-) -> None:
-    """A lookup on a relation names the relation, as the plain one does."""
-    requests_mock.get("https://related.example/posts/", json=[])
-
-    several = lookup == "owner__in"
-    for related in (SubUser(id="abc"),):
-        value = [related] if several else related
-        with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-            list(Post.filter(params={lookup: value}))
-
-    assert requests_mock.call_count == 0
 
 
 def test_a_lookup_sends_the_keys_of_related_objects(

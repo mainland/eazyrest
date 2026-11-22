@@ -372,6 +372,12 @@ describe them further.
   its name resolves raises its `TypeError` when an object is built, where `==`
   and `hash()` raised it. A relation to such a model, or to a model that is not
   defined yet, still lets its owner be built, and raises when it is read.
+- A decorated subclass that redeclares the key field that it inherits with
+  another annotation, such as `id: NewType("AID", int)` or `id: int | None`
+  under `id: int`, raises `TypeError` when it is decorated, naming the
+  subclass, the field, and the base's type. `v1.0.0a5` decorated it, and a
+  relation to the base refused its objects only when they were written.
+  Redeclare the field with the base's type, or leave it out.
 - A primary key is a `str`, an `int`, or a `UUID`, alone or inside `T | None`,
   `Annotated`, or a `NewType`. Any other key raises `TypeError` when the class
   is decorated, naming the field and the types that a key may be, where
@@ -476,8 +482,7 @@ describe them further.
   key's JSON as it was, which could be `true`, a list, or a mapping that a
   server may read as an embedded object. A `save(full=True)` that reads an
   embedded key of another JSON type from the object's own JSON raises the same
-  error before the `PUT`, where it sent the key. A subclass that redeclares the
-  key field with another type is refused as well. A key that the program gives
+  error before the `PUT`, where it sent the key. A key that the program gives
   to a relation as it is, as in `post.owner = 7`, `create(owner=7)`, or
   `filter(owner=7)`, is built by the same constructor. Where `v1.0.0a5` sent
   `"7"`, `true`, or a list for an `int` key, and read a mapping back as an

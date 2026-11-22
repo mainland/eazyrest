@@ -2193,8 +2193,6 @@ def _related_wire_key(value: JSONObject, model_type: type[Any]) -> Any:
 
     The relation's model builds the key, as every key is built, so a related
     object whose key that model would not read is refused here and not written.
-    A subclass that redeclares the key field is read by the relation's model
-    too.
 
     Args:
         value: Related object, of ``model_type`` or a subclass that keeps its
@@ -3771,9 +3769,9 @@ def json_object(
         cls: Class being decorated when used as ``@json_object``.
         pk: Name of the primary-key field. It must be a field declared on the
             class or the primary key that the class inherits. If omitted, the
-            class keeps the primary key it inherits, even if it redeclares that
-            field. A class that inherits none uses a field named ``id``
-            declared on the class.
+            class keeps the primary key it inherits, and a redeclaration of
+            that field must have the base's type. A class that inherits none
+            uses a field named ``id`` declared on the class.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
         write_map: Optional mapping from Python attribute name to the JSON
@@ -3820,7 +3818,9 @@ def json_object(
             collection of models whose item type is optional or is itself a
             collection of models. A class defined later raises when the field
             is first used. A key whose type is not yet defined raises when the
-            key is first used.
+            key is first used. Also raised if the class redeclares the key
+            field that it inherits with another type, such as a ``NewType`` or
+            an optional of the base's type.
     """
     if field_map is None:
         field_map = {}
@@ -3917,6 +3917,10 @@ def json_object(
 
         # pylint: disable=protected-access
         cls._json_fields = frozenset(fields)
+        if inherited_pk is not None and pk_field == inherited_pk.field:
+            for prop in declared:
+                if prop.field == pk_field:
+                    _check_redeclared_key(cls, inherited_pk, prop)
         _refuse_declared_types(cls, declared)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
@@ -3954,6 +3958,49 @@ def json_object(
 
     # We're called as @json_object without parens.
     return wrap(cls)
+
+
+def _check_redeclared_key(
+    cls: type[JSONObject], inherited: JSONProperty, prop: JSONProperty
+) -> None:
+    """Refuse a subclass that redeclares its key field with another type.
+
+    The subclass's objects are written to a relation to the base, and matched
+    by prefetch, by the base's key, so a key of another type would name the
+    base's resources by keys that the base does not have.
+
+    Args:
+        cls: The subclass that is decorated.
+        inherited: The key field that the subclass inherits.
+        prop: The subclass's own declaration of that field.
+
+    Raises:
+        TypeError: If the two annotations differ. A name that is not defined
+            yet in either is compared as it is written.
+    """
+    try:
+        base_type = inherited._resolve_type()
+        own_type = prop._resolve_type()
+    except Exception:  # noqa: BLE001
+        # A name that is not defined yet cannot be resolved, so the annotations
+        # are compared as they are written.
+        base_type = _annotations(inherited.cls).get(inherited.field)
+        own_type = _annotations(cls).get(prop.field)
+    if own_type == base_type:
+        return
+    shown = (
+        base_type
+        if isinstance(base_type, str)
+        else getattr(base_type, "__name__", repr(base_type))
+    )
+    error = TypeError(
+        f"{cls.__name__}.{prop.field} redeclares the primary key that "
+        f"{inherited.cls.__name__} declares as {shown}, with another type. A "
+        f"subclass keeps its base's key, so declare {prop.field} as {shown}, "
+        "or leave it out."
+    )
+    setattr(error, _DECLARATION_ERROR, True)
+    raise error
 
 
 def _base_schema(

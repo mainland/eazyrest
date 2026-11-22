@@ -34,17 +34,21 @@ class User(JSONObject):
 ```
 
 Use `pk=` when the primary-key attribute is not named `id`. A decorated
-subclass keeps the primary key it inherits, even if it redeclares that field,
-unless it passes `pk=`. Use `field_map=` when the Python attribute name should
-differ from the JSON key. Use `exclude=` for annotated attributes that should
-not become JSON-backed fields. An attribute annotated with `ClassVar`, such as
-`class_url: ClassVar[str]`, is a class attribute and never becomes a field.
-`@json_object` raises `ValueError` if `pk=` names no field of the class, if a
-`field_map=` key names no field declared on the class, or if `exclude=` names
-an attribute that the class does not annotate, so a misspelled option does not
-go unnoticed. It also raises `ValueError` if two fields, including inherited
-ones, map to the same JSON key, because each field caches its own value and
-assigning one would leave the other stale.
+subclass keeps the primary key it inherits, unless it passes `pk=`. It may
+redeclare that field only with the base's type, because its objects are the
+base's resources too: a relation to the base writes them by the base's key.
+Another annotation, such as a `NewType` or an optional of the base's type,
+raises `TypeError` when the subclass is decorated, naming the subclass, the
+field, and the base's type. Use `field_map=` when the Python attribute name
+should differ from the JSON key. Use `exclude=` for annotated attributes that
+should not become JSON-backed fields. An attribute annotated with `ClassVar`,
+such as `class_url: ClassVar[str]`, is a class attribute and never becomes a
+field. `@json_object` raises `ValueError` if `pk=` names no field of the class,
+if a `field_map=` key names no field declared on the class, or if `exclude=`
+names an attribute that the class does not annotate, so a misspelled option
+does not go unnoticed. It also raises `ValueError` if two fields, including
+inherited ones, map to the same JSON key, because each field caches its own
+value and assigning one would leave the other stale.
 
 A primary key is a `str`, an `int`, or a `UUID`, as
 [What a key may be](#what-a-key-may-be) says.
@@ -194,9 +198,8 @@ the server names the resource, and these laws follow:
   `create()`, or used in a query or a lookup such as `owner__in`, and so is one
   that `save(full=True)` reads from the object's own JSON. The relation's model
   builds its key, so an object whose key that model would not read raises
-  `FieldConversionError` naming the relation field before any request, as does
-  one of a subclass that redeclares the key field with another type. A key that
-  the program gives to a relation as it is, as in `post.owner = 7` or
+  `FieldConversionError` naming the relation field before any request. A key
+  that the program gives to a relation as it is, as in `post.owner = 7` or
   `filter(owner=7)`, is built the same way, so `"7"`, `True`, or `1.5` given
   for an `int` key raises `FieldConversionError` naming the relation field
   before any request, and so does a mapping, which a relation never takes for
