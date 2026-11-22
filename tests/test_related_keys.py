@@ -636,6 +636,26 @@ def test_save_refuses_a_bare_key_that_cannot_be_built(
     assert not patch.called
 
 
+@pytest.mark.parametrize(("key", "same"), [(1, True), (2, 2.0)])
+def test_save_refuses_a_key_replaced_by_an_equal_value_that_is_no_key(
+    key: Any, same: Any, requests_mock: Any
+) -> None:
+    """A bare key that is replaced in place by one equal to it is checked."""
+    requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 2, "readers": [key]}, write_mode="lazy"
+    )
+    post.readers[0] = key
+    post.save()
+    sent = requests_mock.call_count
+    post.readers[0] = same
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
+        post.save()
+
+    assert requests_mock.call_count == sent
+
+
 @pytest.mark.parametrize("key", BAD_BARE_KEYS)
 def test_a_query_refuses_a_bare_key_that_cannot_be_built(
     key: Any, requests_mock: Any

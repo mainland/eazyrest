@@ -539,6 +539,19 @@ def test_a_lookup_refuses_a_value_that_the_field_does_not_write_as_a_scalar(
     assert requests_mock.call_count == 0
 
 
+@pytest.mark.parametrize("name", ["point__in", "point__range"])
+def test_a_lookup_of_several_values_refuses_one_value_of_a_structured_field(
+    name: str, requests_mock: Any
+) -> None:
+    """A single value of a structured field is no collection of operands."""
+    requests_mock.get("https://lookups.example/placed/", json=[])
+
+    with pytest.raises(FieldConversionError, match=r"Placed\.point"):
+        list(Placed.filter(params={name: Point(1, 2)}))
+
+    assert requests_mock.call_count == 0
+
+
 def test_a_value_lookup_on_a_scalar_field_still_refuses_what_it_refuses(
     requests_mock: Any,
 ) -> None:
