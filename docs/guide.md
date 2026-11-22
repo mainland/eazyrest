@@ -333,9 +333,11 @@ raised: a `NameError` for a class that is not defined, an `AttributeError` for
 an attribute of a module, and a `TypeError` that says so for a string in a type
 alias's value that cannot be resolved. A query raises it as it builds the
 objects, and a prefetch of a relation to such a model raises it before its bulk
-request. Nothing of that is kept on the class, so once the name is defined,
-objects build with their keys, and a key that is refused then raises its
-`TypeError` when an object is built.
+request. `create()` and `get_or_create()` raise it before the first request,
+the lookup of `get_or_create()` included, since they read the response for a
+key. Nothing of that is kept on the class, so once the name is defined, objects
+build with their keys, and a key that is refused then raises its `TypeError`
+when an object is built.
 
 Only the model's own key resolves when an object is built. A relation to a
 model that is not defined yet, or to a model whose key names a class that is

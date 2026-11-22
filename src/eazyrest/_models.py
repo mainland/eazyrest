@@ -7647,16 +7647,20 @@ class JSONObject:
             UsageError: If the model has no primary-key field, so there is
                 nothing to create. Post with the API and build the object with
                 ``json=`` instead.
+            Exception: Whatever resolving a name in the key's type raises, such
+                as a ``NameError`` for a class that is not defined, before any
+                request.
             ResponseShapeError: If the response does not hold a JSON object, or
                 the object's JSON after ``merge_response()`` lacks the key,
                 holds ``null`` for it, or holds a key that is not of the key's
                 type. The resource may have been created, and the error's
                 ``response`` holds the response.
-            TypeError: If a field is given both as a keyword argument and in
-                ``fields``, if ``request_options`` is not a mapping or sets the
-                body, or if a field's value cannot be sent as a form field with
-                ``files``. Also raised for response streaming or conflicting
-                wire names.
+            TypeError: If the model's key type is refused, which is checked
+                before any request. Also raised if a field is given both as a
+                keyword argument and in ``fields``, if ``request_options`` is
+                not a mapping or sets the body, or if a field's value cannot be
+                sent as a form field with ``files``. Also raised for response
+                streaming or conflicting wire names.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
@@ -7665,6 +7669,9 @@ class JSONObject:
         """
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
+        # The response is read for a key of this type, so a type that cannot be
+        # resolved or is refused must raise before the request.
+        _resolve_key(cls)
         options = _request_options(request_options)
         api = None if api is None else _as_client(api)
         payload = cls._encode_fields(
@@ -8373,8 +8380,9 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field or is named twice, or if a parameter has a
                 value that requests would not send intact.
-            TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or ``request_options`` is not valid for a
+            TypeError: If the model's key type is refused, before the lookup.
+                Also raised if a parameter is given both as a keyword argument
+                and in ``params``, or ``request_options`` is not valid for a
                 query.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
@@ -8688,10 +8696,16 @@ class JSONObject:
                 in ``params``, ``request_options`` is not valid for a query and
                 a creation, or a creation payload value is not made of JSON
                 types, as a model under a name that is no field.
+            Exception: Whatever resolving a name in the key's type raises, such
+                as a ``NameError`` for a class that is not defined, before the
+                lookup.
             RedirectError: If a response is a redirect that was not followed.
         """
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
+        # The creation reads its response for a key of this type, so raise
+        # before the lookup if the type cannot be resolved or is refused.
+        _resolve_key(cls)
         # Check the options for both requests before sending either.
         _query_request_options(request_options)
         _request_options(request_options)
