@@ -2101,6 +2101,21 @@ def _key_kind_of(cls: type[JSONObject]) -> str:
     return kind
 
 
+_UUID_TEXT = re.compile(
+    r"(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+    r"|\{[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}"
+    r"|urn:uuid:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+    r"|[0-9a-fA-F]{32})"
+)
+"""The spellings of a ``UUID`` key's text that a key reads, in ASCII hex.
+
+These are the hyphenated, compact, braced, and URN forms. ``uuid.UUID`` reads
+more, such as a ``0x`` prefix, a sign, an underscore, hyphens anywhere,
+surrounding whitespace, and digits that are not ASCII, so a key of another
+spelling is refused rather than read as the UUID that its digits name.
+"""
+
+
 def _build_identifier(kind: str, value: Any) -> int | str:
     """Build the wire scalar of a key from the value that names it.
 
@@ -2108,10 +2123,10 @@ def _build_identifier(kind: str, value: Any) -> int | str:
     conversion, so no conversion can map two keys to one. An ``int`` key is an
     ``int`` that is not a ``bool``, so a float and a numeric string are
     refused. A ``str`` key is the text as given. A ``UUID`` key is a
-    ``uuid.UUID`` or a string that ``uuid.UUID`` reads, in any spelling, and is
-    sent in its lowercase hyphenated form. A subclass of ``int``, ``str``, or
-    ``UUID`` gives the plain value, so a key has one spelling whatever its
-    class prints.
+    ``uuid.UUID`` or a string in the hyphenated, compact, braced, or URN form,
+    in ASCII hex of either case, and is sent in its lowercase hyphenated form.
+    A subclass of ``int``, ``str``, or ``UUID`` gives the plain value, so a key
+    has one spelling whatever its class prints.
 
     Args:
         kind: The key type, as ``_key_kind()`` returns it.
@@ -2123,7 +2138,8 @@ def _build_identifier(kind: str, value: Any) -> int | str:
     Raises:
         TypeError: If the value is not of the key type. The message does not
             quote it.
-        ValueError: If a string is not a UUID for a ``UUID`` key.
+        ValueError: If a string is not in one of the four forms of a UUID, for
+            a ``UUID`` key.
     """
     if kind == "int":
         if isinstance(value, int) and not isinstance(value, bool):
@@ -2134,10 +2150,9 @@ def _build_identifier(kind: str, value: Any) -> int | str:
     elif isinstance(value, uuid.UUID):
         return str(uuid.UUID(int=value.int))
     elif isinstance(value, str):
-        try:
-            return str(uuid.UUID(value))
-        except ValueError as err:
-            raise ValueError("UUID is not valid") from err
+        if _UUID_TEXT.fullmatch(value) is None:
+            raise ValueError("UUID is not valid")
+        return str(uuid.UUID(value))
     else:
         raise TypeError(
             "The key must be a UUID or a JSON str, not a "

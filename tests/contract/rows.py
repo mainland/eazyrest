@@ -739,6 +739,31 @@ def a_uuid_key_is_read_from_the_braced_and_urn_forms(world: World) -> None:
 
 
 @row(BUILD)
+def a_uuid_key_refuses_a_spelling_outside_the_four_forms(
+    world: World,
+) -> None:
+    digits = U.hex
+    for text in (
+        "0x" + digits[2:],
+        "+" + digits[1:],
+        digits[:15] + "_" + digits[16:],
+        "-".join(digits[i : i + 4] for i in range(0, 32, 4)),
+        " " + digits[1:],
+        digits[:-1] + "\n",
+        digits[:-1] + chr(0xFF17),
+    ):
+        raises(world, FieldConversionError, lambda: Doc(id=text), "Doc.id")
+        raises(
+            world,
+            FieldConversionError,
+            lambda: Doc(json={"id": text}),
+            "Doc.id",
+        )
+        for call in queries(Doc, id=text):
+            raises(world, FieldConversionError, call, "Doc.id")
+
+
+@row(BUILD)
 def a_bad_uuid_refused(world: World) -> None:
     for value in ("not-a-uuid", 7):
         raises(world, FieldConversionError, lambda: Doc(id=value), "Doc.id")

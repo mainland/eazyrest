@@ -366,6 +366,12 @@ describe them further.
 - A pickle of an object of a keyed model that `v1.0.0a5` wrote does not load.
   It raises `UsageError`, because its state holds no key. Read the object from
   the server again. Pickles that this version writes load.
+- A `UUID` key reads a string only in the hyphenated, compact, braced, or
+  `urn:uuid:` form, in ASCII hex of either case, from the program, from JSON,
+  in a query, and in a relation. Any other string raises `FieldConversionError`
+  naming the field, where `v1.0.0a5` read every string that `uuid.UUID` reads,
+  such as one with a `0x` prefix, a sign, surrounding whitespace, or digits
+  that are not ASCII, as the UUID that its digits name.
 - `create()` and `get_or_create()` refuse a response that cannot be the created
   object with a `ResponseShapeError` that holds the response, because the
   resource may exist. A body that is not one JSON object, a list among them,

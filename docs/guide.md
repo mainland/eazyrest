@@ -258,10 +258,15 @@ way:
   `"A"` and `"a"` are two keys.
 - An `int` key is an integer that is not a `bool`. A key given as `"7"`, `7.0`,
   or `True` raises `FieldConversionError`.
-- A `UUID` key is the 128-bit value, given as a `uuid.UUID` or as any string
-  that `uuid.UUID` reads, such as an uppercase or unhyphenated spelling, and
-  written in its lowercase hyphenated form. Declare a `str` key for a service
-  that tells two spellings of one UUID apart.
+- A `UUID` key is the 128-bit value, given as a `uuid.UUID` or as a string in
+  one of four forms, in ASCII hex of either case: the hyphenated form, the
+  compact form without hyphens, the hyphenated form in braces, and the
+  hyphenated form after `urn:uuid:`. It is written in its lowercase hyphenated
+  form. Any other string raises `FieldConversionError`, though `uuid.UUID`
+  reads it, as a `0x` prefix, a sign, an underscore, hyphens in other places,
+  surrounding whitespace, and digits that are not ASCII are, so that two texts
+  never name one key by accident. Declare a `str` key for a service that tells
+  two spellings of one UUID apart.
 
 Any other key raises `TypeError` when the class is decorated, naming the field
 and the types that a key may be. That includes an enum, a `Literal`, a
@@ -392,11 +397,11 @@ are read. Reading the primary key returns the canonical key without a request,
 before and after the object loads: the `int` or the `str` that is sent for it,
 or a `UUID` for a `UUID` key, whichever spelling it was given in. The
 constructor raises `FieldConversionError`, a `ValueError`, for a string that is
-not a UUID. A model object given for the key raises `FieldConversionError`, as
-does a mapping. An object constructed from `json=` starts with that payload
-already loaded. It keeps a deep copy of the payload, as `update_from_json()`
-does, so changing the payload or its nested values afterward does not change
-the object.
+not one of the four forms of a UUID. A model object given for the key raises
+`FieldConversionError`, as does a mapping. An object constructed from `json=`
+starts with that payload already loaded. It keeps a deep copy of the payload,
+as `update_from_json()` does, so changing the payload or its nested values
+afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
