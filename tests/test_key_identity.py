@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+import hypothesis
 import hypothesis.strategies as st
 import pytest
 import requests_mock
@@ -395,3 +396,131 @@ KeyIdentityMachine.TestCase.settings = settings(
     suppress_health_check=[HealthCheck.too_slow],
 )
 test_key_identity = KeyIdentityMachine.TestCase
+
+
+class Store:
+    """A fake server that holds distinct records, one at each key's path."""
+
+    def __init__(self, mocker: requests_mock.Mocker, kind: str) -> None:
+        """Serve the records of a kind, each under its own key.
+
+        Args:
+            mocker: The mocked transport.
+            kind: Name of the kind whose records the store holds.
+        """
+        self.kind = kind
+        self.records: dict[str, dict[str, Any]] = {}
+        self.answer_as: Any = None
+        """A key to name in the next write's response instead of its own."""
+        spec = KINDS[kind]
+        for n in spec.keys[:2]:
+            path = "/v1" + twin(kind, n).url
+            self.records[path] = {
+                spec.key_field: spec.spell(n, "plain"),
+                spec.name_field: f"record {n}",
+            }
+        mocker.register_uri(
+            requests_mock.ANY,
+            re.compile(r"https://example\.com/v1/.*"),
+            text=self.handle,
+        )
+
+    def handle(self, request: Any, context: Any) -> str:
+        """Read or change the record at the request's path.
+
+        Args:
+            request: The request.
+            context: The response to fill.
+
+        Returns:
+            The record, after a write changes it.
+        """
+        record = self.records.get(urlparse(request.url).path)
+        if record is None:
+            context.status_code = 404
+            return "{}"
+        if request.method in ("PATCH", "PUT"):
+            record.update(request.json())
+        answer = dict(record)
+        if request.method != "GET" and self.answer_as is not None:
+            spec = KINDS[self.kind]
+            answer[spec.key_field] = spec.spell(self.answer_as, "plain")
+        return json.dumps(answer)
+
+
+@st.composite
+def _cases(draw: st.DrawFn) -> tuple[str, str, str, bool]:
+    return (
+        draw(st.sampled_from(sorted(KINDS))),
+        draw(st.sampled_from(["plain", "alt"])),
+        draw(st.sampled_from(["given", "json"])),
+        draw(st.booleans()),
+    )
+
+
+@settings(deadline=None, max_examples=60)
+@hypothesis.given(case=_cases())
+def test_a_save_changes_only_the_record_that_the_object_names(
+    case: tuple[str, str, str, bool],
+) -> None:
+    """Of two distinct records, a save changes the one that the key names.
+
+    The object is built from its key or from its JSON, in either spelling of
+    the key. A save sends the key, in a full ``PUT``, as the JSON type that the
+    key's builder writes, and changes only that record. Assigning the other
+    record's key sends nothing, and a write whose response names the other
+    record is refused after its one request.
+
+    Args:
+        case: The kind, the spelling, how the object is built, and whether the
+            save is a full one.
+    """
+    kind, variant, form, full = case
+    spec = KINDS[kind]
+    spec.cls.register_api(test_api)
+    first, second = spec.keys[:2]
+    with requests_mock.Mocker() as mocker:
+        store = Store(mocker, kind)
+        if form == "given":
+            obj = spec.cls(**{spec.key_field: spec.given(first)})
+        else:
+            obj = spec.cls(
+                json={
+                    spec.key_field: spec.spell(first, variant),
+                    spec.name_field: "loaded",
+                }
+            )
+        first_path = "/v1" + twin(kind, first).url
+        second_path = "/v1" + twin(kind, second).url
+        before = mocker.call_count
+
+        setattr(obj, spec.name_field, "edited")
+        obj.save(full=full)
+
+        assert store.records[first_path][spec.name_field] == "edited"
+        assert (
+            store.records[second_path][spec.name_field] == f"record {second}"
+        )
+        writes = [
+            r for r in mocker.request_history[before:] if r.method != "GET"
+        ]
+        assert [urlparse(r.url).path for r in writes] == [first_path]
+        if full:
+            sent = writes[0].json()[spec.key_field]
+            assert sent == spec.spell(first, "plain")
+            assert type(sent) is (int if kind == "int" else str)
+
+        calls = mocker.call_count
+        with pytest.raises(AttributeError, match="cannot change"):
+            setattr(obj, spec.key_field, spec.given(second))
+        assert mocker.call_count == calls
+
+        store.answer_as = second
+        setattr(obj, spec.name_field, "again")
+        with pytest.raises(ResponseShapeError, match="does not match"):
+            obj.save()
+        assert mocker.call_count == calls + 1
+        assert obj == twin(kind, first)
+        assert (
+            store.records[second_path][spec.name_field] == f"record {second}"
+        )
