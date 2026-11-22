@@ -3040,13 +3040,24 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
 
     Returns:
         The field names, or an empty tuple if ``prefetch`` is ``None``.
+
+    Raises:
+        ValueError: If a name is given more than once, since the field would be
+            bulk-loaded once for each copy.
     """
     if prefetch is None:
         return ()
     if isinstance(prefetch, str):
         return (prefetch,)
 
-    return tuple(prefetch)
+    names = tuple(prefetch)
+    for position, name in enumerate(names):
+        if name in names[:position]:
+            raise ValueError(
+                f"prefetch names {name!r} twice. Name each field once"
+            )
+
+    return names
 
 
 T = TypeVar("T", bound="JSONObject")
@@ -8717,8 +8728,8 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field, or if a parameter has a value that
-                requests would not send intact.
+                related-object field or is named twice, or if a parameter has a
+                value that requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, or ``request_options`` is not valid for a
                 query.
@@ -8785,7 +8796,7 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field.
+                related-object field or is named twice.
             TypeError: If ``request_options`` is not valid for a query.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
@@ -8837,8 +8848,8 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field, or if a parameter has a value that
-                requests would not send intact.
+                related-object field or is named twice, or if a parameter has a
+                value that requests would not send intact.
             TypeError: If ``url`` is given with query parameters, a parameter
                 is given both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, or
@@ -8921,8 +8932,8 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field, or if a parameter has a value that
-                requests would not send intact.
+                related-object field or is named twice, or if a parameter has a
+                value that requests would not send intact.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, or ``request_options`` is not valid for a
                 query.

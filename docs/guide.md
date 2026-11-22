@@ -1297,9 +1297,9 @@ constraint on the server, and handle the error it returns.
 `filter()`, `all()`, and `get()` also accept `prefetch=...` for explicit
 bulk-loading of related fields when the related model implements
 `bulk_get_by_pks()`. Pass a single field name as a string, or multiple field
-names as a sequence. Prefetched related objects may be shared by identity
-across parent objects in the same batch, similar to Django's
-`prefetch_related()`.
+names as a sequence. A field named twice raises `ValueError` before any
+request. Prefetched related objects may be shared by identity across parent
+objects in the same batch, similar to Django's `prefetch_related()`.
 
 ## Prefetching related objects
 

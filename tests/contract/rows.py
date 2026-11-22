@@ -1925,6 +1925,19 @@ def an_object_of_another_model_from_the_hook_is_refused(
 
 
 @row(PREFETCH)
+def a_field_named_twice_is_refused(world: World) -> None:
+    hook_calls.clear()
+    raises(
+        world,
+        ValueError,
+        lambda: list(PPost.filter(prefetch=["owner", "owner"])),
+        "owner",
+        "twice",
+    )
+    assert hook_calls == []
+
+
+@row(PREFETCH)
 def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
     prefetched(world, 7)
     assert hook_calls == [{7}]

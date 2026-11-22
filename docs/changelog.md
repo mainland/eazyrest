@@ -545,6 +545,10 @@ describe them further.
   relation field before the method and its request. `v1.0.0a5` passed `"7"` and
   `true` on, where `true` and `1` were one key, and raised `ResponseShapeError`
   for a list. The method receives the keys as the related model writes them.
+- A field named twice in `prefetch=`, as in `prefetch=["owner", "owner"]`,
+  raises `ValueError` naming the field before any request, where `v1.0.0a5`
+  called `bulk_get_by_pks()` once for each copy with the same keys. Name each
+  field once.
 - A key of type `Literal` raises `FieldConversionError` for a value that is not
   one of its members where it is given, and a relation to the model refuses it.
   A non-member that the server's JSON names is treated as a key of the wrong

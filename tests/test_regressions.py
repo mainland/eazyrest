@@ -1130,3 +1130,21 @@ def test_a_deep_copy_of_a_list_copies_an_api_after_the_object() -> None:
 
     assert copied_doc.api is api
     assert copied_api is not api
+
+
+@pytest.mark.parametrize("method", ["filter", "all", "get", "get_page"])
+@pytest.mark.parametrize(
+    "make", [lambda: ["owner", "owner"], lambda: iter(["owner"] * 2)]
+)
+def test_prefetch_refuses_a_field_named_twice(
+    method: str, make: Any, requests_mock: Any
+) -> None:
+    """A field is bulk-loaded once, so naming it twice is refused."""
+    requests_mock.get("https://mocked.example/docs/", json=[])
+    query = getattr(MockedDoc, method)
+    kwargs = {} if method == "all" else {"id": 1} if method == "get" else {}
+
+    with pytest.raises(ValueError, match=r"owner.*twice"):
+        list(query(prefetch=make(), **kwargs))
+
+    assert requests_mock.call_count == 0
