@@ -1102,11 +1102,15 @@ that allows other properties, and one inside itself is any object. A
 `dict[str, T]` is an object whose properties all have `T`'s schema. A type
 whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
 
-`eazyrest` has no required fields, so the schema lists none, except the key of
-a related object that a read embeds. Every field reads `null` as `None`, but
-the schema allows `null` only where the annotation does, so that it describes
-the declared types, as a server's schema does. It allows properties that the
-class does not declare, which a server may send.
+A read schema requires the primary key's JSON name, because every object that
+is read holds its key, and the key of a related object that a read embeds. A
+write schema requires nothing, because the server may assign the key. No other
+field is required, and every field reads `null` as `None`, but the schema
+allows `null` only where the annotation does, so that it describes the declared
+types, as a server's schema does. It allows properties that the class does not
+declare, which a server may send. JSON Schema's `integer` takes `7.0`, which
+the key's builder refuses with `FieldConversionError`, so validating a payload
+with the schema is not the same as reading it.
 
 The schema is in the JSON Schema 2020-12 dialect, which its `$schema` names.
 OpenAPI 3.1 uses the same dialect, but OpenAPI 3.0, which Django REST

@@ -8471,6 +8471,7 @@ def test_json_schema_describes_what_a_model_reads() -> None:
                 ]
             },
         },
+        "required": ["id"],
         "additionalProperties": True,
     }
 

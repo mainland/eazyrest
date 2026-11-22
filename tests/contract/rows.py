@@ -2236,6 +2236,17 @@ def a_collection_is_written_as_keys(world: World) -> None:
 
 
 @row(SCHEMA)
+def the_read_schema_requires_the_key(world: World) -> None:
+    for model, required in (
+        (User, ["id"]),
+        (Tag, ["slug"]),
+        (Doc, ["id"]),
+        (Post, ["postId"]),
+    ):
+        assert model.json_schema("read")["required"] == required
+
+
+@row(SCHEMA)
 def the_write_schema_requires_nothing(world: World) -> None:
     for model in (User, Tag, Doc, Post):
         assert "required" not in model.json_schema("write")

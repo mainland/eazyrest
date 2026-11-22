@@ -8110,11 +8110,15 @@ class JSONObject:
         ``TypedDict`` or ``dict[str, T]`` is an object. A type whose JSON form
         eazyrest does not check, such as ``Any``, allows any value.
 
-        eazyrest has no required fields, so the schema lists none, and allows
-        other properties, which a server may send. The schema is a JSON Schema
-        2020-12 schema, as its ``$schema`` says, which differs from the
-        dialect of OpenAPI 3.0, as in its ``prefixItems`` for a fixed-length
-        tuple.
+        A read schema requires the primary key's JSON name, because every
+        object that is read holds its key, and a write schema requires nothing,
+        because the server may assign the key. Both allow other properties,
+        which a server may send. A key's ``integer`` is JSON Schema's, which
+        takes ``7.0``, but the key's builder refuses a float, so a key that the
+        schema accepts as ``7.0`` still raises ``FieldConversionError``. The
+        schema is a JSON Schema 2020-12 schema, as its ``$schema`` says, which
+        differs from the dialect of OpenAPI 3.0, as in its ``prefixItems`` for
+        a fixed-length tuple.
 
         Args:
             mode: ``"read"`` or ``"write"``.
@@ -8186,6 +8190,13 @@ class JSONObject:
             "properties": properties,
             "additionalProperties": True,
         }
+        key_property = _pk_property_of(cls)
+        if (
+            mode == "read"
+            and key_property is not None
+            and key_property.json_field in properties
+        ):
+            schema["required"] = [key_property.json_field]
         if defs:
             schema["$defs"] = defs
         return schema

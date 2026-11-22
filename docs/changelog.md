@@ -400,6 +400,10 @@ describe them further.
   key in its embedded object form, as a collection of relations already did.
   `v1.0.0a5` allowed `null` for an optional key and any object for an embedded
   related object.
+- The read schema from `json_schema()` requires the primary key's JSON name,
+  where `v1.0.0a5` listed no required property, and the write schema requires
+  nothing. A validator that checks a payload with the schema then refuses an
+  object that lacks its key, as reading it does.
 - `create()` and `get_or_create()` resolve a name to its field before they
   apply its policy and conversion. `pk` and the key's JSON and write keys name
   the key, so `create(pk=7)` posts the key under its write key, where
