@@ -7622,7 +7622,11 @@ class JSONObject:
             for a lookup of several values, rather than read its items.
         """
         parameter = cls._parameter(name)
-        return parameter.conversion is not None and cls._takes_whole(
+        if parameter.conversion is None:
+            # A name that is no field sends a model as its key, so a model that
+            # can be iterated is still one operand.
+            return isinstance(value, JSONObject)
+        return cls._takes_whole(
             parameter.conversion,
             value,
             structured=parameter.structured and not parameter.several,

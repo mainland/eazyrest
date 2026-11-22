@@ -772,3 +772,52 @@ def test_a_list_lookup_refuses_an_item_whose_text_is_empty(
         list(Window.filter(api=api, params={name: items}))
 
     assert requests_mock.call_count == 0
+
+
+@json_object
+class Crowd(LookupBase):
+    """A model that can be iterated, keyed by an ``int``."""
+
+    class_url = "/crowds/"
+
+    id: int
+
+    def __iter__(self) -> Iterator[int]:
+        """Return members that are not the model's key."""
+        return iter([1, 2, 3])
+
+
+@json_object
+class Roster(LookupBase):
+    """A model with one and many relations to an iterable model."""
+
+    class_url = "/rosters/"
+
+    id: int
+    crowd: Crowd
+    crowds: list[Crowd]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"x": Crowd(id=5)},
+        {"x": [Crowd(id=5)]},
+        {"crowd": Crowd(id=5)},
+        {"crowds": Crowd(id=5)},
+        {"crowds": [Crowd(id=5)]},
+    ],
+    ids=["no-field", "no-field-item", "relation", "collection", "items"],
+)
+def test_a_model_that_can_be_iterated_is_sent_as_its_key(
+    params: dict[str, Any], requests_mock: Any
+) -> None:
+    """A model is one operand, whatever name it is given under."""
+    requests_mock.get("https://lookups.example/rosters/", json=[])
+
+    list(Roster.filter(**params))
+
+    (name,) = params
+    assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
+        name: ["5"]
+    }

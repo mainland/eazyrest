@@ -27,6 +27,7 @@ from collections.abc import (
     Callable,
     Collection,
     Iterable,
+    Iterator,
     MutableSequence,
     MutableSet,
     Sequence,
@@ -1547,6 +1548,25 @@ def other_suffixes_are_sent_as_given(world: World) -> None:
 def a_name_that_names_no_field_is_sent_as_given(world: World) -> None:
     sends_query(world, Post, "title__iexact=x", title__iexact="x")
     sends_query(world, Post, "x=8", x=User(id=8))
+
+
+@json_object
+class Crowd(Base):
+    """A model that can be iterated."""
+
+    class_url = "/crowds/"
+    id: int
+
+    def __iter__(self) -> Iterator[int]:
+        """Return members that are not the model's key."""
+        return iter([1, 2, 3])
+
+
+@row(STRUCT)
+def a_model_that_can_be_iterated_is_sent_as_its_key_under_any_name(
+    world: World,
+) -> None:
+    sends_query(world, Post, "x=5", x=Crowd(id=5))
 
 
 CREATE = "creating"
