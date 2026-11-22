@@ -728,7 +728,7 @@ class Member(RelatedBase):
 
 @json_object
 class Ticket(RelatedBase):
-    """Model whose relations are keyed by a relation or a renamed key."""
+    """Model with a relation to a keyed model and one to a renamed key."""
 
     class_url = "/tickets/"
 
@@ -749,10 +749,14 @@ class Renamed(RelatedBase):
 @pytest.mark.parametrize(
     "lookup", ["account__user__in", "account__pk__in", "account__user__id__in"]
 )
-def test_a_lookup_through_a_key_that_is_a_relation_takes_the_key_model(
+def test_a_lookup_on_a_path_that_the_class_does_not_know_sends_a_key(
     lookup: str, requests_mock: Any
 ) -> None:
-    """The operands of a key that is a relation are objects of its model."""
+    """A model object on a path of no known field is sent as its key.
+
+    The class cannot check such a path, so the value is sent as given, except
+    that an object of a model is sent as its key.
+    """
     requests_mock.get("https://related.example/tickets/", json=[])
 
     list(Ticket.filter(params={lookup: [User(id=7)]}))
@@ -1187,3 +1191,46 @@ def _declare_items(annotation: Any) -> Any:
             },
         )
     )
+
+
+def test_a_refused_save_of_a_list_names_the_item_and_a_later_save_sends_it(
+    requests_mock: Any,
+) -> None:
+    """The position of a bad item is named, and a mended list is one PATCH."""
+    patch = requests_mock.patch("https://related.example/posts/1/", json={})
+    post = Post(
+        json={"id": 1, "owner": 1, "readers": [2, 3]}, write_mode="lazy"
+    )
+    post.readers.append("4")  # type: ignore[arg-type]
+
+    with pytest.raises(FieldConversionError, match=r"Post\.readers: \[2\]"):
+        post.save()
+    assert not patch.called
+
+    post.readers[2] = User(id=4)
+    post.save()
+
+    assert [call.json() for call in patch.request_history] == [
+        {"readers": [2, 3, 4]}
+    ]
+
+
+def test_the_error_of_a_creation_with_a_bad_list_item_names_the_field_once(
+    requests_mock: Any,
+) -> None:
+    """The field is named once, at the position of the item."""
+    post = requests_mock.post("https://related.example/posts/", json={"id": 2})
+
+    with pytest.raises(FieldConversionError) as error:
+        Post.create(id=2, owner=1, readers=["7"])
+
+    assert str(error.value).count("Post.readers") == 1
+    assert "[0]" in str(error.value)
+    assert not post.called
+
+
+def test_a_key_given_as_none_through_pk_is_refused() -> None:
+    """``pk=None`` names no resource, as ``id=None`` does."""
+    for kwargs in ({"pk": None}, {"id": None}):
+        with pytest.raises(TypeError, match=r"User\.id"):
+            User(**kwargs)

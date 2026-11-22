@@ -7695,6 +7695,14 @@ class NamedTokenOwner(TokenOwner):
     name: str
 
 
+def test_json_with_a_key_that_is_no_uuid_is_refused_by_the_constructor() -> (
+    None
+):
+    """The key's field is named, and no object is made."""
+    with pytest.raises(FieldConversionError, match=r"TokenOwner\.id"):
+        TokenOwner(json={"id": "not-a-uuid"})
+
+
 @pytest.mark.parametrize(
     ("make", "payload"),
     [
