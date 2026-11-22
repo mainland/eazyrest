@@ -366,6 +366,14 @@ describe them further.
 - A pickle of an object of a keyed model that `v1.0.0a5` wrote does not load.
   It raises `UsageError`, because its state holds no key. Read the object from
   the server again. Pickles that this version writes load.
+- `create()` and `get_or_create()` refuse a response that cannot be the created
+  object with a `ResponseShapeError` that holds the response, because the
+  resource may exist. A body that is not one JSON object, a list among them,
+  raises it, where `v1.0.0a5` raised `DoesNotExist` or
+  `MultipleObjectsReturned` for a list. So does a response that names another
+  key than the request sent, where `v1.0.0a5` returned the object of the key
+  that the response named, and a `save()` already raised for it. A response
+  that names no key takes the key that the request sent.
 - An object of a model whose key annotation names a class that is not defined
   yet, as during a circular import, raises the error that resolving the name
   raises when the object is built, a `NameError`, an `AttributeError` for a
@@ -979,8 +987,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   numeric, and response-shape policy as model reads.
 - `ResponseShapeError.response` holds the response that the error refuses, as
   `APIError.response` and `RedirectError.response` do, for a body that is not
-  JSON. It is `None` for an error raised from decoded JSON, as in a hook such
-  as `object_json()` or `collection_items()`.
+  JSON and for every refusal of a creation's response. It is `None` for an
+  error raised from decoded JSON elsewhere, as in a hook such as
+  `object_json()` or `collection_items()`.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
 
 ### Security

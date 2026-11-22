@@ -7650,11 +7650,12 @@ class JSONObject:
             Exception: Whatever resolving a name in the key's type raises, such
                 as a ``NameError`` for a class that is not defined, before any
                 request.
-            ResponseShapeError: If the response does not hold a JSON object, or
-                the object's JSON after ``merge_response()`` lacks the key,
-                holds ``null`` for it, or holds a key that is not of the key's
-                type. The resource may have been created, and the error's
-                ``response`` holds the response.
+            ResponseShapeError: If the response does not hold a JSON object, as
+                when it is a list, or the object's JSON after
+                ``merge_response()`` lacks the key, holds ``null`` for it,
+                holds a key that is not of the key's type, or names another key
+                than the one that the request sent. The resource may have been
+                created, and the error's ``response`` holds the response.
             TypeError: If the model's key type is refused, which is checked
                 before any request. Also raised if a field is given both as a
                 keyword argument and in ``fields``, if ``request_options`` is
@@ -7696,14 +7697,27 @@ class JSONObject:
             for key, value in payload.items()
             if key in json_keys
         }
-        merged = cls._before_creation(api).merge_response(resp, {}, sent)
+        # The server may have made the resource, which only the response names,
+        # so every refusal of the response holds it.
         try:
+            merged = cls._before_creation(api).merge_response(resp, {}, sent)
+            cls._refuse_other_created_key(payload, merged, resp)
             obj = cls(json=merged, api=api)
+        except (DoesNotExist, MultipleObjectsReturned) as err:
+            # A list is not the object that a creation returns. These errors
+            # describe a query, which a creation is not.
+            raise ResponseShapeError(
+                f"The response to the creation of a {cls.__name__} is not one "
+                f"object, although the resource may have been created: {err}",
+                response=resp,
+            ) from err
+        except ResponseShapeError as err:
+            if err.response is None:
+                err.response = resp
+            raise
         except FieldConversionError as err:
             if err.model is not cls or err.field != cls._pk.field:
                 raise
-            # The server may have made the resource, which only the response
-            # names, so the error holds it.
             raise ResponseShapeError(
                 f"The response to the creation of a {cls.__name__} names no "
                 f"key that the {cls.__name__} has, although it may have been "
@@ -7714,6 +7728,47 @@ class JSONObject:
         # payload nor the response holds is unknown rather than absent.
         obj._json_is_partial = not json_keys.issubset(obj._json)
         return obj
+
+    @classmethod
+    def _refuse_other_created_key(
+        cls,
+        payload: Mapping[str, Any],
+        merged: Mapping[str, Any],
+        resp: Response,
+    ) -> None:
+        """Refuse a creation's response that names another key than was sent.
+
+        A request that sent a key creates the resource that the key names, so a
+        response that names another key contradicts it, as the response to a
+        ``save()`` that names another key does. A response that names no key
+        takes the one that was sent, and one whose key cannot be built is left
+        to the construction of the object, which refuses it.
+
+        Args:
+            payload: The fields that the request sent, by read key.
+            merged: The JSON that ``merge_response()`` returned.
+            resp: The response to the creation.
+
+        Raises:
+            ResponseShapeError: If the request sent a key and the JSON names
+                another. The error holds the response.
+        """
+        field: str = cls._pk.json_field
+        if field not in payload or field not in merged:
+            return
+        sent = _build_key(cls, payload[field])
+        try:
+            named = _build_key(cls, merged[field])
+        except (TypeError, ValueError):
+            return
+        if named != sent:
+            raise ResponseShapeError(
+                f"The response to the creation of a {cls.__name__} names the "
+                f"key {named!r}, but the request sent the key {sent!r}, so "
+                "it contradicts the request, although the resource may have "
+                "been created",
+                response=resp,
+            )
 
     @classmethod
     def _before_creation(cls, api: _AnyAPI | None) -> Self:

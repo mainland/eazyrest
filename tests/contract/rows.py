@@ -1680,6 +1680,7 @@ CREATE = "creating"
 
 @row(CREATE)
 def a_key_and_a_field_are_posted(world: World) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 7, "name": "a"})
     assert world.body(lambda: User.create(id=7, name="a"), "POST") == {
         "id": 7,
         "name": "a",
@@ -1689,6 +1690,7 @@ def a_key_and_a_field_are_posted(world: World) -> None:
 
 @row(CREATE)
 def pk_is_posted_as_the_key(world: World) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 7})
     assert world.body(lambda: User.create(pk=7), "POST") == {"id": 7}
     assert world.requests[-1].path == "/users/"
 
@@ -1700,6 +1702,7 @@ def a_key_of_the_wrong_type_is_refused_on_create(world: World) -> None:
 
 @row(CREATE)
 def a_json_name_is_posted_as_given(world: World) -> None:
+    world.mocker.post(requests_mock.ANY, json={"postId": 7})
     assert world.body(lambda: Post.create(postId=7), "POST") == {"postId": 7}
 
 
@@ -1746,6 +1749,7 @@ def related_objects_are_posted_as_keys(world: World) -> None:
 @row(CREATE)
 def get_or_create_posts_the_key_when_nothing_is_found(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 7})
     sent = world.bodies(lambda: User.get_or_create(pk=7))
     assert sent == [("GET", None), ("POST", {"id": 7})]
     assert [r.path for r in world.requests] == ["/users/", "/users/"]
@@ -1755,10 +1759,27 @@ def get_or_create_posts_the_key_when_nothing_is_found(world: World) -> None:
 @row(CREATE)
 def get_or_create_by_id_posts_the_key(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 7})
     sent = world.bodies(lambda: User.get_or_create(id=7))
     assert sent == [("GET", None), ("POST", {"id": 7})]
     assert [r.path for r in world.requests] == ["/users/", "/users/"]
     assert unquote(urlsplit(world.requests[-2].url).query) == "id=7"
+
+
+@row(CREATE)
+def a_response_that_names_another_key_is_refused(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 8, "name": "a"})
+    for call, requests in (
+        (lambda: User.create(id=7, name="a"), 1),
+        (lambda: User.get_or_create(id=7, name="a"), 2),
+    ):
+        error = raises(
+            world, ResponseShapeError, call, "7", "8", requests=requests
+        )
+        assert isinstance(error, ResponseShapeError)
+        assert error.response is not None
+        assert error.response.json() == {"id": 8, "name": "a"}
 
 
 RESPONSES_WITHOUT_THE_KEY: list[dict[str, Any]] = [

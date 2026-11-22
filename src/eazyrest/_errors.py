@@ -147,7 +147,8 @@ class ResponseShapeError(EazyrestError, TypeError, ValueError):
     response: requests.Response | None
     """The response whose JSON is refused, or ``None`` where the error was
     raised from decoded JSON with no response in scope, as in a hook such as
-    ``object_json()`` or ``collection_items()``."""
+    ``object_json()`` or ``collection_items()``. A creation's refusals always
+    hold it."""
 
     def __init__(
         self, *args: object, response: Response | None = None

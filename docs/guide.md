@@ -1776,11 +1776,16 @@ sent. An extra keyword argument that is not a field, such as a write-only
 password, is sent but not kept. If a field is in neither the payload nor the
 body, as when the body holds only the new primary key, reading it loads the
 object. The result must hold the new object's key, or `create()` raises
-`ResponseShapeError` after the `POST`, with the response as its `response`.
-There is no object until the response names its key, so `create()` calls
-`merge_response()` on an object of the class that has no key and no JSON, which
-only that call sees. The hook may use its `api` and the class's other hooks,
-but its `pk`, its key field, `url`, `==`, and `hash()` raise `UsageError`.
+`ResponseShapeError` after the `POST`, with the response as its `response`. It
+raises the same error, with the response, for a body that is not one JSON
+object, a list among them, and for a response that names another key than the
+one that the request sent, as `save()` does. A response that names no key takes
+the key that was sent. The resource may exist in each case, so the response is
+the only record of it. There is no object until the response names its key, so
+`create()` calls `merge_response()` on an object of the class that has no key
+and no JSON, which only that call sees. The hook may use its `api` and the
+class's other hooks, but its `pk`, its key field, `url`, `==`, and `hash()`
+raise `UsageError`.
 
 `merge_response()` computes the new JSON, and an API whose write responses hold
 something else, such as a status message, can override it on a shared base
@@ -2109,8 +2114,9 @@ exception type that it replaced, so code written for that type keeps working:
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
   the expected shape. Its message does not quote the body. Its `response` is
-  the response whose body is not JSON, and `None` where the error is raised
-  from decoded JSON, as in a hook such as `object_json()` or
+  the response whose body is not JSON, and the response that `create()` or
+  `get_or_create()` refuses. It is `None` where the error is raised from
+  decoded JSON elsewhere, as in a hook such as `object_json()` or
   `collection_items()`.
 - `UsageError`, a `RuntimeError`, for a model without a registered API.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
