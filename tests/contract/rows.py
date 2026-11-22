@@ -231,16 +231,27 @@ def raises(
     return caught
 
 
-def lookups(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
-    """Return the calls that take one lookup: filter, get, and the others."""
+def queries(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
+    """Return the calls that only look an object up: filter and get."""
     return [
         lambda: list(model.filter(**kw)),
         lambda: model.get(**kw),
-        lambda: model.get_or_create(**kw),
         lambda: list(model.filter(params=kw)),
         lambda: model.get(params=kw),
+    ]
+
+
+def creations(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
+    """Return the calls that look an object up and may create it."""
+    return [
+        lambda: model.get_or_create(**kw),
         lambda: model.get_or_create(params=kw),
     ]
+
+
+def lookups(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
+    """Return the calls that take one lookup: filter, get, and the others."""
+    return [*queries(model, **kw), *creations(model, **kw)]
 
 
 def sends_query(
@@ -249,6 +260,25 @@ def sends_query(
     """Assert that every form of a lookup sends exactly one query string."""
     for call in lookups(model, **kw):
         assert world.query(call) == expected
+
+
+def sends_query_but_refuses_creation(
+    world: World,
+    model: type[JSONObject],
+    expected: str,
+    exc: type[Exception],
+    *named: str,
+    **kw: Any,
+) -> None:
+    """Assert that a lookup is sent, unless get_or_create() takes it.
+
+    A lookup sends a value that the creation could not send, so
+    ``get_or_create()`` raises ``exc`` before any request.
+    """
+    for call in queries(model, **kw):
+        assert world.query(call) == expected
+    for call in creations(model, **kw):
+        raises(world, exc, call, *named)
 
 
 def refuses_query(
@@ -1308,14 +1338,20 @@ def a_key_of_the_wrong_type_is_refused_in_a_query(world: World) -> None:
 @row(OWN)
 def an_object_of_the_model_is_sent_as_the_key(world: World) -> None:
     other = Post(json={"postId": 3})
-    sends_query(world, Post, "postId=3", id=other)
-    sends_query(world, Post, "pk=3", pk=other)
+    sends_query_but_refuses_creation(
+        world, Post, "postId=3", FieldConversionError, "Post.id", id=other
+    )
+    sends_query_but_refuses_creation(
+        world, Post, "pk=3", TypeError, "Post", pk=other
+    )
     sends_query(world, Post, "pk__in=3", pk__in=[other])
 
 
 @row(OWN)
 def a_subclass_object_is_sent_as_its_key(world: World) -> None:
-    sends_query(world, User, "id=7", id=Admin(id=7))
+    sends_query_but_refuses_creation(
+        world, User, "id=7", FieldConversionError, "User.id", id=Admin(id=7)
+    )
 
 
 @row(OWN)
@@ -1366,7 +1402,9 @@ def the_json_name_is_an_ordinary_name(world: World) -> None:
 
 @row(OWN)
 def an_ordinary_name_is_sent_as_given(world: World) -> None:
-    sends_query(world, Post, "postId=7", postId="7")
+    sends_query_but_refuses_creation(
+        world, Post, "postId=7", FieldConversionError, "Post.id", postId="7"
+    )
 
 
 @row(OWN)
@@ -1433,8 +1471,17 @@ def a_key_of_the_wrong_type_among_several_is_refused(world: World) -> None:
 
 @row(REL)
 def a_collection_relation_takes_a_key_or_an_object(world: World) -> None:
-    sends_query(world, Post, "tags=a", tags=Tag(slug="a"))
-    sends_query(world, Post, "tags=a", tags="a")
+    sends_query_but_refuses_creation(
+        world,
+        Post,
+        "tags=a",
+        FieldConversionError,
+        "Post.tags",
+        tags=Tag(slug="a"),
+    )
+    sends_query_but_refuses_creation(
+        world, Post, "tags=a", FieldConversionError, "Post.tags", tags="a"
+    )
 
 
 @row(REL)
@@ -1547,7 +1594,9 @@ def other_suffixes_are_sent_as_given(world: World) -> None:
 @row(STRUCT)
 def a_name_that_names_no_field_is_sent_as_given(world: World) -> None:
     sends_query(world, Post, "title__iexact=x", title__iexact="x")
-    sends_query(world, Post, "x=8", x=User(id=8))
+    sends_query_but_refuses_creation(
+        world, Post, "x=8", TypeError, "User", x=User(id=8)
+    )
 
 
 @json_object
@@ -1566,7 +1615,9 @@ class Crowd(Base):
 def a_model_that_can_be_iterated_is_sent_as_its_key_under_any_name(
     world: World,
 ) -> None:
-    sends_query(world, Post, "x=5", x=Crowd(id=5))
+    sends_query_but_refuses_creation(
+        world, Post, "x=5", TypeError, "Crowd", x=Crowd(id=5)
+    )
 
 
 CREATE = "creating"

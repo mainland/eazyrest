@@ -1263,8 +1263,11 @@ creates an object from them if none matches. Its keyword arguments are sent in
 the lookup's query string, which servers and proxies may log, so pass a value
 that only the creation needs, such as a password, in `defaults`. The lookup
 query and the creation payload use the same JSON field names and conversions as
-`create()`. As in Django, a keyword argument that contains `__` and is not a
-field, such as `title__iexact`, is sent only in the lookup query:
+`create()`. Before it sends the lookup, `get_or_create()` refuses a value that
+`create()` could not send, such as a model under a name that is no field, so
+its error does not depend on whether the server has a match. As in Django, a
+keyword argument that contains `__` and is not a field, such as
+`title__iexact`, is sent only in the lookup query:
 
 ```python
 todo, created = Todo.get_or_create(user=user, title="Write docs")

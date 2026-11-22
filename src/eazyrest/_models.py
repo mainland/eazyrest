@@ -9005,6 +9005,12 @@ class JSONObject:
         once, before the lookup, and its items are used for both requests. A
         value that the field's conversion takes as a whole is not read.
 
+        Before it sends the lookup, this method refuses an argument that
+        ``create()`` could not send, after the checks that ``filter()`` makes
+        of the lookup. A model under a name that is no field, for example, is
+        sent as its key in a lookup but cannot be a body. The error therefore
+        does not depend on whether the lookup finds an object.
+
         Args:
             defaults: Optional fields applied only when creating a new object.
             api: Optional API to send the lookup and any creation with, instead
@@ -9029,9 +9035,12 @@ class JSONObject:
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
+            FieldConversionError: If a field's value cannot be converted, as
+                when a field that holds a collection is given a single item.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or ``request_options`` is not valid for a
-                query and a creation.
+                in ``params``, ``request_options`` is not valid for a query and
+                a creation, or a creation payload value is not made of JSON
+                types, as a model under a name that is no field.
             RedirectError: If a response is a redirect that was not followed.
         """
         _require_decorated(cls)
@@ -9039,18 +9048,43 @@ class JSONObject:
         # Check the options for both requests before sending either.
         _query_request_options(request_options)
         _request_options(request_options)
+
         # The lookup and the creation each iterate a collection value, so read
         # a single-pass iterable, such as a generator, only once. A value that
         # the field's conversion takes whole is no collection of values, and
         # the query reads it itself.
-        kwargs = {
-            name: list(value)
-            if isinstance(value, Iterable)
-            and not isinstance(value, (Collection, str, bytes, Mapping))
-            and not cls._takes_whole_value(name, value)
-            else value
-            for name, value in _query_params(params, kwargs).items()
+        def read_once(values: Mapping[str, Any]) -> dict[str, Any]:
+            """Return ``values`` with each single-pass iterable read."""
+            return {
+                name: list(value)
+                if isinstance(value, Iterable)
+                and not isinstance(value, (Collection, str, bytes, Mapping))
+                and not cls._takes_whole_value(name, value)
+                else value
+                for name, value in values.items()
+            }
+
+        kwargs = read_once(_query_params(params, kwargs))
+        create_kwargs = {
+            name: value
+            for name, value in kwargs.items()
+            if "__" not in name
+            or isinstance(getattr(cls, name, None), JSONProperty)
         }
+        if defaults is not None:
+            create_kwargs.update(read_once(defaults))
+
+        # Refuse an argument that the lookup or the creation could not send
+        # before sending anything. The lookup's own checks come first, then the
+        # payload's, so the outcome does not depend on what the server holds.
+        # filter() sends its request when it is called, so its checks are made
+        # here, ahead of the payload's.
+        _check_api_attribute(cls, UsageError)
+        client = cls.api if api is None else _as_client(api)
+        cls._encode_query(kwargs, client)
+        payload = cls._encode_fields(create_kwargs)
+        cls._check_created_key(payload)
+        _checked_json(cls._to_wire(payload))
         results = cls.filter(
             api=api, request_options=request_options, params=kwargs
         )
@@ -9063,15 +9097,6 @@ class JSONObject:
                 )
 
             return first, False
-
-        create_kwargs = {
-            name: value
-            for name, value in kwargs.items()
-            if "__" not in name
-            or isinstance(getattr(cls, name, None), JSONProperty)
-        }
-        if defaults is not None:
-            create_kwargs.update(defaults)
 
         return (
             cls.create(

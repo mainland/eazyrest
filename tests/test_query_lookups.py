@@ -821,3 +821,48 @@ def test_a_model_that_can_be_iterated_is_sent_as_its_key(
     assert parse_qs(urlparse(requests_mock.last_request.url).query) == {
         name: ["5"]
     }
+
+
+@pytest.mark.parametrize(
+    ("params", "error"),
+    [
+        ({"x": Owner(id=1)}, TypeError),
+        ({"labels": Status.OPEN}, FieldConversionError),
+    ],
+    ids=["model-under-no-field", "one-item-of-a-collection"],
+)
+@pytest.mark.parametrize("matches", [False, True], ids=["none", "match"])
+def test_get_or_create_refuses_what_create_could_not_send_before_any_request(
+    params: dict[str, Any],
+    error: type[Exception],
+    matches: bool,
+    requests_mock: Any,
+) -> None:
+    """A value the creation cannot send fails whatever the server holds."""
+    found = [{"id": 1, "labels": ["open"]}] if matches else []
+    requests_mock.get("https://lookups.example/tasks/", json=found)
+    requests_mock.post("https://lookups.example/tasks/", json={"id": 1})
+
+    with pytest.raises(error):
+        Task.get_or_create(**params)
+
+    assert requests_mock.call_count == 0
+
+
+def test_get_or_create_sends_a_generator_in_defaults_intact(
+    requests_mock: Any,
+) -> None:
+    """The check of the creation payload does not consume a generator."""
+    requests_mock.get("https://lookups.example/tasks/", json=[])
+    created = requests_mock.post(
+        "https://lookups.example/tasks/", json={"id": 1}
+    )
+
+    Task.get_or_create(
+        {"labels": (s for s in (Status.OPEN, Status.DONE))}, type_="x"
+    )
+
+    assert created.last_request.json() == {
+        "type": "x",
+        "labels": ["open", "done"],
+    }

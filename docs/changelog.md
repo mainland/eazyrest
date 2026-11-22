@@ -549,6 +549,14 @@ describe them further.
   raises `ValueError` naming the field before any request, where `v1.0.0a5`
   called `bulk_get_by_pks()` once for each copy with the same keys. Name each
   field once.
+- `get_or_create()` refuses an argument that `create()` could not send before
+  it sends the lookup. A model under a name that is no field, as in
+  `get_or_create(x=User(id=1))`, raises `TypeError`, and a single item for a
+  collection field raises `FieldConversionError`. The lookup's own checks come
+  first, so a lookup parameter that requests would not send intact still raises
+  `ValueError`. `v1.0.0a5` sent the lookup and raised only when nothing
+  matched, so a call that a match satisfied is now refused. Pass such a value
+  to `filter()` or `get()`.
 - A key of type `Literal` raises `FieldConversionError` for a value that is not
   one of its members where it is given, and a relation to the model refuses it.
   A non-member that the server's JSON names is treated as a key of the wrong
