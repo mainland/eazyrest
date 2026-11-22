@@ -273,16 +273,6 @@ class Me(KeyBase):
         return "/me/"
 
 
-def test_update_from_json_gives_a_singleton_the_key_that_it_names() -> None:
-    """A class that overrides ``url`` takes a key before it loads."""
-    me = Me()
-
-    me.update_from_json({"id": 7, "name": "Ada"})
-
-    assert me.pk == 7
-    assert me == Me(json={"id": 7})
-
-
 def test_update_from_json_keeps_the_key_of_a_singleton_that_has_one() -> None:
     """A singleton that knows its key still refuses another."""
     me = Me(json={"id": 7, "name": "Ada"})

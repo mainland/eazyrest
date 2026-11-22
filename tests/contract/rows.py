@@ -160,6 +160,12 @@ class World:
         self.mocker = mocker
         mocker.get(requests_mock.ANY, json=[{"postId": 1, "id": 1}])
         mocker.post(requests_mock.ANY, json={"postId": 9, "id": 9})
+        # A collection or a created object names a key of its model's type. A
+        # row that registers its own reply replaces these.
+        for path, item in (("docs", {"id": LOWER}), ("tags", {"slug": "a"})):
+            url = re.compile(rf"https://rows\.example/{path}/")
+            mocker.get(url, json=[item])
+            mocker.post(url, json=item)
         mocker.patch(requests_mock.ANY, json={})
         mocker.put(requests_mock.ANY, json={})
 
@@ -653,10 +659,7 @@ def key_read_from_json(world: World) -> None:
     assert User(json={"id": 7}).pk == 7
 
 
-@row(
-    BUILD,
-    pending="a key of the wrong JSON type is built without an error",
-)
+@row(BUILD)
 def a_wrong_key_in_json_is_refused(world: World) -> None:
     raises(
         world,
@@ -666,22 +669,18 @@ def a_wrong_key_in_json_is_refused(world: World) -> None:
     )
 
 
-@row(BUILD, pending="an object is built without its key")
+@row(BUILD)
 def a_missing_key_is_refused(world: World) -> None:
     for build in (lambda: User(), lambda: User(id=None)):
         raises(world, TypeError, build, "User.id", "create()")
 
 
-@row(
-    BUILD,
-    pending="an object built from fields without its key raises ValueError "
-    "when it loads, not TypeError when it is built",
-)
+@row(BUILD)
 def fields_without_the_key_are_refused(world: World) -> None:
     raises(world, TypeError, lambda: User(name="a"), "User.id", "create()")
 
 
-@row(BUILD, pending="an object is built from JSON without its key")
+@row(BUILD)
 def json_without_the_key_is_refused(world: World) -> None:
     for body in ({}, {"id": None}):
         raises(
@@ -929,10 +928,7 @@ def an_embedded_object_is_read_without_a_request(world: World) -> None:
     assert world.count == 0
 
 
-@row(
-    OWNER,
-    pending="an embedded object without a key is read without an error",
-)
+@row(OWNER)
 def an_embedded_object_without_a_key_is_refused_when_read(
     world: World,
 ) -> None:
@@ -1753,10 +1749,7 @@ RESPONSES_WITHOUT_THE_KEY: list[dict[str, Any]] = [
 ]
 
 
-@row(
-    CREATE,
-    pending="a response without the key builds an object without one",
-)
+@row(CREATE)
 def a_response_without_the_key_is_refused_after_create(
     world: World,
 ) -> None:
@@ -1772,10 +1765,7 @@ def a_response_without_the_key_is_refused_after_create(
         names(str(error), "User.id")
 
 
-@row(
-    CREATE,
-    pending="a response without the key builds an object without one",
-)
+@row(CREATE)
 def a_response_without_the_key_is_refused_after_get_or_create(
     world: World,
 ) -> None:
@@ -1831,10 +1821,7 @@ def another_key_is_refused_when_merging(world: World) -> None:
             assert user.name == "a"
 
 
-@row(
-    FULL,
-    pending="a query item without the key builds an object without one",
-)
+@row(FULL)
 def a_query_item_without_the_key_is_refused(world: World) -> None:
     items = [{"id": 1, "name": "a"}, {"name": "a"}]
     world.mocker.get(requests_mock.ANY, json=items)
@@ -1862,11 +1849,7 @@ def a_query_item_without_the_key_is_refused(world: World) -> None:
     )
 
 
-@row(
-    FULL,
-    pending="a key of the wrong JSON type in a response is built "
-    "without an error",
-)
+@row(FULL)
 def a_response_key_of_the_wrong_type_is_refused(world: World) -> None:
     body = {"id": "7", "name": "a"}
     world.mocker.post(requests_mock.ANY, json=body)

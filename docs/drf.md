@@ -168,11 +168,10 @@ leaves it unchanged.
 `HyperlinkedModelSerializer` puts each object's own URL in a JSON field named
 `url`, in place of its primary key. eazyrest identifies an object by its key,
 so add the key to the serializer's fields, as in
-`fields = ["url", "id", "name"]`. Without it, an object that a query returns
-reads, but cannot be saved, deleted, or passed as a relation or a query value,
-because it has no key. Its `pk` is `None`, and `save()`, `delete()`, and
-`refresh()` raise `ValueError`. `url` is reserved for `JSONObject.url`, so map
-the field to another attribute name:
+`fields = ["url", "id", "name"]`. Without it, an item that a query returns
+names no object, so the query raises `ResponseShapeError` naming the key field
+and the item's position. `url` is reserved for `JSONObject.url`, so map the
+field to another attribute name:
 
 ```python
 @json_object(field_map={"resource_url": "url"})
@@ -183,10 +182,11 @@ class Todo(DRFObject):
     resource_url: str
 ```
 
-If the server cannot add the key, an object can still be built from its URL's
-last segment, as in
-`Todo(id=int(todo.resource_url.rstrip("/").rsplit("/", 1)[-1]))`. A later 1.x
-release may let a model use its URL as its identity.
+If the server cannot add the key, read the collection with the API and build
+each object from its URL's last segment, as in
+`Todo(id=int(item["url"].rstrip("/").rsplit("/", 1)[-1]))`, or declare a model
+without a key field to read the items as values. A later 1.x release may let a
+model use its URL as its identity.
 
 A `HyperlinkedRelatedField`, which `HyperlinkedModelSerializer` uses for every
 relation, represents a related object by its URL rather than its primary key.

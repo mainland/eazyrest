@@ -11,7 +11,6 @@ import email.message
 import enum
 import inspect
 import math
-import pickle
 import re
 import sys
 import types
@@ -161,10 +160,14 @@ def test_detail_response_without_primary_key_keeps_identity(
     assert patch.last_request.json() == {"name": "Grace"}
 
 
-def test_object_with_overridden_url_loads_without_primary_key(
+def test_a_resource_at_a_fixed_url_is_read_with_its_key(
     requests_mock: Any,
 ) -> None:
-    """A singleton resource that needs no key loads on first read."""
+    """A resource at a fixed URL is read as an object of its model.
+
+    The object has the key that the response names, and its own URL. A class
+    that overrides ``url`` still needs its key from construction.
+    """
 
     @json_object
     class CurrentUser(ModelBase):
@@ -182,14 +185,17 @@ def test_object_with_overridden_url_loads_without_primary_key(
         "https://example.com/v1/me/", json={"id": 7, "name": "Ada"}
     )
 
-    me = CurrentUser()
+    me = User(json=test_api.json(test_api.get("/me/")))
 
-    assert me.name == "Ada"
     assert me.pk == 7
+    assert me.name == "Ada"
+    assert me.url == "/users/7/"
     assert requests_mock.call_count == 1
+    with pytest.raises(TypeError, match=r"CurrentUser\.id"):
+        CurrentUser()
 
 
-def test_url_override_that_extends_default_refuses_object_without_key(
+def test_url_override_that_extends_default_reads_the_key_without_url(
     requests_mock: Any,
 ) -> None:
     """A key read never calls ``url``, so an override cannot recurse."""
@@ -197,6 +203,8 @@ def test_url_override_that_extends_default_refuses_object_without_key(
     @json_object
     class Extended(ModelBase):
         """Resource whose ``url`` extends the default."""
+
+        class_url = "/extended/"
 
         id: int
         name: str
@@ -206,40 +214,10 @@ def test_url_override_that_extends_default_refuses_object_without_key(
             """Return the default URL with a suffix."""
             return super().url + "detail/"
 
-    for obj in (Extended(), Extended(json={"name": "x"})):
-        assert obj.pk is None
-        with pytest.raises(ValueError, match="primary key None"):
-            _ = obj.url
-        with pytest.raises(ValueError, match="primary key None"):
-            obj.delete()
-        with pytest.raises(ValueError, match="primary key None"):
-            obj.refresh()
-    changed = Extended(json={"name": "x"})
-    changed.name = "y"
-    with pytest.raises(ValueError, match="primary key None"):
-        changed.save()
-    assert requests_mock.call_count == 0
+    obj = Extended(id=3)
 
-
-def test_url_override_that_formats_key_reads_none_without_key(
-    requests_mock: Any,
-) -> None:
-    """The key of an object that has none reads ``None``, not an error."""
-
-    @json_object
-    class Formatted(ModelBase):
-        """Resource whose ``url`` formats the key."""
-
-        id: int
-        name: str
-
-        @property
-        def url(self) -> str:
-            """Return a URL built from the key."""
-            return f"formatted/{self.pk}/detail/"
-
-    assert Formatted().pk is None
-    assert Formatted(json={"name": "x"}).pk is None
+    assert obj.pk == 3
+    assert obj.url == "/extended/3/detail/"
     assert requests_mock.call_count == 0
 
 
@@ -2424,7 +2402,6 @@ def test_repr_shows_primary_key_without_a_request(
 
     assert repr(User(id=1)) == "<User id=1>"
     assert repr(User(json={"id": 2, "name": "Ada"})) == "<User id=2>"
-    assert repr(User()) == "<User id=None>"
     assert repr(UUIDUser(key=key)) == f"<UUIDUser key={str(key)!r}>"
     assert repr(UUIDUser(json={"ID": str(key)})) == repr(UUIDUser(key=key))
     assert repr(ModelBase()) == "<ModelBase>"
@@ -2441,58 +2418,42 @@ def test_reading_lazy_primary_key_sends_no_request(requests_mock: Any) -> None:
     assert requests_mock.call_count == 0
 
 
-def test_object_without_primary_key_reports_missing_url(
-    requests_mock: Any,
-) -> None:
-    """An object created without a key cannot load, and says why."""
-    user = User()
-
-    assert user.pk is None
-    with pytest.raises(ValueError, match="primary key None, so it has no URL"):
-        _ = user.name
-    with pytest.raises(ValueError, match="no URL"):
-        User(name="Ada")
-    assert requests_mock.call_count == 0
-
-
 @pytest.mark.parametrize(
-    "body", [{"status_code": 204}, {"json": {}}, {"json": {"title": "a"}}]
+    "body",
+    [
+        {"status_code": 204},
+        {"json": {}},
+        {"json": {"title": "a"}},
+        {"json": {"id": None}},
+        {"json": {"id": "5"}},
+    ],
 )
-def test_create_without_returned_key_reports_missing_url(
+def test_create_without_a_returned_key_is_refused_with_its_response(
     requests_mock: Any, body: dict[str, Any]
 ) -> None:
-    """A creation whose response lacks the new key leaves the object keyless.
+    """A creation whose response names no readable key raises after the POST.
 
-    Its JSON is partial, and loading the rest would need the key, so reading
-    a field that the JSON lacks says that the object has no URL.
+    The server may have made the resource, which only the response names, so
+    the error holds the response. ``get_or_create()`` creates the same way.
 
     Args:
         body: Keyword arguments of the mocked ``POST`` response.
     """
-    requests_mock.post("https://example.com/v1/todos/", **body)
+    posted = requests_mock.post("https://example.com/v1/todos/", **body)
+    requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    todo = Todo.create(title="a")
-
-    assert todo.pk is None
-    assert todo.title == "a"
-    with pytest.raises(ValueError, match="primary key None, so it has no URL"):
-        _ = todo.completed
-    with pytest.raises(ValueError, match="no URL"):
-        todo.save(full=True)
-    assert requests_mock.call_count == 1
-
-
-def test_keyless_push_reports_missing_url(requests_mock: Any) -> None:
-    """A push without a key into a keyless object cannot load the rest."""
-    todo = Todo()
-
-    todo.update_from_json({"title": "a"})
-
-    assert todo.pk is None
-    assert todo.title == "a"
-    with pytest.raises(ValueError, match="no URL"):
-        _ = todo.completed
-    assert requests_mock.call_count == 0
+    for create in (
+        lambda: Todo.create(title="a"),
+        lambda: Todo.get_or_create(title="a"),
+    ):
+        with pytest.raises(
+            ResponseShapeError, match=r"created.*Todo\.id"
+        ) as e:
+            create()
+        assert e.value.response is not None
+        assert e.value.response.status_code == body.get("status_code", 200)
+        assert e.value.response.request.method == "POST"
+    assert posted.call_count == 2
 
 
 @json_object
@@ -2505,33 +2466,21 @@ class TodoNote(ModelBase):
     todo: Todo
 
 
-def test_object_read_without_its_key_behaves_as_built_without_one(
+def test_a_collection_item_without_its_key_is_refused(
     requests_mock: Any,
 ) -> None:
-    """An item whose JSON lacks the key field has the key ``None``.
+    """An item whose JSON lacks the key field names no object.
 
     The server's serializer may omit the key, such as one that names each
-    object by its URL.
+    object by its URL, and then the query raises, naming the item.
     """
     requests_mock.get(
         "https://example.com/v1/todos/",
         json=[{"url": "https://example.com/v1/todos/1/", "title": "t"}],
     )
-    todo = next(Todo.filter())
-    todo.title = "new"
 
-    assert todo.pk is None
-    assert repr(todo) == "<Todo id=None>"
-    for call in (
-        lambda: todo.url,
-        todo.save,
-        todo.delete,
-        todo.refresh,
-    ):
-        with pytest.raises(ValueError, match="primary key None"):
-            call()
-    with pytest.raises(FieldConversionError, match="primary key is None"):
-        TodoNote.create(todo=todo)
+    with pytest.raises(ResponseShapeError, match=r"Item \[0\].*Todo\.id"):
+        next(Todo.filter())
     assert [r.method for r in requests_mock.request_history] == ["GET"]
 
 
@@ -2539,30 +2488,27 @@ def test_refresh_refuses_before_it_discards_pending_changes(
     requests_mock: Any,
 ) -> None:
     """An object that cannot reload keeps its pending changes."""
-    requests_mock.get(
-        "https://example.com/v1/todos/",
-        json=[{"url": "https://example.com/v1/todos/1/", "title": "t"}],
-    )
-    todo = next(Todo.filter())
-    todo.title = "new"
+    obj = TextKeyed(json={"id": ".", "name": "a"})
+    obj.name = "new"
 
     with pytest.raises(ValueError, match="so it has no URL"):
-        todo.refresh()
+        obj.refresh()
 
-    assert todo._pending_updates == {"title": "new"}
-    assert todo.title == "new"
+    assert obj._pending_updates == {"name": "new"}
+    assert obj.name == "new"
+    assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize("key", [None, "", ".", ".."])
+@pytest.mark.parametrize("key", ["", ".", ".."])
 def test_refresh_refuses_an_object_that_has_no_url(
-    requests_mock: Any, key: str | None
+    requests_mock: Any, key: str
 ) -> None:
-    """An object built without a key, or with one that has no URL, is refused.
+    """An object whose key has no URL is refused.
 
     Args:
-        key: Primary key that the object is built with, or ``None`` for none.
+        key: Primary key that the object is built with.
     """
-    obj = Todo() if key is None else TextKeyed(id=key)
+    obj = TextKeyed(id=key)
 
     with pytest.raises(ValueError, match="so it has no URL"):
         obj.refresh()
@@ -3838,7 +3784,6 @@ def test_query_rejects_none_for_json_backed_field(
     [
         (lambda: Todo.filter(userId=None), "parameter userId for"),
         (lambda: Todo.get_or_create(userId=None), "parameter userId for"),
-        (lambda: MaybeTodo.get(user=User(pk=None)), "is None"),
         (lambda: Team.filter(members=[]), "parameter members for"),
         (lambda: SetTeam.get(members=set()), "empty collection"),
         (lambda: Team.get_or_create(members=()), "empty collection"),
@@ -5086,14 +5031,12 @@ def test_url_without_api_keeps_trailing_slash() -> None:
     assert Unbound(id=1).url == "/unbound/1/"
 
 
-@pytest.mark.parametrize("slug", [None, "", ".", ".."])
-def test_invalid_primary_key_has_no_url(
-    requests_mock: Any, slug: str | None
-) -> None:
+@pytest.mark.parametrize("slug", ["", ".", ".."])
+def test_invalid_primary_key_has_no_url(requests_mock: Any, slug: str) -> None:
     """An invalid primary key cannot address another resource.
 
     Args:
-        slug: Primary key that has no URL, such as ``None`` or ``".."``.
+        slug: Primary key that has no URL, such as ``".."``.
     """
     org = Org(slug=slug)
 
@@ -5244,6 +5187,62 @@ def test_create_with_full_body_is_not_partial(requests_mock: Any) -> None:
     todo = Todo.create(title="old", user=User(id=2))
 
     assert todo.completed is False
+    assert requests_mock.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        lambda obj: obj.pk,
+        lambda obj: obj.id,
+        lambda obj: obj.url,
+        lambda obj: obj == obj.__class__(id=1),
+        hash,
+    ],
+    ids=["pk", "key-field", "url", "equality", "hash"],
+)
+def test_merge_response_cannot_use_the_key_during_create(
+    requests_mock: Any, use: Callable[[Any], Any]
+) -> None:
+    """The object that reads a creation has no key, and says so.
+
+    Args:
+        use: What the hook does with the object.
+    """
+
+    @json_object
+    class Probe(ModelBase):
+        """Model whose hook reads the object during a creation."""
+
+        class_url = "/probes/"
+
+        id: int
+
+        def merge_response(
+            self,
+            resp: Response,
+            current: Mapping[str, Any],
+            sent: Mapping[str, Any],
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            """Use the object before the creation has named its key.
+
+            Args:
+                resp: Response to the write.
+                current: JSON of the object before the write.
+                sent: Fields that the write sent.
+                **kwargs: Other arguments, which are ignored.
+
+            Returns:
+                The default merge.
+            """
+            use(self)
+            return super().merge_response(resp, current, sent, **kwargs)
+
+    requests_mock.post("https://example.com/v1/probes/", json={"id": 1})
+
+    with pytest.raises(UsageError, match=r"merge_response\(\) reads during"):
+        Probe.create()
     assert requests_mock.call_count == 1
 
 
@@ -6663,11 +6662,11 @@ def test_a_key_that_is_not_a_relation_refuses_a_model_object() -> None:
     """A model object is not a value of a plain key, as in JSON."""
     with pytest.raises(FieldConversionError, match=r"Todo\.id: .*User"):
         Todo(id=User(id=3))
-    todo = Todo()
+    todo = Todo(id=1)
     with pytest.raises(FieldConversionError, match=r"Todo\.id: .*User"):
         todo.pk = User(id=3)
 
-    assert todo.pk is None
+    assert todo.pk == 1
 
 
 class _UserPair(typing.NamedTuple):
@@ -7018,40 +7017,6 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
         assert len({obj, twins[model], fresh}) == 1
 
 
-def test_an_object_without_a_key_is_not_refused_for_its_models_key_type(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A key that is ``None`` is compared without reading its type.
-
-    The model's key type is refused when a key is first read, but an object
-    whose key is ``None`` has no key to read. It equals only itself, and
-    ``hash()`` says that the key is ``None``.
-
-    Args:
-        monkeypatch: Defines the model that the key names as a global.
-    """
-
-    @json_object
-    class Item(ModelBase):
-        class_url = "/items/"
-
-        id: int
-
-    @json_object
-    class Shelf(ModelBase):
-        class_url = "/shelves/"
-
-        id: list[Item]
-
-    monkeypatch.setitem(globals(), "Item", Item)
-    empty = Shelf(json={"id": None})
-    assert empty != Shelf(json={"id": None})
-    with pytest.raises(TypeError, match="is None"):
-        hash(empty)
-    with pytest.raises(TypeError, match=r"Shelf\.id is the primary key"):
-        Shelf(json={"id": [1]}) == Shelf(json={"id": [1]})  # noqa: B015
-
-
 @pytest.mark.parametrize(
     "operation",
     ["url", "hash", "key", "refresh", "update_from_json"],
@@ -7087,7 +7052,7 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
         "key": lambda obj: obj.pk,
         "refresh": lambda obj: obj.refresh(),
         "update_from_json": lambda obj: obj.update_from_json(
-            {obj._pk_json_field: obj._saved_key_json}
+            {obj._pk_json_field: 1}
         ),
     }
     objects = [stall]
@@ -7690,135 +7655,6 @@ def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize("how", ["field", "pk"])
-@pytest.mark.parametrize(
-    "json",
-    [{"name": "Ada"}, {"id": None, "name": "Ada"}],
-    ids=["missing", "null"],
-)
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_an_object_built_from_json_without_a_key_takes_the_key_it_is_given(
-    requests_mock: Any,
-    write_mode: WriteMode,
-    json: dict[str, Any],
-    how: str,
-) -> None:
-    """Giving the first key sends nothing, and a second one is refused.
-
-    Args:
-        write_mode: Write mode of the user.
-        json: The user's JSON, which has no key.
-        how: Whether the key is assigned as the field or as ``pk``.
-    """
-    user = User(json=json, write_mode=write_mode)
-
-    if how == "field":
-        user.id = 5
-    else:
-        user.pk = 5
-
-    assert requests_mock.call_count == 0
-    assert user.pk == 5
-    assert user.url == "/users/5/"
-    assert user.json["id"] == 5
-    assert user.name == "Ada"
-    assert user == User(id=5)
-    assert hash(user) == hash(User(id=5))
-    assert user._pending_updates == {}
-    with pytest.raises(AttributeError, match=r"key .* cannot change"):
-        user.id = 6
-    assert user.pk == 5
-    assert requests_mock.call_count == 0
-
-
-def _objects_with_unknown_keys() -> list[Callable[[], JSONObject]]:
-    """Return constructors of objects whose key is not known."""
-    return [
-        lambda: User(),
-        lambda: User(json={"name": "No key"}),
-        lambda: User(json={"id": None, "name": "Null key"}),
-    ]
-
-
-@pytest.mark.parametrize("make", _objects_with_unknown_keys())
-def test_an_object_whose_key_is_not_known_equals_only_itself(
-    make: Callable[[], JSONObject], requests_mock: Any
-) -> None:
-    """Without a known key, equality is identity, and no request is sent.
-
-    The cases are an object built without a key, and complete JSON that lacks
-    the key or holds ``null``.
-    """
-    obj = make()
-    twin = make()
-
-    assert obj == obj  # noqa: PLR0124
-    assert obj != twin
-    assert obj != User(id=1)
-    assert requests_mock.call_count == 0
-
-
-_ADVISED = (
-    r"key is not known, so it cannot be hashed\. Load or save the object, or "
-    "give its key, first"
-)
-_UNKNOWN_KEY_HASH_MESSAGES = [
-    _ADVISED,
-    r"key is missing from its JSON, so it cannot be hashed$",
-    r"key is None, so it cannot be hashed$",
-]
-"""The message for each object of ``_objects_with_unknown_keys()``."""
-
-
-@pytest.mark.parametrize(
-    ("make", "message"),
-    list(
-        zip(
-            _objects_with_unknown_keys(),
-            _UNKNOWN_KEY_HASH_MESSAGES,
-            strict=True,
-        )
-    ),
-)
-def test_hashing_an_object_whose_key_is_not_known_raises_type_error(
-    make: Callable[[], JSONObject], message: str, requests_mock: Any
-) -> None:
-    """The message says what is wrong, and advises only what can help.
-
-    Loading, saving, or giving the key can help an object that has no JSON yet
-    or only some of it. Complete JSON without the key, or with ``null``, cannot
-    be mended that way, so the message says what the JSON lacks. Nothing is
-    requested.
-
-    Args:
-        make: Builds an object whose key is not known.
-        message: Pattern that the error message matches.
-    """
-    obj = make()
-
-    with pytest.raises(TypeError, match=message):
-        hash(obj)
-    with pytest.raises(TypeError):
-        {obj}  # noqa: B018
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_is_given_later_makes_an_object_hashable(
-    requests_mock: Any,
-) -> None:
-    """A key of ``None`` has no hash, and the key that is given has one."""
-    user = User(json={"id": None, "name": "a"}, write_mode="lazy")
-    with pytest.raises(
-        TypeError, match=r"key is None, so it cannot be hashed$"
-    ):
-        hash(user)
-
-    user.id = 5
-
-    assert hash(user) == hash(User(id=5))
-    assert requests_mock.call_count == 0
-
-
 @json_object
 class TokenOwner(ModelBase):
     """Model whose key is a ``UUID``, which JSON can spell wrongly."""
@@ -7838,18 +7674,8 @@ class NamedTokenOwner(TokenOwner):
 @pytest.mark.parametrize(
     ("make", "payload"),
     [
-        (lambda: User(), {"id": 5, "name": "b"}),
-        (lambda: User(json={"name": "a"}), {"id": 5, "name": "b"}),
-        (lambda: User(json={"id": None, "name": "a"}), {"id": 5}),
-        (lambda: User(json={"id": None, "name": "a"}), {"id": None}),
-        (
-            lambda: TokenOwner(json={"id": "not-a-uuid"}),
-            {"id": "other-garbage"},
-        ),
-        (
-            lambda: TokenOwner(json={"id": "not-a-uuid"}),
-            {"id": "12345678-1234-5678-1234-567812345678"},
-        ),
+        (lambda: User(json={"id": 5, "name": "a"}), {"id": None}),
+        (lambda: User(json={"id": 5, "name": "a"}), {"id": "5"}),
         (
             lambda: TokenOwner(
                 json={"id": "12345678-1234-5678-1234-567812345678"}
@@ -7857,26 +7683,17 @@ class NamedTokenOwner(TokenOwner):
             {"id": "not-a-uuid"},
         ),
     ],
-    ids=[
-        "no-key",
-        "key-missing",
-        "key-null-payload-names-one",
-        "key-null-payload-null",
-        "unreadable-payload-unreadable",
-        "unreadable-payload-readable",
-        "readable-payload-unreadable",
-    ],
+    ids=["null", "another-json-type", "unreadable"],
 )
-def test_update_from_json_refuses_a_payload_whose_key_or_saved_key_is_unknown(
+def test_update_from_json_refuses_a_payload_whose_key_cannot_be_read(
     make: Callable[[], JSONObject],
     payload: dict[str, Any],
     requests_mock: Any,
 ) -> None:
-    """A payload that names a key needs a key on each side to name this object.
+    """A payload whose key is ``null`` or not of the key's type is refused.
 
-    A key is not known if it is ``None``, or missing, or cannot be converted,
-    and an object with such a key equals only itself. So the payload is
-    refused, and the object keeps its JSON.
+    Such a payload names no resource, so it does not name this object, and the
+    object keeps its JSON.
 
     Args:
         make: Builds the object.
@@ -7889,28 +7706,6 @@ def test_update_from_json_refuses_a_payload_whose_key_or_saved_key_is_unknown(
         obj.update_from_json(payload)
 
     assert obj._json == before
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_cannot_be_converted_equals_only_itself(
-    requests_mock: Any,
-) -> None:
-    """An unreadable key is not a known key, though ``repr()`` shows it.
-
-    The message of ``hash()`` says that the key cannot be read, with the
-    conversion's reason, and does not advise loading the object.
-    """
-    owner = TokenOwner(json={"id": "not-a-uuid"})
-    twin = TokenOwner(json={"id": "not-a-uuid"})
-
-    assert repr(owner) == "<TokenOwner id='not-a-uuid'>"
-    assert owner == owner  # noqa: PLR0124
-    assert owner != twin
-    with pytest.raises(
-        TypeError, match=r"key cannot be read from its JSON"
-    ) as e:
-        hash(owner)
-    assert "Load or save" not in str(e.value)
     assert requests_mock.call_count == 0
 
 
@@ -7943,7 +7738,6 @@ class WrappedKeyed(ModelBase):
         (User, "1"),
         (User, 1.0),
         (User, True),
-        (User, None),
         (TextKeyed, 1),
         (TextKeyed, True),
         (WrappedKeyed, "1"),
@@ -7955,28 +7749,24 @@ def test_a_key_of_another_json_type_is_refused_where_it_is_given(
     """A key that is a leaf type has one JSON type, which a given key must be.
 
     ``bool`` is not an ``int`` key, because the two encode differently. The
-    constructor and the first assignment refuse the value, whether the key is a
-    plain type, a ``Literal``, or wrapped as an optional, a ``NewType``, or
-    ``Annotated``, and the object has no key afterward.
+    constructor and an assignment refuse the value, whether the key is a plain
+    type or wrapped as an optional, a ``NewType``, or ``Annotated``, and an
+    object keeps its key.
 
     Args:
         model: Model with a key of a leaf type.
         given: A key of another JSON type than the field's.
     """
-    if given is None:
-        # ``None`` is no key at all, so it is not refused.
-        assert model(id=given).pk is None
-        return
-
     with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
         model(id=given)
-    obj = model()
+    key = "a" if model is TextKeyed else 1
+    obj = model(id=key)
     with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
         obj.pk = given
     with pytest.raises(FieldConversionError, match=rf"{model.__name__}\.id"):
         setattr(obj, "id", given)  # noqa: B010
 
-    assert obj.pk is None
+    assert obj.pk == key
     assert requests_mock.call_count == 0
 
 
@@ -8287,46 +8077,6 @@ def test_a_payload_without_the_key_is_accepted() -> None:
 
     assert user.name == "z"
     assert user in members
-
-
-@pytest.mark.parametrize(
-    "duplicate",
-    [copy.deepcopy, copy.copy, lambda obj: pickle.loads(pickle.dumps(obj))],
-    ids=["deepcopy", "copy", "pickle"],
-)
-def test_a_copy_of_an_object_whose_key_is_unknown_cannot_be_hashed(
-    duplicate: Callable[[JSONObject], JSONObject],
-) -> None:
-    """A copy or pickle made after a failed hash is still unhashable.
-
-    Args:
-        duplicate: Makes a copy of the object.
-    """
-    user = User(json={"name": "x"})
-    with pytest.raises(TypeError, match="cannot be hashed"):
-        hash(user)
-
-    twin = duplicate(user)
-
-    with pytest.raises(TypeError, match="cannot be hashed"):
-        hash(twin)
-    assert twin != User(id=1)
-
-
-def test_an_object_equals_one_with_its_key_once_the_key_is_assigned() -> None:
-    """An object that had no key equals the object with its key once given.
-
-    Before the assignment it equals only itself and cannot be hashed.
-    """
-    user = User()
-    assert user != User(id=4)
-    with pytest.raises(TypeError):
-        hash(user)
-
-    user.pk = 4
-
-    assert user == User(id=4)
-    assert hash(user) == hash(User(id=4))
 
 
 def test_a_load_that_spells_a_uuid_key_another_way_keeps_the_url(
@@ -9541,23 +9291,6 @@ def test_an_object_without_a_key_has_no_key_and_no_url(
         _ = address.url
     with pytest.raises(AttributeError, match="has no primary-key field"):
         address.pk = 1
-    assert requests_mock.call_count == 0
-
-
-def test_a_related_object_without_a_key_is_not_written(
-    requests_mock: Any,
-) -> None:
-    """An object without a key, written as a relation, raises.
-
-    Writing ``None`` would clear the relation on the server.
-    """
-    todo = MaybeTodo(json={"id": 1, "user": 5})
-
-    with pytest.raises(FieldConversionError, match="primary key is None"):
-        todo.user = User()
-    with pytest.raises(FieldConversionError, match="primary key is None"):
-        MaybeTodo.create(user=User())
-
     assert requests_mock.call_count == 0
 
 

@@ -54,9 +54,8 @@ describe them further.
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the
   field is read, where `v1.0.0a5` read it as an object whose `pk` was `None`.
-  Assigning or saving a collection that holds an object without a key raises
-  too. Declare items that have no key as a `TypedDict` or a dataclass. The read
-  JSON schema of such an item requires the related model's key.
+  Declare items that have no key as a `TypedDict` or a dataclass. The read JSON
+  schema of such an item requires the related model's key.
 - A query that compares the model's own key under two names, as in
   `filter(pk=7, id=8)` or `filter(pk__exact=7, id=8)`, raises `ValueError`
   naming both parameters before any request, and so do two parameters that are
@@ -343,24 +342,27 @@ describe them further.
 - A relation, assigned, given to `create()` or a query, or in a collection of
   relations, refuses an object of a class that is neither the field's model nor
   a subclass of it with `FieldConversionError`, where `v1.0.0a5` sent that
-  object's key or URL. So does a model object given for a primary key. A
-  related object without a key is refused there too, where `v1.0.0a5` accepted
-  it and `url` raised `ValueError`. The model holds the related object's key,
-  so the object must have its key without a request, as an object built from a
-  key or loaded from JSON that has it does. A related object of a class that
-  overrides `url` and has not loaded raises `FieldConversionError`. Load or
-  save it first. If it has loaded and its JSON lacks the key field, the message
-  says that the key is missing from its JSON, and if the JSON holds the key as
-  `null`, that the key is `None`. The constructor, the setter, `repr()`, and
-  `update_from_json()` send no request, and the field reads as a new related
-  object that holds the key, also after `refresh()`, where `v1.0.0a5` returned
-  the object that was given, and the plain key after `refresh()`.
-- An object read from JSON that lacks its key field, such as an item that a
-  `HyperlinkedModelSerializer` without `id` returned, has the key `None`, where
-  `v1.0.0a5` raised `AttributeError` from `pk`, `url`, `save()`, `delete()`,
-  `refresh()`, and a relation write. `url`, `save()`, `delete()`, and
-  `refresh()` raise `ValueError`, and a relation write raises
-  `FieldConversionError`.
+  object's key or URL. So does a model object given for a primary key.
+- Every object of a model that declares a key field has its key from
+  construction. `User()`, `User(id=None)`, and `User(name="a")` raise
+  `TypeError` naming `User.id` and pointing to `create()`, and `json=` without
+  the key, with `null` for it, or with a key that is not of the key's type, as
+  `User(json={"id": "7"})`, raises `FieldConversionError` naming `User.id`.
+  `v1.0.0a5` built such objects, with the key `None` or a `pk` that raised. A
+  caller that built one to create a resource calls `create()` instead, and one
+  that built a resource at a fixed URL, such as `/me/`, reads it with the API
+  and builds the object from the response, as
+  `User(json=api.json(api.get("/me/")))`, whose `url` is the model's own. A
+  class that overrides `url` needs the key too. A query or a page whose item
+  names no key that the model reads raises `ResponseShapeError` naming the key
+  field and the item's position, and `create()` and `get_or_create()` raise
+  `ResponseShapeError` after the `POST` when the response names none, saying
+  that the resource may have been created, with the response as the error's
+  `response`. An embedded related object without its key, as
+  `"owner": {"name": "a"}`, raises `FieldConversionError` naming the relation
+  field when the field is read. An object therefore always equals the objects
+  of its model with its key and hashes, and the refusals of an object without a
+  key in relation writes, queries, and prefetch are gone with it.
 - A primary key is a `str`, an `int`, or a `UUID`, alone or inside `T | None`,
   `Annotated`, or a `NewType`. Any other key raises `TypeError` when the class
   is decorated, naming the field and the types that a key may be, where
@@ -411,9 +413,9 @@ describe them further.
 - A field whose annotation is `None` as a whole, as `date: date = None` gives,
   raises `TypeError` when the class is decorated, naming the shadowing of the
   type by the field, where `v1.0.0a5` read its JSON unconverted.
-- `refresh()` raises `ValueError` for an object built without a key, such as
-  `Todo()`, and for one whose key is empty, `.`, or `..`, where `v1.0.0a5`
-  reset it without an error. It raises before it discards anything.
+- `refresh()` raises `ValueError` for an object whose key is empty, `.`, or
+  `..`, where `v1.0.0a5` reset it without an error. It raises before it
+  discards anything.
 - Bind an API with `Base.register_api(api)`. Assigning it, as in
   `Base.api = api`, would make `api=` ignored, so a class body that assigns
   `api` raises `TypeError`, and constructing an object of a class whose base
@@ -423,9 +425,6 @@ describe them further.
   when the class is defined or, for a class defined later, when the field is
   first used, where `v1.0.0a5` defined the class and read the holder's other
   fields. Declare nested JSON without a key as a `TypedDict` or a dataclass.
-- A relation given an object without a key, as in `Todo.create(user=User())`,
-  raises `FieldConversionError`, where `v1.0.0a5` wrote it as `null`. Save the
-  related object first, or assign `None` to clear an optional relation.
 - In eager mode, assigning a field a value equal to one of its updates that has
   not been sent sends the `PATCH`, where `v1.0.0a5` sent nothing and left the
   update pending. An update is unsent when it was made in lazy mode, or when a
@@ -444,9 +443,7 @@ describe them further.
   `url` as they were. Assigning another key to an object that has its key
   raises `AttributeError`. A load, a write's response, and `update_from_json()`
   that name another key raise `ResponseShapeError`, a `ValueError`, and change
-  nothing. An object without a known key still equals only itself, and `hash()`
-  of one raises `TypeError`, unless its model has no key field. The message
-  says what is wrong with the key.
+  nothing.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two
@@ -552,10 +549,8 @@ describe them further.
 - A key that a server sends in another JSON type than its field's, such as
   `"7"` for an `int` key, is refused as a key that the program gives is. An
   embedded related object whose key has another type raises
-  `FieldConversionError` naming the relation field when it is read. A key like
-  that in the JSON of an object or of a collection item is no key, so the
-  object equals only itself, `hash()` raises `TypeError`, and `url` raises
-  `FieldConversionError`.
+  `FieldConversionError` naming the relation field when it is read, and one in
+  the JSON of an object or of a collection item is refused as a missing key is.
 - `create()` checks the key that it is given as the constructor does, before
   the `POST`. A key of another JSON type, such as `"1"` for an `int` key, or
   one that does not convert, such as `"not-a-uuid"` for a `UUID` key, raises
@@ -617,24 +612,19 @@ that can break code written for 0.9.0, followed by what to do about it.
   the value names another key, where 0.9.0 sent a `PATCH` of the new key to the
   object's URL and, for an object that had not loaded, pointed the object at
   the new key. That covers the key field and `pk`. Assigning the key that the
-  object has does nothing and sends nothing. An object that has no key and no
-  URL of its own takes the key that it is given, as before, and so does one
-  built from JSON that lacks the key or holds `null`, which `v1.0.0a5` queued
-  as a change that `save()` could not send. An object of a class that overrides
-  `url` learns its key at its first load, so assigning it a key raises
-  `AttributeError`, unless the key is given as the object is built, where
-  `v1.0.0a5` accepted it and the next load could name another key and raise
-  `ResponseShapeError`. To rename a resource on a server that allows it, send
-  the write with the raw API, as `api.patch(obj.url, json={"id": 2})`, and
-  build the object again from the response. A known key is also kept when the
-  server names another one. A load, a write's response, and
-  `update_from_json()` raise `ResponseShapeError`, a `ValueError`, and change
-  nothing, where 0.9.0 replaced the object's JSON and so its key. A write's
-  response that is refused leaves the pending updates. A key whose type is
-  `int` or `str` refuses a value of another JSON type where it is given, as
-  `User(id="1")` does for an `int` key, with `FieldConversionError`. So does a
-  related object that a read builds from the server's JSON, and the error names
-  the relation field.
+  object has does nothing and sends nothing. Every object has its key from
+  construction, as the 1.0.0a5 items say, so 0.9.0's object without a key,
+  which took the key that it was given, no longer exists. To rename a resource
+  on a server that allows it, send the write with the raw API, as
+  `api.patch(obj.url, json={"id": 2})`, and build the object again from the
+  response. A known key is also kept when the server names another one. A load,
+  a write's response, and `update_from_json()` raise `ResponseShapeError`, a
+  `ValueError`, and change nothing, where 0.9.0 replaced the object's JSON and
+  so its key. A write's response that is refused leaves the pending updates. A
+  key whose type is `int` or `str` refuses a value of another JSON type where
+  it is given, as `User(id="1")` does for an `int` key, with
+  `FieldConversionError`. So does a related object that a read builds from the
+  server's JSON, and the error names the relation field.
 - A write response is merged into the object through the new `merge_response()`
   hook, rather than replacing its JSON. A response without a body, such as
   `204 No Content`, keeps the values that were sent. `create()` keeps only the
@@ -776,9 +766,7 @@ that can break code written for 0.9.0, followed by what to do about it.
   `User(id=1.0)`, and `User(id=True)` raise, and so does a related object that
   a read builds from the server's JSON, with an error that names the relation
   field. Give the key in its field's type. A refresh leaves the key, the hash,
-  and the `url` as they were. An object without a known key still equals only
-  itself, and `hash()` of one raises `TypeError`, unless its model has no key
-  field. The message says what is wrong with the key.
+  and the `url` as they were.
 - A primary key is a `str`, an `int`, or a `UUID`, and any other key raises
   `TypeError` when the class is decorated, as the 1.0.0a5 items say. That
   includes an enum, a `datetime`, a `Decimal`, and a relation, which 0.9.0
@@ -833,16 +821,11 @@ that can break code written for 0.9.0, followed by what to do about it.
   a subclass of it with `FieldConversionError`. 0.9.0 sent that object's key on
   assignment, raised `TypeError` from `create()`, and sent the object's
   `repr()` as the parameter of a query. A model object given for a primary key
-  is refused too. A related object without a key is refused there as well,
-  where 0.9.0 accepted it and `url` raised `AttributeError`.
+  is refused too.
 - `url` percent-encodes the primary key as one path segment, and an object
-  whose key is missing, empty, `.`, or `..` has no URL. An object read from
-  JSON that lacks its key field has the key `None`, so `url`, `save()`,
-  `delete()`, and `refresh()` raise `ValueError` for it, and a relation write
-  raises `FieldConversionError`. `refresh()` raises `ValueError` for an object
-  whose key is `None`, empty, `.`, or `..`, where 0.9.0 reset an object with an
-  empty or dot key without an error and raised `AttributeError` for one built
-  without a key.
+  whose key is empty, `.`, or `..` has no URL. `refresh()` raises `ValueError`
+  for such an object, where 0.9.0 reset it without an error. An object without
+  a key cannot be built, as the 1.0.0a5 items say.
 - The second positional argument of `API()` is `proxy`, not `pool_connections`.
   Pass connection-pool settings, and other `requests.adapters.HTTPAdapter`
   arguments such as `max_retries=`, as keyword arguments.

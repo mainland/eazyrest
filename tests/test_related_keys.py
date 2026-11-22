@@ -64,18 +64,6 @@ class Feed(RelatedBase):
 
 
 @json_object
-class Me(RelatedBase):
-    """Singleton whose class names its URL."""
-
-    id: int
-
-    @property
-    def url(self) -> str:
-        """Return the fixed URL."""
-        return "/me/"
-
-
-@json_object
 class Slot(RelatedBase):
     """Model whose class formats its URL from its key."""
 
@@ -95,21 +83,6 @@ class Booking(RelatedBase):
 
     id: int
     slot: Slot
-
-
-@json_object
-class Holder(RelatedBase):
-    """Model that relates to a singleton."""
-
-    class_url = "/holders/"
-
-    id: int
-    me: Me
-
-
-def _unkeyed(key: Any) -> User:
-    """Return a user that the server's JSON gives a key of another type."""
-    return User(json={"id": key})
 
 
 BAD_KEYS = [
@@ -186,61 +159,6 @@ def _loaded_post() -> Post:
     )
 
 
-@pytest.mark.parametrize("key", BAD_KEYS)
-def test_assigning_a_related_object_without_a_key_is_refused(
-    key: Any, requests_mock: Any
-) -> None:
-    """The key is built as a read builds it, and nothing is queued."""
-    post = _loaded_post()
-
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        post.owner = _unkeyed(key)
-
-    assert post._pending_updates == {}
-    assert requests_mock.call_count == 0
-
-
-@pytest.mark.parametrize("key", BAD_KEYS)
-def test_create_refuses_a_related_object_without_a_key(
-    key: Any, requests_mock: Any
-) -> None:
-    """A key that cannot be built is not sent in the body."""
-    posted = requests_mock.post("https://related.example/posts/", json={})
-
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        Post.create(id=2, owner=_unkeyed(key), readers=[])
-
-    assert not posted.called
-
-
-@pytest.mark.parametrize("key", BAD_KEYS)
-def test_a_list_of_relations_refuses_a_related_object_without_a_key(
-    key: Any, requests_mock: Any
-) -> None:
-    """Each item of a list relation is built as a single relation is."""
-    posted = requests_mock.post("https://related.example/posts/", json={})
-
-    with pytest.raises(FieldConversionError, match=r"Post\.readers"):
-        Post.create(
-            id=2, owner=User(id=1), readers=[User(id=3), _unkeyed(key)]
-        )
-
-    assert not posted.called
-
-
-@pytest.mark.parametrize("key", BAD_KEYS)
-def test_a_query_refuses_a_related_object_without_a_key(
-    key: Any, requests_mock: Any
-) -> None:
-    """The query sends no key that the related model would not read."""
-    requests_mock.get("https://related.example/posts/", json=[])
-
-    with pytest.raises(FieldConversionError, match=r"Post\.owner"):
-        list(Post.filter(owner=_unkeyed(key)))
-
-    assert requests_mock.call_count == 0
-
-
 def test_a_related_object_with_a_key_is_written_as_that_key(
     requests_mock: Any,
 ) -> None:
@@ -270,24 +188,6 @@ def test_a_subclass_that_redeclares_the_key_is_refused_by_the_relation(
     assert not posted.called
 
 
-def test_a_class_that_overrides_url_refuses_an_assigned_key() -> None:
-    """Its next load could name another key, which the object would refuse."""
-    me = Me()
-
-    with pytest.raises(AttributeError, match="learns its key"):
-        me.id = 7
-
-    assert me.pk is None
-
-
-def test_a_class_that_overrides_url_refuses_a_key_that_cannot_be_built() -> (
-    None
-):
-    """The key is built first, so the error names what is wrong with it."""
-    with pytest.raises(FieldConversionError, match=r"Me\.id"):
-        Me().id = "7"  # type: ignore[assignment]
-
-
 def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
     """A URL that is formatted from the key needs the key given at once."""
     slot = Slot(id=3)
@@ -300,7 +200,7 @@ def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
 def test_the_error_of_a_list_relation_names_the_field_once(
     requests_mock: Any,
 ) -> None:
-    """A read, a full save, and a write each name the relation once."""
+    """A read and a full save each name the relation once."""
     put = requests_mock.put("https://related.example/posts/1/", json={})
     post = Post(json={"id": 1, "owner": 2, "readers": [{"id": "7"}]})
     messages = []
@@ -311,23 +211,20 @@ def test_the_error_of_a_list_relation_names_the_field_once(
     with pytest.raises(FieldConversionError) as full:
         post.save(full=True)
     messages.append(str(full.value))
-    with pytest.raises(FieldConversionError) as created:
-        Post.create(id=2, owner=User(id=1), readers=[_unkeyed("7")])
-    messages.append(str(created.value))
 
-    assert [message.count("Post.readers") for message in messages] == [1] * 3
+    assert [message.count("Post.readers") for message in messages] == [1] * 2
     assert not put.called
 
 
 @pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
-def test_a_lookup_refuses_a_related_object_without_a_key(
+def test_a_lookup_refuses_a_related_object_of_another_key_type(
     lookup: str, requests_mock: Any
 ) -> None:
     """A lookup on a relation names the relation, as the plain one does."""
     requests_mock.get("https://related.example/posts/", json=[])
 
     several = lookup == "owner__in"
-    for related in (_unkeyed("7"), SubUser(id="abc")):
+    for related in (SubUser(id="abc"),):
         value = [related] if several else related
         with pytest.raises(FieldConversionError, match=r"Post\.owner"):
             list(Post.filter(params={lookup: value}))
@@ -344,31 +241,6 @@ def test_a_lookup_sends_the_keys_of_related_objects(
     list(Post.filter(owner__in=[User(id=1), User(json={"id": 2})]))
 
     assert requests_mock.last_request.qs == {"owner__in": ["1,2"]}
-
-
-def test_a_singleton_that_has_not_loaded_says_to_load_or_save_it(
-    requests_mock: Any,
-) -> None:
-    """The key of a class that overrides url may be known by loading it."""
-    holder = Holder(json={"id": 1, "me": 7}, write_mode="lazy")
-
-    with pytest.raises(FieldConversionError, match="load or save"):
-        holder.me = Me()
-    with pytest.raises(FieldConversionError, match="load or save"):
-        Holder.create(id=2, me=Me())
-
-    assert requests_mock.call_count == 0
-
-
-@pytest.mark.parametrize("key", [True, 1.5, [1, "s3cr3t"]])
-def test_repr_hides_a_key_that_is_not_a_string_or_an_integer(key: Any) -> None:
-    """A key of another JSON value is not shown."""
-    assert repr(User(json={"id": key})) == "<User id=...>"
-
-
-def test_repr_shows_a_missing_key_as_none() -> None:
-    """A key that the JSON does not give is not hidden."""
-    assert repr(User(json={"id": None})) == "<User id=None>"
 
 
 def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
@@ -397,11 +269,12 @@ def test_the_error_of_a_list_relation_names_the_position_of_the_item() -> None:
 
 
 def test_a_list_relation_refuses_an_embedded_object_without_a_key() -> None:
-    """An item of a collection has a key, though a single relation need not."""
+    """An item of a collection has a key, as a single relation has."""
     post = Post(json={"id": 1, "owner": {"x": 1}, "readers": [3, {"x": 1}]})
     feed = Feed(json={"id": 1, "readers": [{"id": None}]})
 
-    assert repr(post.owner) == "<User id=None>"
+    with pytest.raises(FieldConversionError, match=r"Post\.owner: .*no key"):
+        post.owner  # noqa: B018
     with pytest.raises(
         FieldConversionError,
         match=r"Post\.readers: \[1\]: The item has no User key",
@@ -425,27 +298,6 @@ def test_an_unread_list_with_a_keyless_item_does_not_stop_a_save(
     post.save()
 
     assert patch.last_request.json() == {"owner": 5}
-
-
-def test_a_list_that_changed_in_place_refuses_a_keyless_item_when_saved(
-    requests_mock: Any,
-) -> None:
-    """A change to the list sends it, so every item must have a key."""
-    patch = requests_mock.patch("https://related.example/posts/1/", json={})
-    post = Post(
-        json={"id": 1, "owner": 2, "readers": [2, 3]},
-        write_mode="lazy",
-    )
-    post.readers.append(User())
-
-    with pytest.raises(FieldConversionError, match=r"Post\.readers: \[2\]"):
-        post.save()
-    del post.readers[2]
-    post.readers.append(User(id=4))
-    post.save()
-
-    assert patch.call_count == 1
-    assert patch.last_request.json() == {"readers": [2, 3, 4]}
 
 
 BAD_BARE_KEYS = [
@@ -1252,17 +1104,6 @@ def test_a_copy_that_reads_changes_and_saves_leaves_the_original_alone(
 
     assert _sent_bodies(requests_mock) == [{"staff": [1, 2, 9]}]
     assert [user.pk for user in roster.staff] == [1, 2]
-
-
-def test_a_copy_that_is_given_a_key_leaves_the_original_json_alone() -> None:
-    """The first key that a copy takes is not the original's."""
-    original = User(json={"name": "x"})
-    copied = copy.copy(original)
-
-    copied.id = 5
-
-    assert copied.json["id"] == 5
-    assert "id" not in original.json
 
 
 @pytest.mark.parametrize(

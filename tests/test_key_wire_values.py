@@ -13,6 +13,7 @@ from eazyrest import (
     API,
     FieldConversionError,
     JSONObject,
+    ResponseShapeError,
     json_object,
 )
 
@@ -279,29 +280,20 @@ def test_embedded_related_object_with_a_key_of_another_json_type_raises(
 
 
 @pytest.mark.parametrize("key", ["7", 7.0, True, {"a": 1}, [1]])
-def test_top_level_key_of_another_json_type_is_unknown(key: Any) -> None:
-    """Such a key names no resource, so the object equals only itself."""
-    first = Item(json={"id": key})
-    second = Item(json={"id": key})
-
-    assert first != second
-    assert first.__eq__(first) is True
-    with pytest.raises(TypeError):
-        hash(first)
+def test_top_level_key_of_another_json_type_is_refused(key: Any) -> None:
+    """Such a key names no resource, so no object is built."""
     with pytest.raises(FieldConversionError, match=r"Item\.id"):
-        _ = first.url
+        Item(json={"id": key})
 
 
-def test_collection_item_with_a_key_of_another_json_type_is_unknown(
+def test_collection_item_with_a_key_of_another_json_type_is_refused(
     requests_mock: Any,
 ) -> None:
-    """A collection item whose key has another JSON type is not keyed."""
+    """A collection item whose key has another JSON type names no object."""
     requests_mock.get("https://wire.example/items/", json=[{"id": "7"}])
 
-    (item,) = Item.filter()
-
-    assert item != Item(id=7)
-    assert item != Item(json={"id": "7"})
+    with pytest.raises(ResponseShapeError, match=r"Item \[0\].*Item\.id"):
+        list(Item.filter())
 
 
 @json_object

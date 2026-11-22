@@ -132,15 +132,30 @@ model, so a subclass does not equal its base, and they have the same canonical
 key. The API and the fields are not compared. Comparing never sends a request,
 and comparing with a value that is not a model object is `False`.
 
-The canonical key comes from the key that the object last took from the server,
-or was given: the saved key. An object takes the key when it is built from
-`json=`, when its key is first given, as `User(id=1)` does, when it loads, when
-a write's response is recorded, and when `update_from_json()` merges a payload
-that names the key. Once the key is known, server state may name only that key,
-and `refresh()` leaves it.
+Every object of a model that declares a key field has its key from construction
+to the end of its life. The key is given to the constructor, as `User(id=1)` or
+`User(pk=1)`, or read from the object's JSON, as
+`User(json={"id": 1, "name": "Ada"})` does. A constructor without a key raises,
+before any request:
 
-Once the key is known, the program cannot change it, as Django's key field
-cannot be renamed through the object either:
+- `User()`, `User(id=None)`, and `User(name="Ada")` raise `TypeError`, naming
+  `User.id` and pointing to `create()`, which makes a new resource and returns
+  its object.
+- `User(json={})`, `User(json={"id": None})`, and a key that is not of the
+  key's type, such as `User(json={"id": "7"})`, raise `FieldConversionError`
+  naming `User.id`.
+- A query or a page whose item lacks the key, holds `null`, or holds a key that
+  is not of the key's type raises `ResponseShapeError`, naming the key field
+  and the item's position, as `Item [1]`.
+- `create()` and `get_or_create()` raise `ResponseShapeError` after the `POST`
+  when the object's JSON, after `merge_response()`, names no key that the model
+  reads. The server may have made the resource, so the message says so, and the
+  error's `response` holds the response, whose body or `Location` header may
+  name it.
+
+Server state may name only that key, and `refresh()` leaves it. The program
+cannot change it either, as Django's key field cannot be renamed through the
+object:
 
 - Assigning the key field or `pk` a value that names another key raises
   `AttributeError`, as assigning a read-only field does, and sends nothing.
@@ -148,16 +163,6 @@ cannot be renamed through the object either:
   another object, build it, as `User(id=2)`.
 - A key is a `str`, an `int`, or a `UUID`, none of which can be changed in
   place.
-- An object that names no resource yet takes the key that it is given, and
-  giving it sends nothing. That is an object with no key and no URL of its own,
-  including one built from JSON that lacks the key or holds `null`. An object
-  of a class that overrides `url` has a URL of its own and already names a
-  resource. It learns its key at its first load, so assigning it a key raises
-  `AttributeError`, unless the key is given as the object is built, as in
-  `Slot(id=3)` for a class that formats its URL from the key. A class whose URL
-  does not use the key should not be given one, because eazyrest cannot tell
-  that the URL ignores it, and the object's first load raises
-  `ResponseShapeError` if the server names another key.
 
 A program that must rename a resource, on a server that allows it, sends the
 write with the raw API and builds the object again from the response:
@@ -167,12 +172,12 @@ response = user.api.patch(user.url, json={"id": 2})
 user = User(json=user.api.json(response))
 ```
 
-The canonical key is built from the saved key, or from the key that the program
-gives, as it is, before any conversion of the field: the text of a `str` key,
-the integer of an `int` key, and the lowercase hyphenated text of a `UUID` key.
-A subclass of `str`, `int`, or `UUID` gives the plain value. The canonical key
-is what a relation, a query, and a full save send for the key, so it is the key
-as the server names the resource, and these laws follow:
+The canonical key is built from the key that the program or the server gives,
+as it is, before any conversion of the field: the text of a `str` key, the
+integer of an `int` key, and the lowercase hyphenated text of a `UUID` key. A
+subclass of `str`, `int`, or `UUID` gives the plain value. The canonical key is
+what a relation, a query, and a full save send for the key, so it is the key as
+the server names the resource, and these laws follow:
 
 - Equal objects have the same `url`, unless their class overrides `url`. Two
   spellings of one `UUID`, such as its uppercase and its lowercase text, are
@@ -211,29 +216,20 @@ as the server names the resource, and these laws follow:
   and an object of another model raises `FieldConversionError`. A path through
   a relation, such as `owner__name` or `owner__id`, compares something that the
   class does not know, so its value is sent as given, with no check, except
-  that a related object in it is sent as its key, and one without a key raises
-  `ValueError` naming the parameter. Give the key in its field's type, as the
-  server returns it.
+  that a related object in it is sent as its key. Give the key in its field's
+  type, as the server returns it.
 
-Any other object equals only itself. That includes an object of a model without
-a key field, one built without a key, such as `User()`, and one whose loaded
-JSON lacks the key, holds `null`, or holds a key that the field cannot convert,
-such as `"not-a-uuid"` for a `UUID` key, which `repr()` still shows.
+An object of a model without a key field equals only itself.
 
 An object hashes by its model and canonical key, so objects that are equal are
 one member of a set or one key of a dict. An object of a model without a key
-field hashes by identity. For any other object whose key is not known, `hash()`
-raises `TypeError`, because a hash that changed when the key became known would
-lose the object in a set or dict that held it. The message advises loading or
-saving the object, or giving its key, only for an object that has no JSON yet
-or only part of it. Otherwise it says that the key is missing from the JSON, is
-`None`, or cannot be read, because none of those would help.
+field hashes by identity.
 
 ### When the hash changes
 
-Once an object's key is known, its hash never changes, so a set or dict that
-holds it keeps finding it. The hash is that of the model and its canonical key,
-and nothing changes the canonical key:
+An object's hash never changes, so a set or dict that holds it keeps finding
+it. The hash is that of the model and its canonical key, and nothing changes
+the canonical key:
 
 - The program cannot change it, as [Equality by key](#equality-by-key) says.
 - Server state that names another canonical key is refused on every path. A
@@ -243,14 +239,8 @@ and nothing changes the canonical key:
   `ResponseShapeError` from a write does, although the server may have applied
   them. That includes a payload or response that holds `null` or a key that the
   field cannot convert.
-- A spelling of the same key, such as `Z` and `+00:00` for a `datetime`, is the
-  same key and is taken.
-
-An object whose key is not known takes the key that the server first names, so
-its hash is the one that raises until then. `update_from_json()` also refuses a
-payload that names a key when the object has no key and no URL of its own. An
-object of a class that overrides `url` takes the key that its payload names if
-its saved key is absent or `null`.
+- A spelling of the same key, such as the uppercase text of a `UUID` key, is
+  the same key and is taken.
 
 ### What a key may be
 
@@ -401,9 +391,9 @@ Objects compare by key and hash by key, with the rules and the cases that
 Other keyword arguments to the constructor are assignments, made after the
 primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
 a change to its name, and in eager mode it also sends a `PATCH`. Use `create()`
-to create a new object. An object constructed without a primary key has `pk`
-`None` until it loads, and loading it raises `ValueError` because it has no
-URL.
+to create a new object. An object needs its key from construction, so `User()`
+and `User(name="Ada")` raise `TypeError`, as
+[Equality by key](#equality-by-key) says.
 
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or
@@ -436,17 +426,14 @@ queues nothing. A write that the server refuses is different: its updates stay
 pending, so a later `save()` sends them again.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
-loading it. For a key that is a relation, it shows the related object's key,
-even when the JSON embeds the related object, so a log of the object holds none
-of the related object's fields. A key that is not a string or an integer, such
-as a list, is shown as `...`.
+loading it. The key is shown as it is sent, so a `UUID` key shows its lowercase
+hyphenated text.
 
 Call `refresh()` to discard cached JSON, converted field values, prefetched
 related objects, and pending lazy updates. The next field read reloads the
 object from the API. An object that has no URL cannot reload, so `refresh()`
 raises `ValueError` before it discards anything. That is the case for an object
-built without a key and for one whose key is empty, `.`, or `..`, as well as
-for one read from JSON that lacks its key.
+whose key is empty, `.`, or `..`.
 
 ```python
 user.refresh()
@@ -506,17 +493,24 @@ always forms one path segment. A string key is its own text, an integer key is
 written in decimal, and a `UUID` key in its lowercase hyphenated form. For
 example, the key `a/b` becomes `a%2Fb`.
 
-The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
-raises `ValueError` because those keys could address the collection or another
-resource. An object built without a key, or read from JSON that lacks the key
-field, has the key `None`, so `url`, `save()`, `delete()`, and `refresh()`
-raise `ValueError` for it, and a relation write raises `FieldConversionError`.
+The keys `""`, `"."`, and `".."` have no resource URL. Accessing `url` raises
+`ValueError` because those keys could address the collection or another
+resource, and so do `save()`, `delete()`, and `refresh()`.
 
-Reading `pk` is like reading any field. If the object holds partial JSON that
-lacks the key, as after `update_from_json()` with a payload that omits it, the
-read loads the object first when it can load, because it has a key. The key is
-`None` only if the object's complete JSON lacks it, and then the object behaves
-as one built without a key.
+Reading `pk` never sends a request, because the object has its key from
+construction, whether or not it has loaded.
+
+A class may override `url`, as one whose detail route adds a suffix to the
+default does, and its objects still need their keys. A resource at a fixed URL,
+such as the current user at `/me/`, is read with the API and built as an object
+of its model, from the response, which names its key:
+
+```python
+me = User(json=api.json(api.get("/me/")))
+```
+
+Its `url` is the model's own, such as `/users/7/`, and it saves and reloads
+there.
 
 ## Field conversion
 
@@ -643,10 +637,8 @@ Related-object writes send the key that the related model builds, as every key
 is built. An object whose class is neither the field's model nor a subclass of
 it raises `FieldConversionError`, naming the field, the expected model, and the
 given class, when it is assigned, given to `create()` or a query, or is an item
-of a collection of relations. An object without a key is refused with
-`FieldConversionError`, rather than written as `null`. Prefetch lookups and
-`update_from_json()` compare canonical keys, so equivalent UUID spellings
-identify the same object.
+of a collection of relations. Prefetch lookups and `update_from_json()` compare
+canonical keys, so equivalent UUID spellings identify the same object.
 
 Collection annotations are converted recursively, so item annotations are
 honored inside `list`, `tuple`, `set`, `frozenset`, and `deque` fields, and
@@ -712,10 +704,9 @@ no item is `None` and no item is a collection of related objects:
 under another collection type, raise `TypeError` when the class is decorated,
 naming the field. An item that the server embeds without one raises
 `FieldConversionError` naming the field and the item's position when the field
-is read, and so does assigning, saving, or giving to `create()` a collection
-that holds an object without a key. A save of another field does not read or
-send a collection that you did not read. Declare items that have no key as a
-`TypedDict` or a dataclass, which need none.
+is read, as an embedded single relation without a key does. A save of another
+field does not read or send a collection that you did not read. Declare items
+that have no key as a `TypedDict` or a dataclass, which need none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps
@@ -1174,15 +1165,14 @@ key, with any suffix, so `field_map={"type_": "type"}` sends `type___in` as
 `type__in`. A name that starts with the name of no field, followed by `__`, is
 sent as given, and so is a path through a relation, such as `owner__id` or
 `owner__pk`, which names a field of the related model. A related model object
-in it is sent as its primary key, and one without a key raises `ValueError`
-naming the parameter. If two fields' names fit, the longer one is the field.
-Any other keyword argument, and a lookup whose suffix does not compare values
-of its field, such as `ordering`, `title__iexact`, `due__isnull`, or
-`created__date__gte`, is sent unchanged, as its `str()`, except that a model
-instance, also as an item of a collection, is sent as its primary key. A
-collection repeats the parameter, so `Todo.filter(tag=[a, b])` sends
-`tag=a&tag=b`, which a view that calls Django's `QueryDict.getlist()` reads, as
-django-filter does for a filter on a many-to-many field.
+in it is sent as its primary key. If two fields' names fit, the longer one is
+the field. Any other keyword argument, and a lookup whose suffix does not
+compare values of its field, such as `ordering`, `title__iexact`,
+`due__isnull`, or `created__date__gte`, is sent unchanged, as its `str()`,
+except that a model instance, also as an item of a collection, is sent as its
+primary key. A collection repeats the parameter, so `Todo.filter(tag=[a, b])`
+sends `tag=a&tag=b`, which a view that calls Django's `QueryDict.getlist()`
+reads, as django-filter does for a filter on a many-to-many field.
 
 A lookup whose name ends in `__in` or `__range`, such as `user__in` or
 `due__range`, takes an iterable of values that is not a string, bytes, a
@@ -1749,7 +1739,12 @@ its old value unless the body holds it. Call `refresh()` to reload it.
 sent. An extra keyword argument that is not a field, such as a write-only
 password, is sent but not kept. If a field is in neither the payload nor the
 body, as when the body holds only the new primary key, reading it loads the
-object.
+object. The result must hold the new object's key, or `create()` raises
+`ResponseShapeError` after the `POST`, with the response as its `response`.
+There is no object until the response names its key, so `create()` calls
+`merge_response()` on an object of the class that has no key and no JSON, which
+only that call sees. The hook may use its `api` and the class's other hooks,
+but its `pk`, its key field, `url`, `==`, and `hash()` raise `UsageError`.
 
 `merge_response()` computes the new JSON, and an API whose write responses hold
 something else, such as a status message, can override it on a shared base
