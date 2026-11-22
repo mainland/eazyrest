@@ -956,6 +956,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   HTTP library, requests for `API`.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
+- `ResponseShapeError.response` holds the response that the error refuses, as
+  `APIError.response` and `RedirectError.response` do, for a body that is not
+  JSON. It is `None` for an error raised from decoded JSON, as in a hook such
+  as `object_json()` or `collection_items()`.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
 
 ### Security

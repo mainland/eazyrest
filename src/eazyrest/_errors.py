@@ -144,6 +144,25 @@ class ResponseShapeError(EazyrestError, TypeError, ValueError):
     no list of results.
     """
 
+    response: requests.Response | None
+    """The response whose JSON is refused, or ``None`` where the error was
+    raised from decoded JSON with no response in scope, as in a hook such as
+    ``object_json()`` or ``collection_items()``."""
+
+    def __init__(
+        self, *args: object, response: Response | None = None
+    ) -> None:
+        """Describe a response that is refused.
+
+        Args:
+            *args: The message, as ``Exception`` takes it.
+            response: The response whose JSON is refused, if one is in scope.
+        """
+        super().__init__(*args)
+        # The protocol types any HTTP library's response, and requests' type is
+        # the one that API returns, as APIError.response has it.
+        self.response = cast("requests.Response | None", response)
+
 
 class UsageError(EazyrestError, RuntimeError):
     """Raised when eazyrest is used in a way it does not support.
@@ -207,7 +226,9 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             parse_constant=_invalid_json_constant, parse_float=_finite_float
         )
     except ValueError as err:
-        raise ResponseShapeError(f"{where} does not hold JSON") from err
+        raise ResponseShapeError(
+            f"{where} does not hold JSON", response=resp
+        ) from err
     except RecursionError as err:
         raise LimitExceeded(
             "max_json_depth", f"{where} holds JSON nested too deeply to decode"

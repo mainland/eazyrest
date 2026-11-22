@@ -113,6 +113,52 @@ def test_non_json_write_response_keeps_pending_updates(
     assert note._pending_updates == {"text": "b"}
 
 
+def test_a_body_that_is_not_json_is_refused_with_its_response(
+    requests_mock: Any,
+) -> None:
+    """The error holds the response, whose body the message does not quote."""
+    requests_mock.get(
+        "https://example.com/v1/notes/1/", text="<html>secret page</html>"
+    )
+
+    with pytest.raises(ResponseShapeError, match="does not hold JSON") as info:
+        _ = Note(id=1).text
+
+    assert info.value.response is not None
+    assert info.value.response.text == "<html>secret page</html>"
+    assert info.value.response.url == "https://example.com/v1/notes/1/"
+
+
+def test_a_hook_that_refuses_decoded_json_holds_no_response(
+    requests_mock: Any,
+) -> None:
+    """A refusal raised from decoded JSON has no response to hold."""
+    requests_mock.get("https://example.com/v1/notes/", json="not a page")
+
+    with pytest.raises(ResponseShapeError, match="must be lists") as info:
+        list(Note.filter())
+
+    assert info.value.response is None
+    assert ResponseShapeError("refused").response is None
+
+
+def test_a_response_shape_error_pickles_with_its_response(
+    requests_mock: Any,
+) -> None:
+    """The response reaches another process with the error."""
+    requests_mock.get("https://example.com/v1/notes/1/", text="not json")
+
+    with pytest.raises(ResponseShapeError) as info:
+        _ = Note(id=1).text
+    copy = pickle.loads(pickle.dumps(info.value))
+
+    assert type(copy) is ResponseShapeError
+    assert str(copy) == str(info.value)
+    assert copy.response is not None
+    assert copy.response.status_code == 200
+    assert copy.response.text == "not json"
+
+
 def test_page_cycle_is_a_pagination_error(requests_mock: Any) -> None:
     """A next link to a page already read raises ``PaginationError``."""
     api = API("https://example.com/v1/")

@@ -2077,7 +2077,10 @@ exception type that it replaced, so code written for that type keeps working:
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
-  the expected shape. Its message does not quote the body.
+  the expected shape. Its message does not quote the body. Its `response` is
+  the response whose body is not JSON, and `None` where the error is raised
+  from decoded JSON, as in a hook such as `object_json()` or
+  `collection_items()`.
 - `UsageError`, a `RuntimeError`, for a model without a registered API.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
