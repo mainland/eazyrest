@@ -372,6 +372,19 @@ describe them further.
   its name resolves raises its `TypeError` when an object is built, where `==`
   and `hash()` raised it. A relation to such a model, or to a model that is not
   defined yet, still lets its owner be built, and raises when it is read.
+- `create()` and `get_or_create()` resolve a name to its field before they
+  apply its policy and conversion. `pk` and the key's JSON and write keys name
+  the key, so `create(pk=7)` posts the key under its write key, where
+  `v1.0.0a5` posted a member named `pk`. A read-only key is refused under any
+  of its names, where `v1.0.0a5` posted it under its JSON key, and a key of
+  another type, such as `"7"` for an `int` key, is refused before the `POST`
+  under its write key too. The key is sent as it is built, so a `UUID` key
+  given in compact uppercase is posted in its lowercase hyphenated form, as a
+  full save puts it, where `v1.0.0a5` posted the spelling that it was given. A
+  name that is the key's JSON or write key and also another field's raises
+  `TypeError`. `get_or_create(pk=post)` for a `Post` object raises
+  `FieldConversionError` naming the key field before the lookup, as
+  `get_or_create(id=post)` does.
 - A decorated subclass that redeclares the key field that it inherits with
   another annotation, such as `id: NewType("AID", int)` or `id: int | None`
   under `id: int`, raises `TypeError` when it is decorated, naming the

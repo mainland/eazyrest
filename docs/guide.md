@@ -180,8 +180,8 @@ The canonical key is built from the key that the program or the server gives,
 as it is, before any conversion of the field: the text of a `str` key, the
 integer of an `int` key, and the lowercase hyphenated text of a `UUID` key. A
 subclass of `str`, `int`, or `UUID` gives the plain value. The canonical key is
-what a relation, a query, and a full save send for the key, so it is the key as
-the server names the resource, and these laws follow:
+what `create()`, a relation, a query, and a full save send for the key, so it
+is the key as the server names the resource, and these laws follow:
 
 - Equal objects have the same `url`, unless their class overrides `url`. Two
   spellings of one `UUID`, such as its uppercase and its lowercase text, are
@@ -1221,6 +1221,16 @@ as `api`, `fields`, or `request_options`, which `create()` reserves for itself:
 todos = Todo.filter(params={"api": "v2"}, completed=False)
 todo = Todo.create(fields={"api": "v2"}, title="Write docs")
 ```
+
+`create()` and `get_or_create()` take the primary key under its field's Python
+name, as `pk`, or under the key's JSON key or write key, such as `postId` for a
+field `id` with `field_map={"id": "postId"}`. Each name is the key, so the key
+field's read-only policy applies to it, the key is built as every key is, and
+it is sent under its write key and kept under its JSON key for the response
+merge. A Python name of a field comes first, and a name that is the key's JSON
+or write key and also another field's raises `TypeError`, naming the fields,
+before any request, as do two names of one field, such as
+`create(id=7, postId=8)`. Any other name that is no field is sent as it is.
 
 Every keyword argument to `filter()`, `get()`, or the lookup of
 `get_or_create()` must have a value that requests sends intact. It must not be

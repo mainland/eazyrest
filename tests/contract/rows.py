@@ -1379,7 +1379,7 @@ def an_object_of_the_model_is_sent_as_the_key(world: World) -> None:
         world, Post, "postId=3", FieldConversionError, "Post.id", id=other
     )
     sends_query_but_refuses_creation(
-        world, Post, "pk=3", TypeError, "Post", pk=other
+        world, Post, "pk=3", FieldConversionError, "Post.id", pk=other
     )
     sends_query(world, Post, "pk__in=3", pk__in=[other])
 
@@ -1669,7 +1669,7 @@ def a_key_and_a_field_are_posted(world: World) -> None:
     assert world.requests[-1].path == "/users/"
 
 
-@row(CREATE, pending="create() sends pk under its own name in the body")
+@row(CREATE)
 def pk_is_posted_as_the_key(world: World) -> None:
     assert world.body(lambda: User.create(pk=7), "POST") == {"id": 7}
     assert world.requests[-1].path == "/users/"
@@ -1725,7 +1725,7 @@ def related_objects_are_posted_as_keys(world: World) -> None:
     }
 
 
-@row(CREATE, pending="get_or_create(pk=) posts pk under its own name")
+@row(CREATE)
 def get_or_create_posts_the_key_when_nothing_is_found(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
     sent = world.bodies(lambda: User.get_or_create(pk=7))

@@ -346,3 +346,143 @@ def test_create_sends_a_key_of_the_right_type(requests_mock: Any) -> None:
 
     assert posted.last_request.json() == {"id": 1}
     assert item == Item(id=1)
+
+
+@json_object(field_map={"id": "recordId"}, read_only={"id"})
+class FixedRecord(WireBase):
+    """Model whose key is read-only and read under another JSON key."""
+
+    class_url = "/fixed-records/"
+
+    id: int
+    name: str
+
+
+@json_object(field_map={"id": "recordId"}, write_map={"id": "inputId"})
+class Record(WireBase):
+    """Model whose key is read and written under other JSON keys."""
+
+    class_url = "/records/"
+
+    id: int
+    name: str
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        pytest.param({"id": 7}, id="field"),
+        pytest.param({"pk": 7}, id="pk"),
+        pytest.param({"fields": {"recordId": 7}}, id="json-key"),
+    ],
+)
+def test_create_refuses_a_read_only_key_under_any_name(
+    requests_mock: Any, given: dict[str, Any]
+) -> None:
+    """Each name of a read-only key is refused before the request.
+
+    Args:
+        given: The keyword arguments of ``create()``.
+    """
+    posted = requests_mock.post("https://wire.example/fixed-records/", json={})
+
+    with pytest.raises(AttributeError, match=r"FixedRecord\.id is read-only"):
+        FixedRecord.create(**given)
+
+    assert not posted.called
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        pytest.param({"id": "7"}, id="field"),
+        pytest.param({"pk": "7"}, id="pk"),
+        pytest.param({"fields": {"recordId": "7"}}, id="json-key"),
+        pytest.param({"fields": {"inputId": "7"}}, id="write-key"),
+    ],
+)
+def test_create_builds_the_key_under_any_name_before_the_request(
+    requests_mock: Any, given: dict[str, Any]
+) -> None:
+    """A key of another type is refused, whichever name gives it.
+
+    Args:
+        given: The keyword arguments of ``create()``.
+    """
+    posted = requests_mock.post("https://wire.example/records/", json={})
+
+    with pytest.raises(FieldConversionError, match=r"Record\.id"):
+        Record.create(**given)
+
+    assert not posted.called
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        pytest.param({"id": 7}, id="field"),
+        pytest.param({"pk": 7}, id="pk"),
+        pytest.param({"fields": {"recordId": 7}}, id="json-key"),
+        pytest.param({"fields": {"inputId": 7}}, id="write-key"),
+    ],
+)
+def test_create_sends_the_key_under_its_write_key_and_keeps_it(
+    requests_mock: Any, given: dict[str, Any]
+) -> None:
+    """The key is sent under its write key, and kept under its JSON key.
+
+    A response that holds no object leaves the object the key that was sent, so
+    it has its URL.
+
+    Args:
+        given: The keyword arguments of ``create()``.
+    """
+    posted = requests_mock.post("https://wire.example/records/", json={})
+
+    record = Record.create(name="a", **given)
+
+    assert posted.last_request.json() == {"inputId": 7, "name": "a"}
+    assert record.pk == 7
+    assert record.url == "/records/7/"
+    assert record.json == {"recordId": 7, "name": "a"}
+
+
+@json_object(
+    field_map={"id": "recordId"},
+    write_map={"id": "inputId", "legacy": "recordId"},
+)
+class Legacy(WireBase):
+    """Model whose key's JSON key is the write key of another field."""
+
+    class_url = "/legacy/"
+
+    id: int
+    legacy: int
+
+
+def test_create_refuses_a_name_of_the_key_that_another_field_writes(
+    requests_mock: Any,
+) -> None:
+    """A raw name that two fields answer to names neither."""
+    posted = requests_mock.post("https://wire.example/legacy/", json={})
+
+    with pytest.raises(TypeError, match=r"recordId.*key id.*legacy"):
+        Legacy.create(fields={"recordId": 7})
+
+    assert not posted.called
+
+
+def test_create_and_a_full_save_send_one_spelling_of_a_uuid_key(
+    requests_mock: Any,
+) -> None:
+    """A key given in compact uppercase is posted and put in one spelling."""
+    canonical = str(U)
+    posted = requests_mock.post("https://wire.example/docs/", json={})
+    put = requests_mock.put(f"https://wire.example/docs/{canonical}/", json={})
+
+    doc = Doc.create(id=U.hex.upper())
+    doc.save(full=True)
+
+    assert posted.last_request.json() == {"id": canonical}
+    assert put.last_request.json() == {"id": canonical}
+    assert doc.url == f"/docs/{canonical}/"

@@ -6897,13 +6897,24 @@ class JSONObject:
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
-            ``field_map`` and converted by ``_to_json()``. Other values are
-            unchanged.
+            ``field_map`` and converted by ``_to_json()``. The key, by its
+            field's name, by ``pk``, or by its JSON or write key, is built as
+            every key is. Other values are unchanged.
+
+        Raises:
+            AttributeError: If a value names a read-only field, the key among
+                them, by any of its names.
+            TypeError: If two values name one field, or a name is the key's
+                JSON or write key and also another field's.
+            FieldConversionError: If a value cannot be converted, as a key that
+                is not of the key's type cannot.
         """
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
+        key_property = _pk_property_of(cls)
 
-        for field, value in fields.items():
+        for given, value in fields.items():
+            field = cls._created_field(given, key_property)
             descriptor = getattr(cls, field, None)
             key = (
                 descriptor.json_field
@@ -6913,21 +6924,75 @@ class JSONObject:
             if key in payload:
                 raise TypeError(
                     f"Multiple fields use the JSON key {key}: {names[key]} "
-                    f"and {field}"
+                    f"and {given}"
                 )
-            names[key] = field
+            names[key] = given
             if isinstance(descriptor, JSONProperty):
                 if descriptor.read_only and not query:
                     raise AttributeError(
                         f"{cls.__name__}.{field} is read-only"
                     )
                 with _converting(cls, field):
-                    conversion = descriptor.analyzed_type
-                    payload[key] = cls._to_json(value, conversion)
+                    if descriptor is key_property:
+                        # The key is sent as it is built, under its write key,
+                        # and kept under its JSON key for the response merge.
+                        payload[key] = _build_key(cls, value)
+                    else:
+                        conversion = descriptor.analyzed_type
+                        payload[key] = cls._to_json(value, conversion)
             else:
                 payload[key] = value
 
         return payload
+
+    @classmethod
+    def _created_field(
+        cls, name: str, key_property: JSONProperty | None
+    ) -> str:
+        """Return the field that a name given to ``create()`` sets.
+
+        A field's Python name sets that field, and comes first. ``pk`` and the
+        key's JSON and write keys set the key, whose read-only policy and
+        builder then apply, as they do to the key field's own name. Any other
+        name is an extra, sent as it is.
+
+        Args:
+            name: The name, as a keyword argument or a key of ``fields``.
+            key_property: The model's key field, if it has one.
+
+        Returns:
+            The Python name of the field, or ``name`` for an extra.
+
+        Raises:
+            TypeError: If the name is the key's JSON or write key and also the
+                JSON or write key of another field, so that it names no one
+                field.
+        """
+        if key_property is None or isinstance(
+            getattr(cls, name, None), JSONProperty
+        ):
+            return name
+        if name == "pk":
+            return key_property.field
+        if name not in (key_property.json_field, key_property.write_field):
+            return name
+        others = sorted(
+            field
+            for field in getattr(cls, "_json_fields", ())
+            if field != key_property.field
+            and name
+            in (
+                (descriptor := getattr(cls, field)).json_field,
+                descriptor.write_field,
+            )
+        )
+        if others:
+            raise TypeError(
+                f"{cls.__name__}.create() was given {name}, which names the "
+                f"key {key_property.field} and also "
+                f"{', '.join(others)}. Pass each by its Python name."
+            )
+        return key_property.field
 
     @classmethod
     def _json_keys(cls) -> set[str]:
@@ -7532,7 +7597,6 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             ),
         )
-        cls._check_created_key(payload)
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
@@ -7623,26 +7687,6 @@ class JSONObject:
                 f"Item [{index}] of the {cls.__name__} collection names no "
                 f"key: {err}"
             ) from err
-
-    @classmethod
-    def _check_created_key(cls, payload: Mapping[str, Any]) -> None:
-        """Refuse a key that ``create()`` would send and the model refuses.
-
-        The key is built as every key is, so a key that would raise where it is
-        given raises here, before the request.
-
-        Args:
-            payload: The JSON that ``create()`` sends.
-
-        Raises:
-            FieldConversionError: If the key is not one that the key field
-                takes.
-        """
-        prop = _pk_property_of(cls)
-        if prop is None or payload.get(prop.json_field) is None:
-            return
-        with _converting(cls, prop.field):
-            _build_key(cls, payload[prop.json_field])
 
     @classmethod
     def bulk_get_by_pks(
@@ -8607,7 +8651,6 @@ class JSONObject:
         client = cls.api if api is None else _as_client(api)
         cls._encode_query(kwargs, client)
         payload = cls._encode_fields(create_kwargs)
-        cls._check_created_key(payload)
         _checked_json(cls._to_wire(payload))
         results = cls.filter(
             api=api, request_options=request_options, params=kwargs
