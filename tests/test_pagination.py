@@ -3430,6 +3430,40 @@ def test_override_of_get_sees_a_query_request_but_no_page_request(
     assert api.gets == 1
 
 
+def test_override_of_get_sees_no_request_of_a_page_by_url_or_a_previous_page(
+    requests_mock: Any,
+) -> None:
+    """``get_page(url=...)`` and ``previous_page()`` skip ``get()``."""
+
+    @json_object
+    class Probe(PagedBase):
+        class_url = "/probes/"
+
+        id: int
+
+    api = _CountingAPI("https://api.test/")
+    requests_mock.get(
+        "https://api.test/probes/",
+        json={"results": [{"id": 1}], "next": None, "previous": None},
+    )
+    requests_mock.get(
+        "https://api.test/probes/?page=2",
+        json={
+            "results": [{"id": 2}],
+            "next": None,
+            "previous": "/probes/",
+        },
+    )
+
+    second = Probe.get_page(url="/probes/?page=2", api=api)
+    first = second.previous_page()
+
+    assert [item.id for item in second] == [2]
+    assert first is not None
+    assert [item.id for item in first] == [1]
+    assert api.gets == 0
+
+
 @pytest.mark.parametrize("rewrite", ["?x=1", "/", "extra/"])
 def test_page_redirect_limit_holds_for_each_redirect_whatever_get_does(
     requests_mock: Any, rewrite: str

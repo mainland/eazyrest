@@ -87,16 +87,17 @@ describe them further.
   source ends `filter()` after its items.
 - The redirect checks apply to requests that go through the API's request
   methods, and a request that a subclass sends another way skips them.
-- A request for a next page does not go through `API.get()`, so an override of
-  `get()` no longer sees it. `v1.0.0a5` sent it through `get()`, so a subclass
-  could count it, rewrite its URL, or add a credential there. Pagination now
-  sends the request itself, with the session's headers, authentication, and
-  hooks, the `request_options=` of a scoped query, and the API's limits, and
-  checks the page's origin and each redirect as before. Move what such an
-  override did to the session's configuration, its authentication handler, or a
-  session hook. A subclass that sent a next-page request through the session
-  directly now has the redirects of that request checked, and its session
-  response hooks run.
+- A request for a next page does not go through `API.get()`, and neither does
+  one from `get_page(url=...)`, `next_page()`, or `previous_page()`, so an
+  override of `get()` sees none of them. `v1.0.0a5` sent a next-page request
+  through `get()`, so a subclass could count it, rewrite its URL, or add a
+  credential there. Pagination now sends the request itself, with the session's
+  headers, authentication, and hooks, the `request_options=` of a scoped query,
+  and the API's limits, and checks the page's origin and each redirect as
+  before. Move what such an override did to the session's configuration, its
+  authentication handler, or a session hook. A subclass that sent a next-page
+  request through the session directly now has the redirects of that request
+  checked, and its session response hooks run.
 - A field type that eazyrest has no way to convert is refused, where `v1.0.0a5`
   read and wrote its JSON as it was. That covers `bytes` without a conversion,
   `Hashable`, `type`, `Callable`, a bare `set`, `frozenset`, `Mapping`, or

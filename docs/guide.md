@@ -1610,13 +1610,14 @@ methods. An override of `get()` or another request method keeps them only if it
 calls the API's method, as `super().get()` does. One that sends through the
 session directly skips them.
 
-A next-page request does not go through `get()`. Pagination sends it itself,
-with the session's headers, authentication, and hooks, the query's
-`request_options=`, and the API's limits, and checks the next-page link's
-origin and every redirect as above. An override of `get()` therefore sees no
-page request, and cannot rewrite its URL, count it, or add a credential to it.
-Do that in the session's configuration, in its authentication handler, or in a
-session hook, which see a page request as they see any other.
+A next-page request does not go through `get()`, and neither does a request
+from `get_page(url=...)`, `next_page()`, or `previous_page()`. Pagination sends
+it itself, with the session's headers, authentication, and hooks, the query's
+`request_options=`, and the API's limits, and checks the page link's origin and
+every redirect as above. An override of `get()` therefore sees no page request
+but a query's first, and cannot rewrite its URL, count it, or add a credential
+to it. Do that in the session's configuration, in its authentication handler,
+or in a session hook, which see a page request as they see any other.
 
 A class that overrides `collection_items_from_response()` for a `Link` header
 API can return `follow_link_headers()` from it. It resolves links and checks
