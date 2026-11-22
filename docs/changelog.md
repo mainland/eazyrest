@@ -393,7 +393,9 @@ describe them further.
   name that is the key's JSON or write key and also another field's raises
   `TypeError`. `get_or_create(pk=post)` for a `Post` object raises
   `FieldConversionError` naming the key field before the lookup, as
-  `get_or_create(id=post)` does.
+  `get_or_create(id=post)` does. An upload in `files=` under any name of the
+  key, or under a form key that a field of the request already writes, raises
+  `TypeError` before the request, where `v1.0.0a5` sent it.
 - A decorated subclass that redeclares the key field that it inherits with
   another annotation, such as `id: NewType("AID", int)` or `id: int | None`
   under `id: int`, raises `TypeError` when it is decorated, naming the

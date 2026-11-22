@@ -6193,14 +6193,35 @@ class JSONObject:
             the payload.
 
         Raises:
-            TypeError: If a payload value cannot be a form field.
+            TypeError: If a payload value cannot be a form field, a file is
+                named by the primary key under any of its names, or a file's
+                form field is one that the payload already writes.
         """
         wire = cls._to_wire(payload)
         if not files:
             return {"json": wire}
         form = {name: _form_value(name, value) for name, value in wire.items()}
+        key_property = _pk_property_of(cls)
+        key_names = (
+            frozenset()
+            if key_property is None
+            else frozenset(
+                {
+                    "pk",
+                    key_property.field,
+                    key_property.json_field,
+                    key_property.write_field,
+                }
+            )
+        )
         uploads = {}
         for name, file in files.items():
+            if name in key_names:
+                raise TypeError(
+                    f"The upload {name!r} names the primary key of "
+                    f"{cls.__name__}, which a request cannot upload. Give "
+                    "the key as a field value, or leave it out."
+                )
             descriptor = getattr(cls, name, None)
             key = (
                 descriptor.write_field
@@ -6209,6 +6230,11 @@ class JSONObject:
             )
             if key in uploads:
                 raise TypeError(f"Multiple files write the form key {key}")
+            if key in form:
+                raise TypeError(
+                    f"The upload {name!r} writes the form key {key}, which "
+                    "a field of the request already writes."
+                )
             uploads[key] = file
         return {"data": form, "files": uploads}
 

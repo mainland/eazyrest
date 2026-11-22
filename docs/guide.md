@@ -1691,6 +1691,10 @@ avatar.save(files={"image": ("new.png", data, "image/png")})
 print(avatar.image)  # the URL that the response holds
 ```
 
+An upload cannot name the primary key, under its field name, `pk`, or its JSON
+or write key, and cannot use a form key that a field of the request already
+writes. Either raises `TypeError` before the request.
+
 A form field holds text, so booleans are sent as `true` and `false` and numbers
 as strings, and a list of scalars is sent as repeated fields. A field whose
 value is `None`, a mapping, an empty list, or a nested list cannot be sent this
