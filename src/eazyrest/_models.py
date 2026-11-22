@@ -3217,6 +3217,31 @@ def _check_key_type(
         raise _key_type_error(cls, field)
 
 
+def _stored_related_key(stored: Any, model: type[JSONObject]) -> Any:
+    """Return the built key of a related object that the JSON holds as a key.
+
+    An embedded object is not a key, so it is returned as it is: assigning the
+    key of an object that a load or a response nested is a change, as it is for
+    any field whose JSON differs from the encoding of the new value.
+
+    Args:
+        stored: What the stored JSON holds for the relation.
+        model: The related model.
+
+    Returns:
+        The key as ``_build_key()`` builds it, so that two spellings of one key
+        are equal, or ``stored`` itself if it is not a bare key that can be
+        built, as ``null`` and an embedded object are not.
+    """
+    if isinstance(stored, dict):
+        return stored
+    try:
+        built = _build_key(model, stored)
+    except (TypeError, ValueError):
+        return stored
+    return stored if built is None else built
+
+
 def _require_item_key(item: Any, model: type[JSONObject]) -> None:
     """Refuse an item of a collection of relations that names no key.
 
@@ -4761,7 +4786,9 @@ class JSONProperty:
             cls._pk = self
             cls._pk_json_field = json_field
 
-    def _same_as_stored(self, stored: Any, new: Any) -> bool:
+    def _same_as_stored(
+        self, stored: Any, new: Any, *, by_key: bool = False
+    ) -> bool:
         """Return whether a newly encoded value matches the stored JSON.
 
         The server may list a set's items in any order, while an encoded set
@@ -4773,6 +4800,10 @@ class JSONProperty:
         Args:
             stored: JSON value that the object holds for this field.
             new: Encoded value that is being assigned.
+            by_key: Whether a related object that the stored JSON holds as a
+                bare key is compared by its built key, so that another spelling
+                of the key is the same key. Otherwise the stored JSON is
+                compared as it is.
 
         Returns:
             Whether the values are equal, as ``_json_equal()`` compares them,
@@ -4789,12 +4820,19 @@ class JSONProperty:
                 conversion = conversion.inner
             else:
                 break
-        if (
-            isinstance(conversion, CollectionType)
-            and _READ_AS[conversion.collection_type] in (set, frozenset)
-            and isinstance(stored, list)
+        if by_key and isinstance(conversion, RelatedType):
+            stored = _stored_related_key(stored, conversion.model_type)
+        elif isinstance(conversion, CollectionType) and isinstance(
+            stored, list
         ):
-            stored = sorted(stored, key=_json_order)
+            item = _unwrap_optional_type(conversion.item_type)
+            if by_key and isinstance(item, RelatedType):
+                stored = [
+                    _stored_related_key(value, item.model_type)
+                    for value in stored
+                ]
+            if _READ_AS[conversion.collection_type] in (set, frozenset):
+                stored = sorted(stored, key=_json_order)
         return _json_equal(stored, new)
 
     def _is_key_of(self, obj: JSONObject) -> bool:
@@ -5032,7 +5070,7 @@ class JSONProperty:
             obj.write_mode == "eager"
             and self.json_field in obj._pending_updates
         )
-        if unsent or not self._same_as_stored(stored, new_value):
+        if unsent or not self._same_as_stored(stored, new_value, by_key=True):
             # Store a copy, so that changing the assigned value in place later
             # cannot match the stored JSON and suppress the next update.
             obj._update_json_field(self.json_field, _copy_json(new_value))
