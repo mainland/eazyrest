@@ -292,7 +292,7 @@ def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
 PrefetchMap = dict[str, Mapping[Any, "JSONObject"]]
 """Prefetched related objects, by field name and then by canonical key.
 
-The key is the text of the canonical key of a key.
+The key is the canonical key itself, the ``int`` or the text that is sent.
 """
 
 PrefetchFields: TypeAlias = str | Sequence[str] | None
@@ -5603,10 +5603,10 @@ class JSONObject:
         """Return the class and primary key without sending a request.
 
         The key is shown as its JSON value, whether or not the object has
-        loaded, as in ``<User id=1>``. A key that is not a string or an
-        integer, such as a list or an object in the server's JSON, is shown as
-        ``...``, so a log of the object holds nothing that the JSON nests
-        there.
+        loaded, as in ``<User id=1>``: the ``int`` or the text that is sent for
+        it, so a ``UUID`` key shows its lowercase hyphenated text. The object
+        that ``merge_response()`` reads during ``create()`` has no key yet and
+        shows ``...``.
 
         Returns:
             The class name and primary key in angle brackets, or the class name
@@ -5637,9 +5637,9 @@ class JSONObject:
         if key is _BEFORE_CREATION:
             raise UsageError(
                 f"The {cls.__name__} object that merge_response() reads "
-                "during create() has no key yet, so its pk, url, equality, "
-                "and hash cannot be used. Read what the hook needs from the "
-                "response."
+                "during create() has no key yet, so its pk, url, hash, and "
+                "comparison with another object of its model cannot be used. "
+                "Read what the hook needs from the response."
             )
         return key
 
@@ -5651,8 +5651,8 @@ class JSONObject:
 
         Args:
             prefetched_related: Mapping from each prefetched field name to the
-                related objects loaded for it, keyed by the text of their
-                canonical key.
+                related objects loaded for it, keyed by their canonical key,
+                the ``int`` or the text that is sent for it.
         """
         # Copy the outer mapping so each parent can drop an entire prefetched
         # field cache independently while still sharing the related objects.
@@ -6575,9 +6575,10 @@ class JSONObject:
         For ``create()``, there is no object yet, because the response has not
         named its key, so ``self`` is an object of the class with no key and no
         JSON, which only this call sees. Its ``api`` and its class's hooks may
-        be used. Its ``pk``, its key field, ``url``, ``==``, and ``hash()``
-        must not be: they raise ``UsageError``. ``create()`` then builds the
-        object that it returns from the result, which must hold the key, or
+        be used. Its ``pk``, its key field, ``url``, and ``hash()`` must not
+        be, and nor must ``==`` with another object of its model: they raise
+        ``UsageError``. It equals itself. ``create()`` then builds the object
+        that it returns from the result, which must hold the key, or
         ``create()`` raises ``ResponseShapeError``.
 
         Override this hook for an API whose write responses hold something
@@ -6850,15 +6851,18 @@ class JSONObject:
     def pk(self, value: Any) -> None:
         """Set this object's primary key value.
 
+        An object has its key from construction, and it never changes, so the
+        assignment only checks the value.
+
         Args:
             value: Primary-key value. The assignment sends no request.
 
         Raises:
-            AttributeError: If the model has no key field, or the object
-                already names a resource and the value names another key.
-                Assigning the key that the object has does nothing.
-            FieldConversionError: If the first assignment to an object that has
-                no key gives a value that is not of the key's type.
+            AttributeError: If the model has no key field, or the value names
+                another key than the object's. Assigning the key that the
+                object has does nothing, in any spelling of it.
+            FieldConversionError: If the value is not of the key's type, as a
+                model object, a mapping, or ``"7"`` for an ``int`` key is not.
         """
         pk_property: JSONProperty | None = getattr(type(self), "_pk", None)
         if pk_property is None:
@@ -7959,9 +7963,9 @@ class JSONObject:
         Returns:
             The loaded objects, in a mapping whose keys are not read. Prefetch
             matches each object by the key that it holds, as ``==`` compares
-            keys, so the mapping may key them as it likes. An object without a
-            key is ignored. An object of another model, which is not an
-            instance of this class or of a subclass, raises ``TypeError``.
+            keys, so the mapping may key them as it likes, and a ``UUID`` key
+            matches in any spelling. An object of another model, which is not
+            an instance of this class or of a subclass, raises ``TypeError``.
 
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.

@@ -513,7 +513,9 @@ example, the key `a/b` becomes `a%2Fb`.
 
 The keys `""`, `"."`, and `".."` have no resource URL. Accessing `url` raises
 `ValueError` because those keys could address the collection or another
-resource, and so do `save()`, `delete()`, and `refresh()`.
+resource, and so do `delete()` and `refresh()`, and `save()` when it has
+something to send. A `save()` with no pending update and no `files=` sends
+nothing and returns.
 
 Reading `pk` never sends a request, because the object has its key from
 construction, whether or not it has loaded.
@@ -1386,13 +1388,13 @@ Embedded related objects do not need prefetching, because `eazyrest` only
 bulk-loads primary-key-style values. When the same related primary key appears
 more than once in a prefetch batch, parent objects share the same related
 instance. A parent finds a returned object by the key that the object holds,
-compared as `==` compares keys, so the dictionary's own keys do not matter. A
-key spelled another way that encodes differently, such as `1.00` for `1.0`, is
-another key, and its object loads on its own unless the method returned it. A
-returned object that has no key is ignored. One that is not an instance of the
-related model, or of a subclass of it that keeps the related model's key,
-raises `TypeError` that names the hook, the model, the field, and the class
-returned, since a parent would otherwise read an object of another resource.
+compared as `==` compares keys, so the dictionary's own keys do not matter, and
+a `UUID` key matches in any spelling. A `str` key that differs in case, such as
+`"A"` for `"a"`, is another key, and its object loads on its own unless the
+method returned it. One that is not an instance of the related model, or of a
+subclass of it that keeps the related model's key, raises `TypeError` that
+names the hook, the model, the field, and the class returned, since a parent
+would otherwise read an object of another resource.
 
 Related objects inherit their parent's write mode, including when they are
 prefetched. Enabling prefetch preserves when assignments are saved, even if the
@@ -1802,8 +1804,10 @@ the key that was sent. The resource may exist in each case, so the response is
 the only record of it. There is no object until the response names its key, so
 `create()` calls `merge_response()` on an object of the class that has no key
 and no JSON, which only that call sees. The hook may use its `api` and the
-class's other hooks, but its `pk`, its key field, `url`, `==`, and `hash()`
-raise `UsageError`.
+class's other hooks, but its `pk`, its key field, `url`, and `hash()` raise
+`UsageError`, and so does `==` with another object of its model. The object is
+not the one that `create()` returns, so what the hook keeps on it, such as an
+`ETag`, is lost. Keep what is needed in the JSON that the hook returns.
 
 `merge_response()` computes the new JSON, and an API whose write responses hold
 something else, such as a status message, can override it on a shared base
@@ -1817,6 +1821,17 @@ class StatusObject(JSONObject):
     def merge_response(self, resp, current, sent, **kwargs):
         # The body is {"status": "ok"}, not the object.
         return {**current, **sent}
+```
+
+For `create()`, `sent` holds the key only if the request sent one, so this hook
+raises `ResponseShapeError` after the `POST` when the server assigns the key.
+Read the key from the response in such a hook, as from the `Location` header:
+
+```python
+class LocatedObject(JSONObject):
+    def merge_response(self, resp, current, sent, **kwargs):
+        key = resp.headers["Location"].rstrip("/").rsplit("/", 1)[-1]
+        return {**current, **sent, "id": int(key)}
 ```
 
 Call `refresh()` to discard unsaved local changes and force the next read to

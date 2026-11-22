@@ -363,6 +363,13 @@ describe them further.
   field when the field is read. An object therefore always equals the objects
   of its model with its key and hashes, and the refusals of an object without a
   key in relation writes, queries, and prefetch are gone with it.
+- During `create()`, the object that `merge_response()` is called on is not the
+  object that `create()` returns, and it has no key. Its `pk`, `url`, and
+  `hash()` raise `UsageError`, and so does `==` with another object of its
+  model. `v1.0.0a5` called the hook on the returned object, so a hook that kept
+  something on `self`, such as an `ETag`, or read `self.pk`, no longer works
+  for `create()`. Keep what is needed in the JSON that the hook returns, and
+  read the key from the response.
 - A pickle of an object of a keyed model that `v1.0.0a5` wrote does not load.
   It raises `UsageError`, because its state holds no key. Read the object from
   the server again. Pickles that this version writes load.
