@@ -167,10 +167,12 @@ response = user.api.patch(user.url, json={"id": 2})
 user = User(json=user.api.json(response))
 ```
 
-The canonical key is the saved key's JSON, decoded and encoded again by the
-key's field type, and written as text. A key's wire value is a string, or an
-integer that is not a `bool`, whatever codec writes it. So it is the key as the
-server names the resource, and these laws follow:
+The canonical key is built from the saved key, or from the key that the program
+gives, as it is, before any conversion of the field: the text of a `str` key,
+the integer of an `int` key, and the lowercase hyphenated text of a `UUID` key.
+A subclass of `str`, `int`, or `UUID` gives the plain value. The canonical key
+is what a relation, a query, and a full save send for the key, so it is the key
+as the server names the resource, and these laws follow:
 
 - Equal objects have the same `url`, unless their class overrides `url`. Two
   spellings of one `UUID`, such as its uppercase and its lowercase text, are
@@ -383,14 +385,15 @@ loaded_user = User(json={"id": 1, "name": "Ada"})
 An object constructed from a primary key is lazy. The first access to `json` or
 a JSON-backed field other than the primary key performs a `GET` against the
 object's `url`, caches the payload, and caches converted field values as they
-are read. Reading the primary key returns the value given to the constructor
-without a request, converted as if it were read from JSON. A `uuid.UUID` key
-given as a string therefore reads as a `UUID`, before and after the object
-loads, and the constructor raises `ValueError` for a key that is not a UUID. A
-model object given for the key raises `FieldConversionError`, as does a
-mapping. An object constructed from `json=` starts with that payload already
-loaded. It keeps a deep copy of the payload, as `update_from_json()` does, so
-changing the payload or its nested values afterward does not change the object.
+are read. Reading the primary key returns the canonical key without a request,
+before and after the object loads: the `int` or the `str` that is sent for it,
+or a `UUID` for a `UUID` key, whichever spelling it was given in. The
+constructor raises `FieldConversionError`, a `ValueError`, for a string that is
+not a UUID. A model object given for the key raises `FieldConversionError`, as
+does a mapping. An object constructed from `json=` starts with that payload
+already loaded. It keeps a deep copy of the payload, as `update_from_json()`
+does, so changing the payload or its nested values afterward does not change
+the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -534,7 +537,9 @@ Python types are converted automatically:
   and so is a `datetime.datetime` assigned to the field, although it is also a
   `datetime.date`.
 - `uuid.UUID` values decode from UUID strings and encode to the standard
-  hyphenated form.
+  hyphenated form. A primary key of type `UUID` is built without this
+  conversion, as [What a key may be](#what-a-key-may-be) says, and is written
+  in the same form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -634,11 +639,11 @@ Reading the field does not change the object's JSON, so saving other fields
 leaves the server's value alone. Assigning `TicketStatus.UNKNOWN` to the field
 sends `"unknown"`.
 
-Related-object writes encode primary keys using the related model's primary-key
-annotation. An object whose class is neither the field's model nor a subclass
-of it raises `FieldConversionError`, naming the field, the expected model, and
-the given class, when it is assigned, given to `create()` or a query, or is an
-item of a collection of relations. An object without a key is refused with
+Related-object writes send the key that the related model builds, as every key
+is built. An object whose class is neither the field's model nor a subclass of
+it raises `FieldConversionError`, naming the field, the expected model, and the
+given class, when it is assigned, given to `create()` or a query, or is an item
+of a collection of relations. An object without a key is refused with
 `FieldConversionError`, rather than written as `null`. Prefetch lookups and
 `update_from_json()` compare canonical keys, so equivalent UUID spellings
 identify the same object.

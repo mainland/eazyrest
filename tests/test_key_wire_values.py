@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import re
 import uuid
 from typing import Annotated, Any, Literal, NewType, Optional
 
@@ -181,18 +182,62 @@ class LoudInt(int):
         return "other"
 
 
+class LoudUUID(uuid.UUID):
+    """UUID whose ``str()`` is another text."""
+
+    def __str__(self) -> str:
+        """Return another text."""
+        return "other"
+
+
+U = uuid.UUID("6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40")
+
+
+@json_object
+class Doc(WireBase):
+    """Model keyed by a ``UUID``."""
+
+    class_url = "/docs/"
+
+    id: uuid.UUID
+
+
 @pytest.mark.parametrize(
-    ("model", "given", "url"),
+    ("model", "given", "wire", "plain"),
     [
-        pytest.param(Label, LoudString("abc"), "/labels/abc/", id="str"),
-        pytest.param(Item, LoudInt(7), "/items/7/", id="int"),
+        pytest.param(Label, LoudString("abc"), "abc", str, id="str"),
+        pytest.param(Item, LoudInt(7), 7, int, id="int"),
+        pytest.param(Item, Tag.ONE, 1, int, id="int-enum"),
+        pytest.param(Doc, LoudUUID(int=U.int), str(U), uuid.UUID, id="uuid"),
     ],
 )
 def test_a_key_given_as_a_subclass_gives_the_plain_key(
-    model: Any, given: Any, url: str
+    model: Any, given: Any, wire: Any, plain: type
 ) -> None:
-    """The URL does not depend on how a ``str`` or ``int`` subclass prints."""
-    assert model(id=given).url == url
+    """The key is the plain value, however a subclass of its type prints.
+
+    The URL, the key that ``pk`` reads, and equality all use it.
+    """
+    obj = model(id=given)
+
+    assert obj.url == f"{model.class_url}{wire}/"
+    assert type(obj.pk) is plain
+    assert obj == model(json={"id": wire})
+
+
+def test_a_query_sends_the_plain_key_of_a_subclass(requests_mock: Any) -> None:
+    """A query on the key, or on a relation to it, sends the built key."""
+    requests_mock.get(re.compile(r"https://wire\.example/"), json=[])
+
+    list(Doc.filter(id=LoudUUID(int=U.int)))
+    list(Cover.filter(doc=LoudUUID(int=U.int)))
+    list(Holder.filter(item=Tag.ONE))
+
+    assert [r.qs for r in requests_mock.request_history] == [
+        {"id": [str(U)]},
+        {"doc": [str(U)]},
+        {"item": ["1"]},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -257,15 +302,6 @@ def test_collection_item_with_a_key_of_another_json_type_is_unknown(
 
     assert item != Item(id=7)
     assert item != Item(json={"id": "7"})
-
-
-@json_object
-class Doc(WireBase):
-    """Model keyed by a ``UUID``."""
-
-    class_url = "/docs/"
-
-    id: uuid.UUID
 
 
 @json_object

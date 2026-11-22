@@ -541,6 +541,14 @@ describe them further.
   objects. `get_or_create()` refuses it before the lookup. Pass `[user]`.
   `filter()` and `get()` still take one model for a collection field and send
   its key.
+- A key is built from the value that the program or the server gives, before
+  any conversion of the field, so no conversion can change which resource it
+  names. `pk` and the key field read the key as it is built: an `int` or a
+  `str`, or a `UUID` for a `UUID` key. A key given as a subclass, such as an
+  `IntEnum` member for an `int` key or a `str` subclass for a `str` key, reads
+  as the plain value, where `v1.0.0a5` returned the value as it was given. A
+  `UUID` subclass whose `str()` prints other text names its UUID, where
+  `v1.0.0a5` refused it with `FieldConversionError`.
 - A key that a server sends in another JSON type than its field's, such as
   `"7"` for an `int` key, is refused as a key that the program gives is. An
   embedded related object whose key has another type raises
