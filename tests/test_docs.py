@@ -100,6 +100,40 @@ def test_enum_fallback_example_maps_unknown_values() -> None:
     assert status("archived") is status.UNKNOWN
 
 
+def test_typed_property_example_keeps_the_service_key() -> None:
+    """A region keyed by its text exposes the enum as a property."""
+    region_type: Any = run_guide_example("class Region")["Region"]
+    south = region_type(json={"id": "south", "label": "S"})
+
+    assert south.pk == "south"
+    assert south.url == "/regions/south/"
+    assert south.code.value == "south"
+    assert south != region_type(json={"id": "north", "label": "N"})
+
+
+def test_related_key_property_example_builds_the_related_object() -> None:
+    """A profile keyed by its user's key reads the user as a property."""
+
+    @json_object
+    class User(JSONObject):
+        class_url = "/users/"
+
+        id: int
+        name: str
+
+    profile_type: Any = run_guide_example(
+        "class Profile(JSONObject)",
+        User=User,
+        JSONObject=JSONObject,
+        json_object=json_object,
+    )["Profile"]
+    profile = profile_type(json={"user": 2, "bio": "b"})
+
+    assert profile.pk == 2
+    assert profile.url == "/profiles/2/"
+    assert profile.user == User(id=2)
+
+
 def test_drf_bulk_example_uses_the_query_api(requests_mock: Any) -> None:
     """The DRF bulk lookup loads users through the API it is given."""
 

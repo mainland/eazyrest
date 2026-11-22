@@ -343,47 +343,43 @@ describe them further.
 - A relation, assigned, given to `create()` or a query, or in a collection of
   relations, refuses an object of a class that is neither the field's model nor
   a subclass of it with `FieldConversionError`, where `v1.0.0a5` sent that
-  object's key or URL. So does a primary key that is a relation, given to the
-  constructor or the `pk` setter, and a model object given for a primary key
-  that is not a relation. A related object without a key is refused there too,
-  where `v1.0.0a5` accepted it and `url` raised `ValueError`. The model holds
-  the related object's key, so the object must have its key without a request,
-  as an object built from a key or loaded from JSON that has it does. A related
-  object of a class that overrides `url` and has not loaded raises
-  `FieldConversionError`. Load or save it first. If it has loaded and its JSON
-  lacks the key field, the message says that the key is missing from its JSON,
-  and if the JSON holds the key as `null`, that the key is `None`. The
-  constructor, the setter, `repr()`, and `update_from_json()` send no request,
-  and the field reads as a new related object that holds the key, also after
-  `refresh()`, where `v1.0.0a5` returned the object that was given, and the
-  plain key after `refresh()`.
-- A primary key that is a relation reads as a related object after `refresh()`,
-  however it was set: as a related object, as a plain value such as
-  `Profile(user=2)`, or from JSON. `v1.0.0a5` read the plain key, an `int` for
-  `user: User`, after `refresh()` in every case. Code that works with that
-  `int`, such as `User(id=profile.user)` after a refresh, raises
-  `FieldConversionError`. Use `profile.user` or `profile.user.pk`.
+  object's key or URL. So does a model object given for a primary key. A
+  related object without a key is refused there too, where `v1.0.0a5` accepted
+  it and `url` raised `ValueError`. The model holds the related object's key,
+  so the object must have its key without a request, as an object built from a
+  key or loaded from JSON that has it does. A related object of a class that
+  overrides `url` and has not loaded raises `FieldConversionError`. Load or
+  save it first. If it has loaded and its JSON lacks the key field, the message
+  says that the key is missing from its JSON, and if the JSON holds the key as
+  `null`, that the key is `None`. The constructor, the setter, `repr()`, and
+  `update_from_json()` send no request, and the field reads as a new related
+  object that holds the key, also after `refresh()`, where `v1.0.0a5` returned
+  the object that was given, and the plain key after `refresh()`.
 - An object read from JSON that lacks its key field, such as an item that a
   `HyperlinkedModelSerializer` without `id` returned, has the key `None`, where
   `v1.0.0a5` raised `AttributeError` from `pk`, `url`, `save()`, `delete()`,
   `refresh()`, and a relation write. `url`, `save()`, `delete()`, and
   `refresh()` raise `ValueError`, and a relation write raises
   `FieldConversionError`.
-- A model whose primary key is neither one value nor a relation to a model
-  keyed by one raises `TypeError` when it is decorated, naming the field, where
-  `v1.0.0a5` defined it. One value is `int`, `str`, `bool`, `float`, `UUID`,
-  `datetime`, `date`, `Decimal`, an enum, a `Literal`, or a class that a
-  conversion converts, also inside `T | None` or a `NewType`. A collection such
-  as `list[int]`, a mapping, a fixed-length tuple, a `TypedDict`, a
-  `NamedTuple`, a dataclass without a conversion, a union of more than one type
-  besides `None`, `Any`, a class that Pydantic configures, and `Annotated` with
-  Pydantic metadata are refused, and so is a key that holds related objects, as
-  `list[User]` does. So is a relation to a model keyed by a relation, which
-  makes a chain of keys, and a cycle of them, such as a model keyed by itself.
-  A key whose type names a class that is not defined yet raises the same
-  `TypeError` when the key is first used. Declare the key as one value, or as a
-  relation to a model keyed by one. To key a model by another model, use a
-  relation to it, or the type of its key.
+- A primary key is a `str`, an `int`, or a `UUID`, alone or inside `T | None`,
+  `Annotated`, or a `NewType`. Any other key raises `TypeError` when the class
+  is decorated, naming the field and the types that a key may be, where
+  `v1.0.0a5` admitted an enum, a `Literal`, a `Decimal`, a `datetime`, a
+  `date`, a `time`, a `timedelta`, a `bool`, a `float`, any class that a
+  conversion converts, and a relation. A type that a conversion in the model's
+  `conversions` converts is refused too, even a `NewType` of `str`, `int`, or
+  `UUID`, and so is a `UUID` when the model replaces eazyrest's conversion of
+  it. A conversion may map two of the service's identifiers to one value, as an
+  enum's `_missing_()` does for a value that it does not list or a `datetime`
+  does for timestamps that differ past the microsecond, and then a write to one
+  resource changed another. Declare the key as the type that the service sends,
+  and expose the richer value as a property, as in `id: str` with a property
+  `code` that returns `Code(self.id)`. A key that was a relation, as
+  `pk="user"` with `user: User`, is declared as the related model's key type,
+  as `user_id: int` with `field_map={"user_id": "user"}`, and a property `user`
+  that returns `User(id=self.user_id)` gives the related object. A key whose
+  type names a class that is not defined yet raises the same `TypeError` when
+  the key is first used. The guide's "What a key may be" shows both patterns.
 - A field whose annotation resolves and whose own type eazyrest does not
   convert, such as `Counter[str]`, `int | list[int]`, a type alias that refers
   to itself, raises `TypeError` when the class is decorated, naming the field,
@@ -436,34 +432,25 @@ describe them further.
   change made in place was found as the object loaded missing fields.
 - Two objects of one model with the same known primary key are equal, where
   `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. The
-  key is the one that the object last took from the server or was given, and a
-  key that is a relation compares as the related object's key that the model
-  copied when the relation was assigned or loaded. Keys compare by their
-  encoding as JSON, so a key of a type that a conversion converts, even one
-  that compares by identity or cannot be hashed, gives equal objects with equal
-  hashes, and spellings that decode to one value and encode alike, such as `Z`
-  and `+00:00`, are one key. A key that encodes differently is another key, as
-  `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`, `float`,
-  or `bool` refuses a value of another JSON type where it is given, with
-  `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
-  `User(id=True)` raise, where `v1.0.0a5` gave other keys that a load of the
-  object then replaced and so changed its hash. A related object that a read
-  builds from the server's JSON is checked too, and the error names the
-  relation field. Give the key in its field's type. Once the key is known it
-  never changes. A refresh leaves the key, the hash, and the `url` as they
-  were. Assigning another key to an object that has its key raises
-  `AttributeError`, and a key changed in place raises `UsageError` from
-  `save()`, where `v1.0.0a5` kept the change pending and left the key, the
-  hash, and the `url` until `save()` sent it. A load, a write's response, and
-  `update_from_json()` that name another key raise `ResponseShapeError`, a
-  `ValueError`, and change nothing. An object without a known key still equals
-  only itself, and `hash()` of one raises `TypeError`, unless its model has no
-  key field. The message says what is wrong with the key.
+  key is the one that the object last took from the server or was given. Two
+  spellings of one `UUID` are one key, and two `str` keys that differ in case
+  are two keys. A key of type `int` or `str` refuses a value of another JSON
+  type where it is given, with `FieldConversionError`, so `User(id="1")`,
+  `User(id=1.0)`, and `User(id=True)` raise, where `v1.0.0a5` gave other keys
+  that a load of the object then replaced and so changed its hash. A related
+  object that a read builds from the server's JSON is checked too, and the
+  error names the relation field. Give the key in its field's type. Once the
+  key is known it never changes. A refresh leaves the key, the hash, and the
+  `url` as they were. Assigning another key to an object that has its key
+  raises `AttributeError`. A load, a write's response, and `update_from_json()`
+  that name another key raise `ResponseShapeError`, a `ValueError`, and change
+  nothing. An object without a known key still equals only itself, and `hash()`
+  of one raises `TypeError`, unless its model has no key field. The message
+  says what is wrong with the key.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
-  key of the returned dictionary. A key that hashes by identity is found
-  without a load, and `Decimal` keys spelled `1.0` and `1.00` get two objects,
-  where `v1.0.0a5` gave both the same one.
+  key of the returned dictionary, so `str` keys `"a"` and `"A"` get two
+  objects.
 - Prefetch raises `TypeError` when `bulk_get_by_pks()` returns an object that
   is not an instance of the related model or of a subclass of it, naming the
   hook, the model, the field, and the class returned. A parent whose key
@@ -471,20 +458,10 @@ describe them further.
   resource.
 - A relation refuses an object of a subclass that chose another primary key
   with `pk=`, with `FieldConversionError` naming the field, in an assignment,
-  `create()`, a query, and a key that is a relation. Prefetch raises
-  `TypeError` for such an object that `bulk_get_by_pks()` returns. They used to
-  write the subclass's key, which names another resource of the related model.
-  Give the relation an object of the related model's own key.
-- A primary key whose class is not one that the guide lists and that no
-  conversion of the model converts raises `TypeError` when the class is
-  decorated, naming the field, as the guide says. That includes `complex`,
-  `None`, `pathlib.Path`, and a bare `bytes`. Such a key read the server's JSON
-  as it was, so a key that was an array or a mapping gave two URLs for one
-  object. Declare a conversion for the class, such as a `bytes` conversion to
-  and from base64, or key the model by a listed type.
-- `repr()` of an object keyed by a relation shows the related object's key. It
-  showed the whole related object when the JSON embedded it, with its fields. A
-  key that is not a string or an integer, such as a list, is shown as `...`.
+  `create()`, and a query. Prefetch raises `TypeError` for such an object that
+  `bulk_get_by_pks()` returns. They used to write the subclass's key, which
+  names another resource of the related model. Give the relation an object of
+  the related model's own key.
 - A relation builds the key of a related object that the program gives it with
   the related model's key constructor, as it builds one that it reads. An
   assignment, `save()`, `create()`, a query, and a lookup such as `owner__in`
@@ -494,18 +471,17 @@ describe them further.
   server may read as an embedded object. A `save(full=True)` that reads an
   embedded key of another JSON type from the object's own JSON raises the same
   error before the `PUT`, where it sent the key. A subclass that redeclares the
-  key field with another type is refused as well, and a key that is a relation
-  refuses a mapping given as the related object, where it read the mapping as
-  an embedded object. A key that the program gives to a relation as it is, as
-  in `post.owner = 7`, `create(owner=7)`, or `filter(owner=7)`, is built by the
-  same constructor. Where `v1.0.0a5` sent `"7"`, `true`, or a list for an `int`
-  key, and read a mapping back as an embedded object, they now raise
-  `FieldConversionError` naming the relation field before any request, and in
-  the `__in` and `__exact` lookups of a relation, which sent a bare value as it
-  was given. A query that compares the model's own key, such as
-  `User.get_or_create(id="7")`, `User.filter(pk__in=["7"])`, or
-  `User.filter(id__range=["1", "9"])`, raises before its request, where it sent
-  the request first or sent the text as given.
+  key field with another type is refused as well. A key that the program gives
+  to a relation as it is, as in `post.owner = 7`, `create(owner=7)`, or
+  `filter(owner=7)`, is built by the same constructor. Where `v1.0.0a5` sent
+  `"7"`, `true`, or a list for an `int` key, and read a mapping back as an
+  embedded object, they now raise `FieldConversionError` naming the relation
+  field before any request, and in the `__in` and `__exact` lookups of a
+  relation, which sent a bare value as it was given. A query that compares the
+  model's own key, such as `User.get_or_create(id="7")`,
+  `User.filter(pk__in=["7"])`, or `User.filter(id__range=["1", "9"])`, raises
+  before its request, where it sent the request first or sent the text as
+  given.
 - A lookup on a field, such as `status__in`, `due__gte`, or `flag__exact`,
   encodes each value as the field's own parameter does, where `v1.0.0a5` sent
   its `str()`: an enum member is sent as its value, a `datetime` as ISO 8601
@@ -565,37 +541,18 @@ describe them further.
   objects. `get_or_create()` refuses it before the lookup. Pass `[user]`.
   `filter()` and `get()` still take one model for a collection field and send
   its key.
-- A key of type `Literal` raises `FieldConversionError` for a value that is not
-  one of its members where it is given, and a relation to the model refuses it.
-  A non-member that the server's JSON names is treated as a key of the wrong
-  type. `Lit(id="c")` of `Literal["a", "b"]` was accepted, and a relation wrote
-  `"c"`. An ordinary `Literal` field still reads and writes any JSON.
-- A primary key's wire value is a string, or an integer that is not a `bool`. A
-  key of type `float` or `bool`, alone or as a `NewType`, an optional, or a
-  `Literal` member, or an enum with a member whose value is not a string or an
-  integer, raises `TypeError` when the class is decorated, where `v1.0.0a5`
-  accepted it. So does a `Literal` or an enum whose values hold a string and an
-  integer of one text, such as `"1"` and `1`, which would be two keys with one
-  URL. A conversion that writes a key as anything else, such as a number with a
-  fraction, a `bool`, a list, or a mapping, gives a key that is refused where
-  it is given and unknown where a server sends it. Write such a key as a
-  string, or as an integer. A `NewType` of `int` whose conversion writes a
-  string is now a string key, so `Entry(id=N(3))` takes the key that
-  `Entry(json={"id": "3"})` does. A key of another JSON type than its field's,
-  which a server sends, is refused as a key that is given is. An embedded
-  related object whose key has another type, such as `"7"` for an `int` key,
-  raises `FieldConversionError` naming the relation field when it is read. A
-  key like that in the JSON of an object or of a collection item is no key, so
-  the object equals only itself, `hash()` raises `TypeError`, and `url` raises
+- A key that a server sends in another JSON type than its field's, such as
+  `"7"` for an `int` key, is refused as a key that the program gives is. An
+  embedded related object whose key has another type raises
+  `FieldConversionError` naming the relation field when it is read. A key like
+  that in the JSON of an object or of a collection item is no key, so the
+  object equals only itself, `hash()` raises `TypeError`, and `url` raises
   `FieldConversionError`.
 - `create()` checks the key that it is given as the constructor does, before
   the `POST`. A key of another JSON type, such as `"1"` for an `int` key, or
   one that does not convert, such as `"not-a-uuid"` for a `UUID` key, raises
   `FieldConversionError` and sends nothing. It used to send the key and keep it
   as given.
-- A key that is changed in place is compared by its canonical text, so changing
-  the value of a mutable key from `1` to `1.0` raises `UsageError` from
-  `save()`. It used to send the write to the old URL.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise
@@ -651,27 +608,25 @@ that can break code written for 0.9.0, followed by what to do about it.
 - Assigning the key of an object that has its key raises `AttributeError` when
   the value names another key, where 0.9.0 sent a `PATCH` of the new key to the
   object's URL and, for an object that had not loaded, pointed the object at
-  the new key. That covers the key field, `pk`, and a key that is a relation.
-  Assigning the key that the object has does nothing and sends nothing. A key
-  that is changed in place, as to a key that is an object with a conversion,
-  raises `UsageError` from `save()` and from an eager assignment of any field,
-  before anything is sent. An object that has no key and no URL of its own
-  takes the key that it is given, as before, and so does one built from JSON
-  that lacks the key or holds `null`, which `v1.0.0a5` queued as a change that
-  `save()` could not send. An object of a class that overrides `url` learns its
-  key at its first load, so assigning it a key raises `AttributeError`, unless
-  the key is given as the object is built, where `v1.0.0a5` accepted it and the
-  next load could name another key and raise `ResponseShapeError`. To rename a
-  resource on a server that allows it, send the write with the raw API, as
-  `api.patch(obj.url, json={"id": 2})`, and build the object again from the
-  response. A known key is also kept when the server names another one. A load,
-  a write's response, and `update_from_json()` raise `ResponseShapeError`, a
-  `ValueError`, and change nothing, where 0.9.0 replaced the object's JSON and
-  so its key. A write's response that is refused leaves the pending updates. A
-  key whose type is `int`, `str`, `float`, or `bool` refuses a value of another
-  JSON type where it is given, as `User(id="1")` does for an `int` key, with
-  `FieldConversionError`. So does a related object that a read builds from the
-  server's JSON, and the error names the relation field.
+  the new key. That covers the key field and `pk`. Assigning the key that the
+  object has does nothing and sends nothing. An object that has no key and no
+  URL of its own takes the key that it is given, as before, and so does one
+  built from JSON that lacks the key or holds `null`, which `v1.0.0a5` queued
+  as a change that `save()` could not send. An object of a class that overrides
+  `url` learns its key at its first load, so assigning it a key raises
+  `AttributeError`, unless the key is given as the object is built, where
+  `v1.0.0a5` accepted it and the next load could name another key and raise
+  `ResponseShapeError`. To rename a resource on a server that allows it, send
+  the write with the raw API, as `api.patch(obj.url, json={"id": 2})`, and
+  build the object again from the response. A known key is also kept when the
+  server names another one. A load, a write's response, and
+  `update_from_json()` raise `ResponseShapeError`, a `ValueError`, and change
+  nothing, where 0.9.0 replaced the object's JSON and so its key. A write's
+  response that is refused leaves the pending updates. A key whose type is
+  `int` or `str` refuses a value of another JSON type where it is given, as
+  `User(id="1")` does for an `int` key, with `FieldConversionError`. So does a
+  related object that a read builds from the server's JSON, and the error names
+  the relation field.
 - A write response is merged into the object through the new `merge_response()`
   hook, rather than replacing its JSON. A response without a body, such as
   `204 No Content`, keeps the values that were sent. `create()` keeps only the
@@ -806,28 +761,21 @@ that can break code written for 0.9.0, followed by what to do about it.
   `TypeError` when it is defined, since the override would never be called.
 - Two objects of one model with the same known primary key are equal, where
   0.9.0 compared them by identity, so a set or dict of them keeps one. The key
-  is the one that the object last took from the server or was given, and a key
-  that is a relation compares as the related object's key that the model copied
-  when the relation was assigned or loaded. Keys compare by their encoding as
-  JSON, so a key of a type that a conversion converts, even one that compares
-  by identity or cannot be hashed, gives equal objects with equal hashes, and
-  spellings that decode to one value and encode alike, such as `Z` and
-  `+00:00`, are one key. A key that encodes differently is another key, as
-  `Decimal` keys of `1.0` and `1.00` are. A key of type `int`, `str`, `float`,
-  or `bool` refuses a value of another JSON type where it is given, with
-  `FieldConversionError`, so `User(id="1")`, `User(id=1.0)`, and
-  `User(id=True)` raise, and so does a related object that a read builds from
-  the server's JSON, with an error that names the relation field. Give the key
-  in its field's type. A refresh leaves the key, the hash, and the `url` as
-  they were. An object without a known key still equals only itself, and
-  `hash()` of one raises `TypeError`, unless its model has no key field. The
-  message says what is wrong with the key.
-- The `pk` and `url` of a model whose primary key is a relation give the key
-  that the model copied from the related object when the relation was assigned
-  or loaded, where 0.9.0 asked the related object that the constructor or the
-  `pk` setter was given, until the model loaded, so they followed its key as it
-  changed. A loaded model read a new object from its JSON each time, and did
-  not follow. They no longer follow the related object.
+  is the one that the object last took from the server or was given. Two
+  spellings of one `UUID` are one key, and two `str` keys that differ in case
+  are two keys. A key of type `int` or `str` refuses a value of another JSON
+  type where it is given, with `FieldConversionError`, so `User(id="1")`,
+  `User(id=1.0)`, and `User(id=True)` raise, and so does a related object that
+  a read builds from the server's JSON, with an error that names the relation
+  field. Give the key in its field's type. A refresh leaves the key, the hash,
+  and the `url` as they were. An object without a known key still equals only
+  itself, and `hash()` of one raises `TypeError`, unless its model has no key
+  field. The message says what is wrong with the key.
+- A primary key is a `str`, an `int`, or a `UUID`, and any other key raises
+  `TypeError` when the class is decorated, as the 1.0.0a5 items say. That
+  includes an enum, a `datetime`, a `Decimal`, and a relation, which 0.9.0
+  accepted as keys. Declare the type that the service sends, and expose the
+  richer value or the related object as a property.
 
 #### Declarations
 
@@ -876,19 +824,9 @@ that can break code written for 0.9.0, followed by what to do about it.
   relations, refuses an object of a class that is neither the field's model nor
   a subclass of it with `FieldConversionError`. 0.9.0 sent that object's key on
   assignment, raised `TypeError` from `create()`, and sent the object's
-  `repr()` as the parameter of a query. A primary key that is a relation, given
-  to the constructor or the `pk` setter, refuses such an object too, and so
-  does a primary key that is not a relation. A related object without a key is
-  refused there as well, where 0.9.0 accepted it and `url` raised
-  `AttributeError`. The field reads as a new related object that holds the key,
-  also after `refresh()`, where 0.9.0 returned the object that was given, and
-  the plain key after `refresh()`.
-- A primary key that is a relation reads as a related object when it is given
-  as a plain value, as `Profile(user=2)` does, where 0.9.0 read the plain
-  value, an `int` for `user: User`. It reads as a related object after
-  `refresh()` too, however it was set, where 0.9.0 read the plain key. Code
-  that works with that `int`, such as `User(id=profile.user)`, raises
-  `FieldConversionError`. Use `profile.user` or `profile.user.pk`.
+  `repr()` as the parameter of a query. A model object given for a primary key
+  is refused too. A related object without a key is refused there as well,
+  where 0.9.0 accepted it and `url` raised `AttributeError`.
 - `url` percent-encodes the primary key as one path segment, and an object
   whose key is missing, empty, `.`, or `..` has no URL. An object read from
   JSON that lacks its key field has the key `None`, so `url`, `save()`,

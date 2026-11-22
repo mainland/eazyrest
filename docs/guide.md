@@ -46,8 +46,8 @@ go unnoticed. It also raises `ValueError` if two fields, including inherited
 ones, map to the same JSON key, because each field caches its own value and
 assigning one would leave the other stale.
 
-A primary key can be a relation to another model, as in `pk="user"` with
-`user: User`.
+A primary key is a `str`, an `int`, or a `UUID`, as
+[What a key may be](#what-a-key-may-be) says.
 
 A field must not replace a `JSONObject` attribute such as `url`, `json`, `pk`,
 or `save`, and `@json_object` raises `ValueError` for such a field. Use
@@ -142,14 +142,12 @@ and `refresh()` leaves it.
 Once the key is known, the program cannot change it, as Django's key field
 cannot be renamed through the object either:
 
-- Assigning the key field, `pk`, or a key that is a relation a value that names
-  another key raises `AttributeError`, as assigning a read-only field does, and
-  sends nothing. Assigning the key that the object has does nothing and sends
-  nothing. To name another object, build it, as `User(id=2)`.
-- Changing the key in place, as to a key that is an object with a conversion,
-  makes `save()`, and an eager assignment of any field, raise `UsageError`
-  before anything is sent. The pending updates stay, and putting the key back
-  lets the object save again.
+- Assigning the key field or `pk` a value that names another key raises
+  `AttributeError`, as assigning a read-only field does, and sends nothing.
+  Assigning the key that the object has does nothing and sends nothing. To name
+  another object, build it, as `User(id=2)`.
+- A key is a `str`, an `int`, or a `UUID`, none of which can be changed in
+  place.
 - An object that names no resource yet takes the key that it is given, and
   giving it sends nothing. That is an object with no key and no URL of its own,
   including one built from JSON that lacks the key or holds `null`. An object
@@ -174,38 +172,30 @@ key's field type, and written as text. A key's wire value is a string, or an
 integer that is not a `bool`, whatever codec writes it. So it is the key as the
 server names the resource, and these laws follow:
 
-- Equal objects have the same `url`, unless their class overrides `url`. Keys
-  that spell one value alike, such as `2026-01-01T00:00:00Z` and
-  `2026-01-01T00:00:00+00:00` for a `datetime`, are one key. A key of a type
-  that a conversion converts, even one that compares by identity or cannot be
-  hashed, still gives equal objects when the encoded keys are equal.
-- Keys that encode differently are different keys, even when Python equates
-  their values, and `Decimal` keys of `"1.0"` and `"1.00"` differ, because each
-  pair names different URLs. A key whose type is `int` or `str`, or a `Literal`
-  of such values, has one JSON type, and a value of another type raises
-  `FieldConversionError` where it is given, as `"not-a-uuid"` does for a `UUID`
-  key. So `User(id="1")`, `User(id=1.0)`, and `User(id=True)` raise for an
-  `int` key, because a `bool` is not an `int`, since the two encode
-  differently. A `Literal` key also raises for a value that is not one of its
-  members, as `Lit(id="c")` does for `Literal["a", "b"]`, where an ordinary
-  `Literal` field reads any JSON. A registered conversion decides its own wire
-  type, so a `NewType` of `int` whose conversion writes a string is a string
-  key. A related object that a read builds from the server's JSON is checked
-  the same way, and the error names the relation field, as in `Post.owner`. A
-  related object that the program gives to a relation is checked the same way,
-  whether it is assigned, saved, given to `create()`, or used in a query or a
-  lookup such as `owner__in`, and so is one that `save(full=True)` reads from
-  the object's own JSON. The relation's model builds its key, so an object
-  whose key that model would not read raises `FieldConversionError` naming the
-  relation field before any request, as does one of a subclass that redeclares
-  the key field with another type. A key that the program gives to a relation
-  as it is, as in `post.owner = 7` or `filter(owner=7)`, is built the same way,
-  so `"7"`, `True`, or `1.5` given for an `int` key raises
-  `FieldConversionError` naming the relation field before any request, and so
-  does a mapping, which a relation never takes for the related object. That
-  holds for a bare value of a lookup on a relation, such as
-  `filter(owner__in=[7])`. A query that compares the key of the model itself,
-  whether by `id` or `pk`, alone or with a value suffix, as in
+- Equal objects have the same `url`, unless their class overrides `url`. Two
+  spellings of one `UUID`, such as its uppercase and its lowercase text, are
+  one key.
+- Keys that are written differently are different keys, so `str` keys `"A"` and
+  `"a"` differ. A key whose type is `int` or `str` has one JSON type, and a
+  value of another type raises `FieldConversionError` where it is given, as
+  `"not-a-uuid"` does for a `UUID` key. So `User(id="1")`, `User(id=1.0)`, and
+  `User(id=True)` raise for an `int` key, because a `bool` is not an `int`,
+  since the two encode differently. A related object that a read builds from
+  the server's JSON is checked the same way, and the error names the relation
+  field, as in `Post.owner`. A related object that the program gives to a
+  relation is checked the same way, whether it is assigned, saved, given to
+  `create()`, or used in a query or a lookup such as `owner__in`, and so is one
+  that `save(full=True)` reads from the object's own JSON. The relation's model
+  builds its key, so an object whose key that model would not read raises
+  `FieldConversionError` naming the relation field before any request, as does
+  one of a subclass that redeclares the key field with another type. A key that
+  the program gives to a relation as it is, as in `post.owner = 7` or
+  `filter(owner=7)`, is built the same way, so `"7"`, `True`, or `1.5` given
+  for an `int` key raises `FieldConversionError` naming the relation field
+  before any request, and so does a mapping, which a relation never takes for
+  the related object. That holds for a bare value of a lookup on a relation,
+  such as `filter(owner__in=[7])`. A query that compares the key of the model
+  itself, whether by `id` or `pk`, alone or with a value suffix, as in
   `User.filter(id=7)`, `User.filter(pk__in=[7, 8])`, or
   `User.get_or_create(id=7)`, builds each value the same way, so `"7"` for an
   `int` key raises `FieldConversionError` naming the field before any request.
@@ -237,27 +227,6 @@ saving the object, or giving its key, only for an object that has no JSON yet
 or only part of it. Otherwise it says that the key is missing from the JSON, is
 `None`, or cannot be read, because none of those would help.
 
-### A key that is a relation
-
-A key that is a relation behaves as a key that is not. The model holds the key
-of the related object, copied when the relation is assigned or loaded, so
-`UserProfile(user=User(id=2))` holds 2 and equals another profile that holds 2.
-The profile's `pk`, `url`, `refresh()`, `update_from_json()`, `==`, and
-`hash()` all use that copy, and none asks the related object again.
-
-- Assigning `profile.user` or `profile.pk` another user raises
-  `AttributeError`, as for any key that is known. Assigning the user that the
-  profile has does nothing.
-- Reading `profile.pk` decodes the copied key afresh each time, so a change
-  made in place to the value that it returns, as to a key that is an object
-  with a conversion, changes a copy. It is neither kept nor refused, and
-  `save()` does not send it, whether the profile has loaded or not.
-- Reading `profile.user` does not give the key's owner. After an assignment it
-  gives a new object that holds the key. When the profile embeds its user, it
-  gives the object built from the embedded JSON, with its other fields. When
-  the profile shares a prefetched user, it gives that object. Otherwise it
-  gives an object built from the key.
-
 ### When the hash changes
 
 Once an object's key is known, its hash never changes, so a set or dict that
@@ -283,58 +252,95 @@ its saved key is absent or `null`.
 
 ### What a key may be
 
-A key is one value, or a relation to a model whose key is one value. A value is
-one if it converts as a whole, so that its JSON has one spelling for equality,
-`url`, and the hash to read. That is `int`, `str`, an enum whose members'
-values are strings or integers, a `Literal` of strings and integers, and a
-class that a conversion of the model converts. The conversions include
-eazyrest's own, for `UUID`, `datetime`, `date`, `time`, `timedelta`, and
-`Decimal`, and any that the model declares, such as one for `bytes` to and from
-base64. The key may be one of these inside `T | None`, a `NewType`, or
-`Annotated`. A relation is allowed. However the key is converted, the value
-that it is written as must be a string or an integer that is not a `bool`. A
-conversion that writes a number with a fraction, a `bool`, a list, or a mapping
-makes a key that is refused where it is given or read, as a key of another JSON
-type is.
+A key's type is the type of the identifier that the service sends for it: a
+`str`, an `int`, or a `UUID`, alone or inside `T | None`, `Annotated`, or a
+`NewType`, such as `UserId = NewType("UserId", int)`. Each names a resource one
+way:
 
-Any other key raises `TypeError` when the class is decorated, naming the field.
-That includes a subclass of `str` or `int` that no conversion converts, as a
-field of that type is refused, since it would read back as a plain `str` or
-`int`. A `NewType` of `str` or `int`, or a conversion for the subclass, serves
-instead. It includes `float` and `bool`, alone or as a `NewType`, optional, or
-`Literal` member, and an enum with a member whose value is not a string or an
-integer, such as a float, because a number has more than one spelling and a
-`bool` is not an integer. It includes a `Literal` or an enum whose values hold
-a string and an integer of one text, such as `"1"` and `1`, because both would
-name one URL as two keys. It includes a collection such as `list[int]`, a
-mapping, a fixed-length tuple, a `TypedDict`, a `NamedTuple`, a dataclass
-without a conversion, a union of more than one type besides `None`, `Any`, and
-a class that Pydantic configures, or `Annotated` with Pydantic metadata. It
-also includes a class that is not listed and that no conversion of the model
-converts, such as `complex`, `None`, `pathlib.Path`, and a bare `bytes`,
-because eazyrest would read the server's JSON as it is, which may be an array
-or a mapping, or could not write it. A mapping is refused because two mappings
-with the same items in another order are one key but have different spellings.
-A relation to a model keyed by a relation is refused as well, so a chain of key
-relations is, and so is a cycle, such as a model keyed by itself or two models
-keyed by each other. To key a model by another model, declare the key as a
-relation to that model, or as the type of that model's key.
+- A `str` key is the text as given, with its case and its leading zeros, so
+  `"A"` and `"a"` are two keys.
+- An `int` key is an integer that is not a `bool`. A key given as `"7"`, `7.0`,
+  or `True` raises `FieldConversionError`.
+- A `UUID` key is the 128-bit value, given as a `uuid.UUID` or as any string
+  that `uuid.UUID` reads, such as an uppercase or unhyphenated spelling, and
+  written in its lowercase hyphenated form. Declare a `str` key for a service
+  that tells two spellings of one UUID apart.
 
-A name in the key's annotation, or in the key of the related model, may not be
-defined yet when the class is decorated. The class is then checked when its key
-is first used. A name is not defined yet when a class is not, when a name is
-bound to another class later, as when a module finishes a circular import, or
-when a module does not have the attribute yet. Until it is defined, the key
-cannot be read, and `==` is `False` for an object of the model. Every other use
-of the key raises the error that resolving the name raised. That is `url`,
-`hash()`, `update_from_json()`, reading a relation to the model, and a prefetch
-of one, which raises before it sends its bulk request. The error is a
-`NameError` for a class that is not defined and an `AttributeError` for an
-attribute of a module, and a string in a type alias's value that cannot be
-resolved raises a `TypeError` that says so. None of that is kept on the object
-or the class, so once the class is defined the object has the `url`, the hash,
-and the equalities of a new object with the same key. Then a key that is
-refused raises its `TypeError`.
+Any other key raises `TypeError` when the class is decorated, naming the field
+and the types that a key may be. That includes an enum, a `Literal`, a
+`Decimal`, a `datetime`, a `date`, a `time`, and a `timedelta`, a `bool` or a
+`float`, a subclass of `str` or `int`, a collection, a mapping, a fixed-length
+tuple, a `TypedDict`, a `NamedTuple`, a dataclass, a union of more than one
+type besides `None`, `Any`, and a class that Pydantic configures. It also
+includes any type that a conversion in the model's `conversions` converts, even
+a `NewType` of `str`, `int`, or `UUID`, and a `UUID` when the model replaces
+eazyrest's conversion of it. A conversion may map two of the service's
+identifiers to one value, as an enum's `_missing_()` does for a value that it
+does not list, or a `datetime` does for two timestamps that differ past the
+microsecond. The two resources would then be one object, with one URL, and a
+write to one would change the other. eazyrest's own conversion of `UUID` maps
+each spelling of one UUID to one value, and a key of that type is built without
+it.
+
+A model whose service identifies resources by a richer value declares the type
+that the service sends, and exposes the richer value as a property:
+
+```python
+import enum
+
+from eazyrest import JSONObject, json_object
+
+
+class Code(enum.Enum):
+    NORTH = "north"
+    SOUTH = "south"
+
+
+@json_object
+class Region(JSONObject):
+    class_url = "/regions/"
+
+    id: str
+    label: str
+
+    @property
+    def code(self) -> Code:
+        return Code(self.id)
+```
+
+A key cannot be a relation either. `pk="user"` with `user: User` raises
+`TypeError` when the class is decorated, naming the field and the related
+model's key type. Declare the key as that type, under another attribute name if
+the relation's name is wanted for the related object, and expose the related
+object as a property:
+
+```python
+@json_object(pk="user_id", field_map={"user_id": "user"})
+class Profile(JSONObject):
+    class_url = "/profiles/"
+
+    user_id: int
+    bio: str
+
+    @property
+    def user(self) -> User:
+        return User(id=self.user_id)
+```
+
+A name in the key's annotation may not be defined yet when the class is
+decorated. The class is then checked when its key is first used. A name is not
+defined yet when a class is not, when a name is bound to another class later,
+as when a module finishes a circular import, or when a module does not have the
+attribute yet. Until it is defined, the key cannot be read, and `==` is `False`
+for an object of the model. Every other use of the key raises the error that
+resolving the name raised. That is `url`, `hash()`, `update_from_json()`,
+reading a relation to the model, and a prefetch of one, which raises before it
+sends its bulk request. The error is a `NameError` for a class that is not
+defined and an `AttributeError` for an attribute of a module, and a string in a
+type alias's value that cannot be resolved raises a `TypeError` that says so.
+None of that is kept on the object or the class, so once the class is defined
+the object has the `url`, the hash, and the equalities of a new object with the
+same key. Then a key that is refused raises its `TypeError`.
 
 A field that is not the key raises a `NameError` when its annotation, or a type
 alias in it, names the class that is not defined yet. It raises a
@@ -352,19 +358,17 @@ raises `FieldConversionError` then.
 
 ### Differences from Django
 
-Django models also compare and hash by primary key. A model keyed by a
-one-to-one relation has the copied column value as its `pk`, such as `user_id`,
-and so does eazyrest's. Django copies the key that a related object has when
-the relation is assigned, or at `save()` if the object had none then. eazyrest
-refuses a related object without a key at assignment, so the copy always
-exists. Django does not refuse a change of the key. Its documentation says that
-the primary key field is read-only, and that if you change the value of the
-primary key on an existing object and then save it, a new object is created
-alongside the old one. `save()` updates the row that has the new key, so a key
-that another row has overwrites that row. Django REST framework makes an
-automatic or non-editable key read-only and ignores it in a request. eazyrest
-refuses the assignment of another key instead, so no write can create or
-overwrite the resource at another key by accident.
+Django models also compare and hash by primary key. A Django model keyed by a
+one-to-one relation has the column value as its `pk`, such as `user_id`, and an
+eazyrest model declares that value as its key, as `Profile` above does. Django
+does not refuse a change of the key. Its documentation says that the primary
+key field is read-only, and that if you change the value of the primary key on
+an existing object and then save it, a new object is created alongside the old
+one. `save()` updates the row that has the new key, so a key that another row
+has overwrites that row. Django REST framework makes an automatic or
+non-editable key read-only and ignores it in a request. eazyrest refuses the
+assignment of another key instead, so no write can create or overwrite the
+resource at another key by accident.
 
 ## Loading and caching
 
@@ -382,34 +386,11 @@ object's `url`, caches the payload, and caches converted field values as they
 are read. Reading the primary key returns the value given to the constructor
 without a request, converted as if it were read from JSON. A `uuid.UUID` key
 given as a string therefore reads as a `UUID`, before and after the object
-loads, and the constructor raises `ValueError` for a key that is not a UUID.
-The value is decoded from the saved key, as a loaded object's is, so a change
-made to it in place, as to a key that is an object with a conversion, is
-detected and refused, as [Equality by key](#equality-by-key) says. That does
-not hold for a key that is a relation, whose `pk` reads a new value each time.
-A key that is a relation takes an object of the related model or of a subclass
-that keeps the related model's key, or the related object's key, and any other
-model object raises `FieldConversionError`, as does a model object given for a
-key that is not a relation. So does a mapping, which the model's own JSON may
-embed as the related object but a program does not give, and a related object
-whose key the related model would not read. The model holds the related
-object's key, not the object, so the related object must have its key without a
-request: it holds the key, as `User(id=1)` does, or its JSON has the key field.
-A related object whose key is not known without a request, as one of a class
-that overrides `url` is until it loads, raises `FieldConversionError`, whose
-message says to load or save it first. So does one whose own key is a relation
-that is not known. Once such an object has loaded, it is accepted if its JSON
-has the key. If its JSON lacks the key field, loading again cannot help, and
-the message says that the key is missing from its JSON. If it holds the key as
-`null`, the message says that the key is `None`. A related object without a
-key, such as `User()`, raises `FieldConversionError` too, as a relation write
-does. The constructor and the `pk` setter therefore never send a request, and
-neither do `repr()` and `update_from_json()` of such a model. Reading the field
-returns a new related object that holds the key, not the object that was given,
-though it equals that object, also after `refresh()`. An object constructed
-from `json=` starts with that payload already loaded. It keeps a deep copy of
-the payload, as `update_from_json()` does, so changing the payload or its
-nested values afterward does not change the object.
+loads, and the constructor raises `ValueError` for a key that is not a UUID. A
+model object given for the key raises `FieldConversionError`, as does a
+mapping. An object constructed from `json=` starts with that payload already
+loaded. It keeps a deep copy of the payload, as `update_from_json()` does, so
+changing the payload or its nested values afterward does not change the object.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -517,10 +498,10 @@ api = API("https://api.example.com/")
 api.trailing_slash = False
 ```
 
-`url` converts the primary key to its JSON value before percent-encoding it, so
-an enum key uses its value and a key always forms one path segment. A string
-key is its own text, and an integer key is written in decimal. For example, the
-key `a/b` becomes `a%2Fb`.
+`url` writes the primary key as it is sent before percent-encoding it, so a key
+always forms one path segment. A string key is its own text, an integer key is
+written in decimal, and a `UUID` key in its lowercase hyphenated form. For
+example, the key `a/b` becomes `a%2Fb`.
 
 The keys `None`, `""`, `"."`, and `".."` have no resource URL. Accessing `url`
 raises `ValueError` because those keys could address the collection or another
@@ -530,10 +511,9 @@ raise `ValueError` for it, and a relation write raises `FieldConversionError`.
 
 Reading `pk` is like reading any field. If the object holds partial JSON that
 lacks the key, as after `update_from_json()` with a payload that omits it, the
-read loads the object first when it can load, because it has a key. A key that
-is a relation never loads the related object, because the object holds the
-related key. The key is `None` only if the object's complete JSON lacks it, and
-then the object behaves as one built without a key.
+read loads the object first when it can load, because it has a key. The key is
+`None` only if the object's complete JSON lacks it, and then the object behaves
+as one built without a key.
 
 ## Field conversion
 

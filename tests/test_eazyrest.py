@@ -30,7 +30,6 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
-    Literal,
     NewType,
     Optional,
     TypeVar,
@@ -5087,93 +5086,6 @@ def test_url_without_api_keeps_trailing_slash() -> None:
     assert Unbound(id=1).url == "/unbound/1/"
 
 
-@pytest.mark.parametrize("initialization", ["raw", "typed", "json"])
-def test_enum_primary_key_urls_use_serialized_values(
-    requests_mock: Any, initialization: str
-) -> None:
-    """Loading and saving enum keys must keep their wire values in URLs.
-
-    Args:
-        initialization: How the workflow is constructed: ``"json"`` from its
-            JSON, ``"typed"`` from an enum key, or ``"raw"`` from the key's
-            wire value.
-    """
-
-    @json_object(pk="status", field_map={"status": "state"})
-    class Workflow(ModelBase):
-        """Resource addressed by an enum key."""
-
-        class_url = "/workflows/"
-
-        status: IssueStatus
-        label: str
-
-    requests_mock.get(
-        "https://example.com/v1/workflows/open/",
-        json={"state": "open", "label": "Active"},
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/workflows/open/", status_code=204
-    )
-    delete = requests_mock.delete(
-        "https://example.com/v1/workflows/open/", status_code=204
-    )
-    if initialization == "json":
-        workflow = Workflow(json={"state": "open", "label": "Active"})
-    elif initialization == "typed":
-        workflow = Workflow(status=IssueStatus.OPEN)
-    else:
-        workflow = Workflow(status="open")
-
-    assert workflow.url == "/workflows/open/"
-    assert requests_mock.call_count == 0
-    assert workflow.label == "Active"
-    assert workflow.pk is IssueStatus.OPEN
-    assert workflow.url == "/workflows/open/"
-    with pytest.raises(AttributeError, match="cannot change"):
-        workflow.status = IssueStatus.CLOSED
-    workflow.status = IssueStatus.OPEN
-    workflow.save()
-
-    assert patch.call_count == 0
-    assert workflow.url == "/workflows/open/"
-    workflow.delete()
-    assert delete.called
-
-
-@pytest.mark.parametrize("value", [None, "", ".", ".."])
-def test_invalid_serialized_enum_key_has_no_url(
-    requests_mock: Any, value: str | None
-) -> None:
-    """Validate the serialized key before it becomes a URL segment.
-
-    Args:
-        value: Wire value of an enum key that has no URL.
-    """
-
-    @json_object
-    class InvalidKey(ModelBase):
-        """Model whose enum values cannot address resources."""
-
-        class Kind(enum.Enum):
-            """Keys whose wire values have no resource URL."""
-
-            MISSING = None
-            EMPTY = ""
-            DOT = "."
-            PARENT = ".."
-
-        class_url = "/invalid-keys/"
-
-        id: Kind
-
-    obj = InvalidKey(id=InvalidKey.Kind(value))
-    with pytest.raises(ValueError, match="no URL"):
-        obj.delete()
-
-    assert requests_mock.call_count == 0
-
-
 @pytest.mark.parametrize("slug", [None, "", ".", ".."])
 def test_invalid_primary_key_has_no_url(
     requests_mock: Any, slug: str | None
@@ -6747,50 +6659,6 @@ def test_a_relation_takes_an_object_of_a_subclass(requests_mock: Any) -> None:
     assert requests_mock.last_request.json()["userId"] == 3
 
 
-@json_object(pk="user")
-class UserProfile(ModelBase):
-    """Model whose primary key is a relation to ``User``."""
-
-    class_url = "/profiles/"
-
-    user: User
-    bio: str
-
-
-def test_a_key_that_is_a_relation_refuses_an_object_of_another_model(
-    requests_mock: Any,
-) -> None:
-    """The constructor and the ``pk`` setter refuse an object of a model.
-
-    Otherwise ``delete()`` would delete the profile of the user whose key
-    equals the other object's.
-    """
-    message = (
-        r"UserProfile\.user: A relation to User cannot take an object of Todo"
-    )
-
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=Todo(id=7))
-    profile = UserProfile()
-    with pytest.raises(FieldConversionError, match=message):
-        profile.pk = Todo(id=7)
-
-    assert requests_mock.call_count == 0
-    assert profile.pk is None
-
-
-def test_a_key_that_is_a_relation_takes_an_object_of_a_subclass() -> None:
-    """The constructor and the ``pk`` setter accept a subclass of the model."""
-    admin = Admin(id=3)
-    profile = UserProfile(user=admin)
-    other = UserProfile()
-    other.pk = admin
-
-    assert profile.pk == 3
-    assert profile.url == "/profiles/3/"
-    assert other.pk == 3
-
-
 def test_a_key_that_is_not_a_relation_refuses_a_model_object() -> None:
     """A model object is not a value of a plain key, as in JSON."""
     with pytest.raises(FieldConversionError, match=r"Todo\.id: .*User"):
@@ -6856,7 +6724,7 @@ def test_a_primary_key_cannot_hold_related_objects_in_any_container(
     """
     with pytest.raises(
         TypeError,
-        match=r"Crate\.id is the primary key.*must be one value",
+        match=r"Crate\.id is the primary key, whose type must be",
     ) as error:
         json_object(
             type(
@@ -6867,29 +6735,6 @@ def test_a_primary_key_cannot_hold_related_objects_in_any_container(
         )
 
     assert not isinstance(error.value, FieldConversionError)
-
-
-@pytest.mark.parametrize(
-    "key_type",
-    [
-        pytest.param(User, id="relation"),
-    ],
-)
-def test_a_primary_key_that_holds_no_related_object_is_accepted(
-    key_type: Any,
-) -> None:
-    """A key that is a relation declares.
-
-    Args:
-        key_type: Declared type of the primary key.
-    """
-    json_object(
-        type(
-            "Bin",
-            (ModelBase,),
-            {"__annotations__": {"id": key_type}, "class_url": "/bins/"},
-        )
-    )
 
 
 _UserPairKey = NewType("_UserPairKey", _UserPair)
@@ -6938,7 +6783,7 @@ def test_a_primary_key_cannot_hold_related_objects_through_a_new_type(
     """
     with pytest.raises(
         TypeError,
-        match=r"Crate\.id is the primary key.*must be one value",
+        match=r"Crate\.id is the primary key, whose type must be",
     ) as error:
         json_object(
             type(
@@ -7030,93 +6875,41 @@ def _decode_entry(value: Any, cls: Any) -> _UserEntry:
         ),
     ],
 )
-def test_a_key_that_a_conversion_converts_may_name_a_model(
-    requests_mock: Any,
+def test_a_key_that_a_conversion_converts_is_refused_whatever_it_reads(
     form: Any,
     key_type: Any,
     decode: Callable[[Any, Any], Any],
     encode: Callable[[Any, Any], Any],
     expected: Any,
 ) -> None:
-    """A conversion replaces a key class's structure, so it is not refused.
+    """A conversion replaces a key class's structure, but no key converts.
 
-    The conversion reads and writes the related model's key. The key declares
-    and works for ``pk``, ``url``, equality, hashing, and ``save()``.
+    The conversion reads and writes the related model's key, and the key is
+    refused as any converted key is, when the class is decorated.
 
     Args:
-        requests_mock: Mocks the write.
         form: Type that the conversion table has an entry for.
         key_type: Declared type of the primary key.
         decode: The entry's ``decode``.
         encode: The entry's ``encode``.
-        expected: What ``pk`` reads for the key 7.
+        expected: What ``pk`` would read for the key 7.
     """
-    patch = requests_mock.patch(
-        "https://example.com/v1/crates/7/", json={"id": 7, "label": "b"}
-    )
-    crate_type: Any = json_object(
-        type(
-            "Crate",
-            (ModelBase,),
-            {
-                "__annotations__": {"id": key_type, "label": str},
-                "class_url": "/crates/",
-                "conversions": {
-                    form: Conversion(decode=decode, encode=encode)
+    with pytest.raises(
+        TypeError, match=r"Crate\.id is the primary key, whose type must be"
+    ):
+        json_object(
+            type(
+                "Crate",
+                (ModelBase,),
+                {
+                    "__annotations__": {"id": key_type, "label": str},
+                    "class_url": "/crates/",
+                    "conversions": {
+                        form: Conversion(decode=decode, encode=encode)
+                    },
                 },
-            },
+            )
         )
-    )
-    crate = crate_type(json={"id": 7, "label": "a"})
-    twin = crate_type(json={"id": 7, "label": "z"})
-
-    assert crate.pk == expected
-    assert crate.url == "/crates/7/"
-    assert crate == twin
-    assert hash(crate) == hash(twin)
-    crate.label = "b"
-    crate.save()
-    assert patch.call_count == 1
-
-
-@pytest.mark.parametrize(
-    ("key_type", "value"),
-    [
-        pytest.param(Optional[_UserEntry], 7, id="optional"),  # noqa: UP045
-        pytest.param(_UserEntry, 7, id="alone"),
-        pytest.param(NewType("_Entry", _UserEntry), 7, id="new-type"),
-    ],
-)
-def test_a_key_of_a_class_that_the_table_converts_is_accepted(
-    key_type: Any, value: Any
-) -> None:
-    """A class that the table converts is a key, alone or optional.
-
-    Args:
-        key_type: Declared type of the primary key.
-        value: JSON of a key of that type.
-    """
-    crate_type: Any = json_object(
-        type(
-            "Crate",
-            (ModelBase,),
-            {
-                "__annotations__": {"id": key_type, "label": str},
-                "class_url": "/crates/",
-                "conversions": {
-                    _UserEntry: Conversion(
-                        decode=_decode_entry,
-                        encode=lambda entry, cls: entry.user.pk,
-                    )
-                },
-            },
-        )
-    )
-    crate = crate_type(json={"id": value, "label": "a"})
-    twin = crate_type(json={"id": value, "label": "z"})
-
-    assert crate == twin
-    assert hash(crate) == hash(twin)
 
 
 def test_a_key_in_a_container_that_holds_a_model_is_refused_on_first_use(
@@ -7169,11 +6962,10 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
 ) -> None:
     """A key annotated by a class defined later is unknown until then.
 
-    That holds for the model whose key it is, and for a model keyed by a
-    relation to it. Until the class is defined, ``url`` and ``hash()`` raise
-    the ``NameError`` of the undefined name, ``==`` is ``False``, and nothing
-    is kept, so afterwards the object has the key of a new object. A field that
-    is not the key still raises a plain ``NameError``.
+    Until the class is defined, ``url`` and ``hash()`` raise the ``NameError``
+    of the undefined name, ``==`` is ``False``, and nothing is kept, so
+    afterwards the object has the key of a new object. A field that is not the
+    key still raises a plain ``NameError``.
 
     Args:
         monkeypatch: Defines the class as a global, after the objects are used.
@@ -7185,12 +6977,6 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
 
         id: LaterSlotKey
 
-    @json_object(pk="slot")
-    class Booking(ModelBase):
-        class_url = "/bookings/"
-
-        slot: Slot
-
     @json_object
     class Note(ModelBase):
         class_url = "/notes/"
@@ -7201,7 +6987,6 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
     monkeypatch.setitem(globals(), "Slot", Slot)
     payloads: dict[Any, Any] = {
         Slot: {"id": 1},
-        Booking: {"slot": {"id": 1}},
     }
     used = {model: model(json=json) for model, json in payloads.items()}
     twins = {model: model(json=json) for model, json in payloads.items()}
@@ -7231,54 +7016,6 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
         assert obj == twins[model]
         assert hash(obj) == hash(fresh)
         assert len({obj, twins[model], fresh}) == 1
-
-
-def test_a_payload_for_an_object_keyed_by_a_later_class_names_the_class(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A payload cannot be matched while the key's class is not defined.
-
-    The object is keyed by a relation to a model whose key names a class that
-    is defined later. Merging a payload with the object's own key raises the
-    undefined name, as ``url`` does, rather than saying that the key does not
-    match, and merges nothing. Once the class is defined, the same call works.
-
-    Args:
-        monkeypatch: Defines the class as a global, after the object is used.
-    """
-
-    @json_object
-    class Seat(ModelBase):
-        class_url = "/seats/"
-
-        id: LaterSeatKey
-
-    @json_object(pk="seat")
-    class Ticket(ModelBase):
-        class_url = "/tickets/"
-
-        seat: Seat
-        note: str
-
-    monkeypatch.setitem(globals(), "Seat", Seat)
-    ticket = Ticket(json={"seat": {"id": 4}, "note": "a"})
-    seat = Seat(json={"id": 4})
-    payload = {"seat": {"id": 4}, "note": "b"}
-
-    with pytest.raises(NameError, match="LaterSeatKey"):
-        ticket.update_from_json(payload)
-    with pytest.raises(NameError, match="LaterSeatKey"):
-        seat.update_from_json({"id": 4})
-    assert ticket.json == {"seat": {"id": 4}, "note": "a"}
-    assert "analyzed_type" not in vars(Seat._pk)
-
-    LaterSeatKey = NewType("LaterSeatKey", int)
-
-    monkeypatch.setitem(globals(), "LaterSeatKey", LaterSeatKey)
-
-    ticket.update_from_json(payload)
-    assert ticket.note == "b"
-    seat.update_from_json({"id": 4})
 
 
 def test_an_object_without_a_key_is_not_refused_for_its_models_key_type(
@@ -7317,7 +7054,7 @@ def test_an_object_without_a_key_is_not_refused_for_its_models_key_type(
 
 @pytest.mark.parametrize(
     "operation",
-    ["url", "hash", "key", "relation", "refresh", "update_from_json"],
+    ["url", "hash", "key", "refresh", "update_from_json"],
 )
 def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
     requests_mock: Any, monkeypatch: pytest.MonkeyPatch, operation: str
@@ -7326,10 +7063,9 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
 
     A ``TypeError`` or a ``ValueError`` would be taken for bad data or a failed
     conversion by the code that handles those. So ``url``, ``hash()``, reading
-    the key, reading a relation to the model, ``refresh()``, and
-    ``update_from_json()`` raise the ``NameError`` of the undefined name, for a
-    model keyed by the class and for one keyed by a relation to it. They send
-    nothing, and once the class is defined each works.
+    the key, ``refresh()``, and ``update_from_json()`` raise the ``NameError``
+    of the undefined name. They send nothing, and once the class is defined
+    each works.
 
     Args:
         requests_mock: Fails the test if a request is sent.
@@ -7343,27 +7079,18 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
 
         id: LaterStallKey
 
-    @json_object(pk="stall")
-    class Lease(ModelBase):
-        class_url = "/leases/"
-
-        stall: Stall
-        note: str
-
     monkeypatch.setitem(globals(), "Stall", Stall)
     stall = Stall(json={"id": 1})
-    lease = Lease(json={"stall": {"id": 1}, "note": "a"})
     operations: dict[str, Callable[[Any], Any]] = {
         "url": lambda obj: obj.url,
         "hash": hash,
         "key": lambda obj: obj.pk,
-        "relation": lambda obj: obj.stall,
         "refresh": lambda obj: obj.refresh(),
         "update_from_json": lambda obj: obj.update_from_json(
             {obj._pk_json_field: obj._saved_key_json}
         ),
     }
-    objects = [lease] if operation == "relation" else [stall, lease]
+    objects = [stall]
 
     for obj in objects:
         with pytest.raises(NameError, match="LaterStallKey") as undefined:
@@ -7381,7 +7108,6 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
         if operation != "refresh":
             operations[operation](obj)
     assert stall == Stall(json={"id": 1})
-    assert lease == Lease(json={"stall": {"id": 1}, "note": "a"})
 
 
 def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
@@ -7570,16 +7296,16 @@ def test_equality_and_hash_raise_a_key_declaration_refused_on_first_use(
         later: Later
         x: str
 
-    @json_object(pk="user")
+    @json_object
     class Later(ModelBase):
         class_url = "/laters/"
 
-        user: User
+        id: int
 
     monkeypatch.setitem(globals(), "Later", Later)
     first = Anchor(json={"later": 1, "x": "p"})
     second = Anchor(json={"later": 1, "x": "q"})
-    message = r"Anchor\.later is the primary key.*keyed by a relation"
+    message = r"Anchor\.later is the primary key and a relation to Later"
 
     with pytest.raises(TypeError, match=message):
         first == second  # noqa: B015
@@ -7604,11 +7330,11 @@ def test_a_primary_key_cannot_be_a_relation_to_its_own_model() -> None:
 def test_a_key_cycle_through_a_class_defined_later_is_refused_on_first_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cycle that decoration cannot see is refused when the key resolves.
+    """A relation key that decoration cannot see is refused when it resolves.
 
     Neither model's key names a class that is defined when the model is
-    decorated, so decoration refuses nothing. A relation key must lead to a
-    model whose key is one value, and each key here leads to a relation.
+    decorated, so decoration refuses nothing. Each key is a relation, which a
+    key cannot be.
 
     Args:
         monkeypatch: Defines the classes as globals, after they are decorated.
@@ -7663,6 +7389,9 @@ class _Token:
 
 _PlainPairKey = NewType("_PlainPairKey", _PlainPair)
 
+_ConvertedCount = NewType("_ConvertedCount", int)
+"""A ``NewType`` of ``int`` that ``_CRATE_CONVERSIONS`` converts."""
+
 
 @pytest.mark.parametrize(
     "key_type",
@@ -7682,20 +7411,31 @@ _PlainPairKey = NewType("_PlainPairKey", _PlainPair)
         pytest.param(int | str, id="union"),
         pytest.param(Optional[list[int]], id="optional-list"),  # noqa: UP045
         pytest.param(list[User], id="list-of-relations"),
-        pytest.param(UserProfile, id="relation-to-a-relation"),
-        pytest.param(Optional[UserProfile], id="optional-relation-chain"),  # noqa: UP045
-        pytest.param(
-            NewType("_ProfileKey", UserProfile), id="chain-by-new-type"
-        ),
+        pytest.param(datetime.datetime, id="datetime"),
+        pytest.param(datetime.date, id="date"),
+        pytest.param(datetime.time, id="time"),
+        pytest.param(datetime.timedelta, id="timedelta"),
+        pytest.param(decimal.Decimal, id="decimal"),
+        pytest.param(IssueStatus, id="enum"),
+        pytest.param(typing.Literal["a", "b"], id="literal"),
+        pytest.param(Optional[decimal.Decimal], id="optional-decimal"),  # noqa: UP045
+        pytest.param(NewType("_Stamp", datetime.datetime), id="new-type"),
+        pytest.param(_Token, id="class-with-a-conversion"),
+        pytest.param(_PlainPairKey, id="new-type-with-a-conversion"),
+        pytest.param(_ConvertedCount, id="new-type-of-int-with-a-conversion"),
+        pytest.param(bool, id="bool"),
+        pytest.param(float, id="float"),
     ],
 )
-def test_a_primary_key_that_is_not_one_value_is_refused(
+def test_a_primary_key_that_is_not_a_key_type_is_refused(
     key_type: Any,
 ) -> None:
-    """Decorating a model whose key is not a leaf or a relation is refused.
+    """Decorating a model whose key is not a str, an int, or a UUID is refused.
 
-    The error is a plain ``TypeError`` that names the field, and it says what a
-    key may be.
+    A type that a conversion converts is refused too, even a ``NewType`` of
+    ``int``, since a conversion may map two of the service's keys to one value.
+    The error is a plain ``TypeError`` that names the field and the types that
+    a key may be.
 
     Args:
         key_type: Declared type of the primary key.
@@ -7703,15 +7443,19 @@ def test_a_primary_key_that_is_not_one_value_is_refused(
     with pytest.raises(
         TypeError,
         match=(
-            r"Crate\.id is the primary key, and a primary key must be one "
-            r"value.*or as the type of that model's key"
+            r"Crate\.id is the primary key, whose type must be the one that "
+            r"the service sends for it: a str, an int, or a UUID"
         ),
     ) as error:
         json_object(
             type(
                 "Crate",
                 (ModelBase,),
-                {"__annotations__": {"id": key_type}, "class_url": "/crates/"},
+                {
+                    "__annotations__": {"id": key_type},
+                    "class_url": "/crates/",
+                    "conversions": _CRATE_CONVERSIONS,
+                },
             )
         )
 
@@ -7733,21 +7477,58 @@ def test_two_objects_keyed_by_a_mapping_cannot_be_declared() -> None:
             id: dict[str, int]
 
 
-def test_a_primary_key_that_is_a_chain_of_relations_is_refused() -> None:
-    """A relation to a model that is keyed by a relation is refused."""
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        pytest.param(User, id="relation"),
+        pytest.param(Optional[User], id="optional-relation"),  # noqa: UP045
+        pytest.param(NewType("_UserRef", User), id="new-type-of-relation"),
+    ],
+)
+def test_a_primary_key_that_is_a_relation_is_refused(key_type: Any) -> None:
+    """A relation as the key is refused, naming the related key's type.
+
+    Args:
+        key_type: Declared type of the primary key.
+    """
     with pytest.raises(
-        TypeError, match=r"Settings\.profile is the primary key"
+        TypeError,
+        match=(
+            r"Settings\.profile is the primary key and a relation to User, "
+            r"and a primary key cannot be a relation\. Declare it as int"
+        ),
     ):
-
-        @json_object(pk="profile")
-        class Settings(ModelBase):
-            class_url = "/settings/"
-
-            profile: UserProfile
+        json_object(pk="profile")(
+            type(
+                "Settings",
+                (ModelBase,),
+                {
+                    "__annotations__": {"profile": key_type},
+                    "class_url": "/settings/",
+                },
+            )
+        )
 
 
 def _decode_token(value: str, cls: type[_Token]) -> _Token:
     return cls(value)
+
+
+_CRATE_CONVERSIONS: dict[Any, Conversion] = {
+    _Token: Conversion(
+        decode=_decode_token,
+        encode=lambda token, cls: token.text,
+    ),
+    _PlainPairKey: Conversion(
+        decode=lambda text, cls: _PlainPair(len(text), 0),
+        encode=lambda pair, cls: "a" * pair.left,
+    ),
+    _ConvertedCount: Conversion(
+        decode=lambda value, cls: _ConvertedCount(value),
+        encode=lambda value, cls: int(value),
+    ),
+}
+"""Conversions of types that a key cannot be, which a model may declare."""
 
 
 @pytest.mark.parametrize(
@@ -7758,25 +7539,23 @@ def _decode_token(value: str, cls: type[_Token]) -> _Token:
         pytest.param(
             uuid.UUID, "12345678-1234-5678-1234-567812345678", id="uuid"
         ),
-        pytest.param(datetime.datetime, "2026-01-01T00:00:00Z", id="datetime"),
-        pytest.param(datetime.date, "2026-01-01", id="date"),
-        pytest.param(decimal.Decimal, "1.5", id="decimal"),
-        pytest.param(IssueStatus, "open", id="enum"),
-        pytest.param(typing.Literal["a", "b"], "a", id="literal"),
         pytest.param(Annotated[int, "a note"], 1, id="annotated"),
         pytest.param(Optional[int], 1, id="optional"),  # noqa: UP045
         pytest.param(NewType("_Id", int), 1, id="new-type"),
-        pytest.param(_Token, "a", id="class-with-a-conversion"),
-        pytest.param(_PlainPairKey, "a", id="new-type-with-a-conversion"),
-        pytest.param(User, 1, id="relation"),
-        pytest.param(Optional[User], 1, id="optional-relation"),  # noqa: UP045
-        pytest.param(NewType("_UserRef", User), 1, id="new-type-of-relation"),
+        pytest.param(NewType("_Slug", str), "a", id="new-type-of-str"),
+        pytest.param(
+            Annotated[NewType("_Ref", uuid.UUID) | None, "a note"],
+            "12345678-1234-5678-1234-567812345678",
+            id="wrapped-uuid",
+        ),
     ],
 )
-def test_a_primary_key_that_is_one_value_or_a_relation_to_one_is_accepted(
+def test_a_primary_key_of_a_key_type_is_accepted(
     key_type: Any, value: Any
 ) -> None:
-    """A leaf, or a relation to a model keyed by a leaf, declares and works.
+    """A str, an int, or a UUID, in the wrappers that a key may have, works.
+
+    A conversion that the model declares for another type leaves the key alone.
 
     Args:
         key_type: Declared type of the primary key.
@@ -7789,16 +7568,7 @@ def test_a_primary_key_that_is_one_value_or_a_relation_to_one_is_accepted(
             {
                 "__annotations__": {"id": key_type},
                 "class_url": "/crates/",
-                "conversions": {
-                    _Token: Conversion(
-                        decode=_decode_token,
-                        encode=lambda token, cls: token.text,
-                    ),
-                    _PlainPairKey: Conversion(
-                        decode=lambda text, cls: _PlainPair(len(text), 0),
-                        encode=lambda pair, cls: "a" * pair.left,
-                    ),
-                },
+                "conversions": _CRATE_CONVERSIONS,
             },
         )
     )
@@ -7815,7 +7585,6 @@ def test_a_key_of_a_later_class_that_is_not_one_value_is_refused_on_first_use(
 ) -> None:
     """A key that names a class defined later is refused when it resolves.
 
-    That holds for the model itself and for a model keyed by a relation to it.
     Until the class is defined, the undefined name is raised as it is, and
     afterwards the refusal is a plain ``TypeError``.
 
@@ -7830,18 +7599,8 @@ def test_a_key_of_a_later_class_that_is_not_one_value_is_refused_on_first_use(
 
         id: LaterRosterKey
 
-    monkeypatch.setitem(globals(), "Roster", Roster)
-
-    @json_object(pk="roster")
-    class RosterNote(ModelBase):
-        class_url = "/roster-notes/"
-
-        roster: Roster
-
     with pytest.raises(NameError, match="LaterRosterKey"):
         Roster(json={"id": [1]}).url  # noqa: B018
-    with pytest.raises(NameError, match="LaterRosterKey"):
-        RosterNote(json={"roster": [1]}).url  # noqa: B018
 
     LaterRosterKey = list[int]
     monkeypatch.setitem(globals(), "LaterRosterKey", LaterRosterKey)
@@ -7849,10 +7608,6 @@ def test_a_key_of_a_later_class_that_is_not_one_value_is_refused_on_first_use(
     with pytest.raises(TypeError, match=r"Roster\.id is the primary key") as e:
         Roster(json={"id": [1]}).url  # noqa: B018
     assert not isinstance(e.value, FieldConversionError)
-    with pytest.raises(TypeError, match=r"RosterNote\.roster is the primary"):
-        RosterNote(json={"roster": [1]}).url  # noqa: B018
-    with pytest.raises(TypeError, match=r"RosterNote\.roster is the primary"):
-        hash(RosterNote(json={"roster": [1]}))
 
 
 def _model_with_field(annotation: Any) -> Any:
@@ -7899,69 +7654,6 @@ def test_other_collections_of_relations_are_accepted(
     assert requests_mock.call_count == 0
 
 
-def test_a_key_that_is_a_relation_refuses_an_object_without_a_key(
-    requests_mock: Any,
-) -> None:
-    """A related object without a key is refused, as a relation write does."""
-    message = r"UserProfile\.user: The User object's primary key is None"
-    with pytest.raises(FieldConversionError, match=message):
-        UserProfile(user=User())
-    profile = UserProfile()
-    with pytest.raises(FieldConversionError, match=message):
-        profile.pk = User()
-
-    assert profile.pk is None
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_is_a_relation_holds_the_key_of_a_known_object(
-    requests_mock: Any,
-) -> None:
-    """A related object whose key is known gives the model its key.
-
-    The key is known if the object holds it or its JSON has it. Nothing sends a
-    request, including ``repr()`` and ``update_from_json()``.
-    """
-    user = User(id=2)
-    loaded = User(json={"id": 3, "name": "Grace"})
-    profile = UserProfile(user=user)
-    other = UserProfile()
-    other.pk = loaded
-
-    assert profile.pk == 2
-    assert profile.user is not user
-    assert other.pk == 3
-    assert repr(profile) == "<UserProfile user=2>"
-    assert profile.url == "/profiles/2/"
-    profile.update_from_json({"bio": "pushed"})
-    with pytest.raises(ValueError, match="does not match"):
-        profile.update_from_json({"user": 9})
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_is_a_relation_reads_as_an_object_after_refresh(
-    requests_mock: Any,
-) -> None:
-    """``refresh()`` holds the key as the constructor does.
-
-    The field reads as the related object, for an object built from a key and
-    for one loaded from JSON, and loads it only when a field of it is read.
-    """
-    get = requests_mock.get(
-        "https://example.com/v1/users/2/", json={"id": 2, "name": "Ada"}
-    )
-    built = UserProfile(user=User(id=2))
-    loaded = UserProfile(json={"user": 2, "bio": "b"})
-    assert loaded.bio == "b"
-
-    for count, profile in enumerate((built, loaded)):
-        profile.refresh()
-        assert isinstance(profile.user, User)
-        assert profile.pk == 2
-        assert get.call_count == count
-        assert profile.user.name == "Ada"
-
-
 def test_objects_of_one_model_with_equal_known_keys_are_equal(
     requests_mock: Any,
 ) -> None:
@@ -7984,87 +7676,6 @@ def test_objects_of_one_model_with_equal_known_keys_are_equal(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize(
-    "embedded", [{"name": "Ada"}, {"id": None, "name": "Ada"}]
-)
-def test_a_key_that_is_a_relation_to_an_embedded_object_without_a_key_is_none(
-    requests_mock: Any, embedded: dict[str, Any]
-) -> None:
-    """An embedded related object without its key gives no key.
-
-    The related object lacks the key field, or holds ``null`` for it.
-
-    Args:
-        requests_mock: Fails the test if a request is sent.
-        embedded: The related object's JSON.
-    """
-    profile = UserProfile(json={"user": embedded, "bio": "Hi"})
-
-    assert profile.pk is None
-    assert profile != UserProfile(json={"user": embedded, "bio": "Hi"})
-    assert requests_mock.call_count == 0
-
-
-def test_a_relation_key_to_a_model_that_is_keyed_by_models_is_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A related model whose key holds a model is refused when it resolves.
-
-    The related model's own declaration is refused too, when its key's class is
-    defined.
-
-    Args:
-        monkeypatch: Defines the model as a global, after the classes that name
-            it are decorated.
-    """
-
-    @json_object
-    class Crew(ModelBase):
-        class_url = "/crews/"
-
-        id: dict[str, LaterHand]
-
-    @json_object(pk="crew")
-    class CrewNote(ModelBase):
-        class_url = "/crew-notes/"
-
-        crew: Crew
-
-    @json_object
-    class LaterHand(ModelBase):
-        class_url = "/hands/"
-
-        id: int
-
-    monkeypatch.setitem(globals(), "Crew", Crew)
-    monkeypatch.setitem(globals(), "LaterHand", LaterHand)
-
-    with pytest.raises(TypeError, match=r"CrewNote\.crew is the primary key"):
-        CrewNote(json={"crew": {"a": 1}}).url  # noqa: B018
-
-
-def test_a_key_that_is_a_relation_compares_as_the_related_key(
-    requests_mock: Any,
-) -> None:
-    """A model keyed by a relation equals one with the related key.
-
-    Reading the field gives a new related object, so the model compares the key
-    and not the object.
-    """
-    user = User(id=2)
-    profile = UserProfile(user=user)
-    same = UserProfile(user=User(id=2))
-    from_json = UserProfile(json={"user": 2, "bio": "Hi"})
-
-    assert profile.user is not user
-    assert profile.user == user
-    assert profile == same
-    assert profile == from_json
-    assert profile != UserProfile(user=User(id=3))
-    assert hash(profile) == hash(same) == hash(from_json)
-    assert requests_mock.call_count == 0
-
-
 def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
     requests_mock: Any,
 ) -> None:
@@ -8074,47 +7685,9 @@ def test_objects_of_different_models_are_not_equal_even_with_equal_keys(
 
     assert user != admin
     assert admin != user
-    assert user != UserProfile(user=User(id=1))
     assert user != Todo(id=1)
     assert admin == Admin(id=1)
     assert requests_mock.call_count == 0
-
-
-@pytest.mark.parametrize("how", ["field", "pk"])
-@pytest.mark.parametrize("kind", ["constructed", "loaded"])
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_assigning_another_object_to_a_key_that_is_a_relation_is_refused(
-    requests_mock: Any, write_mode: WriteMode, kind: str, how: str
-) -> None:
-    """A profile keeps the key that it copied from its user.
-
-    Assigning the user that it has is not a change, and sends nothing.
-
-    Args:
-        write_mode: Write mode of the profile.
-        kind: Whether the profile is built with its user or from its JSON.
-        how: Whether the key is assigned as the field or as ``pk``.
-    """
-    if kind == "constructed":
-        profile = UserProfile(user=User(id=2), write_mode=write_mode)
-    else:
-        profile = UserProfile(
-            json={"user": 2, "bio": "Hi"}, write_mode=write_mode
-        )
-    hashed = hash(profile)
-
-    name = "user" if how == "field" else "pk"
-    with pytest.raises(AttributeError, match=r"key .* cannot change"):
-        setattr(profile, name, User(id=3) if how == "field" else 3)
-    setattr(profile, name, User(id=2) if how == "field" else 2)
-
-    assert requests_mock.call_count == 0
-    assert profile.pk == 2
-    assert profile.url == "/profiles/2/"
-    assert profile == UserProfile(user=User(id=2))
-    assert profile != UserProfile(user=User(id=3))
-    assert hash(profile) == hashed
-    assert profile._pending_updates == {}
 
 
 @pytest.mark.parametrize("how", ["field", "pk"])
@@ -8164,7 +7737,6 @@ def _objects_with_unknown_keys() -> list[Callable[[], JSONObject]]:
         lambda: User(),
         lambda: User(json={"name": "No key"}),
         lambda: User(json={"id": None, "name": "Null key"}),
-        lambda: UserProfile(),
     ]
 
 
@@ -8174,8 +7746,8 @@ def test_an_object_whose_key_is_not_known_equals_only_itself(
 ) -> None:
     """Without a known key, equality is identity, and no request is sent.
 
-    The cases are an object built without a key, complete JSON that lacks the
-    key or holds ``null``, and a key that is a relation and was not given.
+    The cases are an object built without a key, and complete JSON that lacks
+    the key or holds ``null``.
     """
     obj = make()
     twin = make()
@@ -8194,7 +7766,6 @@ _UNKNOWN_KEY_HASH_MESSAGES = [
     _ADVISED,
     r"key is missing from its JSON, so it cannot be hashed$",
     r"key is None, so it cannot be hashed$",
-    _ADVISED,
 ]
 """The message for each object of ``_objects_with_unknown_keys()``."""
 
@@ -8255,6 +7826,13 @@ class TokenOwner(ModelBase):
     class_url = "/token-owners/"
 
     id: uuid.UUID
+
+
+@json_object
+class NamedTokenOwner(TokenOwner):
+    """Model whose key is a ``UUID``, which JSON can spell several ways."""
+
+    name: str
 
 
 @pytest.mark.parametrize(
@@ -8350,16 +7928,6 @@ class TextKeyed(ModelBase):
 
 
 @json_object
-class ChoiceKeyed(ModelBase):
-    """Model whose key is one of two strings."""
-
-    class_url = "/choice-keyed/"
-
-    id: Literal["a", "b"]
-    name: str
-
-
-@json_object
 class WrappedKeyed(ModelBase):
     """Model whose key is an ``int`` in the wrappers that a key may have."""
 
@@ -8378,8 +7946,6 @@ class WrappedKeyed(ModelBase):
         (User, None),
         (TextKeyed, 1),
         (TextKeyed, True),
-        (ChoiceKeyed, 1),
-        (ChoiceKeyed, True),
         (WrappedKeyed, "1"),
     ],
 )
@@ -8419,7 +7985,6 @@ def test_a_key_of_another_json_type_is_refused_where_it_is_given(
     [
         (User, 1),
         (TextKeyed, "a"),
-        (ChoiceKeyed, "a"),
         (WrappedKeyed, 1),
     ],
 )
@@ -8437,30 +8002,6 @@ def test_a_key_of_its_own_json_type_is_taken(
     assert obj.pk == given
     assert obj == model(id=given)
     assert hash(obj) == hash(model(id=given))
-
-
-@pytest.mark.parametrize("how", ["constructor", "pk"])
-def test_a_key_that_is_a_relation_refuses_a_key_of_another_json_type(
-    requests_mock: Any, how: str
-) -> None:
-    """The key that a profile copies from its user has the user's JSON type.
-
-    Args:
-        how: Whether the key is given to the constructor or assigned as ``pk``.
-    """
-    profile = UserProfile()
-
-    def give() -> None:
-        if how == "constructor":
-            UserProfile(pk=cast(Any, "2"))
-        else:
-            profile.pk = "2"
-
-    with pytest.raises(FieldConversionError, match=r"UserProfile\.user"):
-        give()
-
-    assert requests_mock.call_count == 0
-    assert profile.pk is None
 
 
 @pytest.mark.parametrize(
@@ -8494,262 +8035,6 @@ def test_a_related_key_of_another_json_type_from_the_server_is_refused(
 
     assert field not in crew._field_cache
     assert requests_mock.call_count == 0
-
-
-class Cell:
-    """Key type that hashes and compares by identity."""
-
-    def __init__(self, value: int) -> None:
-        """Keep the value."""
-        self.value = value
-
-
-_CELL_DECODES: list[int] = []
-"""The values that the conversion of ``Cell`` decoded."""
-
-
-def _decode_cell(value: int, cls: type[Cell]) -> Cell:
-    """Decode a ``Cell`` and count the call."""
-    _CELL_DECODES.append(value)
-    return cls(value)
-
-
-class CellBase(JSONObject):
-    """Base whose conversion reads a ``Cell`` from its integer."""
-
-    conversions: ClassVar[dict[type, Conversion]] = {
-        Cell: Conversion(
-            decode=_decode_cell, encode=lambda value, cls: value.value
-        )
-    }
-
-
-@json_object
-class Grid(CellBase):
-    """Model whose key is a ``Cell``, which hashes by identity."""
-
-    class_url = "/grids/"
-
-    id: Cell
-    name: str
-
-
-@json_object(pk="grid")
-class GridProfile(CellBase):
-    """Model keyed by a relation to a model whose key hashes by identity."""
-
-    class_url = "/grid-profiles/"
-
-    grid: Grid
-    bio: str
-
-
-def test_the_hash_of_a_key_that_hashes_by_identity_is_stable() -> None:
-    """The key is converted once, so each hash is that of the same key."""
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 1})
-    members = {grid: "grid"}
-
-    assert len({hash(grid) for _ in range(5)}) == 1
-    assert grid in members
-    assert members[grid] == "grid"
-    assert grid == grid  # noqa: PLR0124
-    assert grid == Grid(json={"id": 1})
-    assert Grid(json={"id": 1}) in members
-
-
-def test_comparing_objects_converts_each_key_once() -> None:
-    """Comparing and hashing reuse the key that the first comparison found."""
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 1})
-    other = Grid(json={"id": 1})
-    _CELL_DECODES.clear()
-
-    for _ in range(3):
-        assert grid == other
-        hash(grid)
-        hash(other)
-
-    assert _CELL_DECODES == [1, 1]
-
-
-@pytest.mark.parametrize(
-    "json",
-    [{"grid": 1, "bio": "a"}, {"grid": {"id": 1}, "bio": "a"}],
-    ids=["key", "embedded"],
-)
-def test_a_loaded_object_keyed_by_a_relation_has_one_stable_hash(
-    json: dict[str, Any],
-) -> None:
-    """The related key is converted once, so the hash and lookups are stable.
-
-    Args:
-        json: Payload that spells the related object as a key or embeds it.
-    """
-    GridProfile.register_api(test_api)
-    profile = GridProfile(json=json)
-    members = {profile: "profile"}
-
-    assert len({hash(profile) for _ in range(5)}) == 1
-    assert profile in members
-    assert members[profile] == "profile"
-    assert profile == profile  # noqa: PLR0124
-
-
-def test_comparing_a_loaded_relation_key_converts_it_once() -> None:
-    """Comparing and hashing compute the canonical key of each object once."""
-    GridProfile.register_api(test_api)
-    profile = GridProfile(json={"grid": 1, "bio": "a"})
-    other = GridProfile(json={"grid": 1, "bio": "a"})
-    _CELL_DECODES.clear()
-
-    for _ in range(3):
-        assert profile == other
-        hash(profile)
-        hash(other)
-
-    assert _CELL_DECODES == [1, 1]
-
-
-def _identity_keyed_objects(write_mode: WriteMode) -> list[Any]:
-    """Build a ``Grid`` and a ``GridProfile`` that hold their keys in JSON.
-
-    Args:
-        write_mode: Write mode of both objects.
-
-    Returns:
-        The two objects, each with a field other than its key.
-    """
-    Grid.register_api(test_api)
-    GridProfile.register_api(test_api)
-    return [
-        Grid(json={"id": 1, "name": "a"}, write_mode=write_mode),
-        GridProfile(json={"grid": 1, "bio": "a"}, write_mode=write_mode),
-    ]
-
-
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_that_hashes_by_identity_survives_a_change_of_another_field(
-    requests_mock: Any,
-    write_mode: WriteMode,
-) -> None:
-    """Changing a field that is not the key leaves the object in its set.
-
-    Args:
-        requests_mock: Mocks the eager write.
-        write_mode: Whether the change is sent at once or waits for ``save()``.
-    """
-    requests_mock.patch(
-        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
-    )
-    requests_mock.patch(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": 1, "bio": "b"},
-    )
-    grid, profile = _identity_keyed_objects(write_mode)
-    members = {grid, profile}
-
-    grid.name = "b"
-    profile.bio = "b"
-
-    assert grid in members
-    assert profile in members
-    if write_mode == "lazy":
-        grid.save()
-        profile.save()
-        assert grid in members
-        assert profile in members
-
-
-def test_a_key_that_hashes_by_identity_survives_a_load_of_the_same_key(
-    requests_mock: Any,
-) -> None:
-    """A load that returns the key the object holds leaves it in its set."""
-    requests_mock.get(
-        "https://example.com/v1/grids/1/", json={"id": 1, "name": "a"}
-    )
-    requests_mock.get(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": 1, "bio": "a"},
-    )
-    Grid.register_api(test_api)
-    GridProfile.register_api(test_api)
-    grid = Grid(id=Cell(1))
-    profile = GridProfile(grid=Grid(id=Cell(1)))
-    members = {grid, profile}
-
-    assert grid.name == "a"
-    assert profile.bio == "a"
-
-    assert grid in members
-    assert profile in members
-
-
-def test_a_key_that_hashes_by_identity_survives_a_refresh_of_the_same_key(
-    requests_mock: Any,
-) -> None:
-    """An object stays in its set after a refresh that holds its key."""
-    requests_mock.get(
-        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
-    )
-    Grid.register_api(test_api)
-    from_json = Grid(json={"id": 1, "name": "a"})
-    from_key = Grid(id=Cell(1))
-    members = {from_json, from_key}
-    key = from_key.pk
-
-    from_json.refresh()
-    from_key.refresh()
-
-    assert from_json in members
-    assert from_key in members
-    assert from_key.pk.value == key.value
-    assert from_json.name == "b"
-    assert from_key.name == "b"
-    assert from_json in members
-    assert from_key in members
-
-
-def test_a_key_that_hashes_by_identity_survives_a_refresh_and_an_embedded_load(
-    requests_mock: Any,
-) -> None:
-    """A load that changes only a field of the embedded key keeps the key."""
-    requests_mock.get(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": {"id": 1, "name": "b"}, "bio": "a"},
-    )
-    GridProfile.register_api(test_api)
-    Grid.register_api(test_api)
-    profile = GridProfile(json={"grid": {"id": 1, "name": "a"}, "bio": "a"})
-    members = {profile}
-
-    profile.refresh()
-    assert profile in members
-    assert profile.bio == "a"
-
-    assert profile in members
-
-
-def test_a_key_that_hashes_by_identity_survives_an_embedded_change_in_a_write(
-    requests_mock: Any,
-) -> None:
-    """A write whose response changes another field of the embedded key."""
-    requests_mock.patch(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": {"id": 1, "name": "b"}, "bio": "b"},
-    )
-    GridProfile.register_api(test_api)
-    Grid.register_api(test_api)
-    profile = GridProfile(
-        json={"grid": {"id": 1, "name": "a"}, "bio": "a"},
-        write_mode="eager",
-    )
-    members = {profile}
-
-    profile.bio = "b"
-
-    assert profile.bio == "b"
-    assert profile in members
 
 
 def _keyed_user(write_mode: WriteMode = "lazy") -> User:
@@ -8868,94 +8153,49 @@ def test_update_from_json_refuses_a_payload_that_names_another_key(
 def test_server_state_that_spells_the_same_key_another_way_is_taken(
     requests_mock: Any, path: str
 ) -> None:
-    """``Z`` and ``+00:00`` are one key, so the hash and the URL stay.
+    """Two spellings of one UUID are one key, so the hash and the URL stay.
 
     Args:
         path: How the object takes the server's state.
     """
-    url = (
-        "https://example.com/v1/time-keyed/2026-01-01T00%3A00%3A00%2B00%3A00/"
-    )
-    spelled = {"id": "2026-01-01T00:00:00+00:00", "name": "b"}
+    url = "https://example.com/v1/token-owners/12345678-1234-5678-1234-567812345678/"
+    spelled = {"id": "12345678-1234-5678-1234-567812345678", "name": "b"}
     requests_mock.get(url, json=spelled)
     requests_mock.patch(url, json=spelled)
-    stamp = TimeKeyed(json={"id": "2026-01-01T00:00:00Z", "name": "a"})
-    members = {stamp}
-    before = (stamp.url, hash(stamp))
+    owner = NamedTokenOwner(
+        json={"id": "12345678123456781234567812345678", "name": "a"}
+    )
+    members = {owner}
+    before = (owner.url, hash(owner))
 
     if path == "load":
-        stamp.refresh()
-        assert stamp.name == "b"
+        owner.refresh()
+        assert owner.name == "b"
     elif path == "write":
-        stamp.name = "b"
-        stamp.save()
+        owner.name = "b"
+        owner.save()
     else:
-        stamp.update_from_json(spelled)
+        owner.update_from_json(spelled)
 
-    assert stamp.name == "b"
-    assert (stamp.url, hash(stamp)) == before
-    assert stamp in members
-    assert stamp.json["id"] == "2026-01-01T00:00:00+00:00"
-
-
-def test_two_loads_of_a_key_that_hashes_by_identity_are_equal() -> None:
-    """Objects that load one resource are equal and hash alike."""
-    Grid.register_api(test_api)
-    first = Grid(json={"id": 1, "name": "a"})
-    second = Grid(json={"id": 1, "name": "b"})
-    built = Grid(id=Cell(1))
-
-    assert first == second == built
-    assert hash(first) == hash(second) == hash(built)
-    assert first != Grid(json={"id": 2, "name": "a"})
-    assert len({first, second, built}) == 1
+    assert owner.name == "b"
+    assert (owner.url, hash(owner)) == before
+    assert owner in members
+    assert owner.json["id"] == "12345678-1234-5678-1234-567812345678"
 
 
-@json_object
-class PriceKeyed(ModelBase):
-    """Model whose key is a ``Decimal``, which JSON spells by precision."""
+@json_object(pk="slug")
+class BulkLabel(ModelBase):
+    """Model keyed by a ``str``, which loads in bulk."""
 
-    class_url = "/price-keyed/"
+    class_url = "/bulk-labels/"
 
-    id: decimal.Decimal
-    name: str
-
-
-def test_a_decimal_key_of_another_precision_is_another_key() -> None:
-    """Keys that name different URLs are different keys."""
-    one = PriceKeyed(json={"id": "1.0"})
-    other = PriceKeyed(json={"id": "1.00"})
-
-    assert one != other
-    assert one.url != other.url
-    assert PriceKeyed(json={"id": "1.0"}) == one
-    assert hash(PriceKeyed(json={"id": "1.0"})) == hash(one)
-
-
-def test_a_datetime_key_spelled_two_ways_is_one_key() -> None:
-    """A spelling that decodes and encodes alike is the same key."""
-    first = TimeKeyed(json={"id": "2026-01-01T00:00:00Z"})
-    second = TimeKeyed(json={"id": "2026-01-01T00:00:00+00:00"})
-    built = TimeKeyed(id=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC))
-
-    assert first == second == built
-    assert hash(first) == hash(second) == hash(built)
-    assert first.url == second.url == built.url
-
-
-@json_object
-class BulkPrice(ModelBase):
-    """Model keyed by a ``Decimal``, which loads in bulk."""
-
-    class_url = "/bulk-prices/"
-
-    id: decimal.Decimal
+    slug: str
     name: str
 
     @classmethod
     def bulk_get_by_pks(
         cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
-    ) -> dict[Any, BulkPrice]:
+    ) -> dict[Any, BulkLabel]:
         """Return an object named ``bulk`` for each key, without a request.
 
         Args:
@@ -8966,143 +8206,58 @@ class BulkPrice(ModelBase):
         Returns:
             The objects, keyed as the parents spell the keys.
         """
-        return {pk: cls(json={"id": pk, "name": "bulk"}) for pk in pks}
+        return {pk: cls(json={"slug": pk, "name": "bulk"}) for pk in pks}
 
 
 @json_object
-class PriceHolder(ModelBase):
-    """Model with a relation to ``BulkPrice``."""
+class LabelHolder(ModelBase):
+    """Model with a relation to ``BulkLabel``."""
 
-    class_url = "/price-holders/"
+    class_url = "/label-holders/"
 
     id: int
-    price: BulkPrice
+    label: BulkLabel
 
 
-@json_object
-class BulkGrid(CellBase):
-    """Model keyed by a ``Cell``, which loads in bulk."""
-
-    class_url = "/bulk-grids/"
-
-    id: Cell
-    name: str
-
-    @classmethod
-    def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
-    ) -> dict[Any, BulkGrid]:
-        """Return an object named ``bulk`` for each key, without a request.
-
-        Args:
-            pks: Keys as the parents' JSON spells them.
-            api: Ignored.
-            **kwargs: Ignored.
-
-        Returns:
-            The objects, keyed as the parents spell the keys.
-        """
-        return {pk: cls(json={"id": pk, "name": "bulk"}) for pk in pks}
-
-
-@json_object
-class GridHolder(CellBase):
-    """Model with a relation to ``BulkGrid``."""
-
-    class_url = "/grid-holders/"
-
-    id: int
-    grid: BulkGrid
-
-
-def test_prefetch_keeps_decimal_keys_of_another_precision_apart(
+def test_prefetch_keeps_str_keys_of_another_case_apart(
     requests_mock: Any,
 ) -> None:
-    """Parents that spell a ``Decimal`` key two ways get two objects."""
+    """Parents that spell a ``str`` key in two cases get two objects."""
     requests_mock.get(
-        "https://example.com/v1/price-holders/",
-        json=[{"id": 1, "price": "1.0"}, {"id": 2, "price": "1.00"}],
+        "https://example.com/v1/label-holders/",
+        json=[{"id": 1, "label": "a"}, {"id": 2, "label": "A"}],
     )
 
-    first, second = PriceHolder.filter(prefetch="price")
+    first, second = LabelHolder.filter(prefetch="label")
 
-    assert first.price is not second.price
-    assert first.price.url == "/bulk-prices/1.0/"
-    assert second.price.url == "/bulk-prices/1.00/"
-    assert first.price.name == second.price.name == "bulk"
+    assert first.label is not second.label
+    assert first.label.url == "/bulk-labels/a/"
+    assert second.label.url == "/bulk-labels/A/"
+    assert first.label.name == second.label.name == "bulk"
     assert requests_mock.call_count == 1
-
-
-def test_prefetch_finds_a_key_that_hashes_by_identity(
-    requests_mock: Any,
-) -> None:
-    """A key that compares by identity is found without a load."""
-    BulkGrid.register_api(test_api)
-    GridHolder.register_api(test_api)
-    requests_mock.get(
-        "https://example.com/v1/grid-holders/",
-        json=[{"id": 1, "grid": 5}, {"id": 2, "grid": 5}],
-    )
-
-    first, second = GridHolder.filter(prefetch="grid")
-
-    assert first.grid is second.grid
-    assert first.grid.name == second.grid.name == "bulk"
-    assert requests_mock.call_count == 1
-
-
-def test_a_bare_and_an_embedded_relation_key_are_one_key(
-    requests_mock: Any,
-) -> None:
-    """A key spelled as the related key or as an embedded object is one key.
-
-    That holds when the object is built, when it loads, and when a write's
-    response spells the key the other way.
-    """
-    Grid.register_api(test_api)
-    GridProfile.register_api(test_api)
-    requests_mock.get(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": {"id": 1, "name": "a"}, "bio": "a"},
-    )
-    requests_mock.patch(
-        "https://example.com/v1/grid-profiles/1/",
-        json={"grid": {"id": 1, "name": "a"}, "bio": "b"},
-    )
-    bare = GridProfile(json={"grid": 1, "bio": "a"}, write_mode="eager")
-    embedded = GridProfile(json={"grid": {"id": 1, "name": "x"}, "bio": "a"})
-    members = {bare}
-    assert bare == embedded
-    assert hash(bare) == hash(embedded)
-
-    bare.refresh()
-    assert bare.bio == "a"
-    assert bare in members
-
-    bare.bio = "b"
-
-    assert bare.bio == "b"
-    assert bare in members
-    assert bare == embedded
 
 
 def test_update_from_json_accepts_a_payload_that_names_the_key_it_has() -> (
     None
 ):
-    """A payload that names the object's own key, of any type, is accepted."""
-    grid = _identity_keyed_objects("lazy")[0]
-    profile = _identity_keyed_objects("lazy")[1]
-    members = {grid, profile}
+    """A payload that names the object's own key, in any spelling, is taken."""
+    user = User(json={"id": 1, "name": "a"})
+    owner = NamedTokenOwner(
+        json={"id": "12345678-1234-5678-1234-567812345678", "name": "a"}
+    )
+    members = {user, owner}
 
-    grid.update_from_json({"id": 1, "name": "z"})
-    profile.update_from_json({"grid": {"id": 1, "name": "y"}, "bio": "z"})
+    user.update_from_json({"id": 1, "name": "z"})
+    owner.update_from_json(
+        {"id": "12345678-1234-5678-1234-567812345678", "name": "z"}
+    )
 
-    assert grid.name == "z"
-    assert profile.bio == "z"
-    assert grid in members
-    assert profile in members
+    assert user.name == "z"
+    assert owner.name == "z"
+    assert user in members
+    assert owner in members
     with pytest.raises(ValueError, match="does not match"):
-        grid.update_from_json({"id": 2, "name": "z"})
+        user.update_from_json({"id": 2, "name": "z"})
 
 
 def test_a_refresh_followed_by_a_load_keeps_the_hash(
@@ -9110,304 +8265,28 @@ def test_a_refresh_followed_by_a_load_keeps_the_hash(
 ) -> None:
     """Refreshing and loading the same key leaves the object where it was."""
     requests_mock.get(
-        "https://example.com/v1/grids/1/", json={"id": 1, "name": "b"}
+        "https://example.com/v1/users/1/", json={"id": 1, "name": "b"}
     )
-    Grid.register_api(test_api)
-    grid = Grid(json={"id": 1, "name": "a"})
-    before = hash(grid)
+    user = User(json={"id": 1, "name": "a"})
+    before = hash(user)
 
-    grid.refresh()
-    between = hash(grid)
-    assert grid.name == "b"
+    user.refresh()
+    between = hash(user)
+    assert user.name == "b"
 
-    assert before == between == hash(grid)
-    assert grid == Grid(id=Cell(1))
+    assert before == between == hash(user)
+    assert user == User(id=1)
 
 
-@pytest.mark.parametrize("loaded", [False, True])
-def test_a_change_in_place_to_the_pk_of_a_relation_key_is_not_kept_or_sent(
-    requests_mock: Any,
-    loaded: bool,
-) -> None:
-    """The key of a model keyed by a relation decodes afresh on each read.
-
-    Args:
-        requests_mock: Mocks the load and the write that must not happen.
-        loaded: Whether the profile has loaded before the change.
-    """
-    requests_mock.get(
-        "https://example.com/v1/grid-profiles/5/",
-        json={"grid": 5, "bio": "b"},
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/grid-profiles/5/",
-        json={"grid": 5, "bio": "b"},
-    )
-    Grid.register_api(test_api)
-    GridProfile.register_api(test_api)
-    profile = GridProfile(grid=Grid(id=Cell(5)))
-    if loaded:
-        assert profile.bio == "b"
-
-    profile.pk.value = 9
-    profile.save()
-
-    assert profile.pk.value == 5
-    assert profile.url == "/grid-profiles/5/"
-    assert patch.call_count == 0
-
-
-def test_reading_the_key_of_an_unloaded_object_sends_no_request(
-    requests_mock: Any,
-) -> None:
-    """Reading the key sends no request, and another field loads it once."""
-    get = requests_mock.get(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
-    )
-    Grid.register_api(test_api)
-    grid = Grid(id=Cell(5))
-
-    assert grid.pk.value == 5
-    assert grid.pk is grid.pk
-    assert get.call_count == 0
-    assert grid.name == "a"
-    assert grid.name == "a"
-
-    assert get.call_count == 1
-
-
-class Route:
-    """Key type whose conversion keeps the list that it decodes."""
-
-    def __init__(self, parts: list[str]) -> None:
-        """Keep the list itself, not a copy."""
-        self.parts = parts
-
-
-class RouteBase(JSONObject):
-    """Base whose conversion decodes a ``Route`` without copying."""
-
-    conversions: ClassVar[dict[type, Conversion]] = {
-        Route: Conversion(
-            decode=lambda value, cls: cls(value.split("/")),
-            encode=lambda route, cls: "/".join(route.parts),
-        )
-    }
-
-
-@json_object
-class Stop(RouteBase):
-    """Model whose key is a ``Route``, which can change in place."""
-
-    class_url = "/stops/"
-
-    id: Route
-    name: str
-
-
-@json_object(pk="stop")
-class StopNote(RouteBase):
-    """Model keyed by a relation to a model with a ``Route`` key."""
-
-    class_url = "/stop-notes/"
-
-    stop: Stop
-    note: str
-
-
-@json_object
-class StopHolder(RouteBase):
-    """Model with a plain relation to a model keyed by a ``Route``."""
-
-    class_url = "/stop-holders/"
-
-    id: int
-    stop: Stop
-
-
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_that_a_conversion_aliases_is_refused_when_it_changes(
-    requests_mock: Any,
-    write_mode: WriteMode,
-) -> None:
-    """Changing the decoded key of an unloaded object leaves its saved key.
-
-    The conversion keeps the list that it decodes, so the change in place must
-    reach a copy. A write is refused, and nothing is sent.
-
-    Args:
-        requests_mock: Mocks the load and the write.
-        write_mode: Whether the change is sent at once or waits for ``save()``.
-    """
-    get = requests_mock.get(requests_mock_ANY, json={"id": "a", "name": "A"})
-    patch = requests_mock.patch(
-        requests_mock_ANY, json={"id": "a/b", "name": "renamed"}
-    )
-    Stop.register_api(test_api)
-    stop = Stop(id=Route(["a"]), write_mode=write_mode)
-    twin = Stop(id=Route(["a"]))
-
-    stop.pk.parts.append("b")
-
-    assert stop.url == "/stops/a/"
-    assert stop == twin
-    assert hash(stop) == hash(twin)
-    assert stop.pk.parts == ["a", "b"]
-
-    def write() -> None:
-        if write_mode == "lazy":
-            stop.save()
-        else:
-            stop.name = "renamed"
-
-    with pytest.raises(UsageError, match=r"key .* cannot change"):
-        write()
-
-    assert get.call_count == 0
-    assert patch.call_count == 0
-    assert stop.url == "/stops/a/"
-    assert hash(stop) == hash(twin)
-
-
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_relation_key_that_a_conversion_aliases_keeps_the_saved_key(
-    write_mode: WriteMode,
-) -> None:
-    """Changing the decoded key of an unloaded relation key leaves the URL.
-
-    Args:
-        write_mode: Write mode of the objects.
-    """
-    Stop.register_api(test_api)
-    StopNote.register_api(test_api)
-    note = StopNote(
-        stop=Stop(id=Route(["a"]), write_mode=write_mode),
-        write_mode=write_mode,
-    )
-    twin = StopNote(stop=Stop(id=Route(["a"])))
-    url = note.url
-    before = hash(note)
-
-    note.pk.parts.append("b")
-
-    assert note.url == url == "/stop-notes/a/"
-    assert hash(note) == before == hash(twin)
-    assert note == twin
-
-
-def test_an_embedded_key_that_a_conversion_aliases_is_not_shared() -> None:
-    """A change in place to an embedded related key leaves the saved keys.
-
-    The conversion keeps the list that it decodes. Reading the key of the
-    embedded ``Stop`` through ``note.stop`` must not change the key that the
-    note is read from.
-    """
-    note = StopNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
-    twin = StopNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
-    before = hash(note)
-
-    note.stop.pk.parts.append("b")
-
-    assert note.json["stop"]["id"] == "a"
-    assert note.url == "/stop-notes/a/"
-    assert note == twin
-    assert hash(note) == before
-
-
-def test_a_change_to_the_key_of_a_related_object_leaves_its_parents_json() -> (
-    None
-):
-    """A plain relation's embedded JSON does not change with the object's key.
-
-    The ``Route`` conversion keeps the list that it decodes, so the parent
-    gives the related object a copy.
-    """
-    holder = StopHolder(json={"id": 1, "stop": {"id": "a", "name": "A"}})
-
-    holder.stop.pk.parts.append("b")
-
-    assert holder.json["stop"] == {"id": "a", "name": "A"}
-
-
-@dataclasses.dataclass
-class Trail:
-    """Dataclass key type that a conversion builds around a decoded list."""
-
-    parts: list[str]
-
-
-class TrailBase(JSONObject):
-    """Base whose conversion for ``Trail`` keeps the list that it decodes."""
-
-    conversions: ClassVar[dict[type, Conversion]] = {
-        Trail: Conversion(
-            decode=lambda value, cls: Trail(value.split("/")),
-            encode=lambda trail, cls: "/".join(trail.parts),
-        )
-    }
-
-
-@json_object
-class TrailStop(TrailBase):
-    """Model whose key is a ``Trail``, which can change in place."""
-
-    class_url = "/trail-stops/"
-
-    id: Trail
-    name: str
-
-
-@json_object
-class TrailHolder(TrailBase):
-    """Model with a plain relation to a model keyed by a ``Trail``."""
-
-    class_url = "/trail-holders/"
-
-    id: int
-    stop: TrailStop
-
-
-@json_object(pk="stop")
-class TrailNote(TrailBase):
-    """Model keyed by a relation to a model keyed by a ``Trail``."""
-
-    class_url = "/trail-notes/"
-
-    stop: TrailStop
-    note: str
-
-
-def test_a_change_to_a_key_that_a_class_entry_decodes_leaves_the_parents() -> (
-    None
-):
-    """A class entry that keeps its input does not share it with the JSON.
-
-    The ``Trail`` conversion is keyed by a dataclass, which a class entry
-    converts, and keeps the list that it decodes. A change in place to the
-    related object's key leaves the JSON of a parent that embeds the object,
-    and the key that a model keyed by the parent copies.
-    """
-    holder = TrailHolder(json={"id": 1, "stop": {"id": "a", "name": "A"}})
-    note = TrailNote(json={"stop": {"id": "a", "name": "A"}, "note": "n"})
-
-    holder.stop.pk.parts.append("b")
-    note.stop.pk.parts.append("b")
-
-    assert holder.json["stop"] == {"id": "a", "name": "A"}
-    assert note.json["stop"] == {"id": "a", "name": "A"}
-    assert note.pk == Trail(["a"])
-    assert note.url == "/trail-notes/a/"
-
-
-def test_a_payload_without_the_key_is_accepted_for_any_key_type() -> None:
+def test_a_payload_without_the_key_is_accepted() -> None:
     """A payload that names no key cannot name another object."""
-    grid = _identity_keyed_objects("lazy")[0]
-    members = {grid}
+    user = User(json={"id": 1, "name": "a"})
+    members = {user}
 
-    grid.update_from_json({"name": "z"})
+    user.update_from_json({"name": "z"})
 
-    assert grid.name == "z"
-    assert grid in members
+    assert user.name == "z"
+    assert user in members
 
 
 @pytest.mark.parametrize(
@@ -9450,105 +8329,27 @@ def test_an_object_equals_one_with_its_key_once_the_key_is_assigned() -> None:
     assert hash(user) == hash(User(id=4))
 
 
-@json_object
-class TimeKeyed(ModelBase):
-    """Model whose key is a ``datetime``, which JSON can spell two ways."""
-
-    class_url = "/time-keyed/"
-
-    id: datetime.datetime
-    name: str
-
-
-@pytest.mark.parametrize("state", ["unloaded", "loaded", "refreshed"])
-@pytest.mark.parametrize("write_mode", ["lazy", "eager"])
-def test_a_key_changed_in_place_is_refused_before_anything_is_sent(
-    requests_mock: Any, write_mode: WriteMode, state: str
-) -> None:
-    """``save()`` and an eager assignment raise, and the updates stay.
-
-    The key, the hash, and the URL stay as they were, and putting the key back
-    lets the object save again.
-
-    Args:
-        write_mode: Write mode of the grid.
-        state: Loading state of the grid.
-    """
-    requests_mock.get(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "a"}
-    )
-    patch = requests_mock.patch(
-        "https://example.com/v1/grids/5/", json={"id": 5, "name": "b"}
-    )
-    Grid.register_api(test_api)
-    if state == "unloaded":
-        grid = Grid(id=Cell(5), write_mode=write_mode)
-    else:
-        grid = Grid(json={"id": 5, "name": "a"}, write_mode=write_mode)
-        if state == "refreshed":
-            grid.refresh()
-    hashed = hash(grid)
-    if write_mode == "lazy" and state == "loaded":
-        grid.name = "b"
-    pending = copy.deepcopy(grid._pending_updates)
-    requests_mock.reset_mock()
-
-    grid.id.value = 9
-
-    def write() -> None:
-        if write_mode == "lazy":
-            grid.save()
-        else:
-            grid.name = "b"
-
-    with pytest.raises(UsageError, match=r"key .* cannot change"):
-        write()
-
-    assert requests_mock.call_count == 0
-    assert grid.url == "/grids/5/"
-    assert hash(grid) == hashed
-    assert grid == Grid(id=Cell(5))
-    assert grid._pending_updates == pending
-
-    grid.id.value = 5
-    if write_mode == "lazy":
-        grid.name = "b"
-        grid.save()
-    else:
-        grid.name = "b"
-
-    assert patch.call_count == 1
-    assert patch.last_request.json() == {"name": "b"}
-
-
-def test_the_url_of_an_object_that_has_not_loaded_ignores_a_key_change() -> (
-    None
-):
-    """Changing the key in place does not move an unloaded object's URL."""
-    Grid.register_api(test_api)
-    grid = Grid(id=Cell(5))
-
-    grid.id.value = 9
-
-    assert grid.url == "/grids/5/"
-
-
-def test_a_load_that_spells_a_datetime_key_another_way_keeps_the_url(
+def test_a_load_that_spells_a_uuid_key_another_way_keeps_the_url(
     requests_mock: Any,
 ) -> None:
     """The URL names the key, whichever way a response spells it."""
     requests_mock.get(
-        "https://example.com/v1/time-keyed/2026-01-01T00%3A00%3A00%2B00%3A00/",
-        json={"id": "2026-01-01T00:00:00+00:00", "name": "a"},
+        "https://example.com/v1/token-owners/12345678-1234-5678-1234-567812345678/",
+        json={"id": "12345678-1234-5678-1234-567812345678", "name": "a"},
     )
-    stamp = TimeKeyed(json={"id": "2026-01-01T00:00:00Z"})
-    url = stamp.url
-    stamp.refresh()
+    owner = NamedTokenOwner(
+        json={"id": "{12345678-1234-5678-1234-567812345678}"}
+    )
+    url = owner.url
+    owner.refresh()
 
-    assert stamp.name == "a"
+    assert owner.name == "a"
 
-    assert stamp.url == url
-    assert url.endswith("%2B00%3A00/")
+    assert (
+        owner.url
+        == url
+        == "/token-owners/12345678-1234-5678-1234-567812345678/"
+    )
 
 
 def test_objects_of_a_model_without_a_key_equal_only_themselves(
@@ -9581,13 +8382,13 @@ def test_objects_with_equal_keys_are_one_member_of_a_set_or_dict(
     """A set or dict keeps one object for each key and finds it by key."""
     first = User(id=1)
     members = {first, User(json={"id": 1, "name": "Ada"}), User(id=2)}
-    by_user = {first: "first", UserProfile(user=first): "profile"}
+    by_user = {first: "first", Todo(id=1): "todo"}
 
     assert len(members) == 2
     assert User(id=2) in members
     assert User(id=3) not in members
     assert by_user[User(id=1)] == "first"
-    assert by_user[UserProfile(user=User(id=1))] == "profile"
+    assert by_user[Todo(id=1)] == "todo"
     assert requests_mock.call_count == 0
 
 
@@ -9672,31 +8473,6 @@ def test_a_load_that_omits_the_key_keeps_the_key_the_object_was_saved_under(
     assert operator.pk == 4
     assert operator.url == "/operators/4/"
     assert repr(operator) == "<Operator id=4>"
-
-
-def test_giving_a_key_to_a_keyless_object_keeps_the_prefetched_related(
-    requests_mock: Any,
-) -> None:
-    """A key relation that gets its key reads the related object prefetched.
-
-    Parents of one batch share the prefetched related objects, so a parent
-    without a key reads the object that its batch fetched for the key it is
-    then given.
-    """
-    requests_mock.get(
-        "https://example.com/v1/profiles/",
-        json=[{"user": 2, "bio": "a"}, {"user": None, "bio": "b"}],
-    )
-    requests_mock.get(
-        "https://example.com/v1/users/", json=[{"id": 2, "name": "Ada"}]
-    )
-    first, second = UserProfile.filter(prefetch="user")
-
-    second.pk = User(id=2)
-
-    assert second.user is first.user
-    assert second.user.name == "Ada"
-    assert requests_mock.call_count == 2
 
 
 @pytest.mark.parametrize("status", [300, 304])
@@ -9925,29 +8701,6 @@ def test_json_schema_describes_what_a_model_writes() -> None:
     assert properties["owner_id"] == {"type": "integer"}
     assert "owner" not in properties
     assert list(properties)[:3] == ["id", "name", "score"]
-
-
-def test_json_schema_of_a_relation_to_a_model_keyed_by_a_relation() -> None:
-    """A relation to a model whose key is a relation has the end key's schema.
-
-    ``UserProfile`` is keyed by a ``User``, whose key is an integer, so a
-    relation to a profile is written as that integer, and read as that integer
-    or an embedded object.
-    """
-
-    @json_object
-    class Setting(ModelBase):
-        class_url = "/settings/"
-
-        id: int
-        profile: UserProfile
-
-    assert Setting.json_schema("write")["properties"]["profile"] == {
-        "type": "integer"
-    }
-    assert Setting.json_schema()["properties"]["profile"] == {
-        "anyOf": [{"type": "integer"}, {"type": "object"}]
-    }
 
 
 def test_json_schema_of_a_self_relation_has_the_models_key_schema() -> None:

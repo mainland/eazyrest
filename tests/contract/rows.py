@@ -408,7 +408,7 @@ def annotated_key_admitted(world: World) -> None:
     declare_key(Annotated[int, "doc"])
 
 
-@row(KEY, pending="a NewType that a conversion converts is admitted as a key")
+@row(KEY)
 def converted_newtype_refused(world: World) -> None:
     conversions = {
         Wrapped: Conversion(
@@ -419,13 +419,13 @@ def converted_newtype_refused(world: World) -> None:
     refused_key(world, Wrapped, conversions=conversions)
 
 
-@row(KEY, pending="a Literal is admitted as a key")
+@row(KEY)
 def literal_key_refused(world: World) -> None:
     for annotation in (Literal["a", "b"], Literal[1, 2]):
         refused_key(world, annotation)
 
 
-@row(KEY, pending="an enum, Decimal, or temporal type is admitted as a key")
+@row(KEY)
 def enum_decimal_temporal_key_refused(world: World) -> None:
     for annotation in (
         Colour,
@@ -458,7 +458,7 @@ def other_key_types_refused(world: World) -> None:
         raises(world, TypeError, lambda: declare_key(annotation), "T.id")
 
 
-@row(KEY, pending="a relation is admitted as the key")
+@row(KEY)
 def relation_key_refused(world: World) -> None:
     def build() -> None:
         json_object(

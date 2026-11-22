@@ -115,19 +115,6 @@ def test_prefetch_refuses_an_object_of_another_key(requests_mock: Any) -> None:
         list(Order.filter(prefetch="account"))
 
 
-def test_relation_keyed_by_an_object_of_another_key_is_refused() -> None:
-    """A key that is a relation refuses it too."""
-
-    @json_object(pk="account")
-    class Profile(KeyBase):
-        class_url = "/profiles/"
-
-        account: Account
-
-    with pytest.raises(FieldConversionError, match=r"Profile\.account"):
-        Profile(account=_legacy())
-
-
 def test_relation_accepts_a_subclass_that_keeps_the_key() -> None:
     """A subclass with the inherited key is written by that key."""
 
@@ -160,6 +147,14 @@ class Color(enum.Enum):
 Serial = NewType("Serial", int)
 
 
+class Slug(str):
+    """Subclass of ``str``."""
+
+
+class Code(int):
+    """Subclass of ``int``."""
+
+
 @pytest.mark.parametrize(
     "key_type",
     [
@@ -174,7 +169,8 @@ Serial = NewType("Serial", int)
 def test_a_key_class_that_nothing_converts_is_refused(key_type: Any) -> None:
     """A class that is neither listed nor converted cannot be a key."""
     with pytest.raises(
-        TypeError, match=r"Thing\.id is the primary key.*must be one value"
+        TypeError,
+        match=r"Thing\.id is the primary key, whose type must be the one",
     ):
         _declare_key(key_type)
 
@@ -192,9 +188,6 @@ def test_a_key_annotated_as_none_is_refused(key_type: Any) -> None:
         int,
         str,
         uuid.UUID,
-        decimal.Decimal,
-        Color,
-        Literal["a", "b"],
         Serial,
         Annotated[int | None, "note"],
         str | None,
@@ -205,29 +198,66 @@ def test_a_listed_key_class_decorates(key_type: Any) -> None:
     _declare_key(key_type)
 
 
+class MixedKeys(enum.Enum):
+    """Enum whose members' values are a string and an integer of one text."""
+
+    TEXT = "1"
+    NUMBER = 1
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [
+        decimal.Decimal,
+        Color,
+        MixedKeys | None,
+        Literal["a", "b"],
+        Literal["1", 1],
+        Literal[1, 2] | None,
+    ],
+)
+def test_a_key_of_a_converted_type_or_a_literal_is_refused(
+    key_type: Any,
+) -> None:
+    """A type that eazyrest converts, or a ``Literal``, is no key type.
+
+    The message names the types that a key may be.
+    """
+    with pytest.raises(
+        TypeError, match=r"Thing\.id is the primary key.*a str, an int, or a"
+    ):
+        _declare_key(key_type)
+
+
+@pytest.mark.parametrize(
+    "key_type",
+    [bytes, pathlib.Path, complex, Serial, uuid.UUID, Slug],
+)
+def test_a_key_class_that_a_conversion_of_the_model_converts_is_refused(
+    key_type: Any,
+) -> None:
+    """A conversion that the model declares for the key's type refuses it.
+
+    That holds for a ``NewType`` of ``int`` and for ``UUID``, which the model's
+    conversion replaces, since a conversion may map two of the service's keys
+    to one value.
+    """
+    conversions = {
+        key_type: Conversion(
+            decode=lambda value, _: value,
+            encode=lambda value, _: str(value),
+        )
+    }
+
+    with pytest.raises(TypeError, match=r"Thing\.id is the primary key"):
+        _declare_key(key_type, conversions=conversions)
+
+
 @pytest.mark.parametrize("key_type", [str | bytes, bytes | str])
 def test_a_key_that_is_a_union_with_bytes_is_refused(key_type: Any) -> None:
     """A union of two classes is not one value."""
     with pytest.raises(TypeError, match=r"Thing\.id is the primary key"):
         _declare_key(key_type)
-
-
-@pytest.mark.parametrize("key_type", [bytes, pathlib.Path, complex])
-def test_a_key_class_that_a_conversion_converts_decorates(
-    key_type: Any,
-) -> None:
-    """A conversion of the model's table makes any class a key."""
-    model = _declare_key(
-        key_type,
-        conversions={
-            key_type: Conversion(
-                decode=lambda value, _: key_type(value),
-                encode=lambda value, _: str(value),
-            )
-        },
-    )
-
-    assert issubclass(model, JSONObject)
 
 
 @json_object
@@ -270,39 +300,6 @@ class Item(KeyBase):
     id: int
 
 
-@json_object(pk="owner")
-class Profile(KeyBase):
-    """Model keyed by a relation."""
-
-    class_url = "/profiles/"
-
-    owner: Item
-    api_token: str
-
-
-def test_repr_of_a_model_keyed_by_a_relation_shows_the_related_key() -> None:
-    """The embedded related object's fields are not in ``repr()``."""
-    profile = Profile(
-        json={"owner": {"id": 2, "name": "Ada"}, "api_token": "secret"}
-    )
-
-    assert repr(profile) == "<Profile owner=2>"
-
-
-def test_repr_of_a_model_keyed_by_a_bare_relation_shows_the_key() -> None:
-    """A bare key is shown as it is."""
-    assert repr(Profile(json={"owner": 2})) == "<Profile owner=2>"
-    assert repr(Profile(owner=Item(id=2))) == "<Profile owner=2>"
-
-
-class Slug(str):
-    """Subclass of ``str``."""
-
-
-class Code(int):
-    """Subclass of ``int``."""
-
-
 @pytest.mark.parametrize("key_type", [Slug, Code, Slug | None])
 def test_a_key_of_a_str_or_int_subclass_is_refused_with_its_remedy(
     key_type: Any,
@@ -336,65 +333,6 @@ def test_a_new_type_of_str_or_int_is_a_key(key_type: Any) -> None:
     _declare_key(key_type)
 
 
-def test_a_conversion_for_a_str_subclass_makes_it_a_key() -> None:
-    """A subclass of str is a key when a conversion of the model owns it."""
-    model = _declare_key(
-        Slug,
-        conversions={
-            Slug: Conversion(
-                decode=lambda value, cls: cls(value),
-                encode=lambda value, cls: str(value),
-            )
-        },
-    )
-
-    assert model(json={"id": "a"}).pk == Slug("a")
-
-
-class MixedKeys(enum.Enum):
-    """Enum whose members' values are a string and an integer of one text."""
-
-    TEXT = "1"
-    NUMBER = 1
-
-
-class DistinctKeys(enum.Enum):
-    """Enum whose members' values differ in text."""
-
-    TEXT = "1"
-    NUMBER = 2
-
-
-@pytest.mark.parametrize(
-    "key_type",
-    [
-        Literal["1", 1],
-        Literal[1, "1"],
-        Literal["a", "1", 1],
-        Literal["1", 1] | None,
-        MixedKeys,
-        MixedKeys | None,
-    ],
-)
-def test_a_key_of_a_string_and_an_integer_of_one_text_is_refused(
-    key_type: Any,
-) -> None:
-    """Both values would name one URL while being two unequal keys."""
-    with pytest.raises(TypeError, match=r"Thing\.id is the primary key"):
-        _declare_key(key_type)
-
-
-@pytest.mark.parametrize(
-    "key_type",
-    [Literal["1", 2], Literal["a", 1], Literal["01", "+1", 1], DistinctKeys],
-)
-def test_a_key_of_a_string_and_an_integer_of_different_text_decorates(
-    key_type: Any,
-) -> None:
-    """Values that name different URLs make different keys."""
-    _declare_key(key_type)
-
-
 @dataclasses.dataclass(frozen=True)
 class LateCode:
     """Class of an application that a key names before it exists."""
@@ -408,10 +346,14 @@ LATE_CODE = Conversion(
 )
 
 
-def test_a_subclass_converts_an_inherited_key_that_names_a_late_class(
+def test_a_subclass_whose_conversion_converts_a_late_key_class_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A subclass's conversions admit the key that it inherits."""
+    """An inherited key that names a late class is refused once it resolves.
+
+    The subclass's conversion converts the class, which no key may be, so the
+    subclass is refused when it is decorated.
+    """
     late = LateCode
     monkeypatch.delattr(sys.modules[__name__], "LateCode")
     base: Any = json_object(
@@ -427,13 +369,11 @@ def test_a_subclass_converts_an_inherited_key_that_names_a_late_class(
     )
     monkeypatch.setattr(sys.modules[__name__], "LateCode", late, raising=False)
 
-    sub: Any = json_object(
-        type(
-            "LateSub",
-            (base,),
-            {"__module__": __name__, "conversions": {late: LATE_CODE}},
+    with pytest.raises(TypeError, match=r"LateSub\.id is the primary key"):
+        json_object(
+            type(
+                "LateSub",
+                (base,),
+                {"__module__": __name__, "conversions": {late: LATE_CODE}},
+            )
         )
-    )
-
-    assert sub(json={"id": "a"}).pk == late("a")
-    assert sub(json={"id": "a"}).url == "/late/a/"

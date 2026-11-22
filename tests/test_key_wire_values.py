@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import enum
 import uuid
 from typing import Annotated, Any, Literal, NewType, Optional
@@ -11,10 +10,8 @@ import pytest
 
 from eazyrest import (
     API,
-    Conversion,
     FieldConversionError,
     JSONObject,
-    UsageError,
     json_object,
 )
 
@@ -92,7 +89,7 @@ Ratio = NewType("Ratio", float)
 def test_a_float_or_bool_key_is_refused_at_decoration(key_type: Any) -> None:
     """A key that is a number with many spellings, or a bool, is no key."""
     with pytest.raises(
-        TypeError, match=r"Thing\.id is the primary key.*must be one value"
+        TypeError, match=r"Thing\.id is the primary key.*a str, an int, or a"
     ):
         _declare_key(key_type)
 
@@ -141,223 +138,31 @@ class MixedEnum(enum.Enum):
         pytest.param(Annotated[FloatEnum, "note"], id="annotated"),
         pytest.param(Literal[FloatEnum.A], id="literal"),
         pytest.param(Literal[BoolEnum.A], id="literal-bool-valued"),
+        pytest.param(Tag, id="int-enum"),
+        pytest.param(StrEnum, id="str-enum"),
+        pytest.param(MixedEnum, id="mixed"),
+        pytest.param(Literal[Tag.ONE], id="literal-of-an-int-enum"),
     ],
 )
-def test_an_enum_key_with_a_member_that_is_not_a_key_is_refused(
-    key_type: Any,
-) -> None:
-    """The members' values are known when the class is decorated."""
+def test_an_enum_key_is_refused(key_type: Any) -> None:
+    """An enum's conversion may map two of the service's keys to one member.
+
+    That holds whatever its members' values are, so every enum is refused when
+    the class is decorated.
+    """
     with pytest.raises(
-        TypeError, match=r"Thing\.id is the primary key.*must be one value"
+        TypeError, match=r"Thing\.id is the primary key.*a str, an int, or a"
     ):
         _declare_key(key_type)
 
 
 @pytest.mark.parametrize(
-    ("key_type", "key", "url"),
-    [
-        pytest.param(Tag, Tag.ONE, "/x/1/", id="int-enum"),
-        pytest.param(StrEnum, StrEnum.A, "/x/a/", id="str-enum"),
-        pytest.param(MixedEnum, MixedEnum.A, "/x/a/", id="mixed-str"),
-        pytest.param(MixedEnum, MixedEnum.B, "/x/1/", id="mixed-int"),
-        pytest.param(Tag | None, Tag.ONE, "/x/1/", id="optional"),
-        pytest.param(Literal[Tag.ONE], Tag.ONE, "/x/1/", id="literal"),
-    ],
-)
-def test_an_enum_key_of_strings_and_integers_decorates(
-    key_type: Any, key: Any, url: str
-) -> None:
-    """Members that are strings or integers give keys with URLs."""
-    model = _declare_key(key_type, class_url="/x/")
-
-    assert model(id=key).url == url
-
-
-def test_an_enum_that_a_conversion_owns_is_decided_by_it() -> None:
-    """A registered conversion of the enum decides the wire type."""
-    model = _declare_key(
-        FloatEnum,
-        class_url="/x/",
-        conversions={
-            FloatEnum: Conversion(
-                decode=lambda value, _: FloatEnum.A,
-                encode=lambda value, _: "a",
-            )
-        },
-    )
-
-    assert model(id=FloatEnum.A).url == "/x/a/"
-
-
-@pytest.mark.parametrize(
     "key_type",
-    [int, str, Tag, Serial, Literal["a", 1], Optional[int]],  # noqa: UP045
+    [int, str, uuid.UUID, Serial, Optional[int]],  # noqa: UP045
 )
 def test_a_string_or_integer_key_decorates(key_type: Any) -> None:
     """The types whose wire value is a string or an integer are keys."""
     _declare_key(key_type)
-
-
-def test_a_conversion_of_a_float_that_writes_a_string_decorates() -> None:
-    """A registered codec decides the wire type, so a float may be keyed."""
-    model = _declare_key(
-        Ratio,
-        conversions={
-            Ratio: Conversion(
-                decode=lambda value, _: float(value),
-                encode=lambda value, _: repr(value),
-            )
-        },
-    )
-
-    assert model(id=Ratio(1.5)).url == "/things/1.5/"
-    assert model(json={"id": "1.5"}) == model(id=Ratio(1.5))
-
-
-@dataclasses.dataclass
-class Key:
-    """Mutable key class that wraps a value."""
-
-    value: Any
-
-
-def _key_model(**conversions: Any) -> Any:
-    """Return a model keyed by a ``Key`` whose codec is given."""
-    return _declare_key(
-        Key,
-        conversions={Key: Conversion(**conversions)},
-    )
-
-
-@pytest.mark.parametrize(
-    "written",
-    [
-        pytest.param({"x": 1}, id="mapping"),
-        pytest.param([1], id="list"),
-        pytest.param(1.5, id="float"),
-        pytest.param(True, id="bool"),
-    ],
-)
-def test_a_codec_that_writes_another_json_type_gives_no_key(
-    written: Any,
-) -> None:
-    """A key is a string or an integer, whatever codec writes it."""
-    model = _key_model(
-        decode=lambda value, _: Key(value),
-        encode=lambda key, _: key.value,
-    )
-
-    with pytest.raises(FieldConversionError, match=r"Thing\.id"):
-        model(id=Key(written))
-    unread = model(json={"id": written})
-    assert unread != model(json={"id": written})
-    with pytest.raises(TypeError, match="cannot be hashed"):
-        hash(unread)
-    with pytest.raises(FieldConversionError, match=r"Thing\.id"):
-        _ = unread.url
-
-
-def test_a_mapping_key_from_a_codec_has_no_url_that_depends_on_order() -> None:
-    """Equal mappings in another order are not keys, so no URL differs."""
-    model = _key_model(
-        decode=lambda value, _: Key(value),
-        encode=lambda key, _: key.value,
-    )
-    first = model(json={"id": {"x": 1, "y": 2}})
-    second = model(json={"id": {"y": 2, "x": 1}})
-
-    for obj in (first, second):
-        with pytest.raises(FieldConversionError, match=r"Thing\.id"):
-            _ = obj.url
-
-
-def test_a_new_type_key_that_a_codec_writes_as_a_string_is_a_string_key() -> (
-    None
-):
-    """The registered codec decides the wire type, not the supertype."""
-    entry = _declare_key(
-        Serial,
-        conversions={
-            Serial: Conversion(
-                decode=lambda value, _: int(value),
-                encode=lambda value, _: str(value),
-            )
-        },
-    )
-
-    given = entry(id=Serial(3))
-    read = entry(json={"id": "3"})
-
-    assert given == read
-    assert hash(given) == hash(read)
-    assert given.url == read.url == "/things/3/"
-
-
-def test_a_key_changed_in_place_from_1_to_1_point_0_is_refused(
-    requests_mock: Any,
-) -> None:
-    """The key is compared by its canonical text, which 1.0 does not have."""
-    model = _declare_key(
-        Key,
-        conversions={
-            Key: Conversion(
-                decode=lambda value, _: Key(value),
-                encode=lambda key, _: key.value,
-            )
-        },
-    )
-    patch = requests_mock.patch("https://wire.example/things/1/", json={})
-    obj = model(id=Key(1), write_mode="lazy")
-
-    obj.id.value = 1.0
-
-    with pytest.raises(UsageError, match=r"key .* cannot change"):
-        obj.save()
-    assert not patch.called
-
-
-def test_a_key_changed_in_place_to_the_same_text_is_no_change(
-    requests_mock: Any,
-) -> None:
-    """Python equality is not the test, the canonical text is."""
-    model = _declare_key(
-        Key,
-        conversions={
-            Key: Conversion(
-                decode=lambda value, _: Key(value),
-                encode=lambda key, _: key.value,
-            )
-        },
-    )
-    obj = model(id=Key(1))
-
-    obj.id.value = 1
-
-    obj.save()
-    assert requests_mock.call_count == 0
-
-
-def test_a_key_that_a_codec_reads_from_two_spellings_is_one_key(
-    requests_mock: Any,
-) -> None:
-    """The canonical text decides, not the equality of the encodings."""
-    model = _declare_key(
-        Key,
-        conversions={
-            Key: Conversion(
-                decode=lambda value, _: Key(int(value)),
-                encode=lambda key, _: str(key.value),
-            )
-        },
-    )
-    obj = model(json={"id": "1"}, write_mode="lazy")
-
-    assert obj.id.value == 1
-    obj.id.value = "01"
-
-    obj.save()
-    assert obj.url == "/things/1/"
-    assert requests_mock.call_count == 0
 
 
 class LoudString(str):
@@ -377,38 +182,17 @@ class LoudInt(int):
 
 
 @pytest.mark.parametrize(
-    ("written", "url"),
+    ("model", "given", "url"),
     [
-        pytest.param(LoudString("abc"), "/things/abc/", id="str"),
-        pytest.param(LoudInt(7), "/things/7/", id="int"),
+        pytest.param(Label, LoudString("abc"), "/labels/abc/", id="str"),
+        pytest.param(Item, LoudInt(7), "/items/7/", id="int"),
     ],
 )
-def test_a_codec_that_writes_a_subclass_gives_the_plain_key(
-    written: Any, url: str
+def test_a_key_given_as_a_subclass_gives_the_plain_key(
+    model: Any, given: Any, url: str
 ) -> None:
     """The URL does not depend on how a ``str`` or ``int`` subclass prints."""
-    model = _key_model(
-        decode=lambda value, _: Key(value),
-        encode=lambda key, _: written,
-    )
-
-    assert model(id=Key(1)).url == url
-    assert model(json={"id": 1}).url == url
-
-
-def test_a_codec_that_writes_none_for_a_key_gives_no_key() -> None:
-    """A key that encodes as ``None`` is no key, as ``null`` is not."""
-    model = _key_model(
-        decode=lambda value, _: Key(value),
-        encode=lambda key, _: None,
-    )
-
-    obj = model(json={"id": 5})
-
-    assert obj != model(json={"id": 5})
-    with pytest.raises(ValueError, match="primary key None") as raised:
-        _ = obj.url
-    assert not isinstance(raised.value, FieldConversionError)
+    assert model(id=given).url == url
 
 
 @pytest.mark.parametrize(

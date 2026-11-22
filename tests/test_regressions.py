@@ -798,11 +798,11 @@ class CountingUser(MockedBase):
 
 @json_object(pk="user")
 class Profile(MockedBase):
-    """Resource whose primary key is a related object."""
+    """Resource keyed by the key of the user whose profile it is."""
 
     class_url = "/profiles/"
 
-    user: CountingUser
+    user: int
     bio: str
 
     @classmethod
@@ -823,7 +823,7 @@ class Profile(MockedBase):
 
 @json_object
 class Post(MockedBase):
-    """Resource relating to a model-keyed resource and to a user."""
+    """Resource relating to a profile and to a user."""
 
     class_url = "/posts/"
 
@@ -832,18 +832,10 @@ class Post(MockedBase):
     author: CountingUser
 
 
-def test_model_valued_primary_key_identifies_by_its_key() -> None:
-    """A related object as primary key gives its own key and URL."""
-    profile = Profile(user=CountingUser(id=3))
-
-    assert profile.pk == 3
-    assert profile.url == "/profiles/3/"
-
-
-def test_prefetch_matches_model_keys_and_loads_misses(
+def test_prefetch_matches_keys_and_loads_misses(
     requests_mock: Any,
 ) -> None:
-    """Prefetched model-keyed objects are found, and missing keys load."""
+    """Prefetched objects are found by their keys, and missing keys load."""
     requests_mock.get(
         "https://mocked.example/posts/",
         json=[{"id": 1, "profile": 3, "author": 99}],

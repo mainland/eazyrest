@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import copy
-import enum
 import pickle
 import uuid
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from typing import Any, ClassVar, Literal, NewType, TypedDict
+from collections.abc import Callable, Collection, Iterable, Sequence
+from typing import Any
 
 import pytest
 
 from eazyrest import (
     API,
     Client,
-    Conversion,
     FieldConversionError,
     JSONObject,
     json_object,
@@ -65,16 +63,6 @@ class Feed(RelatedBase):
     readers: Sequence[User]
 
 
-@json_object(pk="user")
-class Account(RelatedBase):
-    """Model keyed by a relation."""
-
-    class_url = "/accounts/"
-
-    user: User
-    token: str
-
-
 @json_object
 class Me(RelatedBase):
     """Singleton whose class names its URL."""
@@ -107,31 +95,6 @@ class Booking(RelatedBase):
 
     id: int
     slot: Slot
-
-
-class Color(enum.Enum):
-    """Enum that a key may be."""
-
-    RED = "red"
-
-
-@json_object
-class Paint(RelatedBase):
-    """Model keyed by an enum, whose key can fail to decode."""
-
-    class_url = "/paints/"
-
-    id: Color
-
-
-@json_object
-class Wall(RelatedBase):
-    """Model that relates to a paint."""
-
-    class_url = "/walls/"
-
-    id: int
-    paint: Paint
 
 
 @json_object
@@ -302,36 +265,9 @@ def test_a_subclass_that_redeclares_the_key_is_refused_by_the_relation(
         Post.create(id=2, owner=SubUser(id="abc"), readers=[])
     with pytest.raises(FieldConversionError, match=r"Post\.readers"):
         Post.create(id=2, owner=User(id=1), readers=[SubUser(id="abc")])
-    with pytest.raises(FieldConversionError, match=r"Account\.user"):
-        Account(user=SubUser(id="abc"))
 
     assert post._pending_updates == {}
     assert not posted.called
-
-
-@pytest.mark.parametrize(
-    "key", [{"id": 5}, {"id": {"id": 5}}, {"a": 1}, [1], {"id": 5, "x": 1}]
-)
-def test_a_key_relation_refuses_a_mapping_and_a_related_key_that_is_one(
-    key: Any,
-) -> None:
-    """A mapping is no wire key, so it is not read as an embedded object."""
-    with pytest.raises(FieldConversionError, match=r"Account\.user"):
-        Account(user=key)
-    with pytest.raises(FieldConversionError, match=r"Account\.user"):
-        Account(user=User(json={"id": key}))
-    account = Account(json={"token": "t"})
-    with pytest.raises(FieldConversionError, match=r"Account\.user"):
-        account.user = User(json={"id": key})
-    assert account.pk is None
-
-
-def test_a_key_relation_still_reads_an_embedded_object_from_its_json() -> None:
-    """The model's own JSON may embed the related object."""
-    account = Account(json={"user": {"id": 5, "name": "Ada"}, "token": "t"})
-
-    assert account.pk == 5
-    assert account == Account(user=User(id=5))
 
 
 def test_a_class_that_overrides_url_refuses_an_assigned_key() -> None:
@@ -359,71 +295,6 @@ def test_a_class_that_overrides_url_takes_its_key_as_it_is_built() -> None:
 
     assert slot.url == "/slots/3/detail/"
     assert booking.slot.url == "/slots/4/detail/"
-
-
-@pytest.mark.parametrize(
-    "json",
-    [
-        pytest.param({"user": [{"id": 1, "token": "s3cr3t"}]}, id="list"),
-        pytest.param(
-            {"user": {"id": {"token": "s3cr3t"}}}, id="mapping-of-mapping"
-        ),
-        pytest.param(
-            {"user": {"id": [{"token": "s3cr3t"}]}}, id="list-in-map"
-        ),
-    ],
-)
-def test_repr_of_a_key_relation_hides_a_key_that_is_not_a_scalar(
-    json: Any,
-) -> None:
-    """A log of the object holds none of the related object's fields."""
-    shown = repr(Account(json=json))
-
-    assert shown == "<Account user=...>"
-    assert "s3cr3t" not in shown
-
-
-def test_repr_of_a_key_relation_shows_a_string_or_an_integer_key() -> None:
-    """The reduced key is shown, as it is for an embedded object."""
-    assert repr(Account(json={"user": {"id": 5, "x": 1}})) == (
-        "<Account user=5>"
-    )
-    assert repr(Account(json={"user": 5})) == "<Account user=5>"
-
-
-def test_repr_of_a_key_relation_to_an_undefined_model_hides_the_value() -> (
-    None
-):
-    """A key that cannot be reduced yet is not shown as it is."""
-
-    @json_object(pk="later")
-    class Waiting(RelatedBase):
-        """Model keyed by a relation to a model that is not defined."""
-
-        later: Later  # type: ignore[name-defined]  # noqa: F821
-
-    shown = repr(Waiting(json={"later": {"id": 1, "token": "s3cr3t"}}))
-
-    assert shown == "<Waiting later=...>"
-
-
-def test_a_key_that_does_not_decode_is_refused_naming_the_relation(
-    requests_mock: Any,
-) -> None:
-    """The error names the field that the program wrote, not the key's."""
-    posted = requests_mock.post("https://related.example/walls/", json={})
-    wall = Wall(json={"id": 1, "paint": "red"}, write_mode="lazy")
-    green = Paint(json={"id": "green"})
-
-    with pytest.raises(FieldConversionError, match=r"Wall\.paint"):
-        wall.paint = green
-    with pytest.raises(FieldConversionError, match=r"Wall\.paint"):
-        Wall.create(id=2, paint=green)
-    with pytest.raises(FieldConversionError, match=r"Wall\.paint"):
-        list(Wall.filter(paint=green))
-
-    assert requests_mock.call_count == 0
-    assert not posted.called
 
 
 def test_the_error_of_a_list_relation_names_the_field_once(
@@ -491,8 +362,7 @@ def test_a_singleton_that_has_not_loaded_says_to_load_or_save_it(
 
 @pytest.mark.parametrize("key", [True, 1.5, [1, "s3cr3t"]])
 def test_repr_hides_a_key_that_is_not_a_string_or_an_integer(key: Any) -> None:
-    """Neither a relation's key nor a model's own shows another JSON value."""
-    assert repr(Account(json={"user": key})) == "<Account user=...>"
+    """A key of another JSON value is not shown."""
     assert repr(User(json={"id": key})) == "<User id=...>"
 
 
@@ -682,17 +552,6 @@ def test_a_query_refuses_a_single_bare_key_that_cannot_be_built(
     assert requests_mock.call_count == 0
 
 
-@pytest.mark.parametrize("key", ["7", True, 1.5, {"id": 5}])
-def test_get_or_create_refuses_a_bare_key_before_its_lookup(
-    key: Any, requests_mock: Any
-) -> None:
-    """A key relation refuses a key that it would refuse to read."""
-    with pytest.raises(FieldConversionError, match=r"Account\.user"):
-        Account.get_or_create(user=key)
-
-    assert requests_mock.call_count == 0
-
-
 @pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
 @pytest.mark.parametrize("key", ["7", True, 1.5])
 def test_a_query_for_the_key_field_refuses_a_key_that_cannot_be_built(
@@ -843,19 +702,8 @@ class Badge(User):
     slug: int
 
 
-hook_calls: list[tuple[set[Any], int]] = []
-"""The keys that a bulk hook received, with the decodes done by then."""
-
-decoded_slugs: list[Any] = []
-"""The values that the slug conversion decoded."""
-
-Slug = NewType("Slug", str)
-
-
-def _decode_slug(value: Any, _: Any) -> Slug:
-    """Decode a slug, recording that the key was built."""
-    decoded_slugs.append(value)
-    return Slug(value)
+hook_calls: list[set[Any]] = []
+"""The keys that a bulk hook received."""
 
 
 @json_object
@@ -871,81 +719,8 @@ class Writer(RelatedBase):
         cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
     ) -> dict[Any, Writer]:
         """Return a writer for each key, after recording the keys."""
-        hook_calls.append((set(pks), len(decoded_slugs)))
+        hook_calls.append(set(pks))
         return {pk: cls(json={"id": pk}, api=api) for pk in pks}
-
-
-@json_object
-class Label(RelatedBase):
-    """Model keyed by a slug whose decodes are counted."""
-
-    class_url = "/labels/"
-    conversions: ClassVar[Mapping[Any, Conversion]] = {
-        Slug: Conversion(
-            decode=_decode_slug, encode=lambda value, _: str(value)
-        )
-    }
-
-    id: Slug
-
-    @classmethod
-    def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
-    ) -> dict[Any, Label]:
-        """Return a label for each key, after recording the keys."""
-        hook_calls.append((set(pks), len(decoded_slugs)))
-        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
-
-
-Mark = NewType("Mark", str)
-
-
-@json_object
-class Stamp(RelatedBase):
-    """Model keyed by a mark that its codec encodes as None for one value."""
-
-    class_url = "/stamps/"
-    conversions: ClassVar[Mapping[Any, Conversion]] = {
-        Mark: Conversion(
-            decode=lambda value, _: Mark(value),
-            encode=lambda value, _: None if value == "gone" else str(value),
-        )
-    }
-
-    id: Mark
-
-    @classmethod
-    def bulk_get_by_pks(
-        cls, pks: set[Any], *, api: Client | None = None, **kwargs: Any
-    ) -> dict[Any, Stamp]:
-        """Return a stamp for each key, after recording the keys."""
-        hook_calls.append((set(pks), len(decoded_slugs)))
-        return {pk: cls(json={"id": pk}, api=api) for pk in pks}
-
-
-class Coords(TypedDict):
-    """Mapping that a codec writes as a key."""
-
-    x: int
-    y: int
-
-
-@json_object
-class Plot(RelatedBase):
-    """Model keyed by a mapping that its codec writes as text."""
-
-    class_url = "/plots/"
-    conversions: ClassVar[Mapping[Any, Conversion]] = {
-        Coords: Conversion(
-            decode=lambda value, _: {
-                "x": int(value.split("-")[0]),
-                "y": int(value.split("-")[1]),
-            },
-            encode=lambda value, _: f"{value['x']}-{value['y']}",
-        )
-    }
-
-    id: Coords
 
 
 @json_object
@@ -957,16 +732,12 @@ class Article(RelatedBase):
     id: int
     writer: Writer
     editors: list[Writer]
-    label: Label
-    stamp: Stamp
-    plot: Plot
 
 
 @pytest.fixture(autouse=True)
 def _clear_records() -> None:
-    """Start each test with no recorded hook calls or decodes."""
+    """Start each test with no recorded hook calls."""
     hook_calls.clear()
-    decoded_slugs.clear()
 
 
 def _article(**fields: Any) -> dict[str, Any]:
@@ -975,7 +746,6 @@ def _article(**fields: Any) -> dict[str, Any]:
         "id": 1,
         "writer": 1,
         "editors": [],
-        "label": "a",
     } | fields
 
 
@@ -1044,146 +814,8 @@ def test_prefetch_hands_the_hook_each_key_once(requests_mock: Any) -> None:
 
     articles = list(Article.filter(prefetch=["writer", "editors"]))
 
-    assert hook_calls == [({1}, 0), ({1, 2, 3}, 0)]
+    assert hook_calls == [{1}, {1, 2, 3}]
     assert [writer.pk for writer in articles[0].editors] == [2, 1]
-
-
-def test_prefetch_builds_each_distinct_key_once_before_the_hook(
-    requests_mock: Any,
-) -> None:
-    """The key constructor runs once for each distinct value."""
-    requests_mock.get(
-        "https://related.example/articles/",
-        json=[
-            _article(label="a"),
-            _article(id=2, label="a"),
-            _article(id=3, label="b"),
-        ],
-    )
-
-    list(Article.filter(prefetch=["label"]))
-
-    assert hook_calls[0][0] == {"a", "b"}
-    assert hook_calls[0][1] == 2
-
-
-@json_object
-class Lit(RelatedBase):
-    """Model keyed by one of two strings."""
-
-    class_url = "/letters/"
-
-    id: Literal["a", "b"]
-
-
-@json_object
-class LitRef(RelatedBase):
-    """Model that relates to a model keyed by a literal."""
-
-    class_url = "/litrefs/"
-
-    id: int
-    lit: Lit
-
-
-@json_object
-class Shade(RelatedBase):
-    """Model keyed by one member of an enum, and an integer."""
-
-    class_url = "/shades/"
-
-    id: Literal[Color.RED, 3]
-
-
-def test_a_literal_key_refuses_a_value_that_is_not_a_member() -> None:
-    """The key's value names a URL, so it must be one that the type lists."""
-    with pytest.raises(FieldConversionError, match=r"Lit\.id"):
-        Lit(id="c")
-    with pytest.raises(FieldConversionError, match=r"Lit\.id"):
-        _ = Lit(json={"id": "c"}).url
-    with pytest.raises(TypeError, match="cannot be read from its JSON"):
-        hash(Lit(json={"id": "c"}))
-    assert Lit(id="a").url == "/letters/a/"
-    assert Lit(json={"id": "b"}).url == "/letters/b/"
-
-
-def test_a_literal_key_checks_the_members_of_an_enum_and_an_integer() -> None:
-    """A member is compared by its wire value and its JSON type."""
-    assert Shade(json={"id": "red"}).url == "/shades/red/"
-    assert Shade(json={"id": 3}).url == "/shades/3/"
-    for key in ("blue", 4, "3", True):
-        with pytest.raises(FieldConversionError, match=r"Shade\.id"):
-            _ = Shade(json={"id": key}).url
-
-
-def test_a_relation_refuses_a_literal_key_that_is_not_a_member(
-    requests_mock: Any,
-) -> None:
-    """A read, a write, and a query name the relation, before any request."""
-    posted = requests_mock.post("https://related.example/litrefs/", json={})
-    outsider = Lit(json={"id": "c"})
-
-    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
-        _ = LitRef(json={"id": 1, "lit": "c"}).lit
-    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
-        LitRef.create(id=1, lit=outsider)
-    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
-        list(LitRef.filter(lit=outsider))
-    with pytest.raises(FieldConversionError, match=r"LitRef\.lit"):
-        LitRef.create(id=1, lit="c")
-
-    assert requests_mock.call_count == 0
-    assert not posted.called
-
-
-def test_a_relation_writes_a_literal_key_that_is_a_member(
-    requests_mock: Any,
-) -> None:
-    """A member is written as the wire key."""
-    posted = requests_mock.post("https://related.example/litrefs/", json={})
-
-    LitRef.create(id=1, lit=Lit(id="a"))
-    LitRef.create(id=2, lit="b")
-
-    assert [r.json()["lit"] for r in requests_mock.request_history] == [
-        "a",
-        "b",
-    ]
-    assert posted.call_count == 2
-
-
-def test_prefetch_names_the_field_of_a_value_that_builds_no_key(
-    requests_mock: Any,
-) -> None:
-    """A key that its codec writes as None is no key."""
-    requests_mock.get(
-        "https://related.example/articles/",
-        json=[_article(stamp="gone")],
-    )
-
-    with pytest.raises(
-        FieldConversionError, match=r"Article\.stamp.*writes no key"
-    ):
-        list(Article.filter(prefetch=["stamp"]))
-
-    assert hook_calls == []
-
-
-def test_a_relation_refuses_a_mapping_that_a_key_conversion_would_encode(
-    requests_mock: Any,
-) -> None:
-    """A mapping is no key even for a codec that writes any value as text."""
-    posted = requests_mock.post("https://related.example/articles/", json={})
-
-    key = {"x": 1, "y": 2}
-
-    with pytest.raises(FieldConversionError, match=r"Article\.plot"):
-        Article.create(id=1, writer=1, editors=[], plot=key)
-    with pytest.raises(FieldConversionError, match=r"Article\.plot"):
-        list(Article.filter(plot=key))
-
-    assert not posted.called
-    assert requests_mock.call_count == 0
 
 
 def _post_with_readers() -> Post:
@@ -1291,7 +923,6 @@ class Ticket(RelatedBase):
 
     id: int
     owner: Member
-    account: Account
     renamed: Renamed
 
 
@@ -1422,18 +1053,15 @@ def test_a_model_operand_of_its_own_key_is_sent_as_its_key(
 ) -> None:
     """An object compares as its key, as a related object does."""
     requests_mock.get("https://related.example/users/", json=[{"id": 7}])
-    requests_mock.get("https://related.example/accounts/", json=[])
 
     list(User.filter(pk__in=[User(id=7), User(id=8)]))
     User.get(pk=User(id=7))
     list(User.filter(id=User(id=7)))
-    list(Account.filter(pk=Account(json={"user": 7, "token": "t"})))
 
     assert [r.qs for r in requests_mock.request_history] == [
         {"pk__in": ["7,8"]},
         {"pk": ["7"]},
         {"id": ["7"]},
-        {"pk": ["7"]},
     ]
 
 
@@ -1442,14 +1070,9 @@ def test_a_model_operand_of_its_own_key_is_refused_as_another_model(
 ) -> None:
     """The class check of a related object applies to the key's lookups."""
     requests_mock.get("https://related.example/users/", json=[])
-    requests_mock.get("https://related.example/accounts/", json=[])
 
     with pytest.raises(FieldConversionError, match=r"User\.id.*another model"):
         list(User.filter(pk__in=[Team(id=4)]))
-    with pytest.raises(
-        FieldConversionError, match=r"Account\.user.*another model"
-    ):
-        list(Account.filter(pk=Team(id=4)))
 
     assert requests_mock.call_count == 0
 

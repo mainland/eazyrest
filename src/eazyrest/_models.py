@@ -55,6 +55,7 @@ from urllib.parse import quote
 import requests
 
 from ._conversion import (
+    DEFAULT_CONVERSIONS,
     Conversion,
     _conversion_of,
     _definition_name,
@@ -3376,8 +3377,14 @@ def _refuse_keyless_request(cls: type[JSONObject], verb: str) -> None:
         )
 
 
+_KEY_TYPES: Mapping[Any, str] = MappingProxyType(
+    {int: "int", str: "str", uuid.UUID: "UUID"}
+)
+"""The types that a primary key may be, by the name of each."""
+
+
 def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
-    """Return the refusal of a primary key that is not a leaf or a relation.
+    """Return the refusal of a primary key whose type is not a key type.
 
     Args:
         cls: Model class that declares the key.
@@ -3388,17 +3395,50 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         the class does, not as the conversion of a value.
     """
     error = TypeError(
-        f"{cls.__name__}.{field} is the primary key, and a primary key must "
-        "be one value, such as an int, a str, a UUID, a datetime, a Decimal, "
-        "an enum, or a class that a conversion of the model converts, or a "
-        "relation to a model whose key is one. It "
-        "cannot be a float, a bool, a collection, a mapping, a tuple, a "
-        "TypedDict, a NamedTuple, a dataclass, a union, a relation to a "
-        "model keyed by a relation, a Literal or an enum with a string and an "
-        'integer of one text, such as "1" and 1, or a subclass of str or '
-        "int, for which use a NewType of str or int, or a conversion. To key "
-        "the model by another model, declare the key as a relation to that "
-        "model, or as the type of that model's key."
+        f"{cls.__name__}.{field} is the primary key, whose type must be the "
+        "one that the service sends for it: a str, an int, or a UUID, alone "
+        "or inside T | None, Annotated, or a NewType that no conversion of "
+        "the model converts. A conversion may map two of the service's keys "
+        "to one value, so a key cannot be converted. Declare the key as the "
+        "service's type, and expose another view of it as a property, such "
+        "as one that returns Code(self.id)."
+    )
+    setattr(error, _DECLARATION_ERROR, True)
+    return error
+
+
+def _relation_key_error(
+    cls: type[JSONObject], field: str, model_type: type[JSONObject]
+) -> TypeError:
+    """Return the refusal of a primary key that is a relation.
+
+    Args:
+        cls: Model class that declares the key.
+        field: Name of the primary-key field.
+        model_type: Model that the relation names.
+
+    Returns:
+        A ``TypeError`` that a conversion reports as a plain one, as decorating
+        the class does, not as the conversion of a value.
+    """
+    name = model_type.__name__
+    related = _pk_property_of(model_type)
+    kind = None
+    if related is not None:
+        try:
+            kind = _key_kind(
+                analyze_type(related._resolve_type()), _table_of(model_type)
+            )
+        except Exception:  # noqa: BLE001
+            # The message names the type only if it can be resolved now, and
+            # the related model's own key is refused where it is used.
+            kind = None
+    key_type = f"{kind}, " if kind is not None else ""
+    error = TypeError(
+        f"{cls.__name__}.{field} is the primary key and a relation to "
+        f"{name}, and a primary key cannot be a relation. Declare it as "
+        f"{key_type}the type of {name}'s key, and expose the related object "
+        f"as a property that builds the {name} from the key."
     )
     setattr(error, _DECLARATION_ERROR, True)
     return error
@@ -3429,138 +3469,76 @@ def _refuses_key_type(error: TypeError) -> bool:
     )
 
 
-def _is_plain_key_class(base: object, table: Mapping[Any, Conversion]) -> bool:
-    """Return whether a type that converts as itself is a key type.
-
-    Args:
-        base: The type of a ``BaseType``, which may be a ``Literal`` or a
-            ``NewType``.
-        table: Conversion table of the model that declares the key.
-
-    Returns:
-        ``True`` for ``int``, ``str``, and a ``Literal`` of strings and
-        integers, none of a string and an integer having the same text, since
-        both would name one URL as two keys. A subclass of ``int`` or ``str``
-        is no key, since it would read back as a plain ``int`` or ``str``. Any
-        other class reads the server's JSON as it is unless a conversion
-        converts it. That JSON may be an array or a mapping, or cannot be
-        written as JSON, so the key would have more than one spelling or none.
-        A ``float`` and a ``bool`` are no keys, because a number has more than
-        one spelling and a ``bool`` is not an integer.
-    """
-    while hasattr(base, "__supertype__"):
-        base = base.__supertype__
-    if typing.get_origin(base) is Literal:
-        values = [
-            _literal_json(member, table) for member in typing.get_args(base)
-        ]
-        return all(
-            _json_kind(value) is not None for value in values
-        ) and _values_are_distinct_keys(values)
-    return base is int or base is str
-
-
-def _enum_values_are_keys(found: _Found) -> bool:
-    """Return whether an enum that converts by value has keys for members.
-
-    Args:
-        found: The conversion of a key's type, as ``_conversion_of()`` found
-            it.
-
-    Returns:
-        ``False`` for an enum that the default enum conversion owns, if the
-        value of any member is not a string, an integer that is not a ``bool``,
-        or ``None``, or if a string and an integer among them have the same
-        text. Every other conversion decides its own wire type, and a
-        conversion that is not for an enum is not examined.
-    """
-    if found.key is not enum.Enum:
-        return True
-    values = (
-        found.entry.encode(member, found.declared) for member in found.declared
-    )
-    wire = [*values]
-    # A member that writes null names no key, which has no URL.
-    return all(
-        value is None or _json_kind(value) is not None for value in wire
-    ) and _values_are_distinct_keys(wire)
-
-
-def _is_leaf_key(
+def _key_kind(
     analyzed: AnalyzedType, table: Mapping[Any, Conversion]
-) -> bool:
-    """Return whether a primary key's type converts as one value.
+) -> str | None:
+    """Return the key type that a primary key's type declares, if any.
 
-    A leaf is a type that an entry of the conversion table converts, or a type
-    that converts as itself, looking through ``T | None`` and ``NewType``. A
-    class that holds many values, such as ``list``, and ``Any`` are not leaves,
-    since their JSON can be a mapping or an array, whose spelling is not
-    unique.
+    A key type is ``int``, ``str``, or ``UUID``, which may be optional, and
+    inside ``Annotated`` or a ``NewType``. A ``NewType`` that a conversion of
+    the model converts is no key type, and neither is ``UUID`` if the model
+    replaces eazyrest's conversion of it. Any other type is no key type: a
+    conversion of it may map two of the service's keys to one value, as an
+    enum's ``_missing_()`` or a timestamp past microseconds does.
 
     Args:
         analyzed: Analyzed type of a primary key field.
         table: Conversion table of the model that declares the key.
 
     Returns:
-        Whether the key's type is a leaf.
+        ``"int"``, ``"str"``, or ``"UUID"``, or ``None`` for any other type.
     """
-    while _class_entry(analyzed, table) is None:
-        match analyzed:
-            case OptionalType(inner) | NewTypeType(_, inner):
-                analyzed = inner
-            case BaseType(base):
-                found = _conversion_of(base, table)
-                if found is not None:
-                    return _enum_values_are_keys(found)
-                _refuse_pydantic_class(base)
-                return _is_plain_key_class(base, table)
-            case _:
-                return False
-    return True
+    while isinstance(analyzed, OptionalType):
+        analyzed = analyzed.inner_type
+    if not isinstance(analyzed, BaseType):
+        return None
+    ty: Any = analyzed.base_type
+    while True:
+        if typing.get_origin(ty) is Annotated:
+            ty = typing.get_args(ty)[0]
+            continue
+        supertype = _supertype(ty)
+        if supertype is None:
+            break
+        if ty in table:
+            return None
+        ty = supertype
+    try:
+        kind = _KEY_TYPES.get(ty)
+    except TypeError:
+        # An unhashable annotation is no key type.
+        return None
+    if kind == "UUID" and table.get(uuid.UUID) is not DEFAULT_CONVERSIONS.get(
+        uuid.UUID
+    ):
+        return None
+    return kind
 
 
-def _check_key_is_leaf_or_relation(
-    cls: type[JSONObject],
-    field: str,
-    analyzed: AnalyzedType,
-    *,
-    strict: bool = False,
+def _check_key_type(
+    cls: type[JSONObject], field: str, analyzed: AnalyzedType
 ) -> None:
-    """Refuse a primary key that is neither a leaf nor a relation to one.
-
-    A key is a leaf, or a relation to a model whose own key is a leaf. A chain
-    of relations is refused, and so is a cycle, which is a chain that never
-    ends.
+    """Refuse a primary key whose type is not a key type.
 
     Args:
         cls: Model class whose key it is, which is the class that decorates or
             uses an inherited key, not the base that declares it.
         field: Name of the primary-key field.
         analyzed: Analyzed type of the field.
-        strict: Whether a name that is not defined in the related model's key
-            raises, as it does when the key is first used. Otherwise the check
-            waits for that use.
 
     Raises:
-        TypeError: If the key is neither.
-        Exception: If ``strict`` and the related model's key type cannot be
-            resolved, whatever resolving it raises.
+        TypeError: If the key is a relation, or its type is not one that
+            ``_key_kind()`` admits. A class that Pydantic configures is refused
+            as it is for any field, saying so.
     """
-    if _is_leaf_key(analyzed, _table_of(cls)):
-        return
     related = _related_key_type(analyzed)
     if related is not None:
-        try:
-            inner = analyze_type(related.model_type._pk._resolve_type())
-        except _ModelInContainerError:
-            raise _key_type_error(cls, field) from None
-        except Exception:
-            if strict:
-                raise
-            return
-        if _is_leaf_key(inner, _table_of(related.model_type)):
-            return
-    raise _key_type_error(cls, field)
+        raise _relation_key_error(cls, field, related.model_type)
+    if _key_kind(analyzed, _table_of(cls)) is None:
+        inner = _unwrap_optional_type(analyzed)
+        if isinstance(inner, BaseType):
+            _refuse_pydantic_class(inner.base_type)
+        raise _key_type_error(cls, field)
 
 
 def _require_item_key(item: Any, model: type[JSONObject]) -> None:
@@ -3704,7 +3682,6 @@ def _analyze_field(
     resolved: Any,
     *,
     owner: type[JSONObject],
-    strict: bool,
 ) -> AnalyzedType:
     """Analyze and check the resolved type of a field.
 
@@ -3714,19 +3691,16 @@ def _analyze_field(
         owner: The class whose conversions decide what a primary key may be,
             which is the class that is decorated or in use, not the base that
             declares an inherited key.
-        strict: Whether a name that is not defined in a related model's key
-            raises, as it does when the field is first used. Otherwise the key
-            check waits for that use.
 
     Returns:
         The field's analyzed type.
 
     Raises:
         TypeError: If the annotation is ``None`` as a whole, or the type is
-            refused, such as a model without a key, a primary key that is not
-            one value or a relation to a model keyed by one.
-        Exception: If a name in a type alias or a related model's key type is
-            not defined yet, whatever evaluating it raises.
+            refused, such as a model without a key, or a primary key that is
+            not a ``str``, an ``int``, or a ``UUID``.
+        Exception: If a name in a type alias is not defined yet, whatever
+            evaluating it raises.
     """
     if resolved is None or resolved is type(None):
         raise TypeError(
@@ -3744,21 +3718,16 @@ def _analyze_field(
             raise _key_type_error(prop.cls, prop.field) from err
         raise
     if prop.is_primary_key:
-        _check_key_is_leaf_or_relation(
-            owner, prop.field, analyzed, strict=strict
-        )
+        _check_key_type(owner, prop.field, analyzed)
     _check_relation_collection(prop.cls, prop.field, analyzed)
     return analyzed
 
 
-def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
+def _field_type(prop: JSONProperty) -> AnalyzedType:
     """Resolve, analyze, and check a field's type: the one compilation path.
 
     Args:
         prop: The field.
-        strict: Whether a name that is not defined in a related model's key
-            raises, as it does when the field is first used. Otherwise the key
-            check waits for that use.
 
     Returns:
         The field's analyzed type.
@@ -3768,9 +3737,7 @@ def _field_type(prop: JSONProperty, *, strict: bool) -> AnalyzedType:
         Exception: If the annotation cannot be resolved, as for a class that is
             not defined yet, whatever resolving it raises.
     """
-    return _analyze_field(
-        prop, prop._resolve_type(), owner=prop._owner, strict=strict
-    )
+    return _analyze_field(prop, prop._resolve_type(), owner=prop._owner)
 
 
 def _refuse_declared_type(
@@ -3805,7 +3772,7 @@ def _refuse_declared_type(
         if inherited:
             analyzed = analyze_type(resolved)
         else:
-            analyzed = _analyze_field(prop, resolved, owner=cls, strict=False)
+            analyzed = _analyze_field(prop, resolved, owner=cls)
         _check_field_unions(analyzed, _table_of(cls))
         _check_admitted(analyzed, _table_of(cls))
     except Exception as err:
@@ -5091,9 +5058,8 @@ class JSONProperty:
 
         Raises:
             TypeError: If the type is refused, such as a primary key that is
-                not one value or a relation to a model keyed by one. A type
-                that names a class defined later is refused here, when it is
-                first used.
+                not a ``str``, an ``int``, or a ``UUID``. A type that names a
+                class defined later is refused here, when it is first used.
             NameError: If a field's annotation names a class that is not
                 defined. It is raised as it is, for a primary key too.
             Exception: If a primary key's type, or the key type of a model that
@@ -5101,7 +5067,7 @@ class JSONProperty:
                 whatever resolving it raises. It is cached only once it
                 resolves.
         """
-        analyzed = _field_type(self, strict=True)
+        analyzed = _field_type(self)
         # Decoration could not check a member that names something not defined
         # yet, so check it, once, now that the field is in use.
         _check_admitted(analyzed, _table_of(self._owner), late=True)
@@ -5411,24 +5377,22 @@ class JSONObject:
     Objects compare by key, as Django models do. Two objects of exactly the
     same model are equal if they have the same canonical key: the key that the
     object last took from the server or was given, decoded and encoded again by
-    the key's field type. A key that is a relation is the related object's key
-    that the object copied when the relation was assigned or loaded. Any other
-    object, such as one built without a key, equals only itself. Hashing an
-    object whose key is not known raises ``TypeError``, so the hash cannot
-    change when the key becomes known.
+    the key's field type. Any other object, such as one built without a key,
+    equals only itself. Hashing an object whose key is not known raises
+    ``TypeError``, so the hash cannot change when the key becomes known.
 
-    Once the key is known, the hash never changes. A spelling of one key that
-    encodes alike, such as ``Z`` for ``+00:00``, is the same key and is taken.
-    A key of type ``int`` or ``str`` refuses a value of another JSON type where
+    Once the key is known, the hash never changes. Another spelling of a
+    ``UUID`` key, such as its uppercase text, is the same key and is taken. A
+    key of type ``int`` or ``str`` refuses a value of another JSON type where
     it is given, so ``User(id="1")`` raises ``FieldConversionError`` for an
     ``int`` key. Server state that names another key, from a load, a write's
     response, or ``update_from_json()``, is refused with
     ``ResponseShapeError``.
 
     Once the key is known, the program cannot change it. Assigning the key
-    field, ``pk``, or a key relation a value that names another key raises
-    ``AttributeError``, and a key changed in place makes ``save()``, an eager
-    assignment, or a load raise ``UsageError``, before anything is sent.
+    field or ``pk`` a value that names another key raises ``AttributeError``,
+    before anything is sent. A key is a ``str``, an ``int``, or a ``UUID``, so
+    it cannot be changed in place.
     """
 
     class_url: ClassVar[str]
@@ -6634,8 +6598,6 @@ class JSONObject:
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
-            UsageError: If the key was changed in place to name another key.
-                Nothing is queued, and the pending updates stay.
         """
         if _pk_property_of(type(self)) is None:
             return []
@@ -6647,39 +6609,10 @@ class JSONObject:
             with _converting(type(self), field):
                 # An object without a key cannot be written.
                 encoded = self._to_json(current, descriptor.analyzed_type)
-            if descriptor._is_key_of(self):
-                # A key is the same key if its canonical text is. Python
-                # equality is not the test, since it equates 1 with 1.0.
-                if self._key_text_of(encoded) == self._key_text_of(snapshot):
-                    continue
-                name = type(self).__name__
-                raise UsageError(
-                    f"The key of a saved {name} object cannot change, but "
-                    f"{name}.{field} was changed in place. Name another "
-                    f"object as {name}({field}=...)"
-                )
             if _json_equal(encoded, snapshot):
                 continue
             changed.append((field, descriptor, encoded))
         return changed
-
-    def _key_text_of(self, key: Any) -> str | None:
-        """Return the canonical text of the JSON of a key, if it is one.
-
-        Args:
-            key: The JSON of the key field.
-
-        Returns:
-            The key's canonical text, or ``None`` if the JSON is no key that
-            the field accepts.
-        """
-        try:
-            built = _build_key(self, key)
-        except (TypeError, ValueError) as err:
-            if getattr(err, _DECLARATION_ERROR, False):
-                raise
-            return None
-        return None if built is None else built[1]
 
     def _queue_changes(
         self, changed: list[tuple[str, JSONProperty, Any]]
@@ -6701,7 +6634,6 @@ class JSONObject:
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
-            UsageError: If the key was changed in place.
         """
         changed = self._changes_in_place()
         if changed and self._json is None:
@@ -6931,9 +6863,8 @@ class JSONObject:
 
         Raises:
             UsageError: If the model has no primary-key field, even when
-                nothing is pending, a class had ``api`` assigned, or the key
-                was changed in place. Nothing is sent, and the pending updates
-                stay.
+                nothing is pending, or a class had ``api`` assigned. Nothing is
+                sent, and the pending updates stay.
             ValueError: If the object has no URL, because its primary key is
                 ``None``, as for an object built without a key or read from
                 JSON that lacks it.
@@ -7360,7 +7291,6 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response does not hold a JSON object, or
                 names another primary key than the object has.
-            UsageError: If the key was changed in place.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())

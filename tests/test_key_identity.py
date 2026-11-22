@@ -1,12 +1,12 @@
 """Stateful property test of the laws of equality by key.
 
-A rule-based state machine builds objects of models with keys of several types,
+A rule-based state machine builds objects of models with keys of each key type,
 and loads them, refreshes them, merges pushed payloads into them, tries to
-change their keys by assignment and in place, and saves them. A fake server
-answers at the key that an object is saved under and spells the key it returns
-in more than one way, and sometimes names another key, which the object
-refuses. After every step, each object must agree with a model whose saved key
-is the one that the object was built with, and these laws must hold:
+change their keys by assignment, and saves them. A fake server answers at the
+key that an object is saved under and spells the key it returns in more than
+one way, and sometimes names another key, which the object refuses. After every
+step, each object must agree with a model whose saved key is the one that the
+object was built with, and these laws must hold:
 
 - If two objects are equal, they have the same ``url``.
 - The equalities and the hash of an object, and its ``url``, never change.
@@ -17,11 +17,10 @@ is the one that the object was built with, and these laws must hold:
 
 from __future__ import annotations
 
-import datetime
-import decimal
 import itertools
 import json
 import re
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -36,20 +35,9 @@ from hypothesis.stateful import (
     invariant,
     rule,
 )
-from test_eazyrest import (
-    Cell,
-    Grid,
-    GridProfile,
-    PriceKeyed,
-    TimeKeyed,
-    User,
-    UserProfile,
-    test_api,
-)
+from test_eazyrest import NamedTokenOwner, TextKeyed, User, test_api
 
-from eazyrest import JSONObject, ResponseShapeError, UsageError, WriteMode
-
-UTC = datetime.UTC
+from eazyrest import JSONObject, ResponseShapeError, WriteMode
 
 
 @dataclass(frozen=True)
@@ -68,67 +56,29 @@ class Kind:
     """The key as a caller gives it to the constructor or assigns it."""
     spell: Callable[[Any, str], Any]
     """The key's JSON in the spelling ``"plain"`` or ``"alt"``."""
-    changed: Callable[[Any], Callable[[], None]] | None = None
-    """Change a key in place, and return the function that changes it back."""
 
 
-def _change_cell(key: Cell) -> Callable[[], None]:
-    key.value += 10
-
-    def undo() -> None:
-        key.value -= 10
-
-    return undo
-
-
-def _day(n: int) -> datetime.datetime:
-    return datetime.datetime(2026, 1, n, tzinfo=UTC)
+def _uuid(n: int) -> uuid.UUID:
+    return uuid.UUID(int=n)
 
 
 KINDS: dict[str, Kind] = {
     "int": Kind(User, "id", "name", (1, 2, 3), lambda n: n, lambda n, v: n),
-    "cell": Kind(
-        Grid,
+    "str": Kind(
+        TextKeyed,
         "id",
         "name",
-        (1, 2, 3),
-        Cell,
-        lambda n, v: n,
-        _change_cell,
-    ),
-    "decimal": Kind(
-        PriceKeyed,
-        "id",
-        "name",
-        ("1.0", "1.00", "2"),
-        decimal.Decimal,
+        ("a", "A", "b"),
+        lambda n: n,
         lambda n, v: n,
     ),
-    "datetime": Kind(
-        TimeKeyed,
+    "uuid": Kind(
+        NamedTokenOwner,
         "id",
         "name",
         (1, 2, 3),
-        _day,
-        lambda n, v: (
-            f"2026-01-0{n}T00:00:00" + ("Z" if v == "plain" else "+00:00")
-        ),
-    ),
-    "grid": Kind(
-        GridProfile,
-        "grid",
-        "bio",
-        (1, 2, 3),
-        lambda n: Grid(id=Cell(n)),
-        lambda n, v: n if v == "plain" else {"id": n, "name": "e"},
-    ),
-    "user": Kind(
-        UserProfile,
-        "user",
-        "bio",
-        (1, 2, 3),
-        lambda n: User(id=n),
-        lambda n, v: n if v == "plain" else {"id": n, "name": "e"},
+        _uuid,
+        lambda n, v: str(_uuid(n)) if v == "plain" else _uuid(n).hex.upper(),
     ),
 }
 
@@ -389,26 +339,6 @@ class KeyIdentityMachine(RuleBasedStateMachine):
             with pytest.raises(AttributeError, match="cannot change"):
                 assign()
         assert self.mocker.call_count == calls
-
-    @rule(data=st.data())
-    def change_key_in_place(self, data: st.DataObject) -> None:
-        """Change the key that the object returns in place, and try to save.
-
-        The write is refused before anything is sent, and the object is as it
-        was once the key is changed back.
-        """
-        subject = self.pick(data, lambda s: bool(KINDS[s.kind].changed))
-        if subject is None:
-            return
-        change = KINDS[subject.kind].changed
-        assert change is not None
-        key = self.act(subject, lambda: subject.obj.pk)
-        calls = self.mocker.call_count
-        undo = change(key)
-        with pytest.raises(UsageError, match="cannot change"):
-            subject.obj.save()
-        assert self.mocker.call_count == calls
-        undo()
 
     @rule(data=st.data())
     def save(self, data: st.DataObject) -> None:
