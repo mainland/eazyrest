@@ -58,7 +58,7 @@ from eazyrest import (
     json_object,
 )
 
-U = uuid.UUID("12345678-1234-5678-1234-567812345678")
+U = uuid.UUID("abcdef12-1234-5678-1234-567812345abc")
 UP = str(U).upper()
 UC = U.hex
 LOWER = str(U)
@@ -107,6 +107,14 @@ class Crew(Tag):
 @json_object
 class Doc(Base):
     class_url = "/docs/"
+    id: uuid.UUID
+
+
+@json_object(field_map={"id": "docId"})
+class Note(Base):
+    """A model whose key is a UUID under another JSON name."""
+
+    class_url = "/notes/"
     id: uuid.UUID
 
 
@@ -718,6 +726,16 @@ def a_uuid_key_is_read_from_any_spelling(world: World) -> None:
     ):
         assert doc.pk == U
         assert doc.url == f"/docs/{LOWER}/"
+
+
+@row(BUILD)
+def a_uuid_key_is_read_from_the_braced_and_urn_forms(world: World) -> None:
+    for text in (f"{{{LOWER}}}", f"urn:uuid:{LOWER}"):
+        # Uppercase hex digits, with the "urn:uuid:" prefix as it is.
+        for spelling in (text, text.replace(LOWER, UP)):
+            doc = Doc(id=spelling)
+            assert doc.pk == U
+            assert doc.url == f"/docs/{LOWER}/"
 
 
 @row(BUILD)
@@ -2116,3 +2134,9 @@ def a_collection_is_written_as_keys(world: World) -> None:
         "type": "array",
         "items": {"type": "string"},
     }
+
+
+@row(SCHEMA)
+def the_write_schema_requires_nothing(world: World) -> None:
+    for model in (User, Tag, Doc, Post):
+        assert "required" not in model.json_schema("write")
