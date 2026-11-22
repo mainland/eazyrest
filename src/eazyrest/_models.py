@@ -2330,6 +2330,15 @@ class _BeforeCreation:
     The response has not been read yet, so the object has no key.
     """
 
+    def __reduce__(self) -> str:
+        """Name the one instance, so a copy or a pickle is that instance.
+
+        Returns:
+            The module-level name of ``_BEFORE_CREATION``, which ``copy`` and
+            ``pickle`` resolve to the same object.
+        """
+        return "_BEFORE_CREATION"
+
 
 _BEFORE_CREATION = _BeforeCreation()
 """The one key of every object that reads a creation's response."""
