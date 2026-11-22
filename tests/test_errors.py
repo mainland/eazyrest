@@ -1934,3 +1934,44 @@ def test_http_error_of_a_url_that_redirected_to_itself_names_the_url_asked_for(
     assert str(raised.value) == (
         "403 Client Error: None for GET https://api.test/dl/"
     )
+
+
+def _response_with_status(status_code: int) -> requests.Response:
+    """Return a response of the given status for a mocked request."""
+    response = requests.Response()
+    response.status_code = status_code
+    response.url = "https://example.com/items/1"
+    response.reason = "Reason"
+    response.request = requests.Request(
+        "GET", "https://example.com/items/1"
+    ).prepare()
+    return response
+
+
+@pytest.mark.parametrize(
+    ("status_code", "kind"),
+    [
+        (400, "Client"),
+        (499, "Client"),
+        (500, "Server"),
+        (599, "Server"),
+    ],
+)
+def test_the_edges_of_the_error_statuses_raise_as_client_or_server_errors(
+    status_code: int, kind: str
+) -> None:
+    """Statuses 400 and 499 are client errors, 500 and 599 server errors."""
+    api = API("https://example.com/")
+
+    with pytest.raises(APIError, match=rf"^{status_code} {kind} Error"):
+        api.raise_for_response(_response_with_status(status_code))
+
+
+@pytest.mark.parametrize("status_code", [399, 600])
+def test_the_statuses_beside_the_error_range_do_not_raise(
+    status_code: int,
+) -> None:
+    """A status below 400 or above 599 is not a failure."""
+    api = API("https://example.com/")
+
+    api.raise_for_response(_response_with_status(status_code))
