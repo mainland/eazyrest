@@ -557,6 +557,14 @@ describe them further.
   `ValueError`. `v1.0.0a5` sent the lookup and raised only when nothing
   matched, so a call that a match satisfied is now refused. Pass such a value
   to `filter()` or `get()`.
+- A model object given alone as the value of a collection of related objects,
+  as in `Team.create(members=user)` or `team.members = user`, raises
+  `FieldConversionError` even if the model defines `__iter__`. It was written
+  as the members that its iteration yields, each as a key, so a model that
+  iterates as `1, 2, 3` sent `{"members": [1, 2, 3]}` and related the wrong
+  objects. `get_or_create()` refuses it before the lookup. Pass `[user]`.
+  `filter()` and `get()` still take one model for a collection field and send
+  its key.
 - A key of type `Literal` raises `FieldConversionError` for a value that is not
   one of its members where it is given, and a relation to the model refuses it.
   A non-member that the server's JSON names is treated as a key of the wrong

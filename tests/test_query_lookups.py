@@ -836,6 +836,63 @@ def test_a_model_that_can_be_iterated_is_sent_as_its_key(
     }
 
 
+def test_create_refuses_a_model_that_can_be_iterated_as_a_collection(
+    requests_mock: Any,
+) -> None:
+    """The members of an iterable model are not the items it stands for."""
+    requests_mock.post("https://lookups.example/rosters/", json={"id": 1})
+
+    with pytest.raises(
+        FieldConversionError, match="must be collections, got Crowd"
+    ):
+        Roster.create(crowds=Crowd(id=5))
+
+    assert requests_mock.call_count == 0
+
+
+def test_assigning_a_model_that_can_be_iterated_to_a_collection_is_refused(
+    requests_mock: Any,
+) -> None:
+    """A model is refused when assigned, and a later save sends nothing."""
+    roster = Roster(json={"id": 1, "crowd": 5, "crowds": [5]})
+
+    with pytest.raises(
+        FieldConversionError, match="must be collections, got Crowd"
+    ):
+        roster.crowds = Crowd(id=5)  # type: ignore[assignment]
+    roster.save()
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize("matches", [False, True], ids=["none", "match"])
+def test_get_or_create_refuses_a_model_that_can_be_iterated_as_a_collection(
+    matches: bool, requests_mock: Any
+) -> None:
+    """The refusal comes before any request, whatever the server holds."""
+    found = [{"id": 1, "crowd": 5, "crowds": [5]}] if matches else []
+    requests_mock.get("https://lookups.example/rosters/", json=found)
+    requests_mock.post("https://lookups.example/rosters/", json={"id": 1})
+
+    with pytest.raises(FieldConversionError):
+        Roster.get_or_create(crowds=Crowd(id=5))
+
+    assert requests_mock.call_count == 0
+
+
+def test_a_list_of_a_model_that_can_be_iterated_is_sent_as_its_key(
+    requests_mock: Any,
+) -> None:
+    """A model inside a list is one item, whatever it iterates as."""
+    created = requests_mock.post(
+        "https://lookups.example/rosters/", json={"id": 1}
+    )
+
+    Roster.create(crowd=Crowd(id=5), crowds=[Crowd(id=5)])
+
+    assert created.last_request.json() == {"crowd": 5, "crowds": [5]}
+
+
 @pytest.mark.parametrize(
     ("params", "error"),
     [

@@ -6247,7 +6247,12 @@ class JSONObject:
                 # rather than in json.dumps() when it is sent.
                 return _checked_json(value)
             case CollectionType(collection_type, item_type):
-                if not _is_collection_value(value):
+                if not _is_collection_value(value) or (
+                    isinstance(value, JSONObject)
+                    and isinstance(item_type, RelatedType)
+                ):
+                    # A model that defines __iter__ is iterable, but its
+                    # members are not the items of a collection of models.
                     raise TypeError(
                         "Collection field values must be collections, "
                         f"got {type(value).__name__}"

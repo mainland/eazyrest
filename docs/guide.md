@@ -743,9 +743,11 @@ Collection payloads must be JSON arrays or another iterable collection shape.
 Strings, bytes, and dictionaries are rejected for collection fields so
 malformed payloads fail before they can be interpreted item by item. The same
 holds for values assigned to collection fields or passed to `create()`, which
-raise `TypeError` unless they are collections. In `filter()` and `get()`, a
-single value for a collection field, such as `Team.filter(members=user)`, is
-sent as one item and matches the objects whose collection holds it.
+raise `TypeError` unless they are collections. A single model object is refused
+for a collection of related objects even if it defines `__iter__`, so pass
+`[user]` and not `user`. In `filter()` and `get()`, a single value for a
+collection field, such as `Team.filter(members=user)`, is sent as one item and
+matches the objects whose collection holds it.
 
 A `TypedDict` field reads a JSON object whose declared keys convert by their
 annotations, as fields do, and writes each declared key in its JSON form. A key

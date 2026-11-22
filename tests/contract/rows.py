@@ -96,6 +96,15 @@ class Tag(Base):
 
 
 @json_object
+class Crew(Tag):
+    """A tag that can be iterated, as its own members and not its key."""
+
+    def __iter__(self) -> Iterator[str]:
+        """Return members that are not the tag's key."""
+        return iter(["x", "y"])
+
+
+@json_object
 class Doc(Base):
     class_url = "/docs/"
     id: uuid.UUID
@@ -1045,6 +1054,38 @@ def an_assigned_object_that_is_no_collection_is_refused(
             lambda: setattr(obj, field, tag("b")),
             f"Post.{field}",
             "collections",
+        )
+
+
+@row(COLL)
+def an_iterable_model_is_refused_for_a_collection_and_kept_in_a_lookup(
+    world: World,
+) -> None:
+    crew = Crew(slug="a")
+    for field in (*SEQUENCES, *SETS):
+        given: dict[str, Any] = {field: crew}
+        obj = post()
+        raises(
+            world,
+            FieldConversionError,
+            lambda: setattr(obj, field, crew),
+            f"Post.{field}",
+            "collections",
+        )
+        raises(
+            world,
+            FieldConversionError,
+            lambda: Post.create(**given),
+            f"Post.{field}",
+            "collections",
+        )
+        sends_query_but_refuses_creation(
+            world,
+            Post,
+            f"{field}=a",
+            FieldConversionError,
+            f"Post.{field}",
+            **given,
         )
 
 
