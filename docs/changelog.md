@@ -372,6 +372,11 @@ describe them further.
   naming the field, where `v1.0.0a5` read every string that `uuid.UUID` reads,
   such as one with a `0x` prefix, a sign, surrounding whitespace, or digits
   that are not ASCII, as the UUID that its digits name.
+- A `null` item in a collection of relations raises `FieldConversionError`
+  naming the field and, for a sequence, the item's position, when the field is
+  read, and before any request when a `None` item is assigned, added in place
+  and saved, or given to `create()`. `v1.0.0a5` read it as `None`, kept it in a
+  set, and sent it as `null`.
 - `create()` and `get_or_create()` refuse a response that cannot be the created
   object with a `ResponseShapeError` that holds the response, because the
   resource may exist. A body that is not one JSON object, a list among them,

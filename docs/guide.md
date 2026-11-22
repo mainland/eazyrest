@@ -722,9 +722,13 @@ no item is `None` and no item is a collection of related objects:
 under another collection type, raise `TypeError` when the class is decorated,
 naming the field. An item that the server embeds without one raises
 `FieldConversionError` naming the field and the item's position when the field
-is read, as an embedded single relation without a key does. A save of another
-field does not read or send a collection that you did not read. Declare items
-that have no key as a `TypedDict` or a dataclass, which need none.
+is read, as an embedded single relation without a key does, and so does a
+`null` item. A `None` item in a list, tuple, deque, or set that you assign, add
+in place and save, or pass to `create()` raises `FieldConversionError` naming
+the field, and for a sequence the item's position, before any request. A save
+of another field does not read or send a collection that you did not read.
+Declare items that have no key as a `TypedDict` or a dataclass, which need
+none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object keeps

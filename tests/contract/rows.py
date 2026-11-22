@@ -1027,6 +1027,47 @@ def tag(slug: str) -> Tag:
 
 
 @row(COLL)
+def a_null_item_is_refused_on_read(world: World) -> None:
+    raises(
+        world,
+        FieldConversionError,
+        lambda: post(readers=[None]).readers,
+        "Post.readers",
+        "[0]",
+    )
+    raises(
+        world,
+        FieldConversionError,
+        lambda: post(watchers=[None, 7]).watchers,
+        "Post.watchers",
+    )
+
+
+@row(COLL)
+def a_null_item_is_refused_on_write(world: World) -> None:
+    p = post()
+
+    def assign() -> None:
+        p.readers = [None]  # type: ignore[list-item]
+
+    raises(world, FieldConversionError, assign, "Post.readers", "[0]")
+    p.readers.append(None)  # type: ignore[arg-type]
+    raises(world, FieldConversionError, p.save, "Post.readers", "[1]")
+    raises(
+        world,
+        FieldConversionError,
+        lambda: Post.create(readers=[None]),
+        "Post.readers",
+        "[0]",
+    )
+    for call in (
+        lambda: setattr(post(), "watchers", {None}),
+        lambda: Post.create(watchers={None, User(id=7)}),
+    ):
+        raises(world, FieldConversionError, call, "Post.watchers")
+
+
+@row(COLL)
 def sequences_are_read_as_the_declared_type(world: World) -> None:
     obj = post(tags=["a", "b"], tagt=["a", "b"], tagq=["a", "b"])
     for field in SEQUENCES:

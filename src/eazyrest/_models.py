@@ -3218,19 +3218,21 @@ def _check_key_type(
 
 
 def _require_item_key(item: Any, model: type[JSONObject]) -> None:
-    """Refuse an embedded item of a collection of relations that has no key.
+    """Refuse an item of a collection of relations that names no key.
 
     A collection of relations is compared and written by its items' keys, so an
-    item that is a JSON object must name its own.
+    item is a key, or a JSON object that names its own, and is never ``null``.
 
     Args:
         item: The item's JSON.
         model: The model that the collection's items relate to.
 
     Raises:
-        ValueError: If the item is an object without the model's key, or with a
-            key of ``null``.
+        ValueError: If the item is ``null``, or an object without the model's
+            key or with a key of ``null``.
     """
+    if item is None:
+        raise ValueError(_NULL_ITEM)
     prop = _pk_property_of(model)
     if (
         isinstance(item, dict)
@@ -3242,6 +3244,12 @@ def _require_item_key(item: Any, model: type[JSONObject]) -> None:
             f"{model.__name__}. Declare items that have no key as a "
             "TypedDict or a dataclass, which need none"
         )
+
+
+_NULL_ITEM = (
+    "A collection of relations holds relations, so no item is null. Leave "
+    "the item out"
+)
 
 
 def _declaration_error(message: str) -> TypeError:
@@ -6009,9 +6017,16 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                items = _each_item(
-                    lambda item: cls._to_json(item, item_type), value
+                relates = isinstance(
+                    _unwrap_optional_type(item_type), RelatedType
                 )
+
+                def write_item(item: Any) -> Any:
+                    if relates and item is None:
+                        raise ValueError(_NULL_ITEM)
+                    return cls._to_json(item, item_type)
+
+                items = _each_item(write_item, value)
                 if _READ_AS[collection_type] in (set, frozenset):
                     # A set's iteration order depends on how it was built, and
                     # a string's hash on the process, so a set writes its items
