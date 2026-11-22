@@ -363,6 +363,15 @@ describe them further.
   field when the field is read. An object therefore always equals the objects
   of its model with its key and hashes, and the refusals of an object without a
   key in relation writes, queries, and prefetch are gone with it.
+- An object of a model whose key annotation names a class that is not defined
+  yet, as during a circular import, raises the error that resolving the name
+  raises when the object is built, a `NameError`, an `AttributeError` for a
+  module's attribute, or a `TypeError` for a type alias's string that names
+  nothing. `v1.0.0a5` built the object, whose `==` was `False` and whose `url`
+  and `hash()` raised until the name was defined. A key that is refused once
+  its name resolves raises its `TypeError` when an object is built, where `==`
+  and `hash()` raised it. A relation to such a model, or to a model that is not
+  defined yet, still lets its owner be built, and raises when it is read.
 - A primary key is a `str`, an `int`, or a `UUID`, alone or inside `T | None`,
   `Annotated`, or a `NewType`. Any other key raises `TypeError` when the class
   is decorated, naming the field and the types that a key may be, where

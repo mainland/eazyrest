@@ -320,19 +320,25 @@ class Profile(JSONObject):
 ```
 
 A name in the key's annotation may not be defined yet when the class is
-decorated. The class is then checked when its key is first used. A name is not
-defined yet when a class is not, when a name is bound to another class later,
-as when a module finishes a circular import, or when a module does not have the
-attribute yet. Until it is defined, the key cannot be read, and `==` is `False`
-for an object of the model. Every other use of the key raises the error that
-resolving the name raised. That is `url`, `hash()`, `update_from_json()`,
-reading a relation to the model, and a prefetch of one, which raises before it
-sends its bulk request. The error is a `NameError` for a class that is not
-defined and an `AttributeError` for an attribute of a module, and a string in a
-type alias's value that cannot be resolved raises a `TypeError` that says so.
-None of that is kept on the object or the class, so once the class is defined
-the object has the `url`, the hash, and the equalities of a new object with the
-same key. Then a key that is refused raises its `TypeError`.
+decorated. The class is then checked when its key is first used, which is when
+an object of it is built, since every object has its key from construction. A
+name is not defined yet when a class is not, when a name is bound to another
+class later, as when a module finishes a circular import, or when a module does
+not have the attribute yet. Until it is defined, building an object of the
+model, from its key or from JSON, raises the error that resolving the name
+raised: a `NameError` for a class that is not defined, an `AttributeError` for
+an attribute of a module, and a `TypeError` that says so for a string in a type
+alias's value that cannot be resolved. A query raises it as it builds the
+objects, and a prefetch of a relation to such a model raises it before its bulk
+request. Nothing of that is kept on the class, so once the name is defined,
+objects build with their keys, and a key that is refused then raises its
+`TypeError` when an object is built.
+
+Only the model's own key resolves when an object is built. A relation to a
+model that is not defined yet, or to a model whose key names a class that is
+not, does not stop its owner from being built. Reading the relation raises the
+error of the undefined name instead, and once the name is defined the relation
+reads.
 
 A field that is not the key raises a `NameError` when its annotation, or a type
 alias in it, names the class that is not defined yet. It raises a

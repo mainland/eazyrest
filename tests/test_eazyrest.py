@@ -6956,18 +6956,18 @@ def test_a_key_in_a_container_that_holds_a_model_is_refused_on_first_use(
         Rack(json={"id": [1]}) == Rack(json={"id": [1]})  # noqa: B015
 
 
-def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
+def test_an_object_whose_key_annotation_names_a_later_class_is_built_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A key annotated by a class defined later is unknown until then.
+    """A key annotated by a class defined later is built once it is defined.
 
-    Until the class is defined, ``url`` and ``hash()`` raise the ``NameError``
-    of the undefined name, ``==`` is ``False``, and nothing is kept, so
-    afterwards the object has the key of a new object. A field that is not the
-    key still raises a plain ``NameError``.
+    Until the class is defined, building an object raises the ``NameError`` of
+    the undefined name, and nothing is kept, so afterwards objects build with
+    their keys. A field that is not the key still raises a plain ``NameError``
+    when it is read.
 
     Args:
-        monkeypatch: Defines the class as a global, after the objects are used.
+        monkeypatch: Defines the class as a global, after the objects fail.
     """
 
     @json_object
@@ -6984,58 +6984,57 @@ def test_an_object_whose_key_annotation_names_a_later_class_has_its_key_after(
         body: LaterSlotKey
 
     monkeypatch.setitem(globals(), "Slot", Slot)
-    payloads: dict[Any, Any] = {
-        Slot: {"id": 1},
-    }
-    used = {model: model(json=json) for model, json in payloads.items()}
-    twins = {model: model(json=json) for model, json in payloads.items()}
 
-    for model, obj in used.items():
-        with pytest.raises(NameError, match="LaterSlotKey"):
-            obj.url  # noqa: B018
-        assert obj != twins[model]
-        with pytest.raises(NameError, match="LaterSlotKey"):
-            hash(obj)
-        assert "_canonical" not in vars(obj)
+    builds: list[Callable[[], Any]] = [
+        lambda: Slot(json={"id": 1}),
+        lambda: Slot(id=1),
+    ]
+    for build in builds:
+        with pytest.raises(NameError, match="LaterSlotKey") as undefined:
+            build()
+        assert not isinstance(undefined.value, TypeError)
     assert "analyzed_type" not in vars(Slot._pk)
     # A field that is not the key raises a NameError alone, which no handler of
     # a conversion's TypeError reads as a refusal.
+    note = Note(json={"id": 1, "body": 1})
     with pytest.raises(NameError, match="LaterSlotKey") as undefined:
-        Note(json={"id": 1, "body": 1}).body  # noqa: B018
+        note.body  # noqa: B018
     assert not isinstance(undefined.value, TypeError)
 
     LaterSlotKey = NewType("LaterSlotKey", int)
 
     monkeypatch.setitem(globals(), "LaterSlotKey", LaterSlotKey)
 
-    for model, obj in used.items():
-        fresh = model(json=payloads[model])
-        assert obj.url == fresh.url
-        assert obj == fresh
-        assert obj == twins[model]
-        assert hash(obj) == hash(fresh)
-        assert len({obj, twins[model], fresh}) == 1
+    built = Slot(json={"id": 1})
+    assert built.url == "/slots/1/"
+    assert built == Slot(id=1)
+    assert hash(built) == hash(Slot(id=1))
 
 
 @pytest.mark.parametrize(
-    "operation",
-    ["url", "hash", "key", "refresh", "update_from_json"],
+    "build",
+    [
+        pytest.param(lambda model: model(json={"id": 1}), id="json"),
+        pytest.param(lambda model: model(id=1), id="key"),
+        pytest.param(lambda model: model(pk=1), id="pk"),
+    ],
 )
 def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch, operation: str
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    build: Callable[[Any], Any],
 ) -> None:
     """The error of an undefined key class is a ``NameError`` and nothing else.
 
     A ``TypeError`` or a ``ValueError`` would be taken for bad data or a failed
-    conversion by the code that handles those. So ``url``, ``hash()``, reading
-    the key, ``refresh()``, and ``update_from_json()`` raise the ``NameError``
-    of the undefined name. They send nothing, and once the class is defined
-    each works.
+    conversion by the code that handles those. So building an object, from its
+    JSON or from its key, raises the ``NameError`` of the undefined name. It
+    sends nothing, and once the class is defined the object builds.
 
     Args:
         requests_mock: Fails the test if a request is sent.
-        monkeypatch: Defines the class as a global, after the operation fails.
-        operation: What is done with the object.
+        monkeypatch: Defines the class as a global, after the build fails.
+        build: Builds an object of the model.
     """
 
     @json_object
@@ -7045,23 +7044,10 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
         id: LaterStallKey
 
     monkeypatch.setitem(globals(), "Stall", Stall)
-    stall = Stall(json={"id": 1})
-    operations: dict[str, Callable[[Any], Any]] = {
-        "url": lambda obj: obj.url,
-        "hash": hash,
-        "key": lambda obj: obj.pk,
-        "refresh": lambda obj: obj.refresh(),
-        "update_from_json": lambda obj: obj.update_from_json(
-            {obj._pk_json_field: 1}
-        ),
-    }
-    objects = [stall]
 
-    for obj in objects:
-        with pytest.raises(NameError, match="LaterStallKey") as undefined:
-            operations[operation](obj)
-        assert not isinstance(undefined.value, (TypeError, ValueError))
-        assert "_canonical" not in vars(obj)
+    with pytest.raises(NameError, match="LaterStallKey") as undefined:
+        build(Stall)
+    assert not isinstance(undefined.value, (TypeError, ValueError))
     assert requests_mock.call_count == 0
     assert "analyzed_type" not in vars(Stall._pk)
 
@@ -7069,10 +7055,8 @@ def test_a_key_naming_a_later_class_raises_the_name_error_and_no_other_type(
 
     monkeypatch.setitem(globals(), "LaterStallKey", LaterStallKey)
 
-    for obj in objects:
-        if operation != "refresh":
-            operations[operation](obj)
-    assert stall == Stall(json={"id": 1})
+    assert build(Stall) == Stall(json={"id": 1})
+    assert requests_mock.call_count == 0
 
 
 def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
@@ -7091,6 +7075,69 @@ def _form_keyed_by(shape: str, member: Any) -> tuple[Any, Any]:
         case "named-tuple":
             return typing.NamedTuple("Pair", [("n", member)]), [1]
     return dataclasses.make_dataclass("Entry", [("n", member)]), {"n": 1}
+
+
+def test_an_owner_of_a_relation_to_a_later_model_is_built_before_it(
+    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the model's own key resolves at construction, not its relations.
+
+    An owner whose relation names a model that is not defined yet, or a model
+    whose own key names a class not defined yet, as a circular import leaves
+    them, is built from its JSON. Reading the relation raises the undefined
+    name, and once it is defined the relation reads.
+
+    Args:
+        requests_mock: Fails the test if a request is sent.
+        monkeypatch: Defines the classes as globals, after the owners are
+            built.
+    """
+
+    @json_object
+    class Post(ModelBase):
+        class_url = "/posts/"
+
+        id: int
+        owner: LaterOwner
+
+    @json_object
+    class Reply(ModelBase):
+        class_url = "/replies/"
+
+        id: int
+        author: Author
+
+    @json_object
+    class Author(ModelBase):
+        class_url = "/authors/"
+
+        id: LaterAuthorKey
+
+    monkeypatch.setitem(globals(), "Author", Author)
+    post = Post(json={"id": 1, "owner": 7})
+    reply = Reply(json={"id": 1, "author": 7})
+
+    assert post.pk == 1
+    assert reply.pk == 1
+    with pytest.raises(NameError, match="LaterOwner"):
+        post.owner  # noqa: B018
+    with pytest.raises(NameError, match="LaterAuthorKey"):
+        reply.author  # noqa: B018
+
+    @json_object
+    class LaterOwner(ModelBase):
+        class_url = "/owners/"
+
+        id: int
+
+    LaterAuthorKey = NewType("LaterAuthorKey", int)
+
+    monkeypatch.setitem(globals(), "LaterOwner", LaterOwner)
+    monkeypatch.setitem(globals(), "LaterAuthorKey", LaterAuthorKey)
+
+    assert post.owner == LaterOwner(id=7)
+    assert reply.author == Author(id=7)
+    assert requests_mock.call_count == 0
 
 
 def _box_keyed_by(form: Any) -> Any:
@@ -7114,76 +7161,57 @@ def _box_keyed_by(form: Any) -> Any:
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="The type statement is new in 3.12."
 )
-def test_a_key_alias_of_a_later_class_has_its_key_after() -> None:
+def test_a_key_alias_of_a_later_class_is_built_after() -> None:
     """An alias that names a class defined later is unresolved until then.
 
     The alias is a ``type`` statement's, which evaluates its value on first
-    use. Until the class is defined, ``url`` and ``hash()`` raise the
-    ``NameError`` of the undefined name, ``==`` is ``False``, and nothing is
-    kept, so afterwards the object has the key of a new object.
+    use. Until the class is defined, building an object raises the
+    ``NameError`` of the undefined name, and nothing is kept, so afterwards
+    objects build with their keys.
     """
     namespace: dict[str, Any] = {}
     exec("type PendingKey = LaterKey", namespace)  # noqa: S102
-    value = 1
     box = _box_keyed_by(namespace["PendingKey"])
-    used = box(json={"id": value})
-    twin = box(json={"id": value})
 
     with pytest.raises(NameError, match="LaterKey"):
-        used.url  # noqa: B018
-    assert used != twin
-    with pytest.raises(NameError, match="LaterKey"):
-        hash(used)
-    assert "_canonical" not in vars(used)
+        box(json={"id": 1})
     assert "analyzed_type" not in vars(box._pk)
 
     namespace["LaterKey"] = int
 
-    fresh = box(json={"id": value})
-    assert used.url == fresh.url
-    assert used == fresh
-    assert used == twin
-    assert hash(used) == hash(fresh)
-    assert len({used, twin, fresh}) == 1
+    built = box(json={"id": 1})
+    assert built.url == "/boxes/1/"
+    assert built == box(id=1)
+    assert len({built, box(id=1)}) == 1
 
 
-def test_an_object_keyed_by_a_module_attribute_has_its_key_after(
+def test_an_object_keyed_by_a_module_attribute_is_built_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A key named as an attribute of a module is unknown until it is set.
+    """A key named as an attribute of a module is unresolved until it is set.
 
     Reading an attribute that the module does not have yet raises an
-    ``AttributeError``. Until the attribute is set, ``url`` and ``hash()``
-    raise it, ``==`` is ``False``, and nothing is kept, as for a class that is
-    not defined yet, so afterwards the object has the key of a new object.
+    ``AttributeError``. Until the attribute is set, building an object raises
+    it, as for a class that is not defined yet, and nothing is kept, so
+    afterwards objects build with their keys.
 
     Args:
         monkeypatch: Defines the module as a global, and sets the attribute
-            after the objects are used.
+            after the build fails.
     """
     later = types.ModuleType("later_attribute_module")
     monkeypatch.setitem(globals(), "later_attribute_module", later)
     box = _box_keyed_by("later_attribute_module.LaterAttributeKey")
-    payload = {"id": 1}
-    used = box(json=payload)
-    twin = box(json=payload)
 
     with pytest.raises(AttributeError, match="LaterAttributeKey"):
-        used.url  # noqa: B018
-    assert used != twin
-    with pytest.raises(AttributeError, match="LaterAttributeKey"):
-        hash(used)
-    assert "_canonical" not in vars(used)
+        box(json={"id": 1})
     assert "analyzed_type" not in vars(box._pk)
 
     later.LaterAttributeKey = int  # type: ignore[attr-defined]
 
-    fresh = box(json=payload)
-    assert used.url == fresh.url
-    assert used == fresh
-    assert used == twin
-    assert hash(used) == hash(fresh)
-    assert len({used, twin, fresh}) == 1
+    built = box(json={"id": 1})
+    assert built.url == "/boxes/1/"
+    assert built == box(id=1)
 
 
 @pytest.mark.skipif(
@@ -7241,13 +7269,13 @@ def test_a_field_that_is_not_the_key_raises_the_name_error_of_a_later_alias(
     assert getattr(obj, field) == values[field]
 
 
-def test_equality_and_hash_raise_a_key_declaration_refused_on_first_use(
+def test_building_raises_a_key_declaration_refused_on_first_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A declaration that is refused is not an unknown key.
+    """A declaration that is refused once it resolves refuses every object.
 
-    ``==`` and ``hash()`` raise it as ``url`` does, instead of returning
-    ``False`` or saying that the key cannot be read.
+    Building an object resolves its key, so it raises the refusal, whether the
+    object is built from its JSON or from its key.
 
     Args:
         monkeypatch: Defines the class as a global, after the model that names
@@ -7268,17 +7296,13 @@ def test_equality_and_hash_raise_a_key_declaration_refused_on_first_use(
         id: int
 
     monkeypatch.setitem(globals(), "Later", Later)
-    first = Anchor(json={"later": 1, "x": "p"})
-    second = Anchor(json={"later": 1, "x": "q"})
     message = r"Anchor\.later is the primary key and a relation to Later"
 
-    with pytest.raises(TypeError, match=message):
-        first == second  # noqa: B015
     with pytest.raises(TypeError, match=message) as error:
-        hash(first)
-    assert "cannot be read" not in str(error.value)
+        Anchor(json={"later": 1, "x": "p"})
+    assert not isinstance(error.value, FieldConversionError)
     with pytest.raises(TypeError, match=message):
-        first == second  # noqa: B015
+        Anchor(later=1)
 
 
 def test_a_primary_key_cannot_be_a_relation_to_its_own_model() -> None:
@@ -9351,6 +9375,9 @@ def test_a_key_alias_of_a_string_naming_nothing_yet_is_checked_on_first_use(
 ) -> None:
     """A key alias whose string names nothing yet decorates, then resolves.
 
+    Until the name is defined, building an object raises the ``TypeError`` that
+    says the alias cannot be resolved, which is no conversion error.
+
     Args:
         monkeypatch: Defines the name as a global, after the model is
             decorated.
@@ -9360,15 +9387,15 @@ def test_a_key_alias_of_a_string_naming_nothing_yet_is_checked_on_first_use(
         "LaterStringKey",  # type: ignore[name-defined]  # noqa: F821
     )
     box = _box_keyed_by(PendingStringKey)
-    obj = box(json={"id": 1})
 
-    with pytest.raises(TypeError, match="cannot be resolved"):
-        obj.url  # noqa: B018
+    with pytest.raises(TypeError, match="cannot be resolved") as error:
+        box(json={"id": 1})
+    assert not isinstance(error.value, FieldConversionError)
     assert "analyzed_type" not in vars(box._pk)
 
     monkeypatch.setitem(globals(), "LaterStringKey", int)
 
-    assert obj.url == box(json={"id": 1}).url
+    assert box(json={"id": 1}).url == "/boxes/1/"
 
 
 def test_decorating_a_model_resolves_each_field_once(

@@ -2326,19 +2326,6 @@ def _json_equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
-@dataclass(frozen=True)
-class _UnbuiltKey:
-    """A key whose type could not be resolved when its object was built.
-
-    A name in the key's annotation may not be defined yet, as when a module
-    finishes a circular import. The key is built at its first use, which raises
-    what resolving the name raises until the name is defined.
-    """
-
-    value: Any
-    """The key as it was given or read, not yet built."""
-
-
 class _BeforeCreation:
     """The key of the object that ``merge_response()`` reads in ``create()``.
 
@@ -5071,9 +5058,8 @@ class JSONObject:
 
     The constructor builds it, from the key that it is given or from the key
     in its JSON, and nothing changes it afterward. It is ``None`` only for an
-    object of a model without a key field. It is an ``_UnbuiltKey`` until the
-    key's type can be resolved, and ``_BEFORE_CREATION`` for the object that
-    ``create()`` gives ``merge_response()``. ``_key`` reads it.
+    object of a model without a key field, and ``_BEFORE_CREATION`` for the
+    object that ``create()`` gives ``merge_response()``. ``_key`` reads it.
     """
 
     _api_override: _AnyAPI | None
@@ -5258,7 +5244,7 @@ class JSONObject:
 
     def _initial_key(
         self, prop: JSONProperty, kwargs: Mapping[str, Any]
-    ) -> int | str | _UnbuiltKey:
+    ) -> int | str:
         """Build the key that a new object has from construction.
 
         Args:
@@ -5269,13 +5255,18 @@ class JSONObject:
             The key's wire scalar, from the JSON if the object has JSON, and
             otherwise from the first key in ``kwargs``, by its field's name or
             as ``pk``. Another key in ``kwargs`` is assigned afterward, as any
-            field is. A key whose type cannot be resolved yet is returned
-            unbuilt, and its first use builds it.
+            field is.
 
         Raises:
             TypeError: If the object has no JSON and ``kwargs`` gives no key.
             FieldConversionError: If the key is not of the key's type, or the
                 JSON lacks the key or holds ``null`` for it.
+            Exception: If the key's type cannot be resolved yet, whatever
+                resolving it raises: a ``NameError`` for a class that is not
+                defined, an ``AttributeError`` for a module's attribute that is
+                not set, and a ``TypeError`` for a string in a type alias that
+                names nothing. A key's type that is refused once it resolves
+                raises its ``TypeError``.
         """
         cls = type(self)
         if self._json is not None:
@@ -5303,12 +5294,9 @@ class JSONObject:
                     f"{cls.__name__}({prop.field}=...), or JSON that holds "
                     f"it. Call create() to make a new {cls.__name__}."
                 )
-        try:
-            _resolve_key(cls)
-        except Exception:  # noqa: BLE001
-            # The key's type names something not defined yet, or is refused
-            # once it is, which the key's first use raises.
-            return _UnbuiltKey(given)
+        # Resolving the type raises what the name raises, which is no
+        # conversion of the key.
+        _resolve_key(cls)
         with _converting(cls, prop.field):
             key = _build_key(cls, given)
         # The key was not None, and the builder gives a scalar for any other.
@@ -5367,8 +5355,7 @@ class JSONObject:
         differ in case are two. Equal objects have the same ``url``, unless
         their class overrides ``url``.
 
-        An object of a model without a key field equals only itself. So does
-        one whose key's type cannot be resolved yet, until it can be. Comparing
+        An object of a model without a key field equals only itself. Comparing
         sends no request and never reads ``url``.
 
         Args:
@@ -5379,8 +5366,8 @@ class JSONObject:
             is not a model object.
 
         Raises:
-            TypeError: If the model's key declaration is refused when the key
-                is first used, as ``url`` refuses it.
+            UsageError: For the object that ``merge_response()`` reads during
+                ``create()``, which has no key yet.
         """
         if not isinstance(other, JSONObject):
             return NotImplemented
@@ -5391,16 +5378,7 @@ class JSONObject:
             or _pk_property_of(type(self)) is None
         ):
             return False
-        try:
-            return bool(self._key == other._key)
-        except Exception as err:
-            unbuilt = isinstance(self._wire_key, _UnbuiltKey) or isinstance(
-                other._wire_key, _UnbuiltKey
-            )
-            if not unbuilt or getattr(err, _DECLARATION_ERROR, False):
-                raise
-            # A key that cannot be built yet names no resource yet.
-            return False
+        return bool(self._key == other._key)
 
     def __hash__(self) -> int:
         """Return a hash that agrees with equality.
@@ -5414,13 +5392,8 @@ class JSONObject:
             The hash.
 
         Raises:
-            TypeError: If the model's key declaration is refused when the key
-                is first used, as ``url`` raises it.
-            NameError: If the key's annotation, or a type alias in its type,
-                names a class that is not defined yet, as ``url`` raises it. An
-                ``AttributeError`` for an attribute of a module that is not set
-                yet is raised the same way. Until the class is defined, ``==``
-                is ``False`` for the object.
+            UsageError: For the object that ``merge_response()`` reads during
+                ``create()``, which has no key yet.
         """
         if _pk_property_of(type(self)) is None:
             return object.__hash__(self)
@@ -5444,8 +5417,7 @@ class JSONObject:
         if pk_property is None:
             return f"<{name}>"
         key = self._wire_key
-        if isinstance(key, _UnbuiltKey | _BeforeCreation):
-            # Nothing that repr() shows may come from a key that is not built.
+        if key is _BEFORE_CREATION:
             return f"<{name} {pk_property.field}=...>"
         return f"<{name} {pk_property.field}={key!r}>"
 
@@ -5453,20 +5425,12 @@ class JSONObject:
     def _key(self) -> Any:
         """Return the wire scalar of the object's primary key.
 
-        A key whose type could not be resolved when the object was built is
-        built now, and kept once it is.
-
         Returns:
             The key, or ``None`` for an object of a model without a key field.
 
         Raises:
             UsageError: For the object that ``merge_response()`` reads during
                 ``create()``, which has no key yet.
-            FieldConversionError: If a key that is built now is not of the
-                key's type.
-            Exception: If the key's type still cannot be resolved, whatever
-                resolving it raises, as a ``NameError`` does for a class that
-                is not defined.
         """
         key = self._wire_key
         cls = type(self)
@@ -5477,11 +5441,6 @@ class JSONObject:
                 "and hash cannot be used. Read what the hook needs from the "
                 "response."
             )
-        if isinstance(key, _UnbuiltKey):
-            _resolve_key(cls)
-            with _converting(cls, cls._pk.field):
-                key = _build_key(cls, key.value)
-            self._wire_key = key
         return key
 
     def _set_prefetched_related(
@@ -6702,11 +6661,6 @@ class JSONObject:
             ValueError: If the primary key is empty or a dot segment, or the
                 class has no primary-key field. The URL would name another
                 resource, such as the collection.
-            Exception: If the key's type cannot be resolved yet, whatever
-                resolving it raises: a ``NameError`` for a class that is not
-                defined, an ``AttributeError`` for a module's attribute that is
-                not set, and a ``FieldConversionError`` for a form whose
-                annotations cannot be resolved.
         """
         if getattr(type(self), "_pk", None) is None:
             raise ValueError(
