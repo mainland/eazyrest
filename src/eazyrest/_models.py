@@ -5126,7 +5126,7 @@ class JSONObject:
     class body: the class merges and checks its table when it is defined.
     """
 
-    _wire_key: Any = None
+    _wire_key: Any
     """The wire scalar of the object's primary key, which never changes.
 
     The constructor builds it, from the key that it is given or from the key
@@ -5276,6 +5276,7 @@ class JSONObject:
         # A class's api can be assigned after the class is defined.
         _require_decorated(type(self))
         _check_api_attribute(type(self), UsageError)
+        self._wire_key = None
         if kwargs:
             _refuse_keyless_assignment(type(self))
         self._api_override = None if api is None else _as_client(api)
@@ -5413,6 +5414,28 @@ class JSONObject:
                 else copy.deepcopy(value, memo)
             )
         return copied
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore the state of a pickled or copied object.
+
+        Args:
+            state: The attributes that the object had when it was pickled.
+
+        Raises:
+            UsageError: If the model has a key field and the state holds no
+                key, as the state of a pickle written before the object kept
+                its key does not.
+        """
+        if _pk_property_of(type(self)) is not None and (
+            "_wire_key" not in state
+        ):
+            raise UsageError(
+                f"The state of this {type(self).__name__} object holds no "
+                "key, so it cannot be restored. Pickle the object again, or "
+                "read it from the server."
+            )
+        self.__dict__.update(state)
+        self.__dict__.setdefault("_wire_key", None)
 
     def __eq__(self, other: object) -> bool:
         """Return whether another object is this object's resource.
