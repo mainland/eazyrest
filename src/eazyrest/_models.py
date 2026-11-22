@@ -8694,7 +8694,9 @@ class JSONObject:
         primary key, as ``filter()`` does. Every key in ``kwargs`` is sent in
         the lookup's query string, which servers and proxies may log, so pass
         a value that only the creation needs, such as a password, in
-        ``defaults``.
+        ``defaults``. The lookup sends a key that is given under its JSON or
+        write name as it is built, as the creation sends it, where ``filter()``
+        sends that name as given.
 
         As in Django, a key that contains ``__`` and does not name a field,
         such as ``name__iexact`` or ``created__gte``, is a lookup rather than a
@@ -8800,8 +8802,20 @@ class JSONObject:
         cls._encode_query(kwargs, client)
         payload = cls._encode_fields(create_kwargs)
         _checked_json(cls._to_wire(payload))
+        # The creation sends the key as it is built, so the lookup does too,
+        # under the JSON or write name that the caller gave. filter() sends
+        # such a name as given, because it is an ordinary query parameter.
+        key_property = _pk_property_of(cls)
+        lookup = {
+            name: _build_key(cls, value)
+            if key_property is not None
+            and name not in ("pk", key_property.field)
+            and cls._created_field(name, key_property) == key_property.field
+            else value
+            for name, value in kwargs.items()
+        }
         results = cls.filter(
-            api=api, request_options=request_options, params=kwargs
+            api=api, request_options=request_options, params=lookup
         )
         first = next(results, None)
         if first is not None:

@@ -1767,6 +1767,18 @@ def get_or_create_by_id_posts_the_key(world: World) -> None:
 
 
 @row(CREATE)
+def get_or_create_looks_up_a_uuid_key_under_its_json_name_as_built(
+    world: World,
+) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"docId": LOWER})
+    sent = world.bodies(lambda: Note.get_or_create(docId=UP))
+    assert sent == [("GET", None), ("POST", {"docId": LOWER})]
+    assert unquote(urlsplit(world.requests[-2].url).query) == f"docId={LOWER}"
+    assert world.query(lambda: list(Note.filter(docId=UP))) == f"docId={UP}"
+
+
+@row(CREATE)
 def a_response_that_names_another_key_is_refused(world: World) -> None:
     world.mocker.get(requests_mock.ANY, json=[])
     world.mocker.post(requests_mock.ANY, json={"id": 8, "name": "a"})

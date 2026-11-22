@@ -1243,7 +1243,10 @@ it is sent under its write key and kept under its JSON key for the response
 merge. A Python name of a field comes first, and a name that is the key's JSON
 or write key and also another field's raises `TypeError`, naming the fields,
 before any request, as do two names of one field, such as
-`create(id=7, postId=8)`. Any other name that is no field is sent as it is.
+`create(id=7, postId=8)`. Any other name that is no field is sent as it is. The
+lookup of `get_or_create()` builds the key under its JSON or write key too, so
+a `UUID` given in uppercase is sent in the query and in the `POST` in one
+spelling, where `filter()` sends such a name as it was given.
 
 Every keyword argument to `filter()`, `get()`, or the lookup of
 `get_or_create()` must have a value that requests sends intact. It must not be
