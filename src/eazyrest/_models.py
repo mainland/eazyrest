@@ -3926,10 +3926,11 @@ def json_object(
 
         # pylint: disable=protected-access
         cls._json_fields = frozenset(fields)
-        if inherited_pk is not None and pk_field == inherited_pk.field:
+        above = _key_declared_above(cls, pk_field)
+        if above is not None:
             for prop in declared:
                 if prop.field == pk_field:
-                    _check_redeclared_key(cls, inherited_pk, prop)
+                    _check_redeclared_key(cls, above, prop)
         _refuse_declared_types(cls, declared)
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
@@ -3969,6 +3970,50 @@ def json_object(
     return wrap(cls)
 
 
+def _key_declared_above(
+    cls: type[JSONObject], field: str
+) -> JSONProperty | None:
+    """Return the nearest declaration of a key field in the bases of a class.
+
+    A base that chose another key field still has the field, as an ordinary
+    one, so only a declaration that was the key counts, wherever in the bases
+    it is. A class that chooses the field as its key again, after a base chose
+    another, then has the key's type that its bases gave the field.
+
+    Args:
+        cls: The class that is decorated.
+        field: The name of the class's key field.
+
+    Returns:
+        The declaration of ``field`` that was a primary key in the nearest base
+        that declares it so, or ``None``.
+    """
+    for base in cls.__mro__[1:]:
+        declared = vars(base).get(field)
+        if isinstance(declared, JSONProperty) and declared.is_primary_key:
+            return declared
+    return None
+
+
+def _annotation_text(annotation: Any) -> str:
+    """Return an annotation as it reads in source, for a message.
+
+    Args:
+        annotation: A declared type, or its text if it was written as a string.
+
+    Returns:
+        The text itself, a class's name, or the representation of a generic
+        form such as ``Optional[int]`` without its module.
+    """
+    if isinstance(annotation, str):
+        return annotation
+    if typing.get_origin(annotation) is None and hasattr(
+        annotation, "__name__"
+    ):
+        return str(annotation.__name__)
+    return repr(annotation).replace("typing.", "")
+
+
 def _check_redeclared_key(
     cls: type[JSONObject], inherited: JSONProperty, prop: JSONProperty
 ) -> None:
@@ -3980,7 +4025,7 @@ def _check_redeclared_key(
 
     Args:
         cls: The subclass that is decorated.
-        inherited: The key field that the subclass inherits.
+        inherited: The nearest declaration of that key field in the bases.
         prop: The subclass's own declaration of that field.
 
     Raises:
@@ -3997,10 +4042,8 @@ def _check_redeclared_key(
         own_type = _annotations(cls).get(prop.field)
     if own_type == base_type:
         return
-    shown = (
-        base_type
-        if isinstance(base_type, str)
-        else getattr(base_type, "__name__", repr(base_type))
+    shown = _annotation_text(
+        _annotations(inherited.cls).get(inherited.field, base_type)
     )
     error = TypeError(
         f"{cls.__name__}.{prop.field} redeclares the primary key that "

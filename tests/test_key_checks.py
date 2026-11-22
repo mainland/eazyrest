@@ -8,7 +8,7 @@ import enum
 import pathlib
 import sys
 import uuid
-from typing import Annotated, Any, Literal, NewType
+from typing import Annotated, Any, Literal, NewType, Optional
 
 import pytest
 
@@ -420,3 +420,89 @@ def test_a_subclass_that_keeps_its_key_type_is_admitted() -> None:
     assert Inheriting(id=1).pk == 1
     assert Redeclaring(id=1).pk == 1
     assert Redeclaring(id=1) != Member(id=1)
+
+
+@json_object(pk="code")
+class ByCode(Member):
+    """A subclass that chose another key field, keeping ``id`` as a field."""
+
+    code: str
+
+
+def test_choosing_the_key_field_again_cannot_change_its_type() -> None:
+    """A detour through another key field does not change the key's type."""
+    with pytest.raises(
+        TypeError,
+        match=r"^Back\.id redeclares the primary key that Member declares as "
+        r"int\b",
+    ):
+        json_object(
+            type(
+                "Back",
+                (ByCode,),
+                {"__annotations__": {"id": str}},
+            ),
+            pk="id",
+        )
+
+
+def test_a_subclass_that_chooses_the_key_field_again_may_keep_its_type() -> (
+    None
+):
+    """Redeclaring the field with the type that its base gave it is allowed."""
+
+    @json_object(pk="id")
+    class Alike(ByCode):
+        id: int
+
+    assert Alike(id=1).pk == 1
+
+
+def test_a_subclass_that_chooses_another_key_inherits_its_base_fields() -> (
+    None
+):
+    """A subclass that declares no key field is not refused."""
+
+    @json_object
+    class Inheriting(ByCode):
+        pass
+
+    assert Inheriting(code="a").pk == "a"
+
+
+@pytest.mark.parametrize(
+    ("annotation", "written"),
+    [
+        pytest.param(
+            Optional[int],  # noqa: UP045
+            r"(?:Optional\[int\]|int \| None)",
+            id="optional",
+        ),
+        pytest.param(
+            Annotated[int, "doc"], r"Annotated\[int, 'doc'\]", id="annotated"
+        ),
+        pytest.param(int | None, r"int \| None", id="union"),
+        pytest.param(NewType("BaseId", int), r"BaseId", id="new-type"),
+    ],
+)
+def test_the_refusal_of_a_redeclared_key_names_the_base_annotation_as_written(
+    annotation: Any, written: str
+) -> None:
+    """The message does not name a wrapper such as Optional or Annotated."""
+    base: Any = json_object(
+        type(
+            "WrappedBase",
+            (KeyBase,),
+            {
+                "class_url": "/wrapped/",
+                "__annotations__": {"id": annotation},
+            },
+        )
+    )
+    with pytest.raises(
+        TypeError,
+        match=rf"^Sub\.id redeclares the primary key that WrappedBase "
+        rf"declares as {written}, with another type\. A subclass keeps its "
+        rf"base's key, so declare id as {written}, or leave it out\.$",
+    ):
+        json_object(type("Sub", (base,), {"__annotations__": {"id": str}}))

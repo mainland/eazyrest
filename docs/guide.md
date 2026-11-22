@@ -39,16 +39,18 @@ redeclare that field only with the base's type, because its objects are the
 base's resources too: a relation to the base writes them by the base's key.
 Another annotation, such as a `NewType` or an optional of the base's type,
 raises `TypeError` when the subclass is decorated, naming the subclass, the
-field, and the base's type. Use `field_map=` when the Python attribute name
-should differ from the JSON key. Use `exclude=` for annotated attributes that
-should not become JSON-backed fields. An attribute annotated with `ClassVar`,
-such as `class_url: ClassVar[str]`, is a class attribute and never becomes a
-field. `@json_object` raises `ValueError` if `pk=` names no field of the class,
-if a `field_map=` key names no field declared on the class, or if `exclude=`
-names an attribute that the class does not annotate, so a misspelled option
-does not go unnoticed. It also raises `ValueError` if two fields, including
-inherited ones, map to the same JSON key, because each field caches its own
-value and assigning one would leave the other stale.
+field, and the base's annotation as the base wrote it. That holds when a base
+between them chose another key field and the subclass chooses the field again.
+Use `field_map=` when the Python attribute name should differ from the JSON
+key. Use `exclude=` for annotated attributes that should not become JSON-backed
+fields. An attribute annotated with `ClassVar`, such as
+`class_url: ClassVar[str]`, is a class attribute and never becomes a field.
+`@json_object` raises `ValueError` if `pk=` names no field of the class, if a
+`field_map=` key names no field declared on the class, or if `exclude=` names
+an attribute that the class does not annotate, so a misspelled option does not
+go unnoticed. It also raises `ValueError` if two fields, including inherited
+ones, map to the same JSON key, because each field caches its own value and
+assigning one would leave the other stale.
 
 A primary key is a `str`, an `int`, or a `UUID`, as
 [What a key may be](#what-a-key-may-be) says.

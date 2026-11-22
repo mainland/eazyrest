@@ -410,9 +410,11 @@ describe them further.
 - A decorated subclass that redeclares the key field that it inherits with
   another annotation, such as `id: NewType("AID", int)` or `id: int | None`
   under `id: int`, raises `TypeError` when it is decorated, naming the
-  subclass, the field, and the base's type. `v1.0.0a5` decorated it, and a
-  relation to the base refused its objects only when they were written.
-  Redeclare the field with the base's type, or leave it out.
+  subclass, the field, and the base's annotation as written. A subclass that
+  chooses the field as its key again after a base chose another field is
+  refused the same way. `v1.0.0a5` decorated it, and a relation to the base
+  refused its objects only when they were written. Redeclare the field with the
+  base's type, or leave it out.
 - A primary key is a `str`, an `int`, or a `UUID`, alone or inside `T | None`,
   `Annotated`, or a `NewType`. Any other key raises `TypeError` when the class
   is decorated, naming the field and the types that a key may be, where
