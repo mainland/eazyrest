@@ -372,6 +372,12 @@ describe them further.
   its name resolves raises its `TypeError` when an object is built, where `==`
   and `hash()` raised it. A relation to such a model, or to a model that is not
   defined yet, still lets its owner be built, and raises when it is read.
+- `json_schema()` gives a primary key the type that its builder sends, in read
+  and write schemas alike, without `null` for a key whose annotation is
+  optional, and a single relation's read schema requires the related model's
+  key in its embedded object form, as a collection of relations already did.
+  `v1.0.0a5` allowed `null` for an optional key and any object for an embedded
+  related object.
 - `create()` and `get_or_create()` resolve a name to its field before they
   apply its policy and conversion. `pk` and the key's JSON and write keys name
   the key, so `create(pk=7)` posts the key under its write key, where

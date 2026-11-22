@@ -8419,7 +8419,16 @@ class Specimen(ModelBase):
 
 def test_json_schema_describes_what_a_model_reads() -> None:
     """The read schema uses read keys and omits write-only fields."""
-    owner = {"anyOf": [{"type": "integer"}, {"type": "object"}]}
+    owner = {
+        "anyOf": [
+            {"type": "integer"},
+            {
+                "type": "object",
+                "required": ["id"],
+                "properties": {"id": {"type": "integer"}},
+            },
+        ]
+    }
 
     assert Specimen.json_schema() == {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

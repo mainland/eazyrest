@@ -4217,14 +4217,32 @@ def _array_schema(items: list[Any]) -> dict[str, Any]:
     }
 
 
+def _key_schema(cls: type[JSONObject]) -> dict[str, Any]:
+    """Return the JSON schema of the key that a model's builder sends.
+
+    Args:
+        cls: Model that has a key field.
+
+    Returns:
+        ``integer`` for an ``int`` key, ``string`` for a ``str`` key, and
+        ``string`` with the format ``uuid`` for a ``UUID`` key, in reads and
+        writes alike. A key is never ``null``, even if its annotation is
+        optional.
+    """
+    match _key_kind_of(cls):
+        case "int":
+            return {"type": "integer"}
+        case "str":
+            return {"type": "string"}
+    return {"type": "string", "format": "uuid"}
+
+
 def _json_schema_of(
     analyzed: AnalyzedType,
     mode: str,
     defs: dict[str, Any],
     seen: frozenset[type],
     table: Mapping[Any, Conversion],
-    *,
-    keyed: bool = False,
 ) -> Any:
     """Return the JSON schema of a field's analyzed type.
 
@@ -4236,8 +4254,6 @@ def _json_schema_of(
             schema is, to stop a cycle of related primary keys or of a
             structure inside itself.
         table: Conversion table of the model whose field it is.
-        keyed: Whether the type is an item of a collection of relations, whose
-            embedded object must hold the related model's key.
 
     Returns:
         The schema of the JSON value that the field reads or writes.
@@ -4250,48 +4266,38 @@ def _json_schema_of(
         return _schema_of_entry(found.entry, found.declared, mode)
     match analyzed:
         case NewTypeType(_, inner):
-            return _json_schema_of(inner, mode, defs, seen, table, keyed=keyed)
+            return _json_schema_of(inner, mode, defs, seen, table)
         case OptionalType(inner):
             return {
                 "anyOf": [
-                    _json_schema_of(
-                        inner, mode, defs, seen, table, keyed=keyed
-                    ),
+                    _json_schema_of(inner, mode, defs, seen, table),
                     {"type": "null"},
                 ]
             }
         case CollectionType(collection_type, item_type):
             schema: dict[str, Any] = {
                 "type": "array",
-                "items": _json_schema_of(
-                    item_type, mode, defs, seen, table, keyed=True
-                ),
+                "items": _json_schema_of(item_type, mode, defs, seen, table),
             }
             if _READ_AS[collection_type] in (set, frozenset):
                 schema["uniqueItems"] = True
             return schema
         case RelatedType(model_type):
             pk = model_type._pk
-            key: Any
-            if model_type in seen:
-                key = {}
-            else:
-                with _converting(model_type, pk.field):
-                    key = _json_schema_of(
-                        pk.analyzed_type,
-                        "write",
-                        defs,
-                        seen | {model_type},
-                        _table_of(model_type),
-                    )
+            key = _key_schema(model_type)
             # A read also accepts the related object embedded as JSON, which
-            # names its key if it is an item of a collection.
+            # names its key, as every object of the model has one.
             if mode == "read":
-                embedded: dict[str, Any] = {"type": "object"}
-                if keyed:
-                    embedded["required"] = [pk.json_field]
-                    embedded["properties"] = {pk.json_field: key}
-                return {"anyOf": [key, embedded]}
+                return {
+                    "anyOf": [
+                        key,
+                        {
+                            "type": "object",
+                            "required": [pk.json_field],
+                            "properties": {pk.json_field: key},
+                        },
+                    ]
+                }
             return key
         case TypedDictType(typed_dict):
             if typed_dict in seen:
@@ -4731,6 +4737,17 @@ class JSONProperty:
         """
         # A model without a key field has none.
         return getattr(type(obj), "_pk", None) is self
+
+    def _is_key_of_class(self, cls: type[JSONObject]) -> bool:
+        """Return whether this property is the primary key of a class.
+
+        Args:
+            cls: The class that owns this property, or a subclass.
+
+        Returns:
+            Whether this property is ``cls``'s key.
+        """
+        return _pk_property_of(cls) is self
 
     def _resolve_type(self) -> Any:
         """Resolve the field type without caching it.
@@ -7907,12 +7924,16 @@ class JSONObject:
                     continue
                 key = descriptor.write_field
             with _converting(cls, field):
-                properties[key] = _json_schema_of(
-                    descriptor.analyzed_type,
-                    mode,
-                    defs,
-                    frozenset(),
-                    _table_of(cls),
+                properties[key] = (
+                    _key_schema(cls)
+                    if descriptor._is_key_of_class(cls)
+                    else _json_schema_of(
+                        descriptor.analyzed_type,
+                        mode,
+                        defs,
+                        frozenset(),
+                        _table_of(cls),
+                    )
                 )
 
         # A conversion's schema may hold definitions of its own, also inside

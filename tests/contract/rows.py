@@ -2072,10 +2072,7 @@ def alternatives(schema: Any) -> list[Any]:
     return [alt for item in schema["anyOf"] for alt in alternatives(item)]
 
 
-@row(
-    SCHEMA,
-    pending="a relation's read schema allows an object without the key",
-)
+@row(SCHEMA)
 def a_relation_is_read_as_a_key_or_an_object_with_its_key(
     world: World,
 ) -> None:

@@ -1057,7 +1057,14 @@ against a server's OpenAPI schema:
 ```python
 schema = Todo.json_schema()
 assert schema["properties"]["userId"] == {
-    "anyOf": [{"type": "integer"}, {"type": "object"}]
+    "anyOf": [
+        {"type": "integer"},
+        {
+            "type": "object",
+            "required": ["id"],
+            "properties": {"id": {"type": "integer"}},
+        },
+    ]
 }
 ```
 
@@ -1070,8 +1077,11 @@ members, and a `Literal` gives its members' JSON values. A read schema also
 allows a number for `datetime.datetime` and `datetime.timedelta`, which read a
 Unix timestamp and a number of seconds, and for `decimal.Decimal`. `T | None`
 also allows `null`, and a collection is an array, whose items are unique for a
-set. A relation is the related model's primary key, and a read also accepts the
-related object embedded as JSON. The definitions of a conversion's schema move
+set. A primary key has the type that its builder sends, in reads and writes
+alike: an integer, a string, or a string with `format` `uuid`, never `null`,
+even when its annotation is optional. A relation is the related model's primary
+key, and a read also accepts the related object embedded as JSON, which must
+hold the related model's key. The definitions of a conversion's schema move
 into the schema's `$defs`, renamed with the references to them when two share a
 name. A plain `TypedDict` is an object with a property for each declared key
 that allows other properties, and one inside itself is any object. A
@@ -1079,10 +1089,11 @@ that allows other properties, and one inside itself is any object. A
 `dict[str, T]` is an object whose properties all have `T`'s schema. A type
 whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
 
-`eazyrest` has no required fields, so the schema lists none. Every field reads
-`null` as `None`, but the schema allows `null` only where the annotation does,
-so that it describes the declared types, as a server's schema does. It allows
-properties that the class does not declare, which a server may send.
+`eazyrest` has no required fields, so the schema lists none, except the key of
+a related object that a read embeds. Every field reads `null` as `None`, but
+the schema allows `null` only where the annotation does, so that it describes
+the declared types, as a server's schema does. It allows properties that the
+class does not declare, which a server may send.
 
 The schema is in the JSON Schema 2020-12 dialect, which its `$schema` names.
 OpenAPI 3.1 uses the same dialect, but OpenAPI 3.0, which Django REST

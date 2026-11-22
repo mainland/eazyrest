@@ -7,6 +7,7 @@ import re
 import uuid
 from typing import Annotated, Any, Literal, NewType, Optional
 
+import jsonschema
 import pytest
 
 from eazyrest import (
@@ -486,3 +487,70 @@ def test_create_and_a_full_save_send_one_spelling_of_a_uuid_key(
     assert posted.last_request.json() == {"id": canonical}
     assert put.last_request.json() == {"id": canonical}
     assert doc.url == f"/docs/{canonical}/"
+
+
+@json_object
+class MaybeKeyed(WireBase):
+    """Model whose key is annotated as optional."""
+
+    class_url = "/maybe/"
+
+    id: int | None
+
+
+@pytest.mark.parametrize(
+    ("model", "key", "schema"),
+    [
+        pytest.param(Item, 7, {"type": "integer"}, id="int"),
+        pytest.param(Label, "a", {"type": "string"}, id="str"),
+        pytest.param(
+            Doc, U.hex.upper(), {"type": "string", "format": "uuid"}, id="uuid"
+        ),
+        pytest.param(MaybeKeyed, 7, {"type": "integer"}, id="optional"),
+    ],
+)
+def test_the_write_schema_takes_what_create_and_a_full_save_send(
+    requests_mock: Any, model: Any, key: Any, schema: dict[str, Any]
+) -> None:
+    """The key's schema is the type that its builder sends, never null.
+
+    Args:
+        model: Model whose key is created and saved.
+        key: The key, as the caller gives it.
+        schema: The key's schema, in reads and writes alike.
+    """
+    posted = requests_mock.post(re.compile(r"https://wire\.example/"), json={})
+    put = requests_mock.put(re.compile(r"https://wire\.example/"), json={})
+    validator = jsonschema.Draft202012Validator(
+        model.json_schema("write"),
+        format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+    )
+
+    obj = model.create(id=key)
+    obj.save(full=True)
+
+    for mode in ("read", "write"):
+        assert model.json_schema(mode)["properties"]["id"] == schema
+    for sent in (posted.last_request.json(), put.last_request.json()):
+        validator.validate(sent)
+    assert not validator.is_valid({"id": None})
+
+
+def test_the_write_schema_of_a_relation_takes_the_key_that_it_sends(
+    requests_mock: Any,
+) -> None:
+    """A relation is written as the related model's built key."""
+    posted = requests_mock.post("https://wire.example/covers/", json={})
+    validator = jsonschema.Draft202012Validator(
+        Cover.json_schema("write"),
+        format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+    )
+
+    Cover.create(id=1, doc=U.hex.upper())
+
+    validator.validate(posted.last_request.json())
+    assert posted.last_request.json() == {"id": 1, "doc": str(U)}
+    assert Cover.json_schema("write")["properties"]["doc"] == {
+        "type": "string",
+        "format": "uuid",
+    }
