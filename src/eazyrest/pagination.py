@@ -856,7 +856,8 @@ class Page(Generic[T]):
         Raises:
             UsageError: If the page has no source.
             PaginationError: If ``url`` names a page already read in that
-                direction.
+                direction, or has another origin and the page does not allow
+                other origins.
             LimitExceeded: If the page would be one more than ``max_pages``.
         """
         if url is None:
@@ -877,6 +878,10 @@ class Page(Generic[T]):
                 f"{subject} names a page that was already read, so "
                 "following it would never end"
             )
+        # A link that cannot be requested is refused before it counts as a
+        # page, as when the pages are read in one pass.
+        if not self._allow_other_origins:
+            _check_page_origin(self._source.api, url, from_server=True)
         limit = self._source.api.max_pages
         if limit is not None and trail.pages >= limit:
             raise LimitExceeded(

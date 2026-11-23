@@ -12,6 +12,7 @@ from eazyrest import (
     PaginationError,
     follow_next_links,
     json_object,
+    link_headers_page,
 )
 
 OTHER = "https://other.example/items/?page=2"
@@ -71,3 +72,21 @@ def test_a_link_on_the_origin_is_stopped_by_the_page_count() -> None:
         )
         with pytest.raises(LimitExceeded, match="max_pages"):
             list(Item.filter())
+
+
+@pytest.mark.parametrize("rel", ["next", "previous"])
+def test_a_page_refuses_the_origin_not_the_page_count(rel: str) -> None:
+    """``next_page()`` and ``previous_page()`` check the origin first."""
+    api = limited()
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            "https://api.example/items/",
+            json=[{"id": 1}],
+            headers={"Link": f'<{OTHER}>; rel="{rel}"'},
+        )
+        page = link_headers_page(api, api.get("/items/"))
+        read = page.next_page if rel == "next" else page.previous_page
+        with pytest.raises(PaginationError) as caught:
+            read()
+        assert mocker.call_count == 1
+    assert not isinstance(caught.value, LimitExceeded)
