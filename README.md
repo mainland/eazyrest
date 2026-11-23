@@ -111,7 +111,9 @@ MIT. See `LICENSE`.
 
 Create the development environment in `.venv` with
 [uv](https://docs.astral.sh/uv/). It installs the project in editable mode with
-the `dev` dependency group, at the versions that `uv.lock` pins:
+the `dev` dependency group, at the versions that `uv.lock` pins. The package
+supports Python 3.11, but the `dev` group needs Python 3.12 or later, since the
+Sphinx that it includes does:
 
 ```bash
 uv sync
