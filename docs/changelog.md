@@ -689,7 +689,8 @@ describe them further.
 - `get_or_create()` raises `ValueError` naming the parameter, before any
   request, for a key's JSON name that holds `__`, as `doc__id`, where
   `v1.0.0a5` looked up `doc__id` and then posted a body without the key. Look
-  the key up as `id` or `pk`.
+  the key up as `id` or `pk`. A key whose field name holds `__` is looked up
+  and created by that name.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

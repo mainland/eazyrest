@@ -9345,7 +9345,8 @@ class JSONObject:
                 nothing to create. No request is sent.
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
-                not send intact, or is the key's JSON name and holds ``__``.
+                not send intact, or is the key's JSON name, which differs from
+                the key's field name, and holds ``__``.
             FieldConversionError: If a field's value cannot be converted, as
                 when a field that holds a collection is given a single item, or
                 if the creation's key is ``None``. Also if a lookup value is of
@@ -9394,11 +9395,13 @@ class JSONObject:
             if (
                 key_property is not None
                 and "__" in name
+                and name != key_property.field
                 and cls._created_field(name, key_property)
                 == key_property.field
             ):
                 # The lookup would read the name as a field and a suffix, and
-                # the creation would not send it as the key.
+                # the creation would not send it as the key. The key's own
+                # field name is read as that field, so it is no such name.
                 raise ValueError(
                     f"Query parameter {name} for {cls.__name__} is the "
                     f"key's JSON name, which holds '__', so a lookup would "

@@ -151,6 +151,14 @@ class DK(Base):
     id: int
 
 
+@json_object(pk="doc__id")
+class DU(Base):
+    """A key whose field name holds two underscores."""
+
+    class_url = "/du/"
+    doc__id: int
+
+
 @json_object(field_map={"user": "userId"})
 class Task(Base):
     """A relation whose JSON name differs from its field's name."""
@@ -2458,6 +2466,21 @@ def a_json_name_with_two_underscores_is_no_lookup_of_get_or_create(
             raises(world, ValueError, call, "doc__id")
     assert world.query(lambda: list(DK.filter(doc__id=7))) == "doc__id=7"
     assert world.query(lambda: DK.get_or_create(id=7)) == "doc__id=7"
+
+
+@row(CREATE)
+def a_key_field_name_with_two_underscores_is_looked_up_as_the_field(
+    world: World,
+) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"doc__id": 7})
+    assert world.bodies(lambda: DU.get_or_create(doc__id=7)) == [
+        ("GET", None),
+        ("POST", {"doc__id": 7}),
+    ]
+    lookup = world.requests[-2]
+    assert unquote(urlsplit(lookup.url).query) == "doc__id=7"
+    assert world.query(lambda: list(DU.filter(doc__id=7))) == "doc__id=7"
 
 
 @row(CREATE)
