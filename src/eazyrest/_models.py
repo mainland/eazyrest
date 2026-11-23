@@ -2083,6 +2083,32 @@ def _resolve_key(cls: type[JSONObject]) -> None:
     _ = cls._pk.analyzed_type
 
 
+def _resolve_items_key(cls: type[JSONObject]) -> None:
+    """Refuse, before a query's request, a key whose annotation cannot be read.
+
+    Every item of a collection is built with its key, so an annotation that
+    cannot be read is the declaration's fault and not the response's, as it is
+    for an object built with a key. A key type that is refused, or a name that
+    is not defined yet, raises when the first item is built, as it does for an
+    empty collection, so those wait.
+
+    Args:
+        cls: Model class that a query reads.
+
+    Raises:
+        FieldConversionError: If the key's annotation cannot be read, naming
+            the model and the key field.
+    """
+    if _pk_property_of(cls) is None:
+        return
+    try:
+        _resolve_key(cls)
+    except FieldConversionError:
+        raise
+    except (TypeError, NameError, AttributeError):
+        return
+
+
 def _key_kind_of(cls: type[JSONObject]) -> str:
     """Return the key type of a model that has a key field.
 
@@ -9662,6 +9688,7 @@ class JSONObject:
                 a page that was already read.
         """
         _require_decorated(cls)
+        _resolve_items_key(cls)
         options = _query_request_options(request_options)
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
@@ -9822,6 +9849,7 @@ class JSONObject:
             LimitExceeded: If a request exceeds a limit of the API.
         """
         _require_decorated(cls)
+        _resolve_items_key(cls)
         options = _query_request_options(request_options)
         query = _query_params(params, kwargs)
         if url is not None and query:
