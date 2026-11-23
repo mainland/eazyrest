@@ -4315,15 +4315,16 @@ def _array_schema(items: list[Any]) -> dict[str, Any]:
         items: Each position's schema.
 
     Returns:
-        The schema, in the JSON Schema 2020-12 vocabulary.
+        The schema, in the JSON Schema 2020-12 vocabulary, which does not allow
+        ``prefixItems`` to be empty, so an array of no items has none.
     """
-    return {
-        "type": "array",
-        "prefixItems": items,
-        "items": False,
-        "minItems": len(items),
-        "maxItems": len(items),
-    }
+    schema: dict[str, Any] = {"type": "array"}
+    if items:
+        schema["prefixItems"] = items
+    schema.update(
+        {"items": False, "minItems": len(items), "maxItems": len(items)}
+    )
+    return schema
 
 
 def _key_schema(cls: type[JSONObject]) -> dict[str, Any]:
