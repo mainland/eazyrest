@@ -13,6 +13,7 @@ from eazyrest import (
     follow_link_headers,
     json_object,
     link_headers_page,
+    next_links_page,
 )
 
 api = API("https://link.example/")
@@ -126,3 +127,57 @@ def test_a_link_without_a_rel_ends_the_traversal() -> None:
             headers={"Link": f'<{BASE}/paged/?page=2>; title="next"'},
         )
         assert [item.id for item in Paged.filter()] == [1]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        '<{u}?page=2>; rel="next", <{u}?page=3>; rel="next"',
+        '<{u}?page=2>; rel="next", <{u}?page=3>; rel="Next"',
+        '<{u}?page=2>; rel="next", <next>',
+    ],
+    ids=["same_rel_twice", "same_rel_in_another_case", "target_named_next"],
+)
+def test_the_first_next_link_in_the_header_is_followed(header: str) -> None:
+    """A later link neither replaces the next link nor removes it."""
+    url = f"{BASE}/paged/"
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            url, json=[{"id": 1}], headers={"Link": header.format(u=url)}
+        )
+        mocker.get(url + "?page=2", json=[{"id": 2}])
+        mocker.get(url + "?page=3", json=[{"id": 3}])
+        assert [item.id for item in Paged.filter()] == [1, 2]
+
+
+@json_object
+class Roaming(JSONObject):
+    """A model whose page hook lets its pages link to another origin."""
+
+    class_url = "/roaming/"
+    id: int
+
+    @classmethod
+    def collection_page(  # type: ignore[no-untyped-def]
+        cls, resp, *, api, **kwargs
+    ):
+        """Read the page, which may link to another origin."""
+        return next_links_page(api, resp, allow_other_origins=True)
+
+
+Roaming.register_api(api)
+
+
+def test_a_page_of_get_page_keeps_the_origins_its_hook_allows() -> None:
+    """``next_page()`` follows a link to another origin if the hook allows."""
+    elsewhere = "https://elsewhere.example/roaming/?page=2"
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            f"{BASE}/roaming/",
+            json={"results": [{"id": 1}], "next": elsewhere},
+        )
+        mocker.get(elsewhere, json={"results": [{"id": 2}], "next": None})
+        page = Roaming.get_page()
+        following = page.next_page()
+    assert following is not None
+    assert [item.id for item in following] == [2]

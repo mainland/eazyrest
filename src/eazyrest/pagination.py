@@ -56,12 +56,9 @@ def _link(resp: Response, rels: frozenset[str]) -> str | None:
     header = resp.headers.get("Link")
     if not header:
         return None
-    # As requests' Response.links does, key the links by their whole rel
-    # value, so that a later link with the same value replaces an earlier one.
-    links: dict[str, tuple[str, str]] = {}
+    # RFC 8288 allows two links of one relation type, so the links are not
+    # keyed by their rel value: the first one in the header's order wins.
     for url, rel in _parse_links(header):
-        links[rel or url] = (url, rel)
-    for url, rel in links.values():
         if rels.intersection(rel.lower().split()):
             return url
 
