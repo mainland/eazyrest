@@ -7978,9 +7978,11 @@ class JSONObject:
                     parameter.collection.collection_type
                 ] in (set, frozenset):
                     operands = _distinct_sorted(operands)
-                elif isinstance(value, (set, frozenset)) and not several:
+                elif isinstance(value, AbstractSet) and not several:
                     # A set has no order, so the same query would otherwise
-                    # give another URL in another process.
+                    # give another URL in another process. Any set is one, a
+                    # dict's key view and a class of the program's own among
+                    # them.
                     operands.sort(key=_lookup_operand_order)
         problem = None
         if not repeated and operands[0] is None:
@@ -8013,7 +8015,7 @@ class JSONObject:
                 f"because its value {problem}"
             )
         if several:
-            if isinstance(value, (set, frozenset)):
+            if isinstance(value, AbstractSet):
                 operands.sort(key=_lookup_operand_order)
             texts = [str(operand) for operand in operands]
             if "" in texts:

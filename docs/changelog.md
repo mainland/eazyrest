@@ -689,7 +689,8 @@ describe them further.
 - A set given to the parameter of a field that is a sequence, as
   `filter(tags={Tag(slug="b"), Tag(slug="a")})` for a `list[Tag]`, is sent
   sorted, where `v1.0.0a5` sent it in hash order, so the URL differed between
-  processes.
+  processes. So is any other `collections.abc.Set` in a query, as a dict's key
+  view, which is sorted now where `v1.0.0a5` sent it in its own order.
 - `get_or_create()` raises `ValueError` naming the parameter, before any
   request, for a key's JSON name that holds `__`, as `doc__id`, where
   `v1.0.0a5` looked up `doc__id` and then posted a body without the key. Look

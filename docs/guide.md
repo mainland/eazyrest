@@ -1248,24 +1248,25 @@ its `str()`, except that a model instance, also as an item of a collection, is
 sent as its primary key. A collection repeats the parameter, so
 `Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
 `QueryDict.getlist()` reads, as django-filter does for a filter on a
-many-to-many field. A set is sent in sorted order, so the same query gives the
-same URL in every process.
+many-to-many field. A set, which is any `collections.abc.Set`, as a dict's key
+view is, is sent in sorted order, so the same query gives the same URL in every
+process.
 
 A lookup whose name ends in `__in` or `__range`, such as `user__in` or
 `due__range`, takes an iterable of values that is not a string, bytes, a
 mapping, or a model, read once, and sends them as one comma-separated
 parameter, which django-filter reads: `Todo.filter(user__in=users)` sends
 `userId__in=3,5`, and `due__range=(start, end)` sends the two bounds. Each
-value is encoded as the field's own parameter encodes it. A set is sent in
-sorted order, so the same query gives the same URL in every process. A value
-that is no such iterable, such as `"1,2"` or `7`, one value that the field's
-conversion takes whole, such as an iterable class that `conversions` registers,
-an empty iterable, which django-filter would read as no filter, an item that is
-`None` or a collection, an item whose text is empty, which reads as no filter
-too, a `__range` of other than two items, and an item whose text holds a comma,
-which the server would split, raise `ValueError` naming the parameter.
-django-filter sees only the last of repeated `__in` values, and refuses
-repeated `__range` values.
+value is encoded as the field's own parameter encodes it. A set, of any class,
+is sent in sorted order, so the same query gives the same URL in every process.
+A value that is no such iterable, such as `"1,2"` or `7`, one value that the
+field's conversion takes whole, such as an iterable class that `conversions`
+registers, an empty iterable, which django-filter would read as no filter, an
+item that is `None` or a collection, an item whose text is empty, which reads
+as no filter too, a `__range` of other than two items, and an item whose text
+holds a comma, which the server would split, raise `ValueError` naming the
+parameter. django-filter sees only the last of repeated `__in` values, and
+refuses repeated `__range` values.
 
 A server that reads repeated values of such a lookup, as `getlist()` does,
 needs the other form. Set `list_lookup_style = "repeat"` on the `API`, on an

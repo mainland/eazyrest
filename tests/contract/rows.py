@@ -2073,6 +2073,18 @@ def a_set_for_a_sequence_relation_is_sent_sorted(world: World) -> None:
 
 
 @row(REL)
+def any_set_is_sent_sorted(world: World) -> None:
+    keys = {"b": 1, "a": 2}.keys()
+    assert world.query(lambda: list(Post.filter(tags=keys))) == (
+        "tags=a&tags=b"
+    )
+    assert world.query(lambda: list(Post.filter(tags__in=keys))) == (
+        "tags__in=a,b"
+    )
+    assert world.query(lambda: list(Post.filter(x=keys))) == "x=a&x=b"
+
+
+@row(REL)
 def a_collection_relation_takes_a_key_or_an_object(world: World) -> None:
     sends_query_but_refuses_creation(
         world,
