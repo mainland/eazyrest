@@ -9725,7 +9725,9 @@ class JSONObject:
 
         A value that can be iterated only once, such as a generator, is read
         once, before the lookup, and its items are used for both requests. A
-        value that the field's conversion takes as a whole is not read.
+        value that the field's conversion takes as a whole is not read. Such a
+        value under a name that is no field cannot be a body, so the creation
+        refuses it as ``create()`` does.
 
         Before it sends the lookup, this method refuses an argument that
         ``create()`` could not send, after the checks that ``filter()`` makes
@@ -9796,13 +9798,25 @@ class JSONObject:
         # a single-pass iterable, such as a generator, only once. A value that
         # the field's conversion takes whole is no collection of values, and
         # the query reads it itself.
-        def read_once(values: Mapping[str, Any]) -> dict[str, Any]:
-            """Return ``values`` with each single-pass iterable read."""
+        def read_once(
+            values: Mapping[str, Any], *, creates: bool = False
+        ) -> dict[str, Any]:
+            """Return ``values`` with each single-pass iterable read.
+
+            A single-pass iterable under a name that is no field, and that the
+            creation sends, is left as it is, so that the creation refuses it
+            as ``create()`` does. A name that only the lookup reads is not
+            sent, so the lookup's reading of it is the only one.
+            """
             return {
                 name: list(value)
                 if isinstance(value, Iterable)
                 and not isinstance(value, (Collection, str, bytes, Mapping))
                 and not cls._takes_whole_value(name, value)
+                and not (
+                    cls._resolve_name(name) is None
+                    and (creates or "__" not in name)
+                )
                 else value
                 for name, value in values.items()
             }
@@ -9847,7 +9861,7 @@ class JSONObject:
             name: value for name, value in kwargs.items() if sets_field(name)
         }
         if defaults is not None:
-            create_kwargs.update(read_once(defaults))
+            create_kwargs.update(read_once(defaults, creates=True))
 
         # Refuse an argument that the lookup or the creation could not send
         # before sending anything. The lookup's own checks come first, then the

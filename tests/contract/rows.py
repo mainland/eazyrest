@@ -2763,6 +2763,15 @@ def an_extra_that_json_would_change_is_refused_by_create(
             lambda: User.get_or_create(id=7, defaults={"x": value}),
         ):
             raises(world, TypeError, call)
+    # A generator is not JSON, whether it is read once for a lookup or not.
+    for call in (
+        lambda: User.create(id=7, x=(i for i in range(2))),
+        lambda: User.get_or_create(id=7, x=(i for i in range(2))),
+        lambda: User.get_or_create(
+            id=7, defaults={"x": (i for i in range(2))}
+        ),
+    ):
+        raises(world, TypeError, call)
 
 
 @row(CREATE)
