@@ -27,7 +27,17 @@ class Keyless(JSONObject):
     name: str
 
 
+@json_object
+class Member(JSONObject):
+    """A model with a set relation to its own model."""
+
+    class_url = "/members/"
+    id: int
+    friends: set[Member]
+
+
 Keyed.register_api(api)
+Member.register_api(api)
 
 
 @pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
@@ -82,3 +92,19 @@ def test_a_pickle_written_without_the_key_does_not_load() -> None:
 
     with pytest.raises(UsageError, match="Keyed"):
         pickle.loads(pickle.dumps(Carrier()))
+
+
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_objects_that_hold_each_other_in_sets_load_from_a_pickle(
+    protocol: int,
+) -> None:
+    """A set is rebuilt after the objects in it have their keys."""
+    first = Member(json={"id": 1, "friends": [2, 3]})
+    second = Member(json={"id": 2, "friends": [1]})
+    first.friends = {second, Member(id=3)}
+    second.friends = {first}
+    restored = pickle.loads(pickle.dumps(first, protocol))
+    assert restored == first
+    assert {friend.pk for friend in restored.friends} == {2, 3}
+    (back,) = next(f for f in restored.friends if f.pk == 2).friends
+    assert back is restored

@@ -44,6 +44,7 @@ from typing import (
     ClassVar,
     Literal,
     Self,
+    SupportsIndex,
     TypeAlias,
     TypeVar,
     Union,
@@ -2405,6 +2406,25 @@ items can, as a dataclass can, so neither is listed.
 
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
+
+
+def _rebuild_object(cls: type[T], wire_key: Any) -> T:
+    """Return an object of a class that has its key and no other state.
+
+    A pickle rebuilds an object with this and then restores its state, so the
+    object has its key, and hashes, before any other object that holds it is
+    rebuilt.
+
+    Args:
+        cls: The model.
+        wire_key: The wire scalar of the object's key.
+
+    Returns:
+        A new object that has only its key.
+    """
+    obj = object.__new__(cls)
+    obj.__dict__["_wire_key"] = wire_key
+    return obj
 
 
 # The lookups whose operands are values of the field, as Django's lookups of
@@ -5549,6 +5569,25 @@ class JSONObject:
             for name, value in vars(self).items()
             if name != "_write_options"
         }
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> tuple[Any, ...]:
+        """Return what a pickle holds, with the key before the state.
+
+        An object is rebuilt with its key first, so that it hashes as soon as
+        it exists. A set of objects that hold each other hashes one of them
+        before its state is restored.
+
+        Args:
+            protocol: The pickle protocol.
+
+        Returns:
+            The reconstructor with the class and the key, and the state.
+        """
+        return (
+            _rebuild_object,
+            (type(self), self._wire_key),
+            self.__getstate__(),
+        )
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore the state of a pickled or copied object.

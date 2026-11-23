@@ -135,6 +135,15 @@ class Post(Base):
 
 
 @json_object
+class Member(Base):
+    """A set relation to its own model."""
+
+    class_url = "/members/"
+    id: int
+    friends: set[Member]
+
+
+@json_object
 class Entry(Base):
     """A model with no key."""
 
@@ -1070,6 +1079,25 @@ def a_copy_made_in_a_write_options_block_sends_none_of_its_options(
         duplicate.title = "new"
         world.body(duplicate.save, "PATCH")
         assert "If-Match" not in world.requests[-1].headers
+
+
+@row(EQ)
+def objects_that_hold_each_other_in_sets_survive_a_pickle(
+    world: World,
+) -> None:
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        m = Member(json={"id": 1, "friends": [2]})
+        n = Member(json={"id": 2, "friends": [1]})
+        m.friends = {n}
+        n.friends = {m}
+        duplicate = pickle.loads(pickle.dumps(m, protocol=protocol))
+        expected = copy.deepcopy(m)
+        assert duplicate == expected
+        assert duplicate.friends == expected.friends
+        (friend,) = duplicate.friends
+        assert friend.pk == 2
+        assert friend.friends == {duplicate}
+        assert friend.friends.pop() is duplicate
 
 
 ASSIGN = "assigning-the-key"
