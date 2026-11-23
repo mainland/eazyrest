@@ -1273,14 +1273,17 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
 
     A value that is not a string, a number, a ``bool``, or ``None``, such as
     bytes or a tuple, has no reading from JSON and cannot be written to it, so
-    a field of the type could neither be read nor be given a value.
+    a field of the type could neither be read nor be given a value. A float
+    that is not finite is no JSON number either, and the schema that holds it
+    is no JSON.
 
     Args:
         name: What to call the type in the message.
         values: The JSON values that the type's members stand for.
 
     Raises:
-        TypeError: If a value is not a JSON scalar.
+        TypeError: If a value is not a JSON scalar, or is a float that is not
+            finite.
     """
     for value in values:
         if value is not None and not isinstance(value, (str, int, float)):
@@ -1288,6 +1291,12 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
                 f"{name} has a value of type {type(value).__name__}, which is "
                 "not a JSON scalar, so its JSON could not be read or written. "
                 "Use strings, integers, floats, bools, or None."
+            )
+        if isinstance(value, float) and not math.isfinite(value):
+            raise TypeError(
+                f"{name} has a float that is not finite, which JSON cannot "
+                "carry, so its JSON could not be read or written. Use finite "
+                "numbers."
             )
 
 

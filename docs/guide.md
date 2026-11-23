@@ -604,12 +604,13 @@ Python types are converted automatically:
   `"0E-20000"`, which writes each zero after the point.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values. An enum or a `Literal` whose values are not JSON scalars, a
-  string, an integer, a float, or a `bool`, such as bytes or a tuple, raises
-  `TypeError` when the class is decorated, since JSON could neither give nor
-  take such a value. So does an enum with a member whose value is `None`, and
-  so does a `Literal` that holds such a member, which every field reads as no
-  value, so the member would never be read. A `Literal` may hold `None` itself.
-  An enum with an entry of its own in `conversions` is not checked.
+  string, an integer, a finite float, or a `bool`, such as bytes, a tuple, or
+  `math.inf`, raises `TypeError` when the class is decorated, since JSON could
+  neither give nor take such a value. So does an enum with a member whose value
+  is `None`, and so does a `Literal` that holds such a member, which every
+  field reads as no value, so the member would never be read. A `Literal` may
+  hold `None` itself. An enum with an entry of its own in `conversions` is not
+  checked.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
 Every field reads JSON `null` as `None` and writes `None` as `null`, whatever

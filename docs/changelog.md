@@ -131,10 +131,11 @@ describe them further.
   or `Mapping[str, Any]`, or register a `Conversion` for the class. A
   subclass's `conversions` decide for the fields that it inherits.
 - A `Literal` or an enum with a value that is not a JSON scalar, such as
-  `Literal[b"x"]` or an enum whose members are tuples, raises `TypeError` when
-  the class is decorated. `v1.0.0a5` accepted it, though no JSON value read as
-  such a member and its schema held a value that JSON cannot write. An enum
-  with an entry of its own in `conversions` is not checked.
+  `Literal[b"x"]` or an enum whose members are tuples, or a float that is not
+  finite, as `Literal[math.inf]`, raises `TypeError` when the class is
+  decorated. `v1.0.0a5` accepted it, though no JSON value read as such a member
+  and its schema held a value that JSON cannot write. An enum with an entry of
+  its own in `conversions` is not checked.
 - An enum with a member whose value is `None`, or a `Literal` that holds such a
   member, raises `TypeError` naming the field and the member when the class is
   decorated, since every field reads `null` as `None`, so the member could
