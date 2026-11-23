@@ -4205,7 +4205,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
                 else:
                     result[key] = rewrite(item)
             return result
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return [rewrite(item) for item in value]
         return value
 
@@ -4288,7 +4288,7 @@ def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
     Returns:
         ``value`` with no ``$defs`` below it, and its references rewritten.
     """
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_hoist_nested_defs(item, defs) for item in value]
     if not isinstance(value, dict):
         return value

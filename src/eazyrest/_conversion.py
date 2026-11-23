@@ -155,7 +155,7 @@ def _check_embeddable(
     if root:
         own = schema.get("$defs") if isinstance(schema, Mapping) else None
         defs = own if isinstance(own, Mapping) else ()
-    if isinstance(schema, list):
+    if isinstance(schema, (list, tuple)):
         for item in schema:
             _check_embeddable(item, root=False, defs=defs)
         return
