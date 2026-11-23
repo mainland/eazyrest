@@ -836,6 +836,10 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             raises an ``AttributeError``, and that is raised as it is.
     """
     ty = _expand_aliases(ty)
+    if cast(Any, ty) is None:
+        # typing spells None as its type in a type argument, as in List[None],
+        # and the builtin generics keep it as None.
+        ty = type(None)
     ty_origin = typing.get_origin(ty)
     ty_args = typing.get_args(ty)
     if ty_origin is not None and not ty_args and not hasattr(ty, "__args__"):
