@@ -5390,7 +5390,7 @@ def test_save_rejects_patch_response_without_object(
     user = User(json={"id": 1, "name": "Ada"})
 
     user.name = "Grace"
-    with pytest.raises(TypeError, match="must hold a JSON object"):
+    with pytest.raises(TypeError, match="must return a JSON object"):
         user.save()
 
     assert user.json == {"id": 1, "name": "Grace"}
@@ -5411,9 +5411,9 @@ def test_create_and_load_reject_response_without_object(
     requests_mock.post("https://example.com/v1/users/", text=body)
     requests_mock.get("https://example.com/v1/users/1/", text=body)
 
-    with pytest.raises(TypeError, match="must hold a JSON object"):
+    with pytest.raises(TypeError, match="must return a JSON object"):
         User.create(name="Ada")
-    with pytest.raises(TypeError, match="must hold a JSON object"):
+    with pytest.raises(TypeError, match="must return a JSON object"):
         _ = User(id=1).name
 
 

@@ -376,7 +376,13 @@ class _ModelPageSource(_PageSource[Any]):
             TypeError: If ``collection_page()`` does not return a ``Page``.
         """
         model = self._model
-        raw = _checked_page(model, model.collection_page(resp, api=self.api))
+        raw = _hook_result(
+            model,
+            "collection_page",
+            model.collection_page(resp, api=self.api),
+            Page,
+            "a Page",
+        )
         _check_page_size(self.api, raw.items)
         if self._prefetch:
             objects: list[JSONObject] = list(
@@ -401,27 +407,6 @@ class _ModelPageSource(_PageSource[Any]):
             page._allow_other_origins = raw._allow_other_origins
         page._asked_url = _asked_url(resp)
         return page
-
-
-def _checked_page(model: type[Any], page: Any) -> Page[Any]:
-    """Return what a model's ``collection_page()`` gave, if it is a page.
-
-    Args:
-        model: The model whose hook was called.
-        page: The hook's result.
-
-    Returns:
-        ``page``.
-
-    Raises:
-        TypeError: If ``page`` is not a ``Page``.
-    """
-    if not isinstance(page, Page):
-        raise TypeError(
-            f"{model.__name__}.collection_page() must return a Page, got "
-            f"{type(page).__name__}"
-        )
-    return page
 
 
 class APIDescriptor:
@@ -2262,31 +2247,47 @@ class _BeforeCreation:
 _BEFORE_CREATION = _BeforeCreation()
 
 
-def _checked_merge(
-    cls: type[Any], merged: Any, resp: Response
-) -> dict[str, Any]:
-    """Return what ``merge_response()`` gave, if it is a mapping.
+def _hook_result(
+    model: type[Any],
+    hook: str,
+    result: Any,
+    kind: type | tuple[type, ...],
+    must: str,
+    *,
+    resp: Response | None = None,
+) -> Any:
+    """Return what an overridable hook gave, if it is what the hook must give.
+
+    Every call of a hook that a subclass may override goes through this check,
+    so that a wrong result names the hook instead of failing later in the
+    library's own code.
 
     Args:
-        cls: The model whose hook was called.
-        merged: The hook's result.
-        resp: The response to the write.
+        model: The model whose hook was called.
+        hook: Name of the hook.
+        result: The hook's result.
+        kind: The class or classes that the result must be an instance of.
+        must: What the hook must return, as the error says it.
+        resp: The response that the hook read, if a write's or a load's
+            response is what it was given.
 
     Returns:
-        The result, which is the object's JSON.
+        ``result``.
 
     Raises:
-        ResponseShapeError: If the result is not a mapping, as when an override
-            returns ``None``, a list, or a string. The error holds the
-            response.
+        ResponseShapeError: If ``result`` is not of ``kind`` and ``resp`` is
+            given. The error holds the response.
+        TypeError: If ``result`` is not of ``kind`` and no response is given.
     """
-    if not isinstance(merged, Mapping):
-        raise ResponseShapeError(
-            f"{cls.__name__}.merge_response() must return a JSON object, "
-            f"got {type(merged).__name__}",
-            response=resp,
-        )
-    return cast("dict[str, Any]", merged)
+    if isinstance(result, kind):
+        return result
+    message = (
+        f"{model.__name__}.{hook}() must return {must}, got "
+        f"{type(result).__name__}"
+    )
+    if resp is not None:
+        raise ResponseShapeError(message, response=resp)
+    raise TypeError(message)
 
 
 """The one key of every object that reads a creation's response."""
@@ -6769,8 +6770,16 @@ class JSONObject:
                 has changed. Any other error of ``merge_response()`` reaches
                 the caller unchanged.
         """
-        return _checked_merge(
-            type(self), self.merge_response(resp, current, sent), resp
+        return cast(
+            "dict[str, Any]",
+            _hook_result(
+                type(self),
+                "merge_response",
+                self.merge_response(resp, current, sent),
+                Mapping,
+                "a JSON object",
+                resp=resp,
+            ),
         )
 
     def _refuse_other_key(self, key: Any) -> None:
@@ -8493,10 +8502,13 @@ class JSONObject:
         # The server may have made the resource, which only the response names,
         # so every refusal of the response holds it.
         try:
-            merged = _checked_merge(
+            merged = _hook_result(
                 cls,
+                "merge_response",
                 cls._before_creation(api).merge_response(resp, {}, sent),
-                resp,
+                Mapping,
+                "a JSON object",
+                resp=resp,
             )
             cls._refuse_other_created_key(payload, merged, resp)
             obj = cls(json=merged, api=api)
@@ -8716,14 +8728,30 @@ class JSONObject:
             TypeError: If ``collection_page()`` does not return a ``Page``.
         """
         if cls._overrides_hook("collection_items"):
-            return cls.collection_items(api.json(resp), api=api, **kwargs)
-        return _follow_pages(
-            api,
-            _checked_page(cls, cls.collection_page(resp, api=api, **kwargs)),
-            lambda page_resp: _checked_page(
-                cls, cls.collection_page(page_resp, api=api, **kwargs)
-            ),
-        )
+            return cast(
+                "Iterable[Any]",
+                _hook_result(
+                    cls,
+                    "collection_items",
+                    cls.collection_items(api.json(resp), api=api, **kwargs),
+                    Iterable,
+                    "an iterable of JSON objects",
+                ),
+            )
+
+        def read_page(page_resp: Response) -> Page[Any]:
+            return cast(
+                "Page[Any]",
+                _hook_result(
+                    cls,
+                    "collection_page",
+                    cls.collection_page(page_resp, api=api, **kwargs),
+                    Page,
+                    "a Page",
+                ),
+            )
+
+        return _follow_pages(api, read_page(resp), read_page)
 
     @classmethod
     def collection_items(
@@ -8966,12 +8994,9 @@ class JSONObject:
             raise ResponseShapeError(
                 f"The response to the {where}: {err}", response=resp
             ) from err
-        if not isinstance(json, Mapping):
-            raise ResponseShapeError(
-                f"{cls.__name__} response must hold a JSON object, "
-                f"got {type(json).__name__}",
-                response=resp,
-            )
+        json = _hook_result(
+            cls, "object_json", json, Mapping, "a JSON object", resp=resp
+        )
 
         return dict(json)
 
@@ -9117,9 +9142,15 @@ class JSONObject:
             # key. A key that cannot be read yet matches none, so raise before
             # the request rather than keep an empty prefetch.
             _resolve_key(model_type)
-            related_objects = model_type.bulk_get_by_pks(
-                _prefetch_keys(cls, field, model_type, raw_keys.values()),
-                api=query.related_client(model_type),
+            related_objects = _hook_result(
+                model_type,
+                "bulk_get_by_pks",
+                model_type.bulk_get_by_pks(
+                    _prefetch_keys(cls, field, model_type, raw_keys.values()),
+                    api=query.related_client(model_type),
+                ),
+                Mapping,
+                "the related objects by key, as a mapping",
             )
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
@@ -9348,7 +9379,13 @@ class JSONObject:
             ),
             "the query has no collection to read",
         )
-        items = cls.collection_items_from_response(resp, api=client)
+        items = _hook_result(
+            cls,
+            "collection_items_from_response",
+            cls.collection_items_from_response(resp, api=client),
+            Iterable,
+            "an iterable of JSON objects",
+        )
 
         count = _count_of(items)
         # Treat an empty prefetch list the same as no prefetch at all.
