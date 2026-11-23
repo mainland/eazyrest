@@ -127,7 +127,8 @@ def _parse_terms(text: str) -> datetime.timedelta | None:
     """Parse a duration written as terms with units, such as ``"1h 30m"``.
 
     Args:
-        text: Duration without surrounding whitespace.
+        text: Duration without surrounding whitespace, which the caller has
+            refused.
 
     Returns:
         Parsed ``timedelta``, or ``None`` if ``text`` is not a sequence of
@@ -192,8 +193,9 @@ def parse_duration(delta: str | float) -> datetime.timedelta:
         TypeError: If ``delta`` is not a string or a number. As for every
             error, the message does not quote ``delta``, which a server or a
             user may have sent.
-        ValueError: If ``delta`` is not in a supported form, has an unknown
-            unit, has years or months, or is out of the range of ``timedelta``.
+        ValueError: If ``delta`` is not in a supported form, has surrounding
+            whitespace, has an unknown unit, has years or months, or is out of
+            the range of ``timedelta``.
     """
     if isinstance(delta, bool) or not isinstance(delta, (str, int, float)):
         raise TypeError(
@@ -220,13 +222,17 @@ def _parse_duration(delta: str | float) -> datetime.timedelta:
 
     Raises:
         OverflowError: If the duration is out of the range of ``timedelta``.
-        ValueError: If ``delta`` is not in a supported form, has an unknown
-            unit, or has years or months.
+        ValueError: If ``delta`` is not in a supported form, has surrounding
+            whitespace, has an unknown unit, or has years or months.
     """
     if not isinstance(delta, str):
         return datetime.timedelta(seconds=delta)
 
-    text = delta.strip()
+    # A date, a time, a decimal, and a key refuse surrounding whitespace, and
+    # so does a duration, whichever form it has.
+    if delta != delta.strip():
+        raise ValueError("Duration has surrounding whitespace")
+    text = delta
     if _SECONDS_RE.fullmatch(text):
         return datetime.timedelta(seconds=float(text))
 

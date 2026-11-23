@@ -136,7 +136,6 @@ def test_parse_duration_returns_timedelta() -> None:
         ("3\u03bcs", datetime.timedelta(microseconds=3)),
         ("-1h30m", datetime.timedelta(hours=-1, minutes=-30)),
         ("- 1 hour", datetime.timedelta(hours=-1)),
-        (" 1h ", datetime.timedelta(hours=1)),
         ("90", datetime.timedelta(seconds=90)),
         ("-1.5", datetime.timedelta(seconds=-1.5)),
         (90, datetime.timedelta(seconds=90)),
@@ -273,3 +272,46 @@ def test_a_datetime_out_of_range_raises_value_error() -> None:
     """24:00 on the last day that ``datetime`` represents is out of range."""
     with pytest.raises(ValueError, match="out of range"):
         parse_datetime("9999-12-31T24:00:00")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        " 1h",
+        "1h ",
+        " 1h ",
+        "\t1h",
+        "1h\n",
+        "\x1f1h",
+        "\u00a01h",
+        "1h\u3000",
+        " 90",
+        "90 ",
+        " 1:30",
+        "1:30 ",
+        " P1D",
+        "P1D ",
+        " -1h",
+        "1h, ",
+    ],
+)
+def test_parse_duration_refuses_surrounding_whitespace(text: str) -> None:
+    """A duration with whitespace around it is refused, in every form.
+
+    Args:
+        text: Duration written with whitespace before or after it.
+    """
+    with pytest.raises(ValueError, match="surrounding whitespace"):
+        parse_duration(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["1h 30m", "- 1 hour", "1h, 30m", "1 day, 2:03"]
+)
+def test_parse_duration_keeps_whitespace_inside_a_duration(text: str) -> None:
+    """Whitespace between the parts of a duration is still allowed.
+
+    Args:
+        text: Duration written with whitespace between its parts.
+    """
+    assert isinstance(parse_duration(text), datetime.timedelta)

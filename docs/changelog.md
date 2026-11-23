@@ -255,6 +255,10 @@ describe them further.
   where `v1.0.0a5` left the strings. A decimal string with spaces, such as
   `" 1.0 "`, is refused, and `Decimal("1E+2")` writes `"100"`. `deque[T]` reads
   a `deque`.
+- `parse_duration()`, and so a `timedelta` field, refuses a string with
+  whitespace before or after it, such as `" 1h "`, with `ValueError`, as a
+  date, a time, and a decimal do. `v1.0.0a5` stripped it. Whitespace between
+  the parts of a duration, as in `"1h 30m"`, is still allowed.
 - A value that cannot be written as JSON, such as a float that is not finite,
   raises `FieldConversionError` when it is assigned, where `v1.0.0a5` accepted
   the assignment. Inside a type that eazyrest does not convert, such as an
