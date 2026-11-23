@@ -855,8 +855,8 @@ def _supertype(ty: Any) -> Any:
     Raises:
         TypeError: If the supertype names a type by a string. Python never
             resolves a string in a ``NewType``'s supertype, so it would stay a
-            string in the type that eazyrest converts, and Pydantic would
-            resolve it in the wrong module.
+            string in the type that eazyrest converts, which cannot be
+            converted as the type that the string names.
     """
     if isinstance(ty, type):
         return None
