@@ -141,6 +141,17 @@ class Entry(Base):
     name: str
 
 
+@json_object
+class Shelf(Base):
+    """Relations to a model with a UUID key."""
+
+    class_url = "/shelves/"
+    id: int
+    cover: Optional[Doc]
+    papers: list[Doc]
+    docset: set[Doc]
+
+
 BODY: dict[str, Any] = {
     "postId": 1,
     "title": "t",
@@ -252,6 +263,32 @@ def raises(
     names(str(caught), *named)
     assert world.count - before == requests
     return caught
+
+
+def refuses_assignment(
+    world: World,
+    obj: JSONObject,
+    name: str,
+    value: Any,
+    *named: str,
+    exc: type[Exception] = FieldConversionError,
+) -> Exception:
+    """Assert that an assignment is refused and changes nothing.
+
+    The field keeps its value, the object's ``json`` is as it was, and a
+    following ``save()`` sends nothing. No request is sent by the assignment.
+    """
+    json_before = copy.deepcopy(obj.json)
+    value_before = getattr(obj, name)
+    snapshot = copy.deepcopy(value_before)
+    error = raises(world, exc, lambda: setattr(obj, name, value), *named)
+    assert getattr(obj, name) is value_before
+    assert value_before == snapshot
+    assert obj.json == json_before
+    sent = world.count
+    obj.save()
+    assert world.count == sent, "a refused assignment left a pending write"
+    return error
 
 
 def queries(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
@@ -763,6 +800,104 @@ def a_uuid_key_refuses_a_spelling_outside_the_four_forms(
             raises(world, FieldConversionError, call, "Doc.id")
 
 
+SHELF: dict[str, Any] = {
+    "id": 1,
+    "cover": LOWER,
+    "papers": [LOWER],
+    "docset": [LOWER],
+}
+
+
+def shelf(**over: Any) -> Shelf:
+    """Return a shelf read from JSON with the given keys replaced."""
+    return Shelf(json={**SHELF, **over})
+
+
+@row(BUILD)
+def a_uuid_key_of_a_relation_is_read_from_any_spelling(
+    world: World,
+) -> None:
+    spellings = (
+        UP,
+        UC,
+        f"{{{LOWER}}}",
+        f"urn:uuid:{LOWER}",
+        f"{{{UP}}}",
+        f"urn:uuid:{UP}",
+    )
+    for text in spellings:
+        obj = shelf(cover=text, papers=[text], docset=[text])
+        assert obj.cover == Doc(id=U)
+        assert pks(obj.papers) == [U]
+        assert pks(obj.docset) == [U]
+    for text in spellings:
+        values: tuple[Any, ...] = (text, Doc(id=text))
+        for value in values:
+            obj = shelf()
+            obj.cover = value
+            obj.papers = [value]
+            obj.docset = {value}
+            assert pks([obj.cover]) == [U]
+            assert pks(obj.papers) == [U]
+            assert pks(obj.docset) == [U]
+
+
+@row(BUILD)
+def a_uuid_key_of_a_relation_is_sent_in_its_canonical_form(
+    world: World,
+) -> None:
+    for text in (UP, UC, f"{{{UP}}}", f"urn:uuid:{UP}"):
+        values: list[tuple[str, Any]] = [
+            ("cover", text),
+            ("papers", [text]),
+            ("docset", {text}),
+        ]
+        for field, value in values:
+            body = world.body(
+                lambda: Shelf.create(**{field: value}),
+                "POST",
+            )
+            assert body == {field: [LOWER] if field != "cover" else LOWER}
+
+
+@row(BUILD)
+def a_uuid_key_of_a_relation_refuses_a_spelling_outside_the_four_forms(
+    world: World,
+) -> None:
+    digits = U.hex
+    for text in (
+        "0x" + digits[2:],
+        "+" + digits[1:],
+        digits[:15] + "_" + digits[16:],
+        "-".join(digits[i : i + 4] for i in range(0, 32, 4)),
+        " " + digits[1:],
+        digits[:-1] + "\n",
+        digits[:-1] + chr(0xFF17),
+    ):
+        given: list[tuple[str, Any, str]] = [
+            ("cover", text, "Shelf.cover"),
+            ("papers", [text], "Shelf.papers"),
+            ("docset", {text}, "Shelf.docset"),
+        ]
+        for field, value, bare in given:
+            refuses_assignment(world, shelf(), field, value, bare)
+            raises(
+                world,
+                FieldConversionError,
+                lambda: Shelf.create(**{field: value}),
+                bare,
+            )
+            for call in queries(Shelf, **{field: value}):
+                raises(world, FieldConversionError, call, bare)
+            obj = shelf(**{field: value})
+            raises(
+                world,
+                FieldConversionError,
+                lambda: getattr(obj, field),
+                bare,
+            )
+
+
 @row(BUILD)
 def a_bad_uuid_refused(world: World) -> None:
     for value in ("not-a-uuid", 7):
@@ -864,12 +999,8 @@ ASSIGN = "assigning-the-key"
 @row(ASSIGN)
 def another_key_is_refused_for_a_keyed_object(world: World) -> None:
     for attribute in ("id", "pk"):
-        user = User(id=7)
-        raises(
-            world,
-            AttributeError,
-            lambda: setattr(user, attribute, 8),
-        )
+        user = User(json={"id": 7, "name": "a"})
+        refuses_assignment(world, user, attribute, 8, exc=AttributeError)
         assert user.pk == 7
 
 
@@ -912,12 +1043,7 @@ def none_is_sent_as_null(world: World) -> None:
 def a_key_of_the_wrong_type_is_refused_for_a_relation(world: World) -> None:
     for value in ("8", True, 8.0):
         obj = post()
-        raises(
-            world,
-            FieldConversionError,
-            lambda: setattr(obj, "owner", value),
-            "Post.owner",
-        )
+        refuses_assignment(world, obj, "owner", value, "Post.owner")
         raises(
             world,
             FieldConversionError,
@@ -929,23 +1055,26 @@ def a_key_of_the_wrong_type_is_refused_for_a_relation(world: World) -> None:
 @row(OWNER)
 def an_object_of_another_model_is_refused(world: World) -> None:
     obj = post()
-    for call in (
-        lambda: setattr(obj, "owner", Other(id=8)),
+    names_ = ("Post.owner", "User", "Other")
+    refuses_assignment(world, obj, "owner", Other(id=8), *names_)
+    raises(
+        world,
+        FieldConversionError,
         lambda: Post.create(owner=Other(id=8)),
-    ):
-        raises(
-            world, FieldConversionError, call, "Post.owner", "User", "Other"
-        )
+        *names_,
+    )
 
 
 @row(OWNER)
 def a_mapping_is_refused_for_a_relation(world: World) -> None:
     obj = post()
-    for call in (
-        lambda: setattr(obj, "owner", {"id": 8}),
+    refuses_assignment(world, obj, "owner", {"id": 8}, "Post.owner")
+    raises(
+        world,
+        FieldConversionError,
         lambda: Post.create(owner={"id": 8}),
-    ):
-        raises(world, FieldConversionError, call, "Post.owner")
+        "Post.owner",
+    )
 
 
 @row(OWNER)
@@ -1040,17 +1169,14 @@ def a_null_item_is_refused_on_read(world: World) -> None:
         FieldConversionError,
         lambda: post(watchers=[None, 7]).watchers,
         "Post.watchers",
+        "[0]",
     )
 
 
 @row(COLL)
 def a_null_item_is_refused_on_write(world: World) -> None:
     p = post()
-
-    def assign() -> None:
-        p.readers = [None]  # type: ignore[list-item]
-
-    raises(world, FieldConversionError, assign, "Post.readers", "[0]")
+    refuses_assignment(world, p, "readers", [None], "Post.readers", "[0]")
     p.readers.append(None)  # type: ignore[arg-type]
     raises(world, FieldConversionError, p.save, "Post.readers", "[1]")
     raises(
@@ -1060,11 +1186,18 @@ def a_null_item_is_refused_on_write(world: World) -> None:
         "Post.readers",
         "[0]",
     )
-    for call in (
-        lambda: setattr(post(), "watchers", {None}),
+    refuses_assignment(
+        world, post(), "watchers", {None}, "Post.watchers", "[0]"
+    )
+    q = post(watchers=[])
+    q.watchers.add(None)  # type: ignore[arg-type]
+    raises(world, FieldConversionError, q.save, "Post.watchers", "[0]")
+    raises(
+        world,
+        FieldConversionError,
         lambda: Post.create(watchers={None, User(id=7)}),
-    ):
-        raises(world, FieldConversionError, call, "Post.watchers")
+        "Post.watchers",
+    )
 
 
 @row(COLL)
@@ -1114,12 +1247,7 @@ def an_assigned_collection_is_sent_as_keys(world: World) -> None:
 def an_assigned_item_of_another_model_is_refused(world: World) -> None:
     for field in SEQUENCES:
         obj = post()
-        raises(
-            world,
-            FieldConversionError,
-            lambda: setattr(obj, field, [Other(id=1)]),
-            f"Post.{field}",
-        )
+        refuses_assignment(world, obj, field, [Other(id=1)], f"Post.{field}")
 
 
 @row(COLL)
@@ -1128,12 +1256,8 @@ def an_assigned_object_that_is_no_collection_is_refused(
 ) -> None:
     for field in SEQUENCES:
         obj = post()
-        raises(
-            world,
-            FieldConversionError,
-            lambda: setattr(obj, field, tag("b")),
-            f"Post.{field}",
-            "collections",
+        refuses_assignment(
+            world, obj, field, tag("b"), f"Post.{field}", "collections"
         )
 
 
@@ -1145,12 +1269,8 @@ def an_iterable_model_is_refused_for_a_collection_and_kept_in_a_lookup(
     for field in (*SEQUENCES, *SETS):
         given: dict[str, Any] = {field: crew}
         obj = post()
-        raises(
-            world,
-            FieldConversionError,
-            lambda: setattr(obj, field, crew),
-            f"Post.{field}",
-            "collections",
+        refuses_assignment(
+            world, obj, field, crew, f"Post.{field}", "collections"
         )
         raises(
             world,
@@ -1448,6 +1568,14 @@ def pk_is_sent_as_pk(world: World) -> None:
 def pk_lookups_are_sent_as_pk(world: World) -> None:
     sends_query(world, Post, "pk__in=7,8", pk__in=[7, 8])
     sends_query(world, Post, "pk__range=1,5", pk__range=(1, 5))
+    api = API("https://rows.example/")
+    api.list_lookup_style = "repeat"
+    for call in (
+        lambda: list(Post.filter(pk__in=[7, 8], api=api)),
+        lambda: Post.get(pk__in=[7, 8], api=api),
+        lambda: Post.get_or_create(pk__in=[7, 8], api=api),
+    ):
+        assert world.query(call) == "pk__in=7&pk__in=8"
 
 
 @row(OWN)
@@ -1739,51 +1867,86 @@ def a_model_that_can_be_iterated_is_sent_as_its_key_under_any_name(
     sends_query_but_refuses_creation(
         world, Post, "x=5", TypeError, "Crowd", x=Crowd(id=5)
     )
+    sends_query_but_refuses_creation(
+        world, Post, "x=5", TypeError, "Crowd", x=[Crowd(id=5)]
+    )
 
 
 CREATE = "creating"
 
 
+def creating(model: type[JSONObject], **kw: Any) -> list[Callable[[], Any]]:
+    """Return the calls that create an object: create and get_or_create."""
+    return [
+        lambda: model.create(**kw),
+        lambda: model.get_or_create(**kw),
+    ]
+
+
+def posted(world: World, model: type[JSONObject], **kw: Any) -> list[Any]:
+    """Return the body that each way of creating an object posts.
+
+    ``get_or_create()`` finds nothing, so it creates the object, and its
+    ``POST`` is the last request.
+    """
+    world.mocker.get(requests_mock.ANY, json=[])
+    bodies = []
+    for call in creating(model, **kw):
+        sent = world.bodies(call)
+        assert sent[-1][0] == "POST", sent
+        bodies.append(sent[-1][1])
+    return bodies
+
+
+def refuses_creation(
+    world: World,
+    model: type[JSONObject],
+    exc: type[Exception],
+    *named: str,
+    **kw: Any,
+) -> None:
+    """Assert that both ways of creating an object raise before a request."""
+    for call in creating(model, **kw):
+        raises(world, exc, call, *named)
+
+
 @row(CREATE)
 def a_key_and_a_field_are_posted(world: World) -> None:
     world.mocker.post(requests_mock.ANY, json={"id": 7, "name": "a"})
-    assert world.body(lambda: User.create(id=7, name="a"), "POST") == {
-        "id": 7,
-        "name": "a",
-    }
+    for body in posted(world, User, id=7, name="a"):
+        assert body == {"id": 7, "name": "a"}
     assert world.requests[-1].path == "/users/"
 
 
 @row(CREATE)
 def pk_is_posted_as_the_key(world: World) -> None:
     world.mocker.post(requests_mock.ANY, json={"id": 7})
-    assert world.body(lambda: User.create(pk=7), "POST") == {"id": 7}
+    for body in posted(world, User, pk=7):
+        assert body == {"id": 7}
     assert world.requests[-1].path == "/users/"
 
 
 @row(CREATE)
 def a_key_of_the_wrong_type_is_refused_on_create(world: World) -> None:
-    raises(world, FieldConversionError, lambda: User.create(id="7"), "User.id")
+    refuses_creation(world, User, FieldConversionError, "User.id", id="7")
 
 
 @row(CREATE)
 def a_json_name_is_posted_as_given(world: World) -> None:
     world.mocker.post(requests_mock.ANY, json={"postId": 7})
-    assert world.body(lambda: Post.create(postId=7), "POST") == {"postId": 7}
+    for body in posted(world, Post, postId=7):
+        assert body == {"postId": 7}
 
 
 @row(CREATE)
 def a_json_name_of_the_wrong_type_is_refused_on_create(world: World) -> None:
-    raises(
-        world,
-        FieldConversionError,
-        lambda: Post.create(postId="7"),
-        "Post.id",
-    )
+    refuses_creation(world, Post, FieldConversionError, "Post.id", postId="7")
 
 
 @row(CREATE)
 def two_names_of_one_key_are_refused_on_create(world: World) -> None:
+    # get_or_create() takes the two names as a lookup, which refuses them as a
+    # ValueError, the class of the rows on a lookup.
     raises(
         world,
         TypeError,
@@ -1795,21 +1958,20 @@ def two_names_of_one_key_are_refused_on_create(world: World) -> None:
 
 @row(CREATE)
 def a_uuid_key_is_posted_in_its_canonical_form(world: World) -> None:
-    assert world.body(lambda: Doc.create(id=UP), "POST") == {"id": LOWER}
+    for body in posted(world, Doc, id=UP):
+        assert body == {"id": LOWER}
 
 
 @row(CREATE)
 def a_related_object_is_posted_as_its_key(world: World) -> None:
-    assert world.body(lambda: Post.create(owner=User(id=8)), "POST") == {
-        "owner": 8
-    }
+    for body in posted(world, Post, owner=User(id=8)):
+        assert body == {"owner": 8}
 
 
 @row(CREATE)
 def related_objects_are_posted_as_keys(world: World) -> None:
-    assert world.body(lambda: Post.create(tags=[Tag(slug="a")]), "POST") == {
-        "tags": ["a"]
-    }
+    for body in posted(world, Post, tags=[Tag(slug="a")]):
+        assert body == {"tags": ["a"]}
 
 
 @row(CREATE)
@@ -1880,6 +2042,9 @@ def a_response_without_the_key_is_refused_after_create(
             requests=1,
         )
         names(str(error), "User.id")
+        assert isinstance(error, ResponseShapeError)
+        assert error.response is not None
+        assert error.response.json() == body
 
 
 @row(CREATE)
@@ -1889,7 +2054,7 @@ def a_response_without_the_key_is_refused_after_get_or_create(
     world.mocker.get(requests_mock.ANY, json=[])
     for body in RESPONSES_WITHOUT_THE_KEY:
         world.mocker.post(requests_mock.ANY, json=body)
-        raises(
+        error = raises(
             world,
             ResponseShapeError,
             lambda: User.get_or_create(name="a"),
@@ -1897,6 +2062,9 @@ def a_response_without_the_key_is_refused_after_get_or_create(
             "User.id",
             requests=2,
         )
+        assert isinstance(error, ResponseShapeError)
+        assert error.response is not None
+        assert error.response.json() == body
 
 
 @row(CREATE)
