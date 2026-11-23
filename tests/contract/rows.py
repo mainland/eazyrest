@@ -2981,6 +2981,28 @@ def a_merge_that_changes_a_related_objects_json_gives_a_new_object(
 
 
 @row(FULL)
+def a_full_save_answered_with_204_replaces_an_embedded_owner_by_its_key(
+    world: World,
+) -> None:
+    obj = post(owner={"id": 7, "name": "a"})
+    held = obj.owner
+    assert held is not None
+    held.name = "b"
+    world.mocker.put(requests_mock.ANY, status_code=204)
+    body = world.body(lambda: obj.save(full=True), "PUT")
+    assert body["owner"] == 7
+    assert obj.json["owner"] == 7
+    # The field's JSON changed from an embedded object to its key, so the field
+    # reads a new object, without the unsaved change.
+    assert obj.owner is not held
+    assert obj.owner is not None
+    assert obj.owner.pk == 7
+    sent = world.count
+    obj.owner.save()
+    assert world.count == sent
+
+
+@row(FULL)
 def a_response_with_a_bare_key_replaces_an_embedded_owner(
     world: World,
 ) -> None:
