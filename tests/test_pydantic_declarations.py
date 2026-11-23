@@ -329,8 +329,7 @@ def test_pydantic_metadata_is_refused_at_decoration(
         TypeError,
         match=(
             rf"^Holder\.value: .*The Annotated metadata {metadata} is for "
-            r"Pydantic.* Remove the Pydantic metadata, or register a "
-            r"Conversion for the type\.$"
+            r"Pydantic.* Remove the Pydantic metadata\.$"
         ),
     ):
         _model(_PLACES[place](ty))

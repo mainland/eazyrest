@@ -975,8 +975,7 @@ def _check_not_pydantic_metadata(metadata: Any) -> None:
         raise _PydanticMetadataError(
             f"The Annotated metadata {type(metadata).__name__} is for "
             "Pydantic, which eazyrest does not apply, so it would change "
-            "nothing. Remove the Pydantic metadata, or register a Conversion "
-            "for the type."
+            "nothing. Remove the Pydantic metadata."
         )
 
 

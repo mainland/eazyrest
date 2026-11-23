@@ -1024,12 +1024,12 @@ without an alias, `pydantic.AfterValidator()`, and the encoders inside
 `pydantic.Base64Bytes`. The error is a `TypeError` that names the member, and a
 member that cannot be analyzed until the field is first used raises
 `FieldConversionError` then. A conversion for the underlying type does not
-exempt the metadata. Remove it, or register a conversion for the type. A class
-that has Pydantic's schema hook, a type written for Pydantic, is refused like a
-Pydantic model unless an entry converts it. The constraints of
-`annotated_types` are not refused, because other libraries use them too, but
-eazyrest does not apply them. To read and write bytes that the server sends as
-base64, as `pydantic.Base64Bytes` does, register a conversion for `bytes`:
+exempt the metadata. Remove it. A class that has Pydantic's schema hook, a type
+written for Pydantic, is refused like a Pydantic model unless an entry converts
+it. The constraints of `annotated_types` are not refused, because other
+libraries use them too, but eazyrest does not apply them. To read and write
+bytes that the server sends as base64, as `pydantic.Base64Bytes` does, register
+a conversion for `bytes`:
 
 ```python
 import base64
