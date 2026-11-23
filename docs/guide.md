@@ -1221,9 +1221,12 @@ distinct items in sorted order. A path through a relation that compares one
 value takes no collection either: one that ends with `exact`, `gt`, `gte`,
 `lt`, or `lte`, or names the related model's key, as `owner__id` and
 `owner__id__gt` do, raises `ValueError` naming the parameter. Use
-`owner__id__in`. An empty text in a parameter that takes one value is sent, as
-in `Todo.filter(title="")`, which sends `title=`, and django-filter reads it as
-no filter, so the query matches every object.
+`owner__id__in`. So do the model's own key by its JSON key, as `postId` and
+`postId__gt` for a field `id` with `field_map={"id": "postId"}`, and a path
+through a relation by the relation's JSON key, as `userId__id`. An empty text
+in a parameter that takes one value is sent, as in `Todo.filter(title="")`,
+which sends `title=`, and django-filter reads it as no filter, so the query
+matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,

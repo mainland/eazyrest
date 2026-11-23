@@ -1970,6 +1970,16 @@ def a_collection_for_a_lookup_of_one_value_is_refused(world: World) -> None:
 
 
 @row(OWN)
+def a_collection_for_the_json_name_of_the_key_is_refused(
+    world: World,
+) -> None:
+    for name in ("postId", "postId__exact", "postId__gt"):
+        for value in ([7, 8], (7, 8), {7, 8}):
+            refuses_query(world, Post, ValueError, name, **{name: value})
+    sends_query(world, Post, "postId__in=7,8", postId__in=[7, 8])
+
+
+@row(OWN)
 def the_json_name_is_an_ordinary_name(world: World) -> None:
     sends_query(world, Post, "postId=7", postId=7)
 
@@ -2187,6 +2197,16 @@ def a_collection_for_a_lookup_of_one_value_through_a_relation_is_refused(
     for name in ("owner__id", "owner__id__gt", "owner__id__exact"):
         for value in ([7, 8], (7, 8), {7, 8}):
             refuses_query(world, Post, ValueError, name, **{name: value})
+
+
+@row(THROUGH)
+def a_collection_through_the_json_name_of_a_relation_is_refused(
+    world: World,
+) -> None:
+    for name in ("userId__id", "userId__id__gt", "userId__pk"):
+        for value in ([3, 4], (3, 4), {3, 4}):
+            refuses_query(world, Task, ValueError, name, **{name: value})
+    sends_query(world, Task, "userId__id__in=3,4", userId__id__in=[3, 4])
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"

@@ -7822,7 +7822,16 @@ class JSONObject:
                 )
         found = cls._lookup_field(name)
         if found is None:
-            return _Parameter(name, None, None, None, False, several, False)
+            return _Parameter(
+                name,
+                None,
+                None,
+                None,
+                False,
+                several,
+                False,
+                one_value=cls._compares_one_value_by_json_name(name),
+            )
         field, rest = found
         descriptor = getattr(cls, field)
         wire = f"{descriptor.json_field}__{rest}"
@@ -7843,6 +7852,40 @@ class JSONObject:
             False,
             one_value=cls._compares_one_value_through(field, rest),
         )
+
+    @classmethod
+    def _compares_one_value_by_json_name(cls, name: str) -> bool:
+        """Return whether a name that is no field's compares one value.
+
+        A field's JSON key and write key are ordinary query names, sent as
+        given, but the model's own key by them, alone or with a suffix that
+        compares one value, and a path through a relation by its JSON key,
+        compare one value as the field's Python name does.
+
+        Args:
+            name: Name of a parameter that is no field and has no field before
+                a ``__``.
+
+        Returns:
+            Whether a collection given for it names no one value.
+        """
+        head, _, rest = name.partition("__")
+        key_field = _pk_property_of(cls)
+        if key_field is not None and head in (
+            key_field.json_field,
+            key_field.write_field,
+        ):
+            return not rest or rest in _ONE_VALUE_LOOKUPS
+        if not rest:
+            return False
+        for field in getattr(cls, "_json_fields", ()):
+            descriptor = getattr(cls, field)
+            if head in (
+                descriptor.json_field,
+                descriptor.write_field,
+            ) and cls._compares_one_value_through(field, rest):
+                return True
+        return False
 
     @classmethod
     def _compares_one_value_through(cls, field: str, rest: str) -> bool:
