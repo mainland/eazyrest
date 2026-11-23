@@ -1349,9 +1349,10 @@ def _check_admitted(
             analyzed raises.
 
     Raises:
-        TypeError: If a member is refused, or a tuple class has fields without
-            annotations. If ``late``, also a union with a member that converts,
-            and whatever analyzing a member raises.
+        TypeError: If a member is refused, a tuple class has fields without
+            annotations, or an enum has a member whose value is ``None``. If
+            ``late``, also a union with a member that converts, and whatever
+            analyzing a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1375,6 +1376,16 @@ def _check_admitted(
                         for member in found.declared
                     ),
                 )
+                for member in found.declared:
+                    if found.entry.encode(member, found.declared) is None:
+                        raise TypeError(
+                            f"The member {member.name} of "
+                            f"{found.declared.__name__} has the value None, "
+                            "which every field reads as no value, so the "
+                            "member would never be read. Give it another "
+                            "value, or leave it out and declare the field "
+                            "optional."
+                        )
             if found is None:
                 _refuse_pydantic_class(base_type)
                 if (supertype := _supertype(base_type)) is not None:

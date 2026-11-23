@@ -234,7 +234,6 @@ class Mixed(enum.Enum):
     NUMBER = 1
     REAL = 1.5
     FLAG = True
-    NOTHING = None
 
 
 _NOT_SCALARS: dict[str, Any] = {
@@ -288,7 +287,7 @@ def test_an_enum_with_an_entry_of_its_own_may_have_any_values() -> None:
 def test_json_scalar_values_are_admitted_in_a_literal_or_an_enum(
     hint: Any,
 ) -> None:
-    """A string, an integer, a float, a ``bool``, and ``None`` decorate.
+    """A string, an integer, a float, and a ``bool`` decorate.
 
     Args:
         hint: Annotation of the field.
