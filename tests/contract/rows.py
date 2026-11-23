@@ -2759,6 +2759,7 @@ def an_extra_that_json_would_change_is_refused_by_create(
         for call in (
             lambda: User.create(id=7, x=value),
             lambda: User.create(fields={"id": 7, "x": value}),
+            lambda: User.create(id=7, x=value, files={}),
             lambda: User.get_or_create(id=7, defaults={"x": value}),
         ):
             raises(world, TypeError, call)

@@ -8518,9 +8518,10 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             ),
         )
-        if files is None:
-            # An extra has no annotation, so eazyrest cannot say how a tuple,
-            # or a mapping with a key that is not a string, reads back as JSON.
+        if not files:
+            # The body is JSON, as _write_body() decides. An extra has no
+            # annotation, so eazyrest cannot say how a tuple, or a mapping with
+            # a key that is not a string, reads back as JSON.
             _checked_json(cls._to_wire(payload))
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
