@@ -186,6 +186,23 @@ class Titled(Base):
     title: str
 
 
+@json_object(write_map={"id": "ident"})
+class WK(Base):
+    """A key with a write key of its own."""
+
+    class_url = "/wk/"
+    id: int
+
+
+@json_object(field_map={"title": "the__title"})
+class DT(Base):
+    """A field that is not the key, whose JSON name holds two underscores."""
+
+    class_url = "/dt/"
+    id: int
+    title: str
+
+
 @json_object
 class Entry(Base):
     """A model with no key."""
@@ -1995,6 +2012,29 @@ def a_collection_for_the_json_name_of_the_key_is_refused(
 
 
 @row(OWN)
+def a_collection_for_a_key_json_name_with_two_underscores_is_refused(
+    world: World,
+) -> None:
+    for name in ("doc__id", "doc__id__exact", "doc__id__gt"):
+        for value in ([7, 8], (7, 8), {7, 8}):
+            refuses_query(world, DK, ValueError, name, **{name: value})
+    world.mocker.get(requests_mock.ANY, json=[{"doc__id": 7}])
+    sends_query(world, DK, "doc__id__in=7,8", doc__id__in=[7, 8])
+
+
+@row(OWN)
+def two_parameters_naming_the_key_by_its_write_key_are_refused(
+    world: World,
+) -> None:
+    refuses_query(world, WK, ValueError, "pk", "ident", pk=7, ident=8)
+    refuses_query(world, WK, ValueError, "id", "ident", id=7, ident=8)
+    refuses_query(
+        world, WK, ValueError, "pk__gt", "ident__gt", pk__gt=7, ident__gt=8
+    )
+    sends_query(world, WK, "ident=8", ident=8)
+
+
+@row(OWN)
 def the_json_name_is_an_ordinary_name(world: World) -> None:
     sends_query(world, Post, "postId=7", postId=7)
 
@@ -2252,6 +2292,34 @@ def a_lookup_of_several_values_or_one_value_by_json_name_is_sent(
     sends_query(world, Titled, "Title__in=a,b", Title__in=["a", "b"])
     sends_query(world, Task, "userId__in=3,4", userId__in=[3, 4])
     sends_query(world, Titled, "Title=a", Title="a")
+
+
+@row(JSON_NAME)
+def a_collection_for_a_json_name_with_two_underscores_is_refused(
+    world: World,
+) -> None:
+    for name in ("the__title", "the__title__exact", "the__title__gt"):
+        for value in (["a", "b"], ("a", "b"), {"a", "b"}):
+            refuses_query(world, DT, ValueError, name, **{name: value})
+    for call in queries(DT, the__title="a"):
+        assert world.query(call) == "the__title=a"
+    sends_query(world, DT, "the__title__in=a,b", the__title__in=["a", "b"])
+
+
+@row(JSON_NAME)
+def a_field_json_name_with_two_underscores_is_no_lookup_of_get_or_create(
+    world: World,
+) -> None:
+    for call in creations(DT, the__title="a"):
+        raises(world, ValueError, call, "the__title", "title")
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 9})
+    assert world.bodies(lambda: DT.get_or_create(title="a")) == [
+        ("GET", None),
+        ("POST", {"the__title": "a"}),
+    ]
+    lookup = world.requests[-2]
+    assert unquote(urlsplit(lookup.url).query) == "the__title=a"
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"

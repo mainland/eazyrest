@@ -2352,6 +2352,27 @@ _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
 _ONE_VALUE_LOOKUPS = frozenset(("exact", "gt", "gte", "lt", "lte"))
 
 
+# The kinds of key that a query parameter's name can start with, in the order
+# in which one wins over another of the same length.
+_KeyKind = typing.Literal["python", "pk", "json", "write"]
+_KEY_KINDS = typing.get_args(_KeyKind)
+
+
+@dataclass(frozen=True)
+class _Name:
+    """The field that a query parameter's name names, and by which key."""
+
+    field: str
+    """The Python name of the field."""
+
+    by: _KeyKind
+    """The key that the name starts with: the field's Python name, ``pk`` for
+    the model's key, or the field's JSON key or write key."""
+
+    suffix: str | None
+    """What follows the key and ``__``, or ``None`` if the name is the key."""
+
+
 @dataclass(frozen=True)
 class _Parameter:
     """What a query parameter's name means, resolved once."""
@@ -2393,6 +2414,9 @@ class _Parameter:
     """For a parameter that names the model's own key, the lookup suffix that
     follows the name, empty for the key alone and for ``exact``. Two parameters
     with one suffix name one comparison."""
+
+    named: _Name | None = None
+    """The field that the name names, or ``None`` for a name of no field."""
 
 
 def _distinct_sorted(items: Iterable[Any]) -> list[Any]:
@@ -7713,25 +7737,46 @@ class JSONObject:
         )
 
     @classmethod
-    def _lookup_field(cls, name: str) -> tuple[str, str] | None:
-        """Return the field that a lookup parameter filters on, and its suffix.
+    def _resolve_name(cls, name: str) -> _Name | None:
+        """Resolve a query parameter's name to the field that it names.
+
+        A name starts with a key of a field, either the whole name or followed
+        by ``__`` and a suffix. The keys of a field are its Python name, its
+        JSON key, and its write key, and ``pk`` is a key of the model's key
+        field. Of the keys that the name starts with, the longest wins, so that
+        a key that holds ``__`` is found whole. Of equal length, the Python
+        name wins over ``pk``, ``pk`` over a JSON key, and a JSON key over a
+        write key. Every check of a parameter's name reads this result.
 
         Args:
-            name: Name of a parameter that is no field, such as ``owner__in``.
+            name: Name of the parameter.
 
         Returns:
-            The Python name of the longest JSON-backed field that ``name``
-            starts with, followed by ``__``, and the rest of the name, or
-            ``None`` if no field does. A field named ``type_`` gives
-            ``type___in`` as ``type_`` and ``in``.
+            The field, the kind of key, and the suffix after it, or ``None`` if
+            the name starts with no key of a field. A field named ``type_``
+            gives ``type___in`` as ``type_`` and ``in``.
         """
-        found = None
+        keys: list[tuple[str, _Name]] = []
         for field in getattr(cls, "_json_fields", ()):
-            if name.startswith(f"{field}__") and (
-                found is None or len(field) > len(found)
-            ):
-                found = field
-        return None if found is None else (found, name[len(found) + 2 :])
+            descriptor = getattr(cls, field)
+            keys.append((field, _Name(field, "python", None)))
+            keys.append((descriptor.json_field, _Name(field, "json", None)))
+            keys.append((descriptor.write_field, _Name(field, "write", None)))
+        key_field = _pk_property_of(cls)
+        if key_field is not None:
+            keys.append(("pk", _Name(key_field.field, "pk", None)))
+        found: tuple[tuple[int, int], _Name] | None = None
+        for key, candidate in keys:
+            if name == key:
+                suffix = None
+            elif name.startswith(f"{key}__"):
+                suffix = name[len(key) + 2 :]
+            else:
+                continue
+            rank = (len(key), -_KEY_KINDS.index(candidate.by))
+            if found is None or rank > found[0]:
+                found = (rank, dataclasses.replace(candidate, suffix=suffix))
+        return None if found is None else found[1]
 
     @classmethod
     def _field_parameter(
@@ -7798,7 +7843,10 @@ class JSONObject:
         ``<field>__<suffix>``, compares the field's values if the suffix is a
         value suffix. Any other name, such as a path through a relation, or a
         suffix that does not compare values, compares something else, and its
-        operands are sent as given, a model as its key.
+        operands are sent as given, a model as its key. A field's JSON key and
+        write key are ordinary names, sent as given, but a collection for one
+        that compares one value is refused as it is for the field's Python
+        name, and the model's key is compared by them as by ``pk``.
 
         Args:
             name: Name of the parameter.
@@ -7811,46 +7859,43 @@ class JSONObject:
                 compares cannot be resolved.
         """
         several = name.endswith(("__in", "__range"))
-        descriptor = _field_named(cls, name)
-        if descriptor is not None:
-            return cls._field_parameter(
-                name, descriptor.json_field, several=False, own=True
+        named = cls._resolve_name(name)
+        if named is None:
+            return _Parameter(name, None, None, None, False, several, False)
+        descriptor = getattr(cls, named.field)
+        suffix = named.suffix
+        compares = suffix is None or suffix in _VALUE_LOOKUPS
+        if named.by == "python":
+            wire = (
+                descriptor.json_field
+                if suffix is None
+                else f"{descriptor.json_field}__{suffix}"
             )
-        key_field = _pk_property_of(cls)
-        if key_field is not None:
-            # The key is also named by ``pk``, alone or with a value suffix,
-            # and sent under that name.
-            head, _, tail = name.partition("__")
-            if head == "pk" and (not tail or tail in _VALUE_LOOKUPS):
-                return cls._field_parameter(
-                    key_field.field,
-                    name,
-                    several=several,
-                    own=False,
-                    suffix=tail,
+            if compares:
+                return dataclasses.replace(
+                    cls._compared_parameter(named, wire, several), named=named
                 )
-        found = cls._lookup_field(name)
-        if found is None:
-            return _Parameter(
-                name,
-                None,
-                None,
-                None,
-                False,
-                several,
-                False,
-                one_value=cls._compares_one_value_by_json_name(name),
+        elif named.by == "pk":
+            if compares:
+                return dataclasses.replace(
+                    cls._compared_parameter(named, name, several), named=named
+                )
+            wire = name
+        else:
+            # A JSON key and a write key are sent as given, and the model's key
+            # is still compared by them.
+            wire = name
+        key_suffix = None
+        if compares and descriptor is _pk_property_of(cls):
+            key_suffix = "" if suffix in (None, "exact") else suffix
+        if suffix is None:
+            one = named.by in ("json", "write") and not cls._holds_items(
+                descriptor
             )
-        field, rest = found
-        descriptor = getattr(cls, field)
-        wire = f"{descriptor.json_field}__{rest}"
-        if rest in _VALUE_LOOKUPS:
-            # A value lookup compares the field's own values.
-            return cls._field_parameter(
-                field, wire, several=several, own=False, suffix=rest
-            )
-        # Any other path, such as one through a relation, compares something
-        # that the class does not know, so its operands are sent as given.
+        else:
+            one = (
+                named.by in ("json", "write") and suffix in _ONE_VALUE_LOOKUPS
+            ) or cls._compares_one_value_through(named.field, suffix)
         return _Parameter(
             wire,
             None,
@@ -7859,42 +7904,37 @@ class JSONObject:
             False,
             several,
             False,
-            one_value=cls._compares_one_value_through(field, rest),
+            one_value=one,
+            key_suffix=key_suffix,
+            named=named,
         )
 
     @classmethod
-    def _compares_one_value_by_json_name(cls, name: str) -> bool:
-        """Return whether a name that is no field's compares one value.
-
-        A field's JSON key and write key are ordinary query names, sent as
-        given, but by either of them, alone or with a suffix that compares one
-        value, a field compares one value as its Python name does, and so does
-        a path through a relation by its JSON key. The key by which a field
-        compares a collection of items, alone, takes a collection as its Python
-        name does.
+    def _compared_parameter(
+        cls, named: _Name, wire: str, several: bool
+    ) -> _Parameter:
+        """Return the parameter that compares a field's values by a name.
 
         Args:
-            name: Name of a parameter that is no field and has no field before
-                a ``__``.
+            named: The field and the suffix, which is a value suffix or none.
+            wire: The name that the parameter is sent under.
+            several: Whether the name is a lookup that takes several values.
 
         Returns:
-            Whether a collection given for it names no one value.
+            The parameter that the field's Python name, or ``pk`` for its key,
+            gives with that suffix, whatever key named the field.
+
+        Raises:
+            FieldConversionError: If the field's type cannot be resolved.
         """
-        head, _, rest = name.partition("__")
-        for field in getattr(cls, "_json_fields", ()):
-            descriptor = getattr(cls, field)
-            if head not in (descriptor.json_field, descriptor.write_field):
-                continue
-            if rest:
-                one = (
-                    rest in _ONE_VALUE_LOOKUPS
-                    or cls._compares_one_value_through(field, rest)
-                )
-            else:
-                one = not cls._holds_items(descriptor)
-            if one:
-                return True
-        return False
+        own = named.suffix is None and named.by != "pk"
+        return cls._field_parameter(
+            named.field,
+            wire,
+            several=several and named.suffix is not None,
+            own=own,
+            suffix=named.suffix or "",
+        )
 
     @classmethod
     def _holds_items(cls, descriptor: JSONProperty) -> bool:
@@ -8185,7 +8225,6 @@ class JSONObject:
         payload: dict[str, Any] = {}
         senders: dict[str, str] = {}
         keys: dict[str, str] = {}
-        key_field = _pk_property_of(cls)
         for name, value in params.items():
             parameter = cls._parameter(name)
             if parameter.wire in senders:
@@ -8195,23 +8234,6 @@ class JSONObject:
                 )
             senders[parameter.wire] = name
             key_suffix = parameter.key_suffix
-            if (
-                key_suffix is None
-                and parameter.field is None
-                and key_field is not None
-            ):
-                # The key's JSON name is an ordinary name, but it compares the
-                # key as the key's own name does, and so does it with a suffix
-                # that compares values.
-                json_name = key_field.json_field
-                if name == json_name:
-                    key_suffix = ""
-                elif (
-                    name.startswith(f"{json_name}__")
-                    and name[len(json_name) + 2 :] in _VALUE_LOOKUPS
-                ):
-                    suffix = name[len(json_name) + 2 :]
-                    key_suffix = "" if suffix == "exact" else suffix
             if key_suffix is not None:
                 if key_suffix in keys:
                     raise ValueError(
@@ -9555,27 +9577,42 @@ class JSONObject:
 
         kwargs = read_once(_query_params(params, kwargs))
         key_property = _pk_property_of(cls)
-        for name in kwargs:
+        names = {name: cls._resolve_name(name) for name in kwargs}
+        for name, named in names.items():
             if (
-                key_property is not None
+                named is not None
+                and named.by in ("json", "write")
+                and named.suffix is None
                 and "__" in name
-                and name != key_property.field
-                and cls._created_field(name, key_property)
-                == key_property.field
             ):
                 # The lookup would read the name as a field and a suffix, and
-                # the creation would not send it as the key. The key's own
-                # field name is read as that field, so it is no such name.
+                # the creation would not send it as the field.
+                if key_property is not None and (
+                    named.field == key_property.field
+                ):
+                    advice = f"the key as {key_property.field} or pk"
+                    subject = "the key's"
+                else:
+                    advice = f"{named.field} as {named.field}"
+                    subject = f"{named.field}'s"
                 raise ValueError(
-                    f"Query parameter {name} for {cls.__name__} is the "
-                    f"key's JSON name, which holds '__', so a lookup would "
-                    "read it as a field and a suffix. Look the key up as "
-                    f"{key_property.field} or pk"
+                    f"Query parameter {name} for {cls.__name__} is "
+                    f"{subject} {'JSON' if named.by == 'json' else 'write'} "
+                    "name, which holds '__', so a lookup would read it as a "
+                    f"field and a suffix. Look {advice}"
                 )
+
+        def sets_field(name: str) -> bool:
+            """Return whether a name is a field of the creation.
+
+            It is if it is a whole key of a field, or it is no field's and
+            holds no ``__``, which a lookup would read as a field and a suffix.
+            """
+            named = names[name]
+            return "__" not in name if named is None else named.suffix is None
+
         create_kwargs = {
-            name: value
-            for name, value in kwargs.items()
-            if "__" not in name or _field_named(cls, name) is not None
+            name: value for name, value in kwargs.items() if sets_field(name)
         }
         if defaults is not None:
             create_kwargs.update(read_once(defaults))
@@ -9595,11 +9632,13 @@ class JSONObject:
         # such a name as given, because it is an ordinary query parameter.
         lookup = {}
         for name, value in kwargs.items():
+            named = names[name]
             if (
                 key_property is not None
-                and name not in ("pk", key_property.field)
-                and cls._created_field(name, key_property)
-                == key_property.field
+                and named is not None
+                and named.field == key_property.field
+                and named.by in ("json", "write")
+                and named.suffix is None
             ):
                 with _converting(cls, key_property.field):
                     value = _build_key(cls, value)
