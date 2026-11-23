@@ -7818,6 +7818,7 @@ class JSONObject:
         payload: dict[str, Any] = {}
         senders: dict[str, str] = {}
         keys: dict[str, str] = {}
+        key_field = _pk_property_of(cls)
         for name, value in params.items():
             parameter = cls._parameter(name)
             if parameter.wire in senders:
@@ -7826,14 +7827,32 @@ class JSONObject:
                     f"for {cls.__name__} both send {parameter.wire}"
                 )
             senders[parameter.wire] = name
-            if parameter.key_suffix is not None:
-                if parameter.key_suffix in keys:
+            key_suffix = parameter.key_suffix
+            if (
+                key_suffix is None
+                and parameter.field is None
+                and key_field is not None
+            ):
+                # The key's JSON name is an ordinary name, but it compares the
+                # key as the key's own name does, and so does it with a suffix
+                # that compares values.
+                json_name = key_field.json_field
+                if name == json_name:
+                    key_suffix = ""
+                elif (
+                    name.startswith(f"{json_name}__")
+                    and name[len(json_name) + 2 :] in _VALUE_LOOKUPS
+                ):
+                    suffix = name[len(json_name) + 2 :]
+                    key_suffix = "" if suffix == "exact" else suffix
+            if key_suffix is not None:
+                if key_suffix in keys:
                     raise ValueError(
-                        f"Query parameters {keys[parameter.key_suffix]} and "
+                        f"Query parameters {keys[key_suffix]} and "
                         f"{name} for {cls.__name__} both compare its key. "
                         "Name the key once"
                     )
-                keys[parameter.key_suffix] = name
+                keys[key_suffix] = name
             payload[parameter.wire] = cls._query_operands(name, value, style)
 
         return payload

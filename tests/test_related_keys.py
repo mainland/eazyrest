@@ -918,12 +918,14 @@ def test_two_parameters_that_name_one_key_are_refused(
 def test_the_json_name_of_the_key_is_an_ordinary_name(
     requests_mock: Any,
 ) -> None:
-    """Only ``pk`` and the key field's name name the key."""
+    """The JSON name is sent as given, but it compares the key as ``pk``."""
     requests_mock.get("https://related.example/renamed/", json=[])
 
-    list(Renamed.filter(id="7", pk=8))
+    list(Renamed.filter(id="7"))
 
-    assert requests_mock.last_request.qs == {"id": ["7"], "pk": ["8"]}
+    assert requests_mock.last_request.qs == {"id": ["7"]}
+    with pytest.raises(ValueError, match=r"id and pk .* both compare"):
+        list(Renamed.filter(id="7", pk=8))
 
 
 def test_two_parameters_that_send_one_name_are_refused(

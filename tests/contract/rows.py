@@ -1806,6 +1806,32 @@ def two_parameters_naming_the_key_are_refused(world: World) -> None:
     refuses_query(
         world, Post, ValueError, "id__exact", "pk", id__exact=7, pk=8
     )
+    refuses_query(world, Post, ValueError, "pk", "postId", pk=7, postId=8)
+    refuses_query(
+        world, Post, ValueError, "pk__gt", "postId__gt", pk__gt=7, postId__gt=8
+    )
+    refuses_query(
+        world,
+        Post,
+        ValueError,
+        "id__in",
+        "postId__in",
+        id__in=[1],
+        postId__in=[2],
+    )
+    sends_query(
+        world, Post, "pk=7&postId__icontains=8", pk=7, postId__icontains="8"
+    )
+    refuses_query(world, Post, ValueError, "postId", "pk", postId=7, pk=8)
+    refuses_query(
+        world,
+        Post,
+        ValueError,
+        "pk__exact",
+        "postId",
+        pk__exact=7,
+        postId=8,
+    )
 
 
 @row(OWN)

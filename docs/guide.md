@@ -213,16 +213,19 @@ is the key as the server names the resource, and these laws follow:
   `int` key raises `FieldConversionError` naming the field before any request.
   The key is named by `pk`, which is sent as `pk`, or by its field's Python
   name, which is sent under the field's JSON key. The JSON key, such as
-  `postId` for a field `id`, is an ordinary name, sent as given. Two parameters
-  that compare the key the same way, as in `filter(pk=7, id=8)` or
-  `filter(pk__exact=7, id=8)`, raise `ValueError` naming both, and so do two
-  parameters that are sent under one name, as in `filter(id=7, postId=8)`. An
-  object of the model itself, as in `User.filter(pk=user)`, is sent as its key,
-  and an object of another model raises `FieldConversionError`. A path through
-  a relation, such as `owner__name` or `owner__id`, compares something that the
-  class does not know, so its value is sent as given, with no check, except
-  that a related object in it is sent as its key. Give the key in its field's
-  type, as the server returns it.
+  `postId` for a field `id`, is an ordinary name, sent as given, but it and its
+  value suffixes (`exact`, `in`, `range`, `gt`, `gte`, `lt`, `lte`) compare the
+  key. Two parameters that compare the key the same way, as in
+  `filter(pk=7, id=8)`, `filter(pk__exact=7, id=8)`, `filter(pk=7, postId=8)`,
+  or `filter(pk__gt=7, postId__gt=8)`, raise `ValueError` naming both, and so
+  do two parameters that are sent under one name, as in
+  `filter(id=7, postId=8)`. An object of the model itself, as in
+  `User.filter(pk=user)`, is sent as its key, and an object of another model
+  raises `FieldConversionError`. A path through a relation, such as
+  `owner__name` or `owner__id`, compares something that the class does not
+  know, so its value is sent as given, with no check, except that a related
+  object in it is sent as its key. Give the key in its field's type, as the
+  server returns it.
 
 An object of a model without a key field equals only itself.
 
