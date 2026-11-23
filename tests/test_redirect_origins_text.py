@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import requests_mock
 
-from eazyrest import API
+from eazyrest import API, link_headers_page
 
 ORIGIN = "https://cdn.example.com"
 
@@ -59,3 +59,46 @@ def test_a_list_of_one_origin_is_accepted() -> None:
     with requests_mock.Mocker() as mocker:
         mocker.get("https://api.example.com/items/", json={"id": 1})
         assert api.json(api.get("/items/")) == {"id": 1}
+
+
+@pytest.mark.parametrize(
+    "value", [ORIGIN, ORIGIN.encode()], ids=["str", "bytes"]
+)
+@pytest.mark.parametrize("name", ["first", "page"])
+def test_a_page_request_refuses_text_as_redirect_origins(
+    name: str, value: Any
+) -> None:
+    """A request that stays on the API's origin is refused too."""
+    api = API("https://api.example.com/")
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            "https://api.example.com/items/",
+            json=[],
+            headers={
+                "Link": '<https://api.example.com/items/?p=2>; rel="next"'
+            },
+        )
+        mocker.get("https://api.example.com/items/?p=2", json=[])
+        page = link_headers_page(api, api.get("/items/"))
+        api.redirect_origins = value
+        before = mocker.call_count
+        request = (
+            (lambda: api.get("/items/")) if name == "first" else page.next_page
+        )
+        with pytest.raises(TypeError, match="collection of origins"):
+            request()
+        assert mocker.call_count == before
+
+
+@pytest.mark.parametrize("request_", REQUESTS.values(), ids=REQUESTS.keys())
+def test_bytes_assigned_to_an_instance_is_refused(
+    request_: Callable[[API], Any],
+) -> None:
+    """Bytes are not read as integers, which would fail as an invalid URL."""
+    api = API("https://api.example.com/")
+    api.redirect_origins = ORIGIN.encode()  # type: ignore[assignment]
+    with requests_mock.Mocker() as mocker:
+        mocker.register_uri(requests_mock.ANY, requests_mock.ANY, json={})
+        with pytest.raises(TypeError, match="collection of origins"):
+            request_(api)
+        assert mocker.call_count == 0

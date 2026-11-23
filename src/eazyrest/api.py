@@ -250,11 +250,11 @@ def _permitted_origins(
         The origin of ``base_url`` and the origins of ``redirect_origins``.
 
     Raises:
-        TypeError: If ``redirect_origins`` is a string, which a type checker
-            takes for a collection of strings and which would be read as a
-            collection of its characters.
+        TypeError: If ``redirect_origins`` is a string or bytes, which a type
+            checker takes for a collection of strings and which would be read
+            as a collection of its characters or of its integers.
     """
-    if isinstance(redirect_origins, str):
+    if isinstance(redirect_origins, (str, bytes)):
         raise TypeError(
             "API.redirect_origins must be a collection of origins, such as "
             '["https://cdn.example.com"], not a string'
@@ -1071,7 +1071,7 @@ class API:
     instance or in a subclass, to follow redirects to it. Only the scheme,
     host, and port of each URL count. Every header and any body of the
     redirected request is sent to these origins. Give a collection of origins:
-    a single string raises ``TypeError`` before a request is sent.
+    a single string or bytes raises ``TypeError`` before a request is sent.
     """
 
     default_write_mode: WriteMode
@@ -1678,11 +1678,11 @@ class API:
             hooks, with a final response hook that checks each redirect before
             requests follows it.
         """
-        allowed = (
-            set(limit.origins)
-            if limit is not None
-            else _permitted_origins(url, self.redirect_origins)
-        )
+        # Every request checks the attribute, also one that a page request's
+        # own limit replaces, so that a value that is refused is refused
+        # whatever the request.
+        permitted = _permitted_origins(url, self.redirect_origins)
+        allowed = permitted if limit is None else set(limit.origins)
 
         def name(resp: requests.Response) -> str:
             """Return the request that a message names.
