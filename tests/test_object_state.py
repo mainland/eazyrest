@@ -894,18 +894,21 @@ class ObjectStateMachine(RuleBasedStateMachine):
     def assign_owner(self, owner: int) -> None:
         """Assign a related object, which a write sends by its key.
 
-        As for any field, an assignment that leaves the object's JSON
-        unchanged sends nothing. A load or a response holds the related
-        object nested, which differs from its key, so the assignment of the
-        same key is unchanged only after an assignment has stored the key.
+        As for any field, an assignment that leaves the object's JSON unchanged
+        sends nothing. A load or a response holds the related object nested,
+        and an assignment compares it by the key that it holds, so assigning
+        the same key is unchanged.
 
         Args:
             owner: Key of the related object to assign.
         """
         self.detect_before_load("owner")
         state = working_json(self.obj)
+        stored = None if state is None else state.get("owner")
+        if isinstance(stored, dict):
+            stored = stored.get("id")
         unchanged = self.same_assignment(
-            "owner", state is not None and state.get("owner") == owner
+            "owner", state is not None and stored == owner
         )
         if self.poisoned and self.sends(unchanged):
             self.refused(lambda: setattr(self.obj, "owner", Owner(id=owner)))

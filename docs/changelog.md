@@ -645,6 +645,11 @@ describe them further.
   sent a repeated key as many times as it was given. A set field that the
   server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
   assigning the field its own value sends nothing.
+- Assigning a relation, or a collection of relations, the object or the
+  collection that it holds sends nothing when the server embedded the object,
+  as `post.owner = post.owner` for `"owner": {"id": 7, "name": "a"}`, where
+  `v1.0.0a5` sent `{"owner": 7}`. An assignment compares the keys. Another key
+  is still sent.
 - A write or a load of one object that the server answers with a list, as `[]`
   or two objects, raises `ResponseShapeError` with the response, as `create()`
   does, and a write's updates stay pending. `v1.0.0a5` raised `DoesNotExist` or

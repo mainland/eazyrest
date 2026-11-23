@@ -3288,24 +3288,33 @@ def _check_key_type(
         raise _key_type_error(cls, field)
 
 
-def _stored_related_key(stored: Any, model: type[JSONObject]) -> Any:
+def _stored_related_key(
+    stored: Any, model: type[JSONObject], *, embedded: bool = False
+) -> Any:
     """Return the built key of a related object that the JSON holds as a key.
 
-    An embedded object is not a key, so it is returned as it is: assigning the
-    key of an object that a load or a response nested is a change, as it is for
-    any field whose JSON differs from the encoding of the new value.
+    An embedded object is not a key, so it is returned as it is unless
+    ``embedded`` says to read its key: replacing the object that a load or a
+    response nested by a key is a change when the other fields of the object
+    matter, as they do for any field whose JSON differs from the encoding of
+    the new value.
 
     Args:
         stored: What the stored JSON holds for the relation.
         model: The related model.
+        embedded: Whether an embedded object is replaced by the key that it
+            holds, as an assignment compares it.
 
     Returns:
         The key as ``_build_key()`` builds it, so that two spellings of one key
         are equal, or ``stored`` itself if it is not a bare key that can be
-        built, as ``null`` and an embedded object are not.
+        built, as ``null`` is, or an embedded object unless ``embedded``.
     """
     if isinstance(stored, dict):
-        return stored
+        prop = _pk_property_of(model)
+        if not embedded or prop is None or prop.json_field not in stored:
+            return stored
+        stored = stored[prop.json_field]
     try:
         built = _build_key(model, stored)
     except (TypeError, ValueError):
@@ -4858,7 +4867,12 @@ class JSONProperty:
             cls._pk_json_field = json_field
 
     def _same_as_stored(
-        self, stored: Any, new: Any, *, by_key: bool = False
+        self,
+        stored: Any,
+        new: Any,
+        *,
+        by_key: bool = False,
+        embedded: bool = False,
     ) -> bool:
         """Return whether a newly encoded value matches the stored JSON.
 
@@ -4875,24 +4889,30 @@ class JSONProperty:
                 bare key is compared by its built key, so that another spelling
                 of the key is the same key. Otherwise the stored JSON is
                 compared as it is.
+            embedded: Whether a related object that the stored JSON embeds is
+                compared by the key that it holds too, as an assignment does.
 
         Returns:
             Whether the values are equal, as ``_json_equal()`` compares them,
             after sorting a stored set as an encoded one is sorted.
         """
-        return _json_equal(self._comparable(stored, by_key=by_key), new)
+        comparable = self._comparable(stored, by_key=by_key, embedded=embedded)
+        return _json_equal(comparable, new)
 
-    def _comparable(self, stored: Any, *, by_key: bool) -> Any:
+    def _comparable(
+        self, stored: Any, *, by_key: bool, embedded: bool = False
+    ) -> Any:
         """Return stored JSON in the form in which it is compared.
 
         A set field's items are sorted, as an encoded set's are. With
         ``by_key``, a related object that the JSON holds as a bare key is
         replaced by its built key, so that two spellings of one key compare
-        equal. An embedded object is kept as it is.
+        equal. An embedded object is kept as it is, unless ``embedded``.
 
         Args:
             stored: What the stored JSON holds for this field.
             by_key: Whether to build the keys of related objects.
+            embedded: Whether an embedded object is replaced by its key.
 
         Returns:
             The value to compare.
@@ -4909,14 +4929,18 @@ class JSONProperty:
             else:
                 break
         if by_key and isinstance(conversion, RelatedType):
-            stored = _stored_related_key(stored, conversion.model_type)
+            stored = _stored_related_key(
+                stored, conversion.model_type, embedded=embedded
+            )
         elif isinstance(conversion, CollectionType) and isinstance(
             stored, list
         ):
             item = _unwrap_optional_type(conversion.item_type)
             if by_key and isinstance(item, RelatedType):
                 stored = [
-                    _stored_related_key(value, item.model_type)
+                    _stored_related_key(
+                        value, item.model_type, embedded=embedded
+                    )
                     for value in stored
                 ]
             if _READ_AS[conversion.collection_type] in (set, frozenset):
@@ -5160,7 +5184,12 @@ class JSONProperty:
             obj.write_mode == "eager"
             and self.json_field in obj._pending_updates
         )
-        if unsent or not self._same_as_stored(stored, new_value, by_key=True):
+        # An embedded related object is the same as its key, so assigning the
+        # object that the field holds sends nothing.
+        unchanged = not unsent and self._same_as_stored(
+            stored, new_value, by_key=True, embedded=True
+        )
+        if not unchanged:
             # Store a copy, so that changing the assigned value in place later
             # cannot match the stored JSON and suppress the next update.
             obj._update_json_field(self.json_field, _copy_json(new_value))
@@ -5173,7 +5202,9 @@ class JSONProperty:
         # An eager write's response can name other related objects, which
         # then replace the assigned ones, as after save().
         final = obj._working_value(self.json_field)
-        if not self._same_as_stored(final, new_value, by_key=True):
+        if not unchanged and not self._same_as_stored(
+            final, new_value, by_key=True
+        ):
             return
 
         if kept is not _MISSING:

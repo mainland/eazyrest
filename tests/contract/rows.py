@@ -1264,6 +1264,25 @@ def a_full_save_sends_an_embedded_owner_as_its_key(world: World) -> None:
     assert body["owner"] == 7
 
 
+@row(OWNER)
+def an_embedded_owner_assigned_its_own_object_sends_nothing(
+    world: World,
+) -> None:
+    obj = post(owner={"id": 7, "name": "a"})
+    held = obj.owner
+
+    def assign_own_object(p: Post) -> None:
+        p.owner = p.owner
+
+    assert patch_after(world, obj, assign_own_object) is None
+    assert obj.owner is held
+
+    def assign_another(p: Post) -> None:
+        p.owner = User(id=8)
+
+    assert patch_after(world, obj, assign_another) == {"owner": 8}
+
+
 COLL = "a-collection-of-relations"
 
 SEQUENCES = ("tags", "tagt", "tagq")
@@ -1436,6 +1455,28 @@ def an_iterable_model_is_refused_for_a_collection_and_kept_in_a_lookup(
             f"Post.{field}",
             **given,
         )
+
+
+@row(COLL)
+def embedded_items_assigned_their_own_collection_send_nothing(
+    world: World,
+) -> None:
+    for field in SEQUENCES:
+        obj = post(**{field: [{"slug": "a"}]})
+        held = getattr(obj, field)
+
+        def assign_own_collection(p: Post) -> None:
+            setattr(p, field, getattr(p, field))
+
+        assert patch_after(world, obj, assign_own_collection) is None
+        assert getattr(obj, field) is not None
+        assert pks(getattr(obj, field)) == ["a"]
+        assert type(getattr(obj, field)) is type(held)
+
+        def assign_another(p: Post) -> None:
+            setattr(p, field, [tag("b")])
+
+        assert patch_after(world, obj, assign_another) == {field: ["b"]}
 
 
 @row(COLL)
