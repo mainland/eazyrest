@@ -1333,9 +1333,9 @@ def _check_admitted(
 
     Raises:
         TypeError: If a member is refused, a tuple class has fields without
-            annotations, or an enum has a member whose value is ``None``. If
-            ``late``, also a union with a member that converts, and whatever
-            analyzing a member raises.
+            annotations, an enum has a member whose value is ``None``, or a
+            ``Literal`` holds such a member. If ``late``, also a union with a
+            member that converts, and whatever analyzing a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1350,6 +1350,24 @@ def _check_admitted(
                         for member in typing.get_args(literal)
                     ),
                 )
+                for member in typing.get_args(literal):
+                    if not isinstance(member, enum.Enum):
+                        continue
+                    held = _conversion_of(type(member), table)
+                    # As for an enum, a conversion of its own decides.
+                    if (
+                        held is not None
+                        and held.key is enum.Enum
+                        and held.entry.encode(member, held.declared) is None
+                    ):
+                        raise TypeError(
+                            f"The member {type(member).__name__}."
+                            f"{member.name} in a Literal has the value "
+                            "None, which every field reads as no value, so "
+                            "the member would never be read. Give it "
+                            "another value, or write None in the Literal "
+                            "instead."
+                        )
             found = _conversion_of(base_type, table)
             if found is not None and found.key is enum.Enum:
                 _check_json_scalars(

@@ -120,9 +120,10 @@ describe them further.
   the class is decorated. `v1.0.0a5` accepted it, though no JSON value read as
   such a member and its schema held a value that JSON cannot write. An enum
   with an entry of its own in `conversions` is not checked.
-- An enum with a member whose value is `None` raises `TypeError` naming the
-  field and the member when the class is decorated, since every field reads
-  `null` as `None`, so the member could never be read. `v1.0.0a5` accepted it.
+- An enum with a member whose value is `None`, or a `Literal` that holds such a
+  member, raises `TypeError` naming the field and the member when the class is
+  decorated, since every field reads `null` as `None`, so the member could
+  never be read. `v1.0.0a5` accepted both.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as

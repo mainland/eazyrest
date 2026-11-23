@@ -1,4 +1,4 @@
-"""An enum with a member whose value is ``None`` is refused at decoration."""
+"""An enum member whose value is ``None`` is refused at decoration."""
 
 from __future__ import annotations
 
@@ -58,6 +58,40 @@ def test_the_member_is_refused_naming_the_field_and_the_member(
     assert "Status" in message
 
 
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Literal[Status.UNKNOWN],
+        Literal[Status.OPEN, Status.UNKNOWN],
+        Literal["closed", Status.UNKNOWN],
+        Literal[Status.UNKNOWN] | None,
+        list[Literal[Status.UNKNOWN]],
+        dict[str, Literal[Status.UNKNOWN]],
+    ],
+    ids=[
+        "plain",
+        "with-another-member",
+        "with-a-string",
+        "optional",
+        "list",
+        "mapping",
+    ],
+)
+def test_a_literal_holding_the_member_is_refused_naming_it(
+    annotation: Any,
+) -> None:
+    """The error names the field and the member, as for the enum."""
+    with pytest.raises(TypeError, match=r"Ticket\.status") as caught:
+        declare(annotation)
+    assert "Status.UNKNOWN" in str(caught.value)
+
+
+def test_a_literal_holding_other_members_is_admitted() -> None:
+    """The refusal is for the member, not for a Literal of an enum."""
+    declare(Literal[Status.OPEN])
+    declare(Literal[Plain.OPEN] | None)
+
+
 def test_an_enum_without_the_member_is_admitted() -> None:
     """The refusal is for the member, not for enums."""
     declare(Plain)
@@ -70,10 +104,15 @@ def test_a_literal_may_hold_none() -> None:
     assert ticket.status is None
 
 
-def test_an_enum_with_a_conversion_of_its_own_is_not_checked() -> None:
+@pytest.mark.parametrize(
+    "annotation", [Status, Literal[Status.UNKNOWN]], ids=["enum", "literal"]
+)
+def test_an_enum_with_a_conversion_of_its_own_is_not_checked(
+    annotation: Any,
+) -> None:
     """A conversion of the enum decides how it reads, so it is not refused."""
     declare(
-        Status,
+        annotation,
         conversions={
             Status: Conversion(
                 decode=lambda value, cls: cls.OPEN,
