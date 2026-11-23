@@ -1978,6 +1978,9 @@ api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
 
+Give a collection of origins. A single string raises `TypeError` before the
+request, because it would be read as a collection of its characters.
+
 These checks guard the redirects that requests follows. A raw `GET` or `HEAD`
 sent with `allow_redirects=False` follows none, so it returns the 3xx response
 as it is, and the caller decides what to do with it. Requests does prepare

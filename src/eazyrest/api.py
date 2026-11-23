@@ -248,7 +248,17 @@ def _permitted_origins(
 
     Returns:
         The origin of ``base_url`` and the origins of ``redirect_origins``.
+
+    Raises:
+        TypeError: If ``redirect_origins`` is a string, which a type checker
+            takes for a collection of strings and which would be read as a
+            collection of its characters.
     """
+    if isinstance(redirect_origins, str):
+        raise TypeError(
+            "API.redirect_origins must be a collection of origins, such as "
+            '["https://cdn.example.com"], not a string'
+        )
     return {_origin(base_url), *map(_origin, redirect_origins)}
 
 
@@ -1056,7 +1066,8 @@ class API:
     too. Add an origin here, such as ``"https://cdn.example.com"``, on an
     instance or in a subclass, to follow redirects to it. Only the scheme,
     host, and port of each URL count. Every header and any body of the
-    redirected request is sent to these origins.
+    redirected request is sent to these origins. Give a collection of origins:
+    a single string raises ``TypeError`` before a request is sent.
     """
 
     default_write_mode: WriteMode

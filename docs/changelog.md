@@ -566,6 +566,10 @@ describe them further.
   `Collection[User]`, `Iterable[User]`, `list[User | None]`, and
   `list[list[User]]`, also optional or in a `NewType`, where `v1.0.0a5` encoded
   them as lists.
+- A string given as `API.redirect_origins` raises `TypeError` before the
+  request, saying to give a collection of origins, where `v1.0.0a5` read it as
+  a collection of its characters, so that every request raised the
+  `Invalid URL` error of requests.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two
