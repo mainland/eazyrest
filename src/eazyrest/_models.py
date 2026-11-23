@@ -6599,7 +6599,7 @@ class JSONObject:
             # Only write-only fields were sent, so the object need not load.
             # A body becomes its JSON so far, and a read of a field that the
             # body lacks loads it.
-            json = self._readable_json(self.merge_response(resp, {}, {}))
+            json = self._readable_json(self._merged_response(resp, {}, {}))
             if json:
                 self._replace_json(json, clear_pending=True)
                 self._json_is_partial = True
@@ -6607,8 +6607,41 @@ class JSONObject:
                 self._pending_updates.clear()
         else:
             self._replace_json(
-                self.merge_response(resp, self.json, sent), clear_pending=True
+                self._merged_response(resp, self.json, sent),
+                clear_pending=True,
             )
+
+    def _merged_response(
+        self,
+        resp: requests.Response,
+        current: Mapping[str, Any],
+        sent: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Return what ``merge_response()`` gives for a write's response.
+
+        Args:
+            resp: Successful response to the write.
+            current: The object's JSON before the write.
+            sent: JSON fields that the write sent.
+
+        Returns:
+            The object's JSON after the write.
+
+        Raises:
+            ResponseShapeError: If the response is a list rather than one
+                object. Its ``response`` is the response, and nothing has
+                changed.
+        """
+        try:
+            return self.merge_response(resp, current, sent)
+        except (DoesNotExist, MultipleObjectsReturned) as err:
+            # A list is not the object that a write returns. These errors
+            # describe a query, which a write is not.
+            raise ResponseShapeError(
+                f"The response to the write of a {type(self).__name__} is "
+                f"not one object: {err}",
+                response=resp,
+            ) from err
 
     def _refuse_other_key(self, key: Any) -> None:
         """Refuse server state that names another key than the object's.
@@ -6808,8 +6841,9 @@ class JSONObject:
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
             ResponseShapeError: If the response body does not hold a JSON
-                object, or names another primary key than the object has. The
-                server may have applied the updates, but they remain pending.
+                object, as when it is a list, or names another primary key than
+                the object has. The server may have applied the updates, but
+                they remain pending.
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response, or a field cannot be sent as a form
                 field.
@@ -7144,14 +7178,23 @@ class JSONObject:
         shows them over the loaded JSON.
 
         Raises:
-            ResponseShapeError: If the response does not hold a JSON object, or
-                names another primary key than the object has.
+            ResponseShapeError: If the response does not hold a JSON object, as
+                when it is a list, or names another primary key than the object
+                has.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())
-        json = self._object_from_response(
-            self.api.json(self._request_api().get(self.url))
-        )
+        resp = self._request_api().get(self.url)
+        try:
+            json = self._object_from_response(self.api.json(resp))
+        except (DoesNotExist, MultipleObjectsReturned) as err:
+            # A list is not the object that a load reads. These errors describe
+            # a query, which a load is not.
+            raise ResponseShapeError(
+                f"The response to the load of a {type(self).__name__} is not "
+                f"one object: {err}",
+                response=resp,
+            ) from err
 
         # Some APIs leave the primary key out of a detail response, because the
         # URL holds it. Keep the key that the object was loaded by, so that the
@@ -8456,7 +8499,10 @@ class JSONObject:
         """Return the JSON object contained in a single-object response.
 
         Subclasses can override this hook when an API wraps single-object
-        responses in an envelope or returns singleton lists.
+        responses in an envelope or returns singleton lists. A write or a load
+        whose response is a list that this hook does not unwrap raises
+        ``ResponseShapeError``, with the response, rather than the errors
+        below.
 
         Args:
             payload: Decoded JSON payload returned by the object endpoint.

@@ -2471,6 +2471,63 @@ def a_loaded_response_with_a_null_key_is_refused(world: World) -> None:
     raises(world, ResponseShapeError, lambda: user.name, requests=1)
 
 
+LISTS: list[list[dict[str, Any]]] = [[], [{"id": 7}, {"id": 8}]]
+
+
+@row(FULL)
+def a_write_answered_with_a_list_is_a_shape_error(world: World) -> None:
+    for body in LISTS:
+        for method, mock in (("PATCH", world.mocker.patch), ("PUT", None)):
+            if mock is None:
+                mock = world.mocker.put
+            mock(requests_mock.ANY, json=body)
+            user = User(json={"id": 7, "name": "a"})
+            user.name = "b"
+            call = (
+                user.save
+                if method == "PATCH"
+                else lambda: user.save(full=True)
+            )
+            error = raises(world, ResponseShapeError, call, requests=1)
+            assert isinstance(error, ResponseShapeError)
+            assert error.response is not None
+            assert error.response.json() == body
+            # The change is still pending, so a save that works sends it.
+            world.mocker.patch(requests_mock.ANY, json={})
+            assert world.body(user.save, "PATCH") == {"name": "b"}
+        eager = User(json={"id": 7, "name": "a"}, write_mode="eager")
+        world.mocker.patch(requests_mock.ANY, json=body)
+        error = raises(
+            world,
+            ResponseShapeError,
+            lambda: setattr(eager, "name", "b"),
+            requests=1,
+        )
+        assert isinstance(error, ResponseShapeError)
+        assert error.response is not None
+        assert error.response.json() == body
+
+
+@row(FULL)
+def a_load_answered_with_a_list_is_a_shape_error(world: World) -> None:
+    def refreshed() -> User:
+        obj = User(json={"id": 7, "name": "a"})
+        obj.refresh()
+        return obj
+
+    for body in LISTS:
+        world.mocker.get(requests_mock.ANY, json=body)
+        for read in (
+            lambda: User(id=7).name,
+            lambda: User(id=7).json,
+            lambda: refreshed().name,
+        ):
+            error = raises(world, ResponseShapeError, read, requests=1)
+            assert isinstance(error, ResponseShapeError)
+            assert error.response is not None
+            assert error.response.json() == body
+
+
 PREFETCH = "prefetch"
 
 hook_calls: list[Any] = []

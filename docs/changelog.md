@@ -645,6 +645,10 @@ describe them further.
   sent a repeated key as many times as it was given. A set field that the
   server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
   assigning the field its own value sends nothing.
+- A write or a load of one object that the server answers with a list, as `[]`
+  or two objects, raises `ResponseShapeError` with the response, as `create()`
+  does, and a write's updates stay pending. `v1.0.0a5` raised `DoesNotExist` or
+  `MultipleObjectsReturned`, which describe a query.
 - A set given to the parameter of a field that is a sequence, as
   `filter(tags={Tag(slug="b"), Tag(slug="a")})` for a `list[Tag]`, is sent
   sorted, where `v1.0.0a5` sent it in hash order, so the URL differed between

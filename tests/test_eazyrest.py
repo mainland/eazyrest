@@ -622,23 +622,21 @@ class NoBulkTodo(ModelBase):
     title: str
 
 
-def test_object_json_raises_for_empty_list_response(
+def test_a_load_answered_with_an_empty_list_raises_a_shape_error(
     requests_mock: Any,
 ) -> None:
-    """Empty list object responses should raise ``DoesNotExist``."""
+    """An empty list is not the object that a load reads."""
     requests_mock.get("https://example.com/v1/todos/1/", json=[])
 
     todo = Todo(id=1)
 
-    try:
+    with pytest.raises(ResponseShapeError) as caught:
         _ = todo.json
-    except DoesNotExist:
-        pass
-    else:
-        raise AssertionError("Expected DoesNotExist for empty object response")
+    assert caught.value.response is not None
+    assert caught.value.response.json() == []
 
 
-def test_object_json_rejects_list_of_several_objects(
+def test_a_load_answered_with_a_list_of_several_objects_raises(
     requests_mock: Any,
 ) -> None:
     """Only a singleton list holds one object."""
@@ -647,8 +645,10 @@ def test_object_json_rejects_list_of_several_objects(
         json=[{"id": 1, "name": "Ada"}, {"id": 2, "name": "Grace"}],
     )
 
-    with pytest.raises(MultipleObjectsReturned):
+    with pytest.raises(ResponseShapeError) as caught:
         _ = User(id=1).name
+    assert caught.value.response is not None
+    assert len(caught.value.response.json()) == 2
 
 
 def test_filter_returns_iterable_and_preserves_base_path_prefix(
