@@ -897,18 +897,16 @@ class ObjectStateMachine(RuleBasedStateMachine):
         As for any field, an assignment that leaves the object's JSON unchanged
         sends nothing. A load or a response holds the related object nested,
         and an assignment compares it by the key that it holds, so assigning
-        the same key is unchanged.
+        the same key is unchanged. An object that has not loaded, or that lacks
+        the owner, loads to compare, so the assignment is compared with the
+        owner that the load brings, which ``stored`` holds.
 
         Args:
             owner: Key of the related object to assign.
         """
         self.detect_before_load("owner")
-        state = working_json(self.obj)
-        stored = None if state is None else state.get("owner")
-        if isinstance(stored, dict):
-            stored = stored.get("id")
         unchanged = self.same_assignment(
-            "owner", state is not None and stored == owner
+            "owner", self.stored["owner"] == owner
         )
         if self.poisoned and self.sends(unchanged):
             self.refused(lambda: setattr(self.obj, "owner", Owner(id=owner)))
@@ -1292,6 +1290,55 @@ class ObjectStateMachine(RuleBasedStateMachine):
         for field in self.FIELDS:
             if field in state:
                 assert state[field] == self.stored[field]
+
+
+class FixedData:
+    """Stand-in for a Hypothesis data object that draws given values."""
+
+    def __init__(self, *values: Any) -> None:
+        """Hold the values to draw, in order.
+
+        Args:
+            *values: The value of each draw.
+        """
+        self.values = list(values)
+
+    def draw(self, strategy: st.SearchStrategy[Any]) -> Any:
+        """Return the next value, whatever the strategy.
+
+        Args:
+            strategy: Strategy that a data object would draw from.
+
+        Returns:
+            The next given value.
+        """
+        return self.values.pop(0)
+
+
+def test_unloaded_object_assigned_its_owner_sends_nothing() -> None:
+    """A write that changes nothing keeps a pending write-only value pending.
+
+    Assigning the owner that the server holds loads the unloaded object, finds
+    the owner unchanged, and sends nothing, so the secret stays pending.
+    """
+    machine = ObjectStateMachine()
+    try:
+        # The draws are the server's fields, in the order of ``DECLARED``.
+        machine.create_object(
+            FixedData("", 0, [], {}, {}, [], [], 1), how="load", secret=None
+        )
+        machine.assign_secret("")
+        machine.set_write_mode("eager")
+        machine.assign_owner(1)
+        machine.server_matches_model()
+        machine.json_matches_model()
+        assert machine.pending_secret == ""
+        assert not any(
+            request.method != "GET"
+            for request in machine.mocker.request_history
+        )
+    finally:
+        machine.teardown()
 
 
 ObjectStateMachine.TestCase.settings = settings(
