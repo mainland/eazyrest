@@ -2551,6 +2551,16 @@ def an_extra_that_json_would_change_is_refused_by_create(
 
 
 @row(CREATE)
+def an_extra_given_as_a_lookup_is_refused_as_a_query_value(
+    world: World,
+) -> None:
+    raises(world, TypeError, lambda: User.get_or_create(id=7, x=(1, 2)))
+    raises(
+        world, ValueError, lambda: User.get_or_create(id=7, x={1: "a"}), "x"
+    )
+
+
+@row(CREATE)
 def a_keyed_model_without_class_url_is_a_usage_error(world: World) -> None:
     for call in (
         lambda: Bare(id=1).url,
