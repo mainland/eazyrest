@@ -8134,6 +8134,13 @@ class JSONObject:
             ValueError: If ``mode`` is neither ``"read"`` nor ``"write"``.
             NameError: If a field's annotation names a type that cannot be
                 resolved, as when the field is read.
+            FieldConversionError: If a field's type cannot be converted, as
+                when the field is read, such as a member of a ``TypedDict``
+                that refers to itself through a type alias.
+            TypeError: If the class is not decorated, has a decorated ancestor,
+                and sets ``conversions`` itself or inherits them from a class
+                that is not an ancestor of that decorated class, such as a
+                mixin.
         """
         _require_decorated(cls)
         if mode not in ("read", "write"):
