@@ -7,14 +7,14 @@ wins, so a key that holds ``__`` is found whole.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Iterator, Mapping
+from typing import Any, ClassVar
 from urllib.parse import unquote, urlsplit
 
 import pytest
 import requests_mock as requests_mock_module
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import API, Conversion, JSONObject, json_object
 
 URL = "https://example.com/v1/"
 
@@ -74,6 +74,34 @@ class Task(Base):
     class_url = "/tasks/"
     id: int
     user: User
+
+
+class Span:
+    """An iterable class that a conversion writes as one text."""
+
+    def __init__(self, lo: int, hi: int) -> None:
+        """Hold the two ends."""
+        self.lo, self.hi = lo, hi
+
+    def __iter__(self) -> Iterator[int]:
+        """Return the two ends."""
+        return iter((self.lo, self.hi))
+
+
+@json_object(field_map={"span": "Span"}, write_map={"span": "Span_w"})
+class Spanned(Base):
+    """A field whose conversion takes an iterable value whole."""
+
+    class_url = "/spanned/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Span: Conversion(
+            decode=lambda text, declared: Span(*map(int, text.split("-"))),
+            encode=lambda span, declared: f"{span.lo}-{span.hi}",
+            schema={"type": "string"},
+        )
+    }
+    id: int
+    span: Span
 
 
 @pytest.fixture
@@ -188,3 +216,32 @@ def test_an_iterable_model_given_by_a_json_key_is_one_value(
 
     list(Task.filter(userId__in=[crew]))
     assert query_of(server) == "userId__in=5"
+
+
+@pytest.mark.parametrize("name", ["Span", "Span__exact", "Span__in", "Span_w"])
+def test_a_json_key_refuses_a_value_that_the_python_name_converts(
+    name: str, server: Any
+) -> None:
+    """A JSON key or write key sends no conversion, so it refuses it."""
+    with pytest.raises(ValueError, match=name):
+        list(Spanned.filter(params={name: Span(1, 2)}))
+
+    assert server.call_count == 0
+
+
+def test_the_python_name_converts_a_value_that_a_conversion_takes_whole(
+    server: Any,
+) -> None:
+    """The refusal is of the JSON key, since the Python name sends the text."""
+    list(Spanned.filter(span=Span(1, 2)))
+
+    assert query_of(server) == "Span=1-2"
+
+
+def test_a_json_key_sends_a_value_that_no_conversion_takes_whole(
+    server: Any,
+) -> None:
+    """A list of numbers is no value of the field's conversion."""
+    list(Spanned.filter(params={"Span__in": [3, 4]}))
+
+    assert query_of(server) == "Span__in=3,4"

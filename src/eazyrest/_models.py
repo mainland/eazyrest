@@ -7728,8 +7728,13 @@ class JSONObject:
         parameter = cls._parameter(name)
         if parameter.conversion is None:
             # A name that is no field sends a model as its key, so a model that
-            # can be iterated is still one operand.
-            return isinstance(value, JSONObject)
+            # can be iterated is still one operand. A JSON key or write key
+            # sends no conversion, but its value is one operand if the field's
+            # Python name would convert it whole, and the query then refuses
+            # it.
+            return isinstance(value, JSONObject) or (
+                cls._converts_by_python_name(parameter, name, value)
+            )
         return cls._takes_whole(
             parameter.conversion,
             value,
@@ -7910,6 +7915,50 @@ class JSONObject:
         )
 
     @classmethod
+    def _converts_by_python_name(
+        cls, parameter: _Parameter, name: str, value: Any
+    ) -> bool:
+        """Return whether the field's Python name would convert a value whole.
+
+        A JSON key or write key sends no conversion, so it would read an
+        iterable value that the Python name takes whole as its items.
+
+        Args:
+            parameter: The parameter that the name resolves to.
+            name: Name of the parameter.
+            value: Query value.
+
+        Returns:
+            Whether the parameter is a field's JSON key or write key, alone or
+            with a suffix that compares values, and the Python name takes the
+            value, an iterable that is no model, as one operand because a
+            conversion encodes it. ``False`` for a field whose type cannot be
+            resolved yet, which a name sent as given does not need, and for a
+            structured field, whose collection is one value that a lookup of
+            one value refuses.
+        """
+        named = parameter.named
+        if (
+            named is None
+            or named.by not in ("json", "write")
+            or not (named.suffix is None or named.suffix in _VALUE_LOOKUPS)
+            or isinstance(value, JSONObject)
+            or not _is_collection_value(value)
+        ):
+            return False
+        try:
+            equivalent = cls._compared_parameter(
+                named, name, parameter.several
+            )
+        except (FieldConversionError, NameError):
+            return False
+        if equivalent.conversion is None or equivalent.structured:
+            # A structured field's collection is one value of a lookup of one
+            # value, which that lookup refuses.
+            return False
+        return cls._takes_whole(equivalent.conversion, value, structured=False)
+
+    @classmethod
     def _compared_parameter(
         cls, named: _Name, wire: str, several: bool
     ) -> _Parameter:
@@ -8074,6 +8123,23 @@ class JSONObject:
                 "repeated, and a server applies only one of those. Pass one "
                 "value, or use a lookup that takes several, such as "
                 f"{several_name}__in"
+            )
+        if (
+            whole
+            and parameter.named is not None
+            and not isinstance(value, JSONObject)
+            and parameter.conversion is None
+        ):
+            python_name = (
+                parameter.named.field
+                if parameter.named.suffix is None
+                else f"{parameter.named.field}__{parameter.named.suffix}"
+            )
+            raise ValueError(
+                f"Query parameter {name} for {cls.__name__} cannot be sent, "
+                f"because it is a JSON name of {parameter.named.field}, which "
+                "sends no conversion, and the field's conversion takes this "
+                f"value whole. Pass it as {python_name}"
             )
         if several and (
             isinstance(value, JSONObject)

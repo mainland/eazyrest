@@ -28,6 +28,7 @@ from collections.abc import (
     Collection,
     Iterable,
     Iterator,
+    Mapping,
     MutableSequence,
     MutableSet,
     Sequence,
@@ -38,6 +39,7 @@ from decimal import Decimal
 from typing import (
     Annotated,
     Any,
+    ClassVar,
     Literal,
     NewType,
     Optional,
@@ -201,6 +203,34 @@ class DT(Base):
     class_url = "/dt/"
     id: int
     title: str
+
+
+class Span:
+    """An iterable class that a conversion writes as one text."""
+
+    def __init__(self, lo: int, hi: int) -> None:
+        self.lo, self.hi = lo, hi
+
+    def __iter__(self) -> Iterator[int]:
+        """Return the two ends."""
+        return iter((self.lo, self.hi))
+
+
+@json_object(field_map={"span": "Span", "spans": "Spans"})
+class Spanned(Base):
+    """Fields whose conversion takes an iterable value whole."""
+
+    class_url = "/spanned/"
+    conversions: ClassVar[Mapping[Any, Conversion]] = {
+        Span: Conversion(
+            decode=lambda text, declared: Span(*map(int, text.split("-"))),
+            encode=lambda span, declared: f"{span.lo}-{span.hi}",
+            schema={"type": "string"},
+        )
+    }
+    id: int
+    span: Span
+    spans: list[Span]
 
 
 @json_object
@@ -2320,6 +2350,16 @@ def a_field_json_name_with_two_underscores_is_no_lookup_of_get_or_create(
     ]
     lookup = world.requests[-2]
     assert unquote(urlsplit(lookup.url).query) == "the__title=a"
+
+
+@row(JSON_NAME)
+def a_value_that_a_conversion_takes_whole_is_refused_by_json_name(
+    world: World,
+) -> None:
+    span = Span(1, 2)
+    for name in ("Span__in", "Spans", "span__in"):
+        refuses_query(world, Spanned, ValueError, name, **{name: span})
+    assert world.query(lambda: list(Spanned.filter(spans=span))) == "Spans=1-2"
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"
