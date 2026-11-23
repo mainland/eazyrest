@@ -3651,8 +3651,31 @@ def _check_json(value: Any, path: str) -> None:
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping
             key that is not a string.
-        ValueError: If ``value`` holds a float that is not finite, which
-            JSON cannot write.
+        ValueError: If ``value`` holds a float that is not finite, which JSON
+            cannot write, or holds itself, or nests more deeply than Python can
+            check.
+    """
+    try:
+        _walk_json(value, path)
+    except RecursionError:
+        raise ValueError(
+            f"The value{_at(path)} holds itself or nests too deeply to be JSON"
+        ) from None
+
+
+def _walk_json(value: Any, path: str) -> None:
+    """Check each part of a value, which may recurse without bound.
+
+    Args:
+        value: Value to check.
+        path: Where ``value`` is, as ``_check_json()`` takes it.
+
+    Raises:
+        TypeError: If ``value`` holds a value of another type, or a mapping key
+            that is not a string.
+        ValueError: If ``value`` holds a float that is not finite.
+        RecursionError: If ``value`` holds itself, or nests more deeply than
+            Python can check.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -3665,7 +3688,7 @@ def _check_json(value: Any, path: str) -> None:
         return
     if isinstance(value, list):
         for index, item in enumerate(value):
-            _check_json(item, f"{path}[{index}]")
+            _walk_json(item, f"{path}[{index}]")
         return
     if isinstance(value, dict):
         for key, item in value.items():
@@ -3674,7 +3697,7 @@ def _check_json(value: Any, path: str) -> None:
                     f"The value{_at(path)} has a key that is not a string, "
                     "which JSON objects cannot have"
                 )
-            _check_json(item, f"{path}[key]")
+            _walk_json(item, f"{path}[key]")
         return
     raise TypeError(
         f"The value{_at(path)} has the type {type(value).__name__}, which "
