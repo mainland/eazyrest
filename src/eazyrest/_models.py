@@ -1419,7 +1419,11 @@ def _check_admitted(
             members = leaves
         case OptionalType(inner) | NewTypeType(_, inner):
             members = (inner,)
-        case CollectionType(_, item) | MappingType(item):
+        case CollectionType(collection_type, item):
+            if _READ_AS[collection_type] in (set, frozenset):
+                _refuse_unhashable_item(item, table)
+            members = (item,)
+        case MappingType(item):
             members = (item,)
         case FixedTupleType(items):
             members = items
@@ -1448,6 +1452,94 @@ def _check_admitted(
                 return
     for member in members:
         _check_admitted(member, table, seen, late=late)
+
+
+def _has_no_hash(cls: type[Any]) -> bool:
+    """Return whether the instances of a class have no hash.
+
+    Args:
+        cls: The class.
+
+    Returns:
+        Whether the class sets ``__hash__`` to ``None``, as ``list`` does and a
+        dataclass that is not frozen does.
+    """
+    return cast("object", cls.__hash__) is None
+
+
+def _unhashable_kind(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> str | None:
+    """Return what makes the value of a type unhashable, if anything does.
+
+    A conversion of its own decides what its class reads as, so a class that
+    the table converts is taken to have a hash. So is a type whose members
+    cannot be analyzed yet.
+
+    Args:
+        analyzed: Analyzed type of a set's items.
+        table: Conversion table of the model that owns the field.
+
+    Returns:
+        A name for the kind of value that has no hash, such as ``dict`` or a
+        dataclass's name, or ``None`` if the values have one or it is unknown.
+    """
+    if _class_entry(analyzed, table) is not None:
+        return None
+    match analyzed:
+        case BaseType(base_type):
+            if _conversion_of(base_type, table) is not None:
+                return None
+            if _has_no_hash(base_type):
+                return base_type.__name__
+        case OptionalType(inner) | NewTypeType(_, inner):
+            return _unhashable_kind(inner, table)
+        case CollectionType(collection_type, item):
+            if _READ_AS[collection_type] not in (tuple, frozenset):
+                return _READ_AS[collection_type].__name__
+            return _unhashable_kind(item, table)
+        case MappingType():
+            return "dict"
+        case TypedDictType(cls):
+            return cls.__name__
+        case DataclassType(cls):
+            if _has_no_hash(cls):
+                return cls.__name__
+        case FixedTupleType(items):
+            return next(
+                (
+                    kind
+                    for item in items
+                    if (kind := _unhashable_kind(item, table)) is not None
+                ),
+                None,
+            )
+    return None
+
+
+def _refuse_unhashable_item(
+    item: AnalyzedType, table: Mapping[Any, Conversion]
+) -> None:
+    """Refuse a set whose items have no hash.
+
+    Such a field decorates and reads an empty array, but refuses any other
+    value, since a set holds only what it can hash.
+
+    Args:
+        item: Analyzed type of the set's items.
+        table: Conversion table of the model that owns the field.
+
+    Raises:
+        TypeError: If the items have no hash, naming the item type.
+    """
+    kind = _unhashable_kind(item, table)
+    if kind is not None:
+        raise TypeError(
+            f"A set holds items that have a hash, and {kind} has none, so "
+            "no item could be read or written. Declare a list, or use items "
+            "of a type that has a hash, such as a frozen dataclass or a "
+            "tuple"
+        )
 
 
 def _hints_of(cls: type[Any]) -> dict[str, Any]:

@@ -705,13 +705,16 @@ text. Equal sets therefore write equal JSON, and replacing a set with an equal
 one is not a change that `save()` sends, even when the server lists the items
 in another order. That holds for a field annotated as a set or frozenset, an
 optional one, or a `NewType` of either. A set nested in a list, tuple, or
-mapping field is compared in the server's order. Any other parameterized type,
-such as `Counter[str]`, raises `TypeError` when the class is decorated, because
-its items would otherwise pass through unconverted. Annotate a tuple of any
-length as `tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of
-exactly one item, and a bare `tuple` is a tuple of any length whose items read
-as they are. A bare alias from `typing`, such as `typing.List` or
-`typing.Dict`, reads as its class, `list` or `dict`:
+mapping field is compared in the server's order. A set whose items have no
+hash, as `set[dict[str, int]]`, `frozenset[list[int]]`, or a set of a dataclass
+that is not frozen, raises `TypeError` when the class is decorated, naming the
+field and the item type, since a set could hold none of its items. Any other
+parameterized type, such as `Counter[str]`, raises `TypeError` when the class
+is decorated, because its items would otherwise pass through unconverted.
+Annotate a tuple of any length as `tuple[T, ...]`. As Python's types say,
+`tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a tuple of any
+length whose items read as they are. A bare alias from `typing`, such as
+`typing.List` or `typing.Dict`, reads as its class, `list` or `dict`:
 
 ```python
 import datetime

@@ -889,21 +889,40 @@ def _holds_relation(ty: Any) -> bool:
     )
 
 
+def _has_no_hash(ty: Any) -> bool:
+    """Return whether the values of a type have no hash.
+
+    Args:
+        ty: A type built from ``_LEAF_TYPES`` and the type constructors.
+
+    Returns:
+        Whether ``ty`` is a list or a set, or a tuple or an optional type that
+        holds one.
+    """
+    if typing.get_origin(ty) in (list, set):
+        return True
+    return any(
+        _has_no_hash(arg) for arg in typing.get_args(ty) if arg is not Ellipsis
+    )
+
+
 def _is_declarable(ty: Any) -> bool:
     """Return whether a class may declare a field of a type.
 
     A collection of relations holds relations that are not optional, and no
     collection of relations, so such a type is refused when its class is
-    decorated.
+    decorated. So is a set whose items have no hash.
 
     Args:
         ty: A type built from ``_LEAF_TYPES`` and the type constructors.
 
     Returns:
         Whether the type holds no optional relation or collection of relations
-        as an item of a collection.
+        as an item of a collection, and no set of items without a hash.
     """
     args = typing.get_args(ty)
+    if typing.get_origin(ty) is set and _has_no_hash(args[0]):
+        return False
     if typing.get_origin(ty) in (list, tuple, set):
         item = args[0]
         inside = [a for a in typing.get_args(item) if a is not type(None)]

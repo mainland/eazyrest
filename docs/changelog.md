@@ -140,6 +140,12 @@ describe them further.
   member, raises `TypeError` naming the field and the member when the class is
   decorated, since every field reads `null` as `None`, so the member could
   never be read. `v1.0.0a5` accepted both.
+- A set or frozenset whose items have no hash, as `set[dict[str, int]]`,
+  `frozenset[list[int]]`, or a set of a dataclass that is not frozen, raises
+  `TypeError` naming the field and the item type when the class is decorated.
+  `v1.0.0a5` accepted it, read an empty array as an empty set, and refused any
+  other value when the field was read. Use a list, a tuple, or a frozen
+  dataclass.
 - `JSONObject.from_json()` and `to_json()` are gone, and so are the exports
   `AnalyzedType`, `BaseType`, `CollectionType`, `OptionalType`, `PydanticType`,
   and `RelatedType`. Declare conversions instead, as
