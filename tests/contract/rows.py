@@ -2960,6 +2960,27 @@ def a_merge_keeps_a_related_object_whose_key_is_unchanged(
 
 
 @row(FULL)
+def a_merge_that_changes_a_related_objects_json_gives_a_new_object(
+    world: World,
+) -> None:
+    # The key alone is not what a merge compares. A payload that embeds the
+    # same key with another member changed, or that gives the bare key, has
+    # other JSON than the field held.
+    for payload in ({"owner": {"id": 7, "name": "c"}}, {"owner": 7}):
+        obj = post(owner={"id": 7, "name": "a"})
+        held = obj.owner
+        assert held is not None
+        held.name = "b"
+        obj.update_from_json(payload)
+        assert obj.owner is not held
+        assert obj.owner is not None
+        assert obj.owner.pk == 7
+        sent = world.count
+        obj.owner.save()
+        assert world.count == sent
+
+
+@row(FULL)
 def a_response_with_a_bare_key_replaces_an_embedded_owner(
     world: World,
 ) -> None:

@@ -558,12 +558,14 @@ describe them further.
   its key raises `AttributeError`. A load, a write's response, and
   `update_from_json()` that name another key raise `ResponseShapeError`, a
   `ValueError`, and change nothing.
-- `update_from_json()` keeps the related objects of a relation field whose key
+- `update_from_json()` keeps the related objects of a relation field whose JSON
   the payload leaves unchanged, as a load does, so that a related object keeps
   its unsaved changes when a payload repeats the field's JSON, where `v1.0.0a5`
   read new related objects and dropped the changes. A payload that names
-  another key still gives new objects, and a change made in place to the
-  field's own collection and a pending update of the field are still discarded.
+  another key, or that embeds the same key with another member changed, or
+  gives the bare key where an object was embedded, still gives new objects, and
+  a change made in place to the field's own collection and a pending update of
+  the field are still discarded.
 - A query with `prefetch=` raises `TypeError` before any request if the model's
   `prefetch_batch_size` is not an `int`, and `ValueError` if it is below 1,
   where `v1.0.0a5` read no object for 0, and raised the `ValueError` of
