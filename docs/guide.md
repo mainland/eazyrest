@@ -977,16 +977,17 @@ type converts by the entry for exactly that type, else by the entry of the
 nearest class in its MRO, so a subclass of `datetime.datetime` converts as a
 `datetime`, and reads a plain `datetime`, which writes back, unless it has an
 entry of its own. A `NewType` converts by its own entry, or else as its
-supertype. A key cannot be a model, whose fields are relations, a type that
-eazyrest converts itself: `object`, `bool`, `int`, `float`, `str`, `None`'s
-type, or a collection type such as `list` or `dict`, or a type whose instances
-`isinstance()` cannot recognize, such as `Any` or a `Protocol` that is not
-runtime-checkable. An entry for `int` would also convert `bool` and `IntEnum`
-fields, so to convert some integers differently, key the entry by a `NewType`,
-such as `Cents = NewType("Cents", int)`. Declare `conversions` in the class
-body, because a class merges and checks its table when it is defined, and
-raises `TypeError` for a bad entry. `DEFAULT_CONVERSIONS` holds the default
-table, so an entry can reuse a default's `decode`, `encode`, or `schema`.
+supertype, which may be a named alias or an `Annotated`. A key cannot be a
+model, whose fields are relations, a type that eazyrest converts itself:
+`object`, `bool`, `int`, `float`, `str`, `None`'s type, or a collection type
+such as `list` or `dict`, or a type whose instances `isinstance()` cannot
+recognize, such as `Any` or a `Protocol` that is not runtime-checkable. An
+entry for `int` would also convert `bool` and `IntEnum` fields, so to convert
+some integers differently, key the entry by a `NewType`, such as
+`Cents = NewType("Cents", int)`. Declare `conversions` in the class body,
+because a class merges and checks its table when it is defined, and raises
+`TypeError` for a bad entry. `DEFAULT_CONVERSIONS` holds the default table, so
+an entry can reuse a default's `decode`, `encode`, or `schema`.
 
 An entry can also convert a class whose structure eazyrest would otherwise
 convert: a dataclass, a `NamedTuple`, or a `TypedDict`. The entry replaces the

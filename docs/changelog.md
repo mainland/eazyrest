@@ -216,8 +216,9 @@ describe them further.
   tuple, `Set` as a `frozenset`, and `MutableSet` as a `set`, where `v1.0.0a5`
   read a list.
 - A field typed as a subclass of a type that converts, such as a subclass of
-  `datetime`, converts as that type, and a `NewType` as its supertype, where
-  `v1.0.0a5` read their JSON values unchanged.
+  `datetime`, converts as that type, and a `NewType` as its supertype, also
+  when the supertype is a named alias or an `Annotated`, where `v1.0.0a5` read
+  their JSON values unchanged.
 - A `Literal` field reads the JSON value of one of its enum members as the
   member, where `v1.0.0a5` read the JSON value.
 - `decimal.Decimal` and `datetime.time` fields read as `Decimal` and `time`,

@@ -64,6 +64,7 @@ from ._aliases import (
 from ._conversion import (
     DEFAULT_CONVERSIONS,
     Conversion,
+    _annotated_supertype,
     _conversion_of,
     _definition_name,
     _final_supertype,
@@ -863,7 +864,7 @@ def analyze_type(ty: type[Any]) -> AnalyzedType:
             return OptionalType(union)
         return union
 
-    supertype = _supertype(ty)
+    supertype = _annotated_supertype(ty)
     if supertype is not None:
         inner = analyze_type(supertype)
         if isinstance(inner, BaseType):
@@ -1100,9 +1101,12 @@ def _check_union(union: UnionType, table: Mapping[Any, Conversion]) -> None:
     """
     for member in union.members:
         ty = member.base_type
+        literal = _literal_of(ty)
         if _conversion_of(ty, table) is not None or (
-            typing.get_origin(ty) is Literal
-            and any(isinstance(arg, enum.Enum) for arg in typing.get_args(ty))
+            literal is not None
+            and any(
+                isinstance(arg, enum.Enum) for arg in typing.get_args(literal)
+            )
         ):
             raise TypeError(
                 _union_message(
@@ -1243,7 +1247,7 @@ def _refuse_unconverted_class(ty: Any) -> None:
             bare ``dict`` or ``list``, or a ``Literal``.
     """
     cls = ty
-    if typing.get_origin(cls) is Literal:
+    if _literal_of(cls) is not None:
         return
     try:
         if cls in _RAW_JSON_CLASSES:
@@ -1283,6 +1287,20 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
             )
 
 
+def _literal_of(ty: Any) -> Any | None:
+    """Return the ``Literal`` that a declared type is, or a ``NewType`` of.
+
+    Args:
+        ty: Declared type of a leaf.
+
+    Returns:
+        ``ty``, or the supertype of the ``NewType`` that ``ty`` is, if it is a
+        ``Literal``. ``None`` for any other type.
+    """
+    ty = _final_supertype(ty)
+    return ty if typing.get_origin(ty) is Literal else None
+
+
 def _check_admitted(
     analyzed: AnalyzedType,
     table: Mapping[Any, Conversion],
@@ -1320,12 +1338,12 @@ def _check_admitted(
     members: Iterable[AnalyzedType] = ()
     match analyzed:
         case BaseType(base_type):
-            if typing.get_origin(base_type) is Literal:
+            if (literal := _literal_of(base_type)) is not None:
                 _check_json_scalars(
                     "A Literal",
                     (
                         _literal_json(member, table)
-                        for member in typing.get_args(base_type)
+                        for member in typing.get_args(literal)
                     ),
                 )
             found = _conversion_of(base_type, table)
@@ -4086,16 +4104,16 @@ def _base_schema(
         empty schema, which allows any value, for a type whose JSON form
         eazyrest does not check, such as ``Any``.
     """
+    found = _conversion_of(ty, table)
+    if found is not None:
+        return _schema_of_entry(found.entry, found.declared, mode)
+    ty = _final_supertype(ty)
     if typing.get_origin(ty) is Literal:
         return {
             "enum": [
                 _literal_json(member, table) for member in typing.get_args(ty)
             ]
         }
-    found = _conversion_of(ty, table)
-    if found is not None:
-        return _schema_of_entry(found.entry, found.declared, mode)
-    ty = _final_supertype(ty)
     if not isinstance(ty, type):
         return {}
     # A bool is an int too, so it comes first.
@@ -5950,9 +5968,9 @@ class JSONObject:
                     return found.entry.decode(
                         _copy_json(value), found.declared
                     )
-                if typing.get_origin(base_type) is Literal:
+                if (literal := _literal_of(base_type)) is not None:
                     return _literal_member(
-                        base_type, value, _table_of(type(self))
+                        literal, value, _table_of(type(self))
                     )
 
                 # Changing the returned value in place must not change the
@@ -6125,7 +6143,7 @@ class JSONObject:
                         found.entry.encode(value, found.declared)
                     )
 
-                if typing.get_origin(base_type) is Literal and isinstance(
+                if _literal_of(base_type) is not None and isinstance(
                     value, enum.Enum
                 ):
                     value = _literal_json(value, _table_of(cls))

@@ -37,6 +37,7 @@ from urllib.parse import unquote
 
 import isodate
 
+from ._aliases import _expand_aliases
 from .dateparse import parse_datetime, parse_duration
 
 _typing_extensions: types.ModuleType | None
@@ -843,20 +844,44 @@ def _final_supertype(ty: Any) -> Any:
 
 
 def _supertype(ty: Any) -> Any:
-    """Return the supertype of a ``NewType``.
+    """Return the supertype of a ``NewType``, as it converts.
 
     Args:
         ty: Declared type.
 
     Returns:
-        The type that ``ty`` was made from, or ``None`` if ``ty`` is not a
-        ``NewType``.
+        The type that ``ty`` was made from, with a named type alias expanded
+        and ``Annotated`` removed, so that a ``NewType`` of either converts as
+        the type that the alias or the ``Annotated`` holds. ``None`` if ``ty``
+        is not a ``NewType``.
+
+    Raises:
+        TypeError: If the supertype names a type by a string, or an alias in it
+            cannot be expanded.
+    """
+    supertype = _annotated_supertype(ty)
+    # Aliases and Annotated can wrap one another to any depth.
+    while typing.get_origin(supertype) is Annotated:
+        supertype = _expand_aliases(typing.get_args(supertype)[0])
+    return supertype
+
+
+def _annotated_supertype(ty: Any) -> Any:
+    """Return the supertype of a ``NewType``, with its ``Annotated`` kept.
+
+    Args:
+        ty: Declared type.
+
+    Returns:
+        The type that ``ty`` was made from, with a named type alias expanded.
+        ``None`` if ``ty`` is not a ``NewType``.
 
     Raises:
         TypeError: If the supertype names a type by a string. Python never
             resolves a string in a ``NewType``'s supertype, so it would stay a
             string in the type that eazyrest converts, which cannot be
-            converted as the type that the string names.
+            converted as the type that the string names. Also if an alias in
+            the supertype cannot be expanded.
     """
     if isinstance(ty, type):
         return None
@@ -866,7 +891,9 @@ def _supertype(ty: Any) -> Any:
             f"The NewType {getattr(ty, '__name__', ty)!r} has a string in its "
             f"supertype {supertype!r}. Write the type itself."
         )
-    return supertype
+    if supertype is None:
+        return None
+    return _expand_aliases(supertype)
 
 
 def _names_by_string(ty: Any) -> bool:
