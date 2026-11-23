@@ -60,10 +60,13 @@ describe them further.
   that key and not as another field's name and a suffix. A field that is a
   collection still takes a collection by its JSON key.
 - A field's JSON key or write key sends no conversion, so it raises
-  `ValueError` naming the parameter, as in `filter(Span__in=Span(1, 2))`, for
-  an iterable value that the field's name would convert whole, such as an
-  instance of a class that `conversions` registers. `v1.0.0a5` sent its items.
-  Pass it by the field's name.
+  `ValueError` naming the parameter and advising the field's name, as in
+  `filter(Span__in=Span(1, 2))` or `filter(Color=Color.RED)`, for a value that
+  is no JSON scalar, such as an enum member, a `datetime`, or an instance of a
+  class that `conversions` registers, and for each such item of a lookup that
+  takes several values. `v1.0.0a5` sent the value's `str()`, or its items. Pass
+  it by the field's name, which converts it. A model object given for a
+  relation is still sent as its key.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the

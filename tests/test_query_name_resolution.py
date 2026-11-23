@@ -8,8 +8,12 @@ wins, so a key that holds ``__`` is found whole.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from enum import Enum
 from typing import Any, ClassVar
 from urllib.parse import unquote, urlsplit
+from uuid import UUID
 
 import pytest
 import requests_mock as requests_mock_module
@@ -102,6 +106,40 @@ class Spanned(Base):
     }
     id: int
     span: Span
+
+
+class Color(Enum):
+    """An enum that a field writes as its value."""
+
+    RED = "red"
+
+
+@json_object(
+    field_map={
+        "color": "Color",
+        "when": "When",
+        "length": "Length",
+        "price": "Price",
+        "day": "Day",
+        "ref": "Ref",
+        "data": "Data",
+        "owner": "ownerId",
+    },
+    write_map={"when": "When_w", "owner": "owner_w"},
+)
+class Colored(Base):
+    """Fields whose conversion writes other text than ``str()``."""
+
+    class_url = "/colored/"
+    id: int
+    color: Color
+    when: datetime
+    length: timedelta
+    price: Decimal
+    day: date
+    ref: UUID
+    data: Any
+    owner: User
 
 
 @pytest.fixture
@@ -245,3 +283,130 @@ def test_a_json_key_sends_a_value_that_no_conversion_takes_whole(
     list(Spanned.filter(params={"Span__in": [3, 4]}))
 
     assert query_of(server) == "Span__in=3,4"
+
+
+MOMENT = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "advice"),
+    [
+        ("Color", Color.RED, "color"),
+        ("Color__exact", Color.RED, "color__exact"),
+        ("Color__in", [Color.RED], "color__in"),
+        ("When", MOMENT, "when"),
+        ("When_w", MOMENT, "when"),
+        ("When__gt", MOMENT, "when__gt"),
+        ("When__range", [MOMENT, MOMENT], "when__range"),
+        ("Length", timedelta(hours=1), "length"),
+        ("Price", Decimal("1.5"), "price"),
+        ("Day", date(2024, 1, 2), "day"),
+        ("Ref", UUID(int=7), "ref"),
+        ("Data", b"abc", "data"),
+        ("Color", User(id=3), "color"),
+        ("Color__in", [User(id=3)], "color__in"),
+        ("ownerId", Color.RED, "owner"),
+        ("owner_w__in", [Color.RED], "owner__in"),
+    ],
+)
+def test_a_json_key_refuses_a_value_that_is_no_json_scalar(
+    name: str, value: Any, advice: str, server: Any
+) -> None:
+    """The key sends no conversion, so only a JSON scalar is sent by it."""
+    with pytest.raises(ValueError, match=name) as raised:
+        list(Colored.filter(params={name: value}))
+
+    assert f"Pass it as {advice}" in str(raised.value)
+    assert server.call_count == 0
+
+
+def test_a_json_key_refuses_each_operand_that_is_no_json_scalar(
+    server: Any,
+) -> None:
+    """A lookup of several values checks every item, a generator's too."""
+    with pytest.raises(ValueError, match="Color__in"):
+        list(Colored.filter(Color__in=iter(["red", Color.RED])))
+
+    assert server.call_count == 0
+
+
+@pytest.mark.parametrize("name", ["Color", "Color__in"])
+def test_get_or_create_refuses_a_json_key_given_no_json_scalar(
+    name: str, server: Any
+) -> None:
+    """The lookup is refused before any request, as the creation would be."""
+    value: Any = Color.RED if name == "Color" else [Color.RED]
+    with pytest.raises(ValueError, match=name):
+        Colored.get_or_create(params={name: value})
+
+    assert server.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("Color", "JSON key"),
+        ("When_w", "write key"),
+        ("When_w__gt", "write key"),
+    ],
+)
+def test_the_refusal_says_whether_the_name_is_a_json_key_or_a_write_key(
+    name: str, kind: str
+) -> None:
+    """A write key is not called a JSON key."""
+    with pytest.raises(ValueError, match=name) as raised:
+        list(Colored.filter(params={name: Color.RED}))
+
+    message = str(raised.value)
+    assert f"the {kind} of" in message
+    assert ("JSON name" in message) is False
+
+
+def test_the_refusal_of_a_value_taken_whole_names_the_kind_of_key() -> None:
+    """A JSON key and a write key are named as each, for a value of a Span."""
+    with pytest.raises(ValueError, match="the JSON key of span"):
+        list(Spanned.filter(Span=Span(1, 2)))
+    with pytest.raises(ValueError, match="the write key of span"):
+        list(Spanned.filter(Span_w=Span(1, 2)))
+
+
+def test_a_json_key_sends_a_json_scalar_as_given(server: Any) -> None:
+    """A string, number, or boolean is sent, the field's type aside."""
+    list(Colored.filter(Color="red", Length=3, Price=1.5))
+    assert query_of(server) == "Color=red&Length=3&Price=1.5"
+
+    list(
+        Colored.filter(Color__in=["red", "blue"], When="2024-01-02T03:04:05Z")
+    )
+    assert query_of(server) == "Color__in=red,blue&When=2024-01-02T03:04:05Z"
+
+    list(Colored.filter(Color=True))
+    assert query_of(server) == "Color=True"
+
+
+def test_a_json_key_sends_a_model_given_for_a_relation(server: Any) -> None:
+    """A relation takes a model by either key, as its name does."""
+    list(Colored.filter(ownerId=User(id=3), owner_w__in=[User(id=4)]))
+
+    assert query_of(server) == "ownerId=3&owner_w__in=4"
+
+
+def test_a_json_key_refuses_none_as_before() -> None:
+    """None is no operand that requests would send."""
+    with pytest.raises(ValueError, match="None"):
+        list(Colored.filter(Color=None))
+
+
+def test_a_field_not_defined_yet_sends_a_model_by_its_json_key(
+    server: Any,
+) -> None:
+    """The type is unknown, so a model may be a relation's and is its key."""
+    list(Late.filter(Later=User(id=3)))
+
+    assert query_of(server) == "Later=3"
+
+
+def test_a_field_not_defined_yet_refuses_a_value_that_is_no_scalar() -> None:
+    """The refusal of a value needs no type."""
+    with pytest.raises(ValueError, match="Later"):
+        list(Late.filter(Later=MOMENT))

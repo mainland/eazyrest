@@ -581,6 +581,18 @@ def _is_collection_type(ty: Any) -> bool:
     return ty in _READ_AS
 
 
+def _is_json_scalar(value: Any) -> bool:
+    """Return whether a value is a JSON scalar that a query sends as given.
+
+    Args:
+        value: Value to test.
+
+    Returns:
+        Whether the value is a string, number, boolean, or ``None``.
+    """
+    return value is None or isinstance(value, (str, int, float))
+
+
 def _is_collection_value(value: Any) -> bool:
     """Return whether a value is a collection of items.
 
@@ -7959,6 +7971,50 @@ class JSONObject:
         return cls._takes_whole(equivalent.conversion, value, structured=False)
 
     @classmethod
+    def _sends_no_conversion(cls, parameter: _Parameter) -> bool:
+        """Return whether a parameter compares a field by a key sent as given.
+
+        Args:
+            parameter: The parameter that a name resolves to.
+
+        Returns:
+            Whether the parameter is a field's JSON key or write key, alone or
+            with a suffix that compares values, so that its operands are sent
+            with no conversion.
+        """
+        named = parameter.named
+        return (
+            parameter.conversion is None
+            and named is not None
+            and named.by in ("json", "write")
+            and (named.suffix is None or named.suffix in _VALUE_LOOKUPS)
+        )
+
+    @classmethod
+    def _names_relation(cls, parameter: _Parameter) -> bool:
+        """Return whether a parameter's field is a relation.
+
+        Args:
+            parameter: A parameter that resolves to a field.
+
+        Returns:
+            Whether the field is a relation or a collection of them, which
+            takes a model object as its key. ``True`` for a field whose type
+            cannot be resolved yet, since a model given for it may be a
+            relation's, and a name sent as given needs no type.
+        """
+        assert parameter.named is not None
+        try:
+            analyzed = _unwrap_optional_type(
+                getattr(cls, parameter.named.field).analyzed_type
+            )
+        except (FieldConversionError, NameError):
+            return True
+        if isinstance(analyzed, CollectionType):
+            analyzed = _unwrap_optional_type(analyzed.item_type)
+        return isinstance(analyzed, RelatedType)
+
+    @classmethod
     def _compared_parameter(
         cls, named: _Name, wire: str, several: bool
     ) -> _Parameter:
@@ -8071,15 +8127,19 @@ class JSONObject:
                 one value of a field, as ``exact``, the bare name, ``gt``,
                 ``gte``, ``lt``, and ``lte`` do, unless the field's conversion
                 takes it whole or it is a collection field's own parameter.
-                Also if the value is a mapping or ``None``, an empty
-                collection, or holds ``None`` or another collection, which
-                requests would omit, flatten, or send as its keys, or is one
-                value that its field's conversion writes as a list, which
-                requests would send as separate values, so the query would
-                ignore or change its constraint. Also if a lookup that takes
-                several values is given anything but a collection, a
-                ``__range`` is given other than two operands, or an operand's
-                text is empty, or holds a comma under ``"comma"``.
+                Also if the parameter is a field's JSON key or write key, alone
+                or with a suffix that compares values, and an operand is no
+                JSON scalar, except a model given for a relation, since the key
+                sends no conversion and the field's name would send one. Also
+                if the value is a mapping or ``None``, an empty collection, or
+                holds ``None`` or another collection, which requests would
+                omit, flatten, or send as its keys, or is one value that its
+                field's conversion writes as a list, which requests would send
+                as separate values, so the query would ignore or change its
+                constraint. Also if a lookup that takes several values is given
+                anything but a collection, a ``__range`` is given other than
+                two operands, or an operand's text is empty, or holds a comma
+                under ``"comma"``.
             FieldConversionError: If the parameter's conversion refuses an
                 operand.
         """
@@ -8124,23 +8184,28 @@ class JSONObject:
                 "value, or use a lookup that takes several, such as "
                 f"{several_name}__in"
             )
-        if (
-            whole
-            and parameter.named is not None
-            and not isinstance(value, JSONObject)
-            and parameter.conversion is None
-        ):
+        unconverted = cls._sends_no_conversion(parameter)
+
+        def refuse_unconverted() -> NoReturn:
+            """Raise the refusal of a value that is no JSON scalar."""
+            named = parameter.named
+            assert named is not None
             python_name = (
-                parameter.named.field
-                if parameter.named.suffix is None
-                else f"{parameter.named.field}__{parameter.named.suffix}"
+                named.field
+                if named.suffix is None
+                else f"{named.field}__{named.suffix}"
             )
+            kind = "JSON" if named.by == "json" else "write"
             raise ValueError(
                 f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                f"because it is a JSON name of {parameter.named.field}, which "
-                "sends no conversion, and the field's conversion takes this "
-                f"value whole. Pass it as {python_name}"
+                f"because it is the {kind} key of {named.field}, which sends "
+                "no conversion, and its "
+                "value is not a JSON scalar, a string, number, boolean, or "
+                f"None. Pass it as {python_name}"
             )
+
+        if unconverted and whole and not isinstance(value, JSONObject):
+            refuse_unconverted()
         if several and (
             isinstance(value, JSONObject)
             or not _is_collection_value(value)
@@ -8175,6 +8240,14 @@ class JSONObject:
                     # what a query can send.
                     conversion = parameter.key
                 return _query_value(cls._to_json(item, conversion))
+            if unconverted and not _is_json_scalar(item):
+                if isinstance(item, JSONObject):
+                    if not cls._names_relation(parameter):
+                        refuse_unconverted()
+                elif not isinstance(item, Mapping) and not (
+                    _is_collection_value(item)
+                ):
+                    refuse_unconverted()
             if not isinstance(item, JSONObject):
                 return item
             return item._key

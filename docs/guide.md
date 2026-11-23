@@ -1243,12 +1243,15 @@ relation `user`, and a path through a relation by the relation's JSON key, as
 so a key that holds `__`, as `doc__id` for a key `id` or `the__title` for a
 field `title`, refuses a collection too. A field that is a collection takes a
 collection by its JSON key alone, as by its name. A JSON key and a write key
-send no conversion, so one given an iterable value that the field's name would
-convert whole, such as an instance of a class that `conversions` registers,
-raises `ValueError` naming the parameter. Pass it by the field's name, as
-`span=Span(1, 2)`. An empty text in a parameter that takes one value is sent,
-as in `Todo.filter(title="")`, which sends `title=`, and django-filter reads it
-as no filter, so the query matches every object.
+send no conversion, so one given a value that is no JSON scalar, such as an
+enum member, a `datetime`, a `Decimal`, or an instance of a class that
+`conversions` registers, raises `ValueError` naming the parameter and advising
+the field's name with the same suffix, as `span=Span(1, 2)`. So does each item
+of a lookup that takes several values. A model object is the exception for a
+relation, which both names send as its key. A string, an integer, or a float is
+sent as given. An empty text in a parameter that takes one value is sent, as in
+`Todo.filter(title="")`, which sends `title=`, and django-filter reads it as no
+filter, so the query matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,

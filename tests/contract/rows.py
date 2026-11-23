@@ -233,6 +233,25 @@ class Spanned(Base):
     spans: list[Span]
 
 
+class Color(enum.Enum):
+    RED = "red"
+
+
+W = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
+
+
+@json_object(
+    field_map={"color": "Color", "when": "When"}, write_map={"when": "When_w"}
+)
+class Colored(Base):
+    """Fields whose conversion writes other text than ``str()``."""
+
+    class_url = "/colored/"
+    id: int
+    color: Color
+    when: datetime.datetime
+
+
 @json_object
 class Entry(Base):
     """A model with no key."""
@@ -2360,6 +2379,40 @@ def a_value_that_a_conversion_takes_whole_is_refused_by_json_name(
     for name in ("Span__in", "Spans", "span__in"):
         refuses_query(world, Spanned, ValueError, name, **{name: span})
     assert world.query(lambda: list(Spanned.filter(spans=span))) == "Spans=1-2"
+
+
+@row(JSON_NAME)
+def a_value_that_is_no_json_scalar_is_refused_by_json_name(
+    world: World,
+) -> None:
+    for name, advice, value in (
+        ("Color", "color", Color.RED),
+        ("Color__exact", "color__exact", Color.RED),
+        ("Color__in", "color__in", [Color.RED]),
+        ("When", "when", W),
+        ("When_w__gt", "when__gt", W),
+        ("When__range", "when__range", [W, W]),
+        ("Color", "color", User(id=3)),
+    ):
+        refuses_query(
+            world, Colored, ValueError, name, advice, **{name: value}
+        )
+
+
+@row(JSON_NAME)
+def a_json_scalar_is_sent_by_json_name_as_given(world: World) -> None:
+    sends_query(world, Colored, "Color=red", Color="red")
+    sends_query(
+        world, Colored, "Color__in=red,blue", Color__in=["red", "blue"]
+    )
+    sends_query(
+        world,
+        Colored,
+        "When=2024-01-02T03:04:05Z",
+        When="2024-01-02T03:04:05Z",
+    )
+    for call in queries(Task, userId=User(id=3)):
+        assert world.query(call) == "userId=3"
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"
