@@ -49,7 +49,9 @@ describe them further.
   last value, so the query matched fewer objects than it named. Use a lookup
   that takes several values, as in `filter(id__in=[7, 8])`. The name of a field
   that is a collection still sends each item, and so does a value that the
-  field's conversion takes whole.
+  field's conversion takes whole. A path through a relation that compares one
+  value does the same, as in `filter(owner__id=[7, 8])` or
+  `filter(owner__id__gt=[1, 2])`, where `v1.0.0a5` sent the parameter repeated.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the

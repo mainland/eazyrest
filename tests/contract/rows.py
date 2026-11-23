@@ -2020,6 +2020,15 @@ def an_empty_or_null_collection_through_a_relation_is_refused(
         )
 
 
+@row(THROUGH)
+def a_collection_for_a_lookup_of_one_value_through_a_relation_is_refused(
+    world: World,
+) -> None:
+    for name in ("owner__id", "owner__id__gt", "owner__id__exact"):
+        for value in ([7, 8], (7, 8), {7, 8}):
+            refuses_query(world, Post, ValueError, name, **{name: value})
+
+
 STRUCT = "value-suffix-lookups-on-a-structured-field"
 
 

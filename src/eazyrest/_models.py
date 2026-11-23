@@ -2431,6 +2431,9 @@ def _rebuild_object(cls: type[T], wire_key: Any) -> T:
 # those names compare them.
 _VALUE_LOOKUPS = frozenset(("exact", "in", "range", "gt", "gte", "lt", "lte"))
 
+# The value suffixes that compare one value.
+_ONE_VALUE_LOOKUPS = frozenset(("exact", "gt", "gte", "lt", "lte"))
+
 
 @dataclass(frozen=True)
 class _Parameter:
@@ -2464,6 +2467,10 @@ class _Parameter:
     model: RelatedType | None = None
     """The relation by which an object of the model itself is built, for the
     model's own key field, which gives its own key."""
+
+    one_value: bool = False
+    """Whether it is a path through a relation that compares one value, so
+    that a collection is refused as for a field's own one-value lookups."""
 
     key_suffix: str | None = None
     """For a parameter that names the model's own key, the lookup suffix that
@@ -7601,7 +7608,56 @@ class JSONObject:
             )
         # Any other path, such as one through a relation, compares something
         # that the class does not know, so its operands are sent as given.
-        return _Parameter(wire, None, None, None, False, several, False)
+        return _Parameter(
+            wire,
+            None,
+            None,
+            None,
+            False,
+            several,
+            False,
+            one_value=cls._compares_one_value_through(field, rest),
+        )
+
+    @classmethod
+    def _compares_one_value_through(cls, field: str, rest: str) -> bool:
+        """Return whether a path through a relation compares one value.
+
+        Args:
+            field: Python name of the field that the path starts with.
+            rest: The rest of the path, after the field's name and ``__``.
+
+        Returns:
+            Whether the field is a relation, or a collection of them, and the
+            path ends with a suffix that compares one value, or is the related
+            model's key, so that a collection given for it names no one value.
+        """
+        segments = rest.split("__")
+        if segments[-1] in _ONE_VALUE_LOOKUPS:
+            one = True
+        elif len(segments) == 1:
+            one = segments[0] == "pk"
+        else:
+            return False
+        try:
+            analyzed = _unwrap_optional_type(
+                _analyzed_in_use(cls, getattr(cls, field))
+            )
+        except (FieldConversionError, NameError):
+            # A lookup that compares no value of the field needs no type of it,
+            # so a field that cannot be resolved yet does not stop it.
+            return False
+        if isinstance(analyzed, CollectionType):
+            analyzed = _unwrap_optional_type(analyzed.item_type)
+        if not isinstance(analyzed, RelatedType):
+            return False
+        if not one:
+            prop = _pk_property_of(analyzed.model_type)
+            one = prop is not None and segments[0] in (
+                prop.field,
+                prop.json_field,
+            )
+        return one
 
     @classmethod
     def _query_operands(
@@ -7675,6 +7731,17 @@ class JSONObject:
                 "repeated, and a server applies only one of those. Pass one "
                 "value, or use a lookup that takes several, such as "
                 f"{parameter.field}__in"
+            )
+        if parameter.one_value and _is_collection_value(value) and not whole:
+            head, _, tail = name.rpartition("__")
+            several_name = head if tail in _ONE_VALUE_LOOKUPS else name
+            raise ValueError(
+                f"Query parameter {name} for {cls.__name__} cannot be sent, "
+                "because it compares one value and its value is a "
+                "collection, which requests would send as the parameter "
+                "repeated, and a server applies only one of those. Pass one "
+                "value, or use a lookup that takes several, such as "
+                f"{several_name}__in"
             )
         if several and (
             isinstance(value, JSONObject)
