@@ -2498,6 +2498,29 @@ _QUERY_OPTIONS = frozenset(
 )
 
 
+def _check_names_mapping(values: Any, argument: str) -> None:
+    """Refuse an argument that is no mapping of names to values.
+
+    Args:
+        values: What the caller gave for ``argument``.
+        argument: Name of the argument, for the error message.
+
+    Raises:
+        TypeError: If ``values`` is not a mapping, or has a name that is not a
+            string.
+    """
+    if not isinstance(values, Mapping):
+        raise TypeError(
+            f"{argument}= must be a mapping, got {type(values).__name__}"
+        )
+    for name in values:
+        if not isinstance(name, str):
+            raise TypeError(
+                f"A name in {argument}= must be a string, got "
+                f"{type(name).__name__}"
+            )
+
+
 def _query_params(
     params: Mapping[str, Any] | None,
     kwargs: Mapping[str, Any],
@@ -2522,9 +2545,12 @@ def _query_params(
         Every parameter, keyed by name.
 
     Raises:
-        TypeError: If a name is given both ways, or a keyword argument has a
+        TypeError: If ``params`` is not a mapping or has a name that is not a
+            string, a name is given both ways, or a keyword argument has a
             reserved name.
     """
+    if params is not None:
+        _check_names_mapping(params, argument)
     clash = sorted(reserved & set(kwargs))
     if clash:
         raise TypeError(
@@ -9786,9 +9812,11 @@ class JSONObject:
                 ``APIError`` for an HTTP error status and
                 ``ResponseShapeError`` for a response that names no key.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, ``request_options`` is not valid for a query and
-                a creation, or a creation payload value is not made of JSON
-                types, as a model under a name that is no field.
+                in ``params``, ``params`` or ``defaults`` is not a mapping or
+                has a name that is not a string, ``request_options`` is not
+                valid for a query and a creation, or a creation payload value
+                is not made of JSON types, as a model under a name that is no
+                field.
             Exception: Whatever resolving a name in the key's type raises, such
                 as a ``NameError`` for a class that is not defined, before the
                 lookup.
@@ -9836,6 +9864,8 @@ class JSONObject:
                 for name, value in values.items()
             }
 
+        if defaults is not None:
+            _check_names_mapping(defaults, "defaults")
         kwargs = read_once(_query_params(params, kwargs))
         key_property = _pk_property_of(cls)
         names = {name: cls._resolve_name(name) for name in kwargs}
