@@ -271,15 +271,19 @@ def _check_decimal_exponent(value: decimal.Decimal) -> decimal.Decimal:
     """Check that a decimal's positional form has a bounded length.
 
     Args:
-        value: Finite decimal.
+        value: Decimal that a parse produced.
 
     Returns:
         ``value``.
 
     Raises:
-        ValueError: If ``value``'s exponent is out of range. The message
+        ValueError: If ``value`` is not finite, as the parse of an exponent
+            beyond its limits gives under a context that does not trap
+            ``InvalidOperation``, or its exponent is out of range. The message
             does not quote ``value``.
     """
+    if not value.is_finite():
+        raise ValueError("Decimal is not a finite number")
     # A zero with a positive exponent writes one digit, but a zero with a
     # negative one writes each zero after the point, as "0e-5" writes
     # "0.00000".
