@@ -4537,7 +4537,10 @@ def _at_position(err: FieldConversionError, index: int) -> Exception:
 
 
 def _each_item(
-    convert: Callable[[Any], Any], items: Iterable[Any]
+    convert: Callable[[Any], Any],
+    items: Iterable[Any],
+    *,
+    positioned: bool = True,
 ) -> list[Any]:
     """Convert each item of a collection, naming its position in an error.
 
@@ -4547,6 +4550,9 @@ def _each_item(
     Args:
         convert: Function that converts one item.
         items: The items.
+        positioned: Whether the items have positions. A set's iteration order
+            varies from one run to the next, so an error for one of its items
+            names none.
 
     Returns:
         The converted items, in order.
@@ -4565,16 +4571,18 @@ def _each_item(
         for index, item in enumerate(items):  # noqa: B007
             converted.append(convert(item))
     except FieldConversionError as err:
+        if not positioned:
+            raise
         # It names its field, and a second conversion would name it again, so
         # the position goes into its message.
-        positioned = _at_position(err, index)
-        raise positioned from positioned.__cause__
+        positioned_error = _at_position(err, index)
+        raise positioned_error from positioned_error.__cause__
     except TypeError as err:
-        if _passes_through(err):
+        if not positioned or _passes_through(err):
             raise
         raise TypeError(f"[{index}]: {err}") from err
     except ValueError as err:
-        if _passes_through(err):
+        if not positioned or _passes_through(err):
             raise
         raise ValueError(f"[{index}]: {err}") from err
     return converted
@@ -6200,8 +6208,9 @@ class JSONObject:
                         raise ValueError(_NULL_ITEM)
                     return cls._to_json(item, item_type)
 
-                items = _each_item(write_item, value)
-                if _READ_AS[collection_type] in (set, frozenset):
+                is_set = _READ_AS[collection_type] in (set, frozenset)
+                items = _each_item(write_item, value, positioned=not is_set)
+                if is_set:
                     # A set's iteration order depends on how it was built, and
                     # a string's hash on the process, so a set writes its items
                     # sorted by their JSON. Equal sets then write equal JSON,

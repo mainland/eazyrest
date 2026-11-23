@@ -1363,12 +1363,15 @@ def a_null_item_is_refused_on_write(world: World) -> None:
         "Post.readers",
         "[0]",
     )
-    refuses_assignment(
-        world, post(), "watchers", {None}, "Post.watchers", "[0]"
+    # A set has no positions, so its message names none.
+    error = refuses_assignment(
+        world, post(), "watchers", {None}, "Post.watchers"
     )
+    assert "[0]" not in str(error)
     q = post(watchers=[])
     q.watchers.add(None)  # type: ignore[arg-type]
-    raises(world, FieldConversionError, q.save, "Post.watchers", "[0]")
+    error = raises(world, FieldConversionError, q.save, "Post.watchers")
+    assert "[0]" not in str(error)
     raises(
         world,
         FieldConversionError,
