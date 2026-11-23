@@ -5297,15 +5297,21 @@ class JSONProperty:
 
         Raises:
             Exception: ``err`` itself if the documented errors of a field at
-                first use include it: a ``NameError``, the refusal of a model's
-                declaration, and, for a primary key, what resolving its type
-                raised.
+                first use include it: a ``NameError``, an ``EazyrestError``,
+                the refusal of the declaration of a primary key, and, for a
+                primary key, what resolving its type raised.
             FieldConversionError: Otherwise, naming the model and the field,
-                with ``err`` as its cause.
+                with ``err`` as its cause. That includes the refusal of the
+                field's own declaration, as of a collection of relations whose
+                order does not count, which decoration would have raised if the
+                related model had been defined then.
         """
+        own_declaration = (
+            getattr(err, _DECLARATION_ERROR, False) and not self.is_primary_key
+        )
         if (
             isinstance(err, FieldConversionError | NameError)
-            or _passes_through(err)
+            or (_passes_through(err) and not own_declaration)
             or (
                 self.is_primary_key
                 and (

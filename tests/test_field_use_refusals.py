@@ -14,7 +14,7 @@ import copy
 import dataclasses
 import pickle
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any, NamedTuple
 
 import pytest
@@ -88,6 +88,7 @@ KINDS = {
     "member_for_type_checkers": Kind(FieldConversionError, True),
     "alias_string": Kind(FieldConversionError, True),
     "closed_typed_dict": Kind(FieldConversionError, False),
+    "collection_of_relations": Kind(FieldConversionError, False),
     "refused_member": Kind(FieldConversionError, False),
 }
 
@@ -123,9 +124,11 @@ class Scenario:
         self.other_json: Any = 6
         self.assigned: Any = 7
         self._define: Callable[[], None] = lambda: None
+        self._after_decoration: Callable[[], None] = lambda: None
         self.decode: Callable[[Any], Any] = lambda value: value
         hint = getattr(self, f"_{kind}")()
         self.model = self._decorate(hint)
+        self._after_decoration()
 
     def _decorate(self, hint: Any) -> Any:
         """Decorate the model that holds the field.
@@ -245,6 +248,22 @@ class Scenario:
         self.other_json = [6]
         self.assigned = [7]
         return TypeAliasType("LaterAlias", "list[_AliasMember]")  # noqa: F821
+
+    def _collection_of_relations(self) -> Any:
+        """Declare a collection that is refused once its model is defined.
+
+        Decoration cannot tell that the items are relations while the name is
+        undefined, so the refusal waits for the field's first use.
+        """
+        name = "_LateRelated"
+        self._monkeypatch.delitem(globals(), name, raising=False)
+        self._after_decoration = lambda: self._monkeypatch.setitem(
+            globals(), name, Friend
+        )
+        self.bad_json = [5]
+        self.other_json = [6]
+        self.assigned = [Friend(id=7)]
+        return Collection["_LateRelated"]  # type: ignore[name-defined]  # noqa: F821
 
     def _closed_typed_dict(self) -> Any:
         self.bad_json = {"a": 5}
