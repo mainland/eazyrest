@@ -457,7 +457,10 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
         value: Value of a member of ``cls``.
 
     Returns:
-        The member of ``cls`` whose value is ``value``.
+        The member of ``cls`` whose value is ``value``. A float with an
+        integral value is read as that integer if every member's value is an
+        integer, so that the reading does not depend on which combination of a
+        ``Flag`` the process has made before.
 
     Raises:
         ValueError: If ``cls`` has no such member. The message does not quote
@@ -465,6 +468,16 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
             number, nor a number one whose value is a boolean, although
             Python finds them equal.
     """
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+        and all(
+            isinstance(member.value, int)
+            and not isinstance(member.value, bool)
+            for member in cls
+        )
+    ):
+        value = int(value)
     try:
         member = cls(value)
     except ValueError as err:
