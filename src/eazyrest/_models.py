@@ -6768,18 +6768,10 @@ class JSONObject:
         Raises:
             ResponseShapeError: If the response is a list rather than one
                 object. Its ``response`` is the response, and nothing has
-                changed.
+                changed. Any other error of ``merge_response()`` reaches the
+                caller unchanged.
         """
-        try:
-            return self.merge_response(resp, current, sent)
-        except (DoesNotExist, MultipleObjectsReturned) as err:
-            # A list is not the object that a write returns. These errors
-            # describe a query, which a write is not.
-            raise ResponseShapeError(
-                f"The response to the write of a {type(self).__name__} is "
-                f"not one object: {err}",
-                response=resp,
-            ) from err
+        return self.merge_response(resp, current, sent)
 
     def _refuse_other_key(self, key: Any) -> None:
         """Refuse server state that names another key than the object's.
@@ -6923,7 +6915,7 @@ class JSONObject:
         """
         json = {**current, **sent}
         if resp.content:
-            json.update(self._object_from_response(self.api.json(resp)))
+            json.update(self._object_from_response(self.api.json(resp), resp))
 
         return json
 
@@ -7345,16 +7337,7 @@ class JSONObject:
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())
         resp = self._request_api().get(self.url)
-        try:
-            json = self._object_from_response(self.api.json(resp))
-        except (DoesNotExist, MultipleObjectsReturned) as err:
-            # A list is not the object that a load reads. These errors describe
-            # a query, which a load is not.
-            raise ResponseShapeError(
-                f"The response to the load of a {type(self).__name__} is not "
-                f"one object: {err}",
-                response=resp,
-            ) from err
+        json = self._object_from_response(self.api.json(resp), resp)
 
         # Some APIs leave the primary key out of a detail response, because the
         # URL holds it. Keep the key that the object was loaded by, so that the
@@ -8258,14 +8241,6 @@ class JSONObject:
             merged = cls._before_creation(api).merge_response(resp, {}, sent)
             cls._refuse_other_created_key(payload, merged, resp)
             obj = cls(json=merged, api=api)
-        except (DoesNotExist, MultipleObjectsReturned) as err:
-            # A list is not the object that a creation returns. These errors
-            # describe a query, which a creation is not.
-            raise ResponseShapeError(
-                f"The response to the creation of a {cls.__name__} is not one "
-                f"object, although the resource may have been created: {err}",
-                response=resp,
-            ) from err
         except ResponseShapeError as err:
             if err.response is None:
                 err.response = resp
@@ -8695,24 +8670,45 @@ class JSONObject:
 
         return payload
 
-    @classmethod
-    def _object_from_response(cls, payload: Any) -> dict[str, Any]:
+    def _object_from_response(
+        self, payload: Any, resp: Response
+    ) -> dict[str, Any]:
         """Return the JSON object that a single-object response holds.
 
         Args:
             payload: Decoded JSON payload of the response.
+            resp: The response that the payload was decoded from.
 
         Returns:
             A copy of the mapping that ``object_json()`` extracts.
 
         Raises:
-            TypeError: If ``object_json()`` does not return a mapping.
+            ResponseShapeError: If ``object_json()`` raises ``DoesNotExist`` or
+                ``MultipleObjectsReturned`` for a list, or does not return a
+                mapping. The error holds the response. Any other error of
+                ``object_json()`` reaches the caller unchanged.
         """
-        json = cls.object_json(payload)
+        cls = type(self)
+        try:
+            json = cls.object_json(payload)
+        except (DoesNotExist, MultipleObjectsReturned) as err:
+            # A list is not the object that a write, a load, or a creation
+            # returns. These errors describe a query, which none of them is.
+            if self._wire_key is _BEFORE_CREATION:
+                where = (
+                    f"creation of a {cls.__name__} is not one object, "
+                    "although the resource may have been created"
+                )
+            else:
+                where = f"write or load of a {cls.__name__} is not one object"
+            raise ResponseShapeError(
+                f"The response to the {where}: {err}", response=resp
+            ) from err
         if not isinstance(json, Mapping):
             raise ResponseShapeError(
                 f"{cls.__name__} response must hold a JSON object, "
-                f"got {type(json).__name__}"
+                f"got {type(json).__name__}",
+                response=resp,
             )
 
         return dict(json)
