@@ -2196,6 +2196,24 @@ def a_response_without_the_key_is_refused_after_get_or_create(
 
 
 @row(CREATE)
+def a_none_key_is_refused_on_create(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    for call, name in (
+        (lambda: User.create(id=None, name="a"), "User.id"),
+        (lambda: User.create(pk=None), "User.id"),
+        (lambda: User.create(fields={"id": None}), "User.id"),
+        (lambda: Post.create(postId=None), "Post.id"),
+        (lambda: Post.create(id=None), "Post.id"),
+        (
+            lambda: User.get_or_create(name="a", defaults={"id": None}),
+            "User.id",
+        ),
+    ):
+        error = raises(world, FieldConversionError, call, name, "out")
+        assert "leave the key out" in str(error).lower()
+
+
+@row(CREATE)
 def a_model_without_a_key_cannot_be_created(world: World) -> None:
     raises(world, UsageError, lambda: Entry.create(name="x"))
 

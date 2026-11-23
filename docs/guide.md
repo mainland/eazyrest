@@ -1270,6 +1270,12 @@ lookup of `get_or_create()` builds the key under its JSON or write key too, so
 a `UUID` given in uppercase is sent in the query and in the `POST` in one
 spelling, where `filter()` sends such a name as it was given.
 
+A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the
+key under its JSON or write key, in `fields=`, or in the `defaults` of
+`get_or_create()` raise `FieldConversionError` naming the key field, before any
+request, also for an optional key. To let the server assign the key, leave it
+out.
+
 Every keyword argument to `filter()`, `get()`, or the lookup of
 `get_or_create()` must have a value that requests sends intact. It must not be
 `None`, an empty collection, or a mapping, and a collection must not hold

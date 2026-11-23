@@ -630,6 +630,12 @@ describe them further.
   one that does not convert, such as `"not-a-uuid"` for a `UUID` key, raises
   `FieldConversionError` and sends nothing. It used to send the key and keep it
   as given.
+- `create()` and the creation of `get_or_create()` refuse `None` for the key,
+  under any of its names and in `fields=` or `defaults`, with
+  `FieldConversionError` naming the key field and saying to leave the key out,
+  before any request. `v1.0.0a5` posted `null`, and the creation then raised
+  `ResponseShapeError` whatever the server answered, after the resource might
+  exist.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

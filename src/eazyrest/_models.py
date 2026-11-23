@@ -7185,7 +7185,8 @@ class JSONObject:
             TypeError: If two values name one field, or a name is the key's
                 JSON or write key and also another field's.
             FieldConversionError: If a value cannot be converted, as a key that
-                is not of the key's type cannot.
+                is not of the key's type cannot, or the key is ``None`` and the
+                fields are not a query's.
         """
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
@@ -7212,6 +7213,11 @@ class JSONObject:
                     )
                 with _converting(cls, field):
                     if descriptor is key_property:
+                        if value is None and not query:
+                            raise ValueError(
+                                "A new object's key cannot be None. Leave "
+                                "the key out to let the server assign it"
+                            )
                         # The key is sent as it is built, under its write key,
                         # and kept under its JSON key for the response merge.
                         payload[key] = _build_key(cls, value)
@@ -7873,7 +7879,9 @@ class JSONObject:
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
-            FieldConversionError: If a field's value cannot be converted.
+            FieldConversionError: If a field's value cannot be converted, or
+                the key is ``None``. Leave the key out to let the server assign
+                it.
         """
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
@@ -8973,7 +8981,8 @@ class JSONObject:
             ValueError: If a lookup parameter has a value that requests would
                 not send intact.
             FieldConversionError: If a field's value cannot be converted, as
-                when a field that holds a collection is given a single item.
+                when a field that holds a collection is given a single item, or
+                if the creation's key is ``None``.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, ``request_options`` is not valid for a query and
                 a creation, or a creation payload value is not made of JSON
