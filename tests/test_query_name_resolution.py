@@ -123,6 +123,7 @@ class Color(Enum):
         "day": "Day",
         "ref": "Ref",
         "data": "Data",
+        "flag": "Flag",
         "owner": "ownerId",
     },
     write_map={"when": "When_w", "owner": "owner_w"},
@@ -139,6 +140,7 @@ class Colored(Base):
     day: date
     ref: UUID
     data: Any
+    flag: bool
     owner: User
 
 
@@ -305,6 +307,11 @@ MOMENT = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
         ("Data", b"abc", "data"),
         ("Color", User(id=3), "color"),
         ("Color__in", [User(id=3)], "color__in"),
+        ("Flag", True, "flag"),
+        ("Flag__exact", False, "flag__exact"),
+        ("Flag__in", [True, False], "flag__in"),
+        ("Color", False, "color"),
+        ("When_w", True, "when"),
         ("ownerId", Color.RED, "owner"),
         ("owner_w__in", [Color.RED], "owner__in"),
     ],
@@ -312,7 +319,7 @@ MOMENT = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)
 def test_a_json_key_refuses_a_value_that_is_no_json_scalar(
     name: str, value: Any, advice: str, server: Any
 ) -> None:
-    """The key sends no conversion, so only a JSON scalar is sent by it."""
+    """A key that sends no conversion sends only text, numbers, and None."""
     with pytest.raises(ValueError, match=name) as raised:
         list(Colored.filter(params={name: value}))
 
@@ -380,8 +387,14 @@ def test_a_json_key_sends_a_json_scalar_as_given(server: Any) -> None:
     )
     assert query_of(server) == "Color__in=red,blue&When=2024-01-02T03:04:05Z"
 
-    list(Colored.filter(Color=True))
-    assert query_of(server) == "Color=True"
+
+def test_the_python_name_sends_a_boolean_as_json_writes_it(
+    server: Any,
+) -> None:
+    """The JSON key would send ``True``, which is why it refuses it."""
+    list(Colored.filter(flag=True))
+
+    assert query_of(server) == "Flag=true"
 
 
 def test_a_json_key_sends_a_model_given_for_a_relation(server: Any) -> None:

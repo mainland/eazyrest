@@ -241,7 +241,8 @@ W = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
 
 
 @json_object(
-    field_map={"color": "Color", "when": "When"}, write_map={"when": "When_w"}
+    field_map={"color": "Color", "when": "When", "flag": "Flag"},
+    write_map={"when": "When_w"},
 )
 class Colored(Base):
     """Fields whose conversion writes other text than ``str()``."""
@@ -250,6 +251,7 @@ class Colored(Base):
     id: int
     color: Color
     when: datetime.datetime
+    flag: bool
 
 
 @json_object
@@ -2393,6 +2395,18 @@ def a_value_that_is_no_json_scalar_is_refused_by_json_name(
         ("When_w__gt", "when__gt", W),
         ("When__range", "when__range", [W, W]),
         ("Color", "color", User(id=3)),
+    ):
+        refuses_query(
+            world, Colored, ValueError, name, advice, **{name: value}
+        )
+
+
+@row(JSON_NAME)
+def a_boolean_is_refused_by_json_name(world: World) -> None:
+    for name, advice, value in (
+        ("Flag", "flag", True),
+        ("Flag__in", "flag__in", [True, False]),
+        ("Color", "color", False),
     ):
         refuses_query(
             world, Colored, ValueError, name, advice, **{name: value}
