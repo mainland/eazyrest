@@ -1298,14 +1298,16 @@ it is sent under its write key and kept under its JSON key for the response
 merge. A Python name of a field comes first, and a name that is the key's JSON
 or write key and also another field's raises `TypeError`, naming the fields,
 before any request, as do two names of one field, such as
-`create(id=7, postId=8)`. Any other name that is no field is sent as it is. The
-lookup of `get_or_create()` builds the key under its JSON or write key too, so
-a `UUID` given in uppercase is sent in the query and in the `POST` in one
-spelling, where `filter()` sends such a name as it was given. A key whose JSON
-name holds `__`, as `doc__id` for a field `id`, is no lookup of
-`get_or_create()`, which would read it as a field and a suffix, so the call
-raises `ValueError` naming the parameter before any request. Look such a key up
-as `id` or `pk`. A key whose field name holds `__`, as `doc__id` for
+`create(id=7, postId=8)`. Any other name that is no field is sent as it is,
+except a value that is not made of JSON types, which raises `TypeError` before
+any request: a tuple, which would read back as a list, and a mapping with a key
+that is not a string. The lookup of `get_or_create()` builds the key under its
+JSON or write key too, so a `UUID` given in uppercase is sent in the query and
+in the `POST` in one spelling, where `filter()` sends such a name as it was
+given. A key whose JSON name holds `__`, as `doc__id` for a field `id`, is no
+lookup of `get_or_create()`, which would read it as a field and a suffix, so
+the call raises `ValueError` naming the parameter before any request. Look such
+a key up as `id` or `pk`. A key whose field name holds `__`, as `doc__id` for
 `pk="doc__id"`, is looked up and created by that name.
 
 A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the

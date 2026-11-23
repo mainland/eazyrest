@@ -8167,7 +8167,9 @@ class JSONObject:
                 keyword argument and in ``fields``, if ``request_options`` is
                 not a mapping or sets the body, or if a field's value cannot be
                 sent as a form field with ``files``. Also raised for response
-                streaming or conflicting wire names.
+                streaming or conflicting wire names, and for a value under a
+                name that is no field that is not made of JSON types, as a
+                tuple, or a mapping with a key that is not a string.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
@@ -8188,6 +8190,10 @@ class JSONObject:
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             ),
         )
+        if files is None:
+            # An extra has no annotation, so eazyrest cannot say how a tuple,
+            # or a mapping with a key that is not a string, reads back as JSON.
+            _checked_json(cls._to_wire(payload))
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)

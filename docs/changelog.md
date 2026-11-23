@@ -546,6 +546,10 @@ describe them further.
   where `v1.0.0a5` read no object for 0, and raised the `ValueError` of
   `itertools.islice()` after the request for another value. `None` reads the
   collection as one batch.
+- `create()` raises `TypeError` before any request for a value under a name
+  that is no field when the value is a tuple or a mapping with a key that is
+  not a string, which `get_or_create()` already refused, where `v1.0.0a5` sent
+  the tuple as a list and the key as its text.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

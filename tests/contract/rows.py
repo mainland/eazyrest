@@ -2484,6 +2484,19 @@ def a_key_field_name_with_two_underscores_is_looked_up_as_the_field(
 
 
 @row(CREATE)
+def an_extra_that_json_would_change_is_refused_by_create(
+    world: World,
+) -> None:
+    for value in ((1, 2), {1: "a"}):
+        for call in (
+            lambda: User.create(id=7, x=value),
+            lambda: User.create(fields={"id": 7, "x": value}),
+            lambda: User.get_or_create(id=7, defaults={"x": value}),
+        ):
+            raises(world, TypeError, call)
+
+
+@row(CREATE)
 def a_model_without_a_key_cannot_be_created(world: World) -> None:
     raises(world, UsageError, lambda: Entry.create(name="x"))
 
