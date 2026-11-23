@@ -7170,14 +7170,17 @@ class JSONObject:
             payload: The JSON that the merge applies.
 
         Returns:
-            Whether the field holds related objects that are cached, its JSON
-            is unchanged as a load would compare it, it has no pending update,
-            and its collection was not changed in place.
+            Whether the field holds related objects that are cached or
+            prefetched, its JSON is unchanged as a load would compare it, it
+            has no pending update, and its collection was not changed in place.
         """
         prop: JSONProperty = getattr(type(self), field)
-        if (
+        # Test for what the field holds before resolving any type, since the
+        # comparison resolves the related model's key, which a field that
+        # nothing has used may not be able to do yet.
+        if prop.json_field in self._pending_updates or (
             field not in self._field_cache
-            or prop.json_field in self._pending_updates
+            and field not in self._prefetched_related
         ):
             return False
         assert self._json is not None

@@ -67,3 +67,26 @@ def test_a_lead_that_a_payload_repeats_stays_the_prefetched_one() -> None:
     lead = first.lead
     first.update_from_json({"lead": 7})
     assert first.lead is lead
+
+
+def test_a_repeated_unread_prefetched_field_keeps_its_objects() -> None:
+    """Reading the field after the merge sends no request of its own."""
+    first, _ = teams()
+    first.update_from_json({"lead": 7})
+    with requests_mock.Mocker() as mocker:
+        mocker.get(requests_mock.ANY, json={"id": 7, "name": "loaded"})
+        assert first.lead.name == "m7"
+        assert mocker.call_count == 0
+
+
+def test_a_changed_unread_prefetched_field_drops_its_objects() -> None:
+    """A payload that names another key gives that key's object."""
+    first, _ = teams()
+    first.update_from_json({"lead": 8})
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            "https://prefetch-state.example/members/8/",
+            json={"id": 8, "name": "loaded"},
+        )
+        assert first.lead.name == "loaded"
+        assert mocker.call_count == 1
