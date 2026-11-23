@@ -2794,6 +2794,26 @@ def a_write_answered_with_a_list_is_a_shape_error(world: World) -> None:
 
 
 @row(FULL)
+def a_response_that_is_a_list_of_one_object_is_read_as_that_object(
+    world: World,
+) -> None:
+    body = [{"id": 7, "name": "b"}]
+    world.mocker.patch(requests_mock.ANY, json=body)
+    world.mocker.put(requests_mock.ANY, json=body)
+    world.mocker.get(requests_mock.ANY, json=body)
+    world.mocker.post(requests_mock.ANY, json=body)
+    saved = User(json={"id": 7, "name": "a"})
+    saved.name = "x"
+    saved.save()
+    assert saved.json == {"id": 7, "name": "b"}
+    replaced = User(json={"id": 7, "name": "a"})
+    replaced.save(full=True)
+    assert replaced.json == {"id": 7, "name": "b"}
+    assert User(id=7).name == "b"
+    assert User.create(name="a").json == {"id": 7, "name": "b"}
+
+
+@row(FULL)
 def a_load_answered_with_a_list_is_a_shape_error(world: World) -> None:
     def refreshed() -> User:
         obj = User(json={"id": 7, "name": "a"})

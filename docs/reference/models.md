@@ -23,6 +23,7 @@
 
 ```{eval-rst}
 .. autoexception:: eazyrest.ResponseShapeError
+   :members:
 ```
 
 ```{eval-rst}

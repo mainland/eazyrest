@@ -667,10 +667,10 @@ With `PageNumberPagination` and `LimitOffsetPagination`, the iterator that
 `filter()` returns has the collection's size as `count`, from the first page.
 `CursorPagination` does not report a size, so `count` is `None`.
 
-Follow `next` links in the collection hooks, as the default does with
-`follow_next_links()`, rather than in related-field conversion. Related fields
-should describe one object's payload. Page traversal should describe how to
-walk a collection endpoint.
+Follow `next` links in the collection hooks, as the default does by reading
+each page with `collection_page()`, rather than in related-field conversion.
+Related fields should describe one object's payload. Page traversal should
+describe how to walk a collection endpoint.
 
 ## Recommended DRF server-side setup
 
@@ -688,8 +688,8 @@ unless Django is told to trust the proxy's headers. Set
 `USE_X_FORWARDED_HOST = True` if the proxy sends the public host in
 `X-Forwarded-Host` rather than `Host`, and set `SECURE_PROXY_SSL_HEADER` if TLS
 ends at the proxy. Otherwise a link such as
-`http://127.0.0.1:8000/users/?page=2` reaches the client, and
-`follow_next_links()` raises `ValueError` instead of following it.
+`http://127.0.0.1:8000/users/?page=2` reaches the client, and a traversal that
+follows `next` links raises `PaginationError` instead of following it.
 
 On the Django side, continue using ORM-level `select_related()` and
 `prefetch_related()` inside DRF views and serializers. That solves database N+1

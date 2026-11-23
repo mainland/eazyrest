@@ -6688,11 +6688,11 @@ class JSONObject:
             The object's JSON after the write.
 
         Raises:
-            ResponseShapeError: If the response is a list rather than one
-                object, or ``merge_response()`` returns something that is not a
-                mapping. Its ``response`` is the response, and nothing has
-                changed. Any other error of ``merge_response()`` reaches the
-                caller unchanged.
+            ResponseShapeError: If the response is an empty list or a list of
+                several objects, or ``merge_response()`` returns something that
+                is not a mapping. Its ``response`` is the response, and nothing
+                has changed. Any other error of ``merge_response()`` reaches
+                the caller unchanged.
         """
         return _checked_merge(
             type(self), self.merge_response(resp, current, sent), resp
@@ -6901,9 +6901,9 @@ class JSONObject:
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
             ResponseShapeError: If the response body does not hold a JSON
-                object, as when it is a list, or names another primary key than
-                the object has. The server may have applied the updates, but
-                they remain pending.
+                object, as when it is an empty list or a list of several
+                objects, or names another primary key than the object has. The
+                server may have applied the updates, but they remain pending.
             TypeError: If ``request_options`` is not a mapping, sets the body,
                 or streams the response, or a field cannot be sent as a form
                 field.
@@ -7319,8 +7319,8 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If the response does not hold a JSON object, as
-                when it is a list, or names another primary key than the object
-                has.
+                when it is an empty list or a list of several objects, or names
+                another primary key than the object has.
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())
@@ -8222,11 +8222,12 @@ class JSONObject:
                 as a ``NameError`` for a class that is not defined, before any
                 request.
             ResponseShapeError: If the response does not hold a JSON object, as
-                when it is a list, or the object's JSON after
-                ``merge_response()`` lacks the key, holds ``null`` for it,
-                holds a key that is not of the key's type, or names another key
-                than the one that the request sent. The resource may have been
-                created, and the error's ``response`` holds the response.
+                when it is an empty list or a list of several objects, or the
+                object's JSON after ``merge_response()`` lacks the key, holds
+                ``null`` for it, holds a key that is not of the key's type, or
+                names another key than the one that the request sent. The
+                resource may have been created, and the error's ``response``
+                holds the response.
             TypeError: If the model's key type is refused, which is checked
                 before any request. Also raised if a field is given both as a
                 keyword argument and in ``fields``, if ``request_options`` is
@@ -8685,8 +8686,9 @@ class JSONObject:
         """Return the JSON object contained in a single-object response.
 
         Subclasses can override this hook when an API wraps single-object
-        responses in an envelope or returns singleton lists. A write or a load
-        whose response is a list that this hook does not unwrap raises
+        responses in an envelope. The default reads a list of one object as
+        that object. A write or a load whose response is an empty list or a
+        list of several objects, which this hook does not unwrap, raises
         ``ResponseShapeError``, with the response, rather than the errors
         below.
 
@@ -9074,9 +9076,10 @@ class JSONObject:
 
         Returns:
             Iterator over objects built from the response payload. Its
-            ``count`` is the size of the whole collection, if the iterable
-            that ``collection_items()`` returns has a ``count`` attribute, as
-            ``follow_next_links()``'s does, and ``None`` otherwise.
+            ``count`` is the size of the whole collection, if the iterable that
+            ``collection_items_from_response()`` returns has a ``count``
+            attribute, as the default's does for a page that reports one, and
+            ``None`` otherwise.
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
@@ -9090,15 +9093,24 @@ class JSONObject:
                 object, or holds no key, or a key that is not of the key's
                 type. The message names the item's position, and the error is
                 raised when iteration reaches the item.
-            TypeError: If the model's key type is refused, before the lookup.
-                Also raised if a parameter is given both as a keyword argument
-                and in ``params``, ``request_options`` is not valid for a
-                query, or ``prefetch_batch_size`` is neither an ``int`` nor
-                ``None`` and ``prefetch`` is given.
+            TypeError: If the model's key type is refused once it resolves. The
+                error is raised before the request only if a parameter names
+                the key, and otherwise as the first item is built, so an empty
+                collection raises nothing. Also raised if a parameter is given
+                both as a keyword argument and in ``params``,
+                ``request_options`` is not valid for a query, or
+                ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
+                ``prefetch`` is given.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
+            APIError: If the server returns an HTTP error status, as
+                ``NotFound`` for a 404.
+            LimitExceeded: If a request or the traversal exceeds a limit of the
+                API.
+            PaginationError: If a next-page link leads to another origin, or to
+                a page that was already read.
         """
         _require_decorated(cls)
         options = _query_request_options(request_options)
@@ -9166,12 +9178,26 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field or is named twice.
-            TypeError: If ``request_options`` is not valid for a query.
+                related-object field or is named twice, or ``prefetch`` is
+                given and ``prefetch_batch_size`` is below 1.
+            FieldConversionError: If a related key that ``prefetch`` reads from
+                an item is of the wrong type for its field.
+            ResponseShapeError: If an item of the response is not a JSON
+                object, or holds no key, or a key that is not of the key's
+                type. The message names the item's position, and the error is
+                raised when iteration reaches the item.
+            TypeError: If ``request_options`` is not valid for a query, or the
+                model's key type is refused, as for ``filter()``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
+            APIError: If the server returns an HTTP error status, as
+                ``NotFound`` for a 404.
+            LimitExceeded: If a request or the traversal exceeds a limit of the
+                API.
+            PaginationError: If a next-page link leads to another origin, or to
+                a page that was already read.
         """
         _require_decorated(cls)
         return cls.filter(
@@ -9229,12 +9255,16 @@ class JSONObject:
             TypeError: If ``url`` is given with query parameters, a parameter
                 is given both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, or
-                ``collection_page()`` does not return a ``Page``.
+                ``collection_page()`` does not return a ``Page``. Also if the
+                model's key type is refused, as for ``filter()``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement its bulk lookup.
             PaginationError: If ``url`` has another origin.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
+            APIError: If the server returns an HTTP error status, as
+                ``NotFound`` for a 404.
+            LimitExceeded: If a request exceeds a limit of the API.
         """
         _require_decorated(cls)
         options = _query_request_options(request_options)
@@ -9320,12 +9350,18 @@ class JSONObject:
                 object, or holds no key, or a key that is not of the key's
                 type. The message names the item's position.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or ``request_options`` is not valid for a
-                query.
+                in ``params``, or ``request_options`` is not valid for a query.
+                Also if the model's key type is refused, as for ``filter()``.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
+            APIError: If the server returns an HTTP error status, as
+                ``NotFound`` for a 404.
+            LimitExceeded: If a request or the traversal exceeds a limit of the
+                API.
+            PaginationError: If a next-page link leads to another origin, or to
+                a page that was already read.
         """
         _require_decorated(cls)
         query = _query_params(params, kwargs)
@@ -9440,6 +9476,12 @@ class JSONObject:
                 as a ``NameError`` for a class that is not defined, before the
                 lookup.
             RedirectError: If a response is a redirect that was not followed.
+            APIError: If the server returns an HTTP error status, as
+                ``NotFound`` for a 404.
+            LimitExceeded: If a request or the traversal exceeds a limit of the
+                API.
+            PaginationError: If a next-page link of the lookup leads to another
+                origin, or to a page that was already read.
         """
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")

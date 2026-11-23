@@ -26,10 +26,13 @@ class EazyrestError(Exception):
 
     Every subclass pickles, with its attributes, so that an error raised in
     another process, as by a ``concurrent.futures.ProcessPoolExecutor``,
-    reaches the caller with its type. The exception is an error that holds the
-    request of a raw ``API`` request whose body is a stream, such as an open
-    file, because the request keeps the stream and a stream does not pickle.
-    Model writes encode their bodies to bytes, so their errors pickle.
+    reaches the caller with its type. There are two exceptions. An error that
+    holds the request of a raw ``API`` request whose body is a stream, such as
+    an open file, does not pickle, because the request keeps the stream and a
+    stream does not pickle. Model writes encode their bodies to bytes, so their
+    errors pickle. A ``FieldConversionError`` whose model pickle cannot find by
+    its module and name, as a model that a function defines, does not pickle
+    either.
     """
 
     def __reduce__(self) -> tuple[Any, ...]:
@@ -145,10 +148,9 @@ class ResponseShapeError(EazyrestError, TypeError, ValueError):
     """
 
     response: requests.Response | None
-    """The response whose JSON is refused, or ``None`` where the error was
-    raised from decoded JSON with no response in scope, as in a hook such as
-    ``object_json()`` or ``collection_items()``. A creation's refusals always
-    hold it."""
+    """The response whose JSON is refused. It may be ``None``, as when the
+    error is raised from decoded JSON in a hook such as ``object_json()``, so
+    test it before use."""
 
     def __init__(
         self, *args: object, response: Response | None = None
@@ -168,7 +170,10 @@ class ResponseShapeError(EazyrestError, TypeError, ValueError):
 class UsageError(EazyrestError, RuntimeError):
     """Raised when eazyrest is used in a way it does not support.
 
-    For example, a model has no registered API.
+    For example, a model has no registered API, declares no ``class_url``, or
+    has no primary-key field and is asked to write or load, a page that cannot
+    read other pages is asked for one, or a ``write_options()`` block ends
+    while a later block of the object is still open.
     """
 
 

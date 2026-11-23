@@ -942,25 +942,29 @@ class API:
     paths against ``base_url`` while applying a default timeout.
 
     A write or any request with a body follows no redirect. A request with any
-    method but ``GET`` or ``HEAD``, or with a non-empty ``data`` or ``files``
-    or a ``json`` that is not ``None``, is sent with ``allow_redirects=False``,
-    whatever the caller passes, and a 3xx response to it raises
-    ``RedirectError``, whose ``response`` holds the ``Location``. Django's
-    ``APPEND_SLASH`` answers a URL that lacks its trailing slash with such a
-    redirect.
+    method but ``GET``, or with a non-empty ``data`` or ``files`` or a ``json``
+    that is not ``None``, is sent with ``allow_redirects=False``, whatever the
+    caller passes, and a 3xx response to it raises ``RedirectError``, whose
+    ``response`` holds the ``Location``. Django's ``APPEND_SLASH`` answers a
+    URL that lacks its trailing slash with such a redirect.
 
-    A ``GET`` or ``HEAD`` without a body follows a redirect only to the origin
-    of the request it answers, or to an origin in ``redirect_origins``.
-    Requests drops an ``Authorization`` header when a redirect leaves the host,
-    but it sends every other header, such as an API key or a CSRF token. A
-    redirect to another origin raises ``RedirectError`` before anything is sent
-    there. ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is
-    the redirect. A raw ``GET`` or ``HEAD`` sent with ``allow_redirects=False``
-    follows nothing, so it returns a redirect as it is, without these checks,
-    unless requests raises ``ValueError`` or ``UnicodeError`` while it prepares
+    A ``GET`` without a body follows a redirect only to the origin of the
+    request it answers, or to an origin in ``redirect_origins``. Requests drops
+    an ``Authorization`` header when a redirect leaves the host, but it sends
+    every other header, such as an API key or a CSRF token. A redirect to
+    another origin raises ``RedirectError`` before anything is sent there.
+    ``RedirectError`` is a ``requests.HTTPError``, whose ``response`` is the
+    redirect. A raw ``GET`` sent with ``allow_redirects=False`` follows
+    nothing, so it returns a redirect as it is, without these checks, unless
+    requests raises ``ValueError`` or ``UnicodeError`` while it prepares
     ``Response.next`` for it, which raises ``RedirectError``. Any other
     exception that requests raises there, such as ``TooManyRedirects`` when
     ``Session.max_redirects`` is 0, comes through unchanged.
+
+    The class has ``get()``, ``post()``, ``patch()``, ``put()``, and
+    ``delete()``, and sends no ``HEAD`` request. A ``HEAD`` that is sent
+    through ``session.head()`` skips these checks, and follows a redirect to
+    another origin with the session's headers if it is told to follow.
     """
 
     base_url: str
@@ -1769,6 +1773,18 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            APIError: If the status reports a failure, or ``NotFound`` for a
+                404, as ``raise_for_response()`` raises them.
+            RedirectError: If a redirect leads to an origin that is not
+                allowed, or the final response is a redirect that is not
+                followed and requests raises ``ValueError`` or ``UnicodeError``
+                while it prepares the next request for it.
+            LimitExceeded: If the request exceeds ``total_timeout``, or the
+                response exceeds ``max_response_bytes``.
+            requests.RequestException: If the request fails to send, as
+                ``requests.ConnectionError`` does.
         """
         return self._send("GET", self.session.get, uri, *args, **kwargs)
 
@@ -1785,6 +1801,13 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            APIError: As for ``get()``.
+            RedirectError: If the response is a redirect, since the request
+                follows none, and as for ``get()``.
+            LimitExceeded: As for ``get()``.
+            requests.RequestException: As for ``get()``.
         """
         return self._send("POST", self.session.post, uri, *args, **kwargs)
 
@@ -1803,6 +1826,13 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            APIError: As for ``get()``.
+            RedirectError: If the response is a redirect, since the request
+                follows none, and as for ``get()``.
+            LimitExceeded: As for ``get()``.
+            requests.RequestException: As for ``get()``.
         """
         return self._send("PATCH", self.session.patch, uri, *args, **kwargs)
 
@@ -1819,6 +1849,13 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            APIError: As for ``get()``.
+            RedirectError: If the response is a redirect, since the request
+                follows none, and as for ``get()``.
+            LimitExceeded: As for ``get()``.
+            requests.RequestException: As for ``get()``.
         """
         return self._send("PUT", self.session.put, uri, *args, **kwargs)
 
@@ -1834,6 +1871,13 @@ class API:
 
         Returns:
             Validated HTTP response.
+
+        Raises:
+            APIError: As for ``get()``.
+            RedirectError: If the response is a redirect, since the request
+                follows none, and as for ``get()``.
+            LimitExceeded: As for ``get()``.
+            requests.RequestException: As for ``get()``.
         """
         return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 

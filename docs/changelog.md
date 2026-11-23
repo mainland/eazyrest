@@ -327,23 +327,23 @@ describe them further.
   a query without options. It gets the 3xx back now, as from the API. A query
   and a next-page request still raise `RedirectError` for an unfollowed 3xx.
 - A write or any request with a body follows no redirect. A request with any
-  method but `GET` or `HEAD`, from a model or from `API.post()`, `put()`,
-  `patch()`, or `delete()`, and a `GET` with `data`, `json`, or `files`, is
-  sent with `allow_redirects=False`, even if you pass `allow_redirects=True`,
-  and a 3xx response to it raises `RedirectError`. `v1.0.0a5` followed a 307 or
-  308 of such a request to the request's origin, or to an origin in
+  method but `GET`, from a model or from `API.post()`, `put()`, `patch()`, or
+  `delete()`, and a `GET` with `data`, `json`, or `files`, is sent with
+  `allow_redirects=False`, even if you pass `allow_redirects=True`, and a 3xx
+  response to it raises `RedirectError`. `v1.0.0a5` followed a 307 or 308 of
+  such a request to the request's origin, or to an origin in
   `API.redirect_origins`, and resent it with its body, and a raw write sent
   with `allow_redirects=False` returned the 3xx response. It refused a 301,
   302, or 303 of a `GET` with a body, as this release does. The message does
   not quote the `Location`, which is on the error's `response`. Send the
   request to the URL that the server expects, for example by setting
   `API.trailing_slash`.
-- A raw `GET` or `HEAD` sent with `allow_redirects=False` returns a 3xx
-  response, where it raised `RedirectError` for a `Location` on another origin,
-  though nothing was followed. A query and a next-page request raise
-  `RedirectError` for an unfollowed 3xx. A next-page request to the API's
-  origin that is answered with a redirect to another origin, when the query's
-  client does not follow redirects, raised `PaginationError`, which advised
+- A raw `GET` sent with `allow_redirects=False` returns a 3xx response, where
+  it raised `RedirectError` for a `Location` on another origin, though nothing
+  was followed. A query and a next-page request raise `RedirectError` for an
+  unfollowed 3xx. A next-page request to the API's origin that is answered with
+  a redirect to another origin, when the query's client does not follow
+  redirects, raised `PaginationError`, which advised
   `allow_other_origins=True`, though that option would follow nothing. It
   raises `RedirectError` now. A next-page URL that itself names another origin
   still raises `PaginationError`. A `Location` that cannot be parsed raises
@@ -410,12 +410,12 @@ describe them further.
   set, and sent it as `null`.
 - `create()` and `get_or_create()` refuse a response that cannot be the created
   object with a `ResponseShapeError` that holds the response, because the
-  resource may exist. A body that is not one JSON object, a list among them,
-  raises it, where `v1.0.0a5` raised `DoesNotExist` or
-  `MultipleObjectsReturned` for a list. So does a response that names another
-  key than the request sent, where `v1.0.0a5` returned the object of the key
-  that the response named, and a `save()` already raised for it. A response
-  that names no key takes the key that the request sent.
+  resource may exist. A body that is not one JSON object, an empty list or a
+  list of several objects among them, raises it, where `v1.0.0a5` raised
+  `DoesNotExist` or `MultipleObjectsReturned` for a list. So does a response
+  that names another key than the request sent, where `v1.0.0a5` returned the
+  object of the key that the response named, and a `save()` already raised for
+  it. A response that names no key takes the key that the request sent.
 - An object of a model whose key annotation names a class that is not defined
   yet, as during a circular import, raises the error that resolving the name
   raises when the object is built, a `NameError`, an `AttributeError` for a
@@ -529,19 +529,19 @@ describe them further.
   change made in place was found as the object loaded missing fields.
 - Two objects of one model with the same known primary key are equal, where
   `v1.0.0a5` compared them by identity, so a set or dict of them keeps one. The
-  key is the one that the object last took from the server or was given. Two
-  spellings of one `UUID` are one key, and two `str` keys that differ in case
-  are two keys. A key of type `int` or `str` refuses a value of another JSON
-  type where it is given, with `FieldConversionError`, so `User(id="1")`,
-  `User(id=1.0)`, and `User(id=True)` raise, where `v1.0.0a5` gave other keys
-  that a load of the object then replaced and so changed its hash. A related
-  object that a read builds from the server's JSON is checked too, and the
-  error names the relation field. Give the key in its field's type. Once the
-  key is known it never changes. A refresh leaves the key, the hash, and the
-  `url` as they were. Assigning another key to an object that has its key
-  raises `AttributeError`. A load, a write's response, and `update_from_json()`
-  that name another key raise `ResponseShapeError`, a `ValueError`, and change
-  nothing.
+  key is the one that the object has from construction, given or read from the
+  JSON that built it. Two spellings of one `UUID` are one key, and two `str`
+  keys that differ in case are two keys. A key of type `int` or `str` refuses a
+  value of another JSON type where it is given, with `FieldConversionError`, so
+  `User(id="1")`, `User(id=1.0)`, and `User(id=True)` raise, where `v1.0.0a5`
+  gave other keys that a load of the object then replaced and so changed its
+  hash. A related object that a read builds from the server's JSON is checked
+  too, and the error names the relation field. Give the key in its field's
+  type. Once the key is known it never changes. A refresh leaves the key, the
+  hash, and the `url` as they were. Assigning another key to an object that has
+  its key raises `AttributeError`. A load, a write's response, and
+  `update_from_json()` that name another key raise `ResponseShapeError`, a
+  `ValueError`, and change nothing.
 - `update_from_json()` keeps the related objects of a relation field whose key
   the payload leaves unchanged, as a load does, so that a related object keeps
   its unsaved changes when a payload repeats the field's JSON, where `v1.0.0a5`
@@ -705,10 +705,10 @@ describe them further.
   as `post.owner = post.owner` for `"owner": {"id": 7, "name": "a"}`, where
   `v1.0.0a5` sent `{"owner": 7}`. An assignment compares the keys. Another key
   is still sent.
-- A write or a load of one object that the server answers with a list, as `[]`
-  or two objects, raises `ResponseShapeError` with the response, as `create()`
-  does, and a write's updates stay pending. `v1.0.0a5` raised `DoesNotExist` or
-  `MultipleObjectsReturned`, which describe a query.
+- A write or a load of one object that the server answers with an empty list or
+  a list of several objects raises `ResponseShapeError` with the response, as
+  `create()` does, and a write's updates stay pending. `v1.0.0a5` raised
+  `DoesNotExist` or `MultipleObjectsReturned`, which describe a query.
 - A set given to the parameter of a field that is a sequence, as
   `filter(tags={Tag(slug="b"), Tag(slug="a")})` for a `list[Tag]`, is sent
   sorted, where `v1.0.0a5` sent it in hash order, so the URL differed between
@@ -922,14 +922,14 @@ that can break code written for 0.9.0, followed by what to do about it.
   `TypeError` when it is defined, since the override would never be called.
 - Two objects of one model with the same known primary key are equal, where
   0.9.0 compared them by identity, so a set or dict of them keeps one. The key
-  is the one that the object last took from the server or was given. Two
-  spellings of one `UUID` are one key, and two `str` keys that differ in case
-  are two keys. A key of type `int` or `str` refuses a value of another JSON
-  type where it is given, with `FieldConversionError`, so `User(id="1")`,
-  `User(id=1.0)`, and `User(id=True)` raise, and so does a related object that
-  a read builds from the server's JSON, with an error that names the relation
-  field. Give the key in its field's type. A refresh leaves the key, the hash,
-  and the `url` as they were.
+  is the one that the object has from construction, given or read from the JSON
+  that built it. Two spellings of one `UUID` are one key, and two `str` keys
+  that differ in case are two keys. A key of type `int` or `str` refuses a
+  value of another JSON type where it is given, with `FieldConversionError`, so
+  `User(id="1")`, `User(id=1.0)`, and `User(id=True)` raise, and so does a
+  related object that a read builds from the server's JSON, with an error that
+  names the relation field. Give the key in its field's type. A refresh leaves
+  the key, the hash, and the `url` as they were.
 - A primary key is a `str`, an `int`, or a `UUID`, and any other key raises
   `TypeError` when the class is decorated, as the 1.0.0a5 items say. That
   includes an enum, a `datetime`, a `Decimal`, and a relation, which 0.9.0
@@ -972,8 +972,8 @@ that can break code written for 0.9.0, followed by what to do about it.
   `/users/` as `https://h.example.com/api/v1/users/`, where 0.9.0 requested
   `https://h.example.com/users/`. A `class_url` that repeats the base URL's
   path must drop it.
-- A detail response that is a list of more than one item raises
-  `MultipleObjectsReturned`, where 0.9.0 read the first item.
+- A detail response that is a list of several items raises
+  `ResponseShapeError`, where 0.9.0 read the first item.
 - `reset_session()` keeps the session's headers, cookies, and query parameters,
   which 0.9.0 dropped.
 - Requests send `Accept: application/json`, where 0.9.0 sent requests' `*/*`.
@@ -996,10 +996,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   takes precedence over `REQUESTS_CA_BUNDLE`. `verify=False` no longer
   suppresses urllib3's `InsecureRequestWarning` for the whole process. Filter
   the warning yourself if you accept unverified connections.
-- A redirect of a `GET` or `HEAD` is followed only to the origin of the request
-  it answers, or to an origin in `API.redirect_origins`, so that session
-  headers such as API keys are not sent elsewhere. A `Location` that cannot be
-  parsed, such as `http://[bad/` or one with a byte that is not UTF-8, raises
+- A redirect of a `GET` is followed only to the origin of the request it
+  answers, or to an origin in `API.redirect_origins`, so that session headers
+  such as API keys are not sent elsewhere. A `Location` that cannot be parsed,
+  such as `http://[bad/` or one with a byte that is not UTF-8, raises
   `RedirectError`, where 0.9.0 let requests' `ValueError` or
   `UnicodeDecodeError` escape. So does a `Location` with a port that is out of
   range, when the redirect is followed or requests must read the port of one
@@ -1103,10 +1103,9 @@ that can break code written for 0.9.0, followed by what to do about it.
 - `API.json(response)` decodes JSON in application hooks with the same depth,
   numeric, and response-shape policy as model reads.
 - `ResponseShapeError.response` holds the response that the error refuses, as
-  `APIError.response` and `RedirectError.response` do, for a body that is not
-  JSON and for every refusal of a creation's response. It is `None` for an
-  error raised from decoded JSON elsewhere, as in a hook such as
-  `object_json()` or `collection_items()`.
+  `APIError.response` and `RedirectError.response` do. It may be `None`, as for
+  an error raised from decoded JSON in a hook such as `object_json()`, so test
+  it before use.
 - Documentation, with a user guide and a guide to Django REST Framework APIs.
 
 ### Security

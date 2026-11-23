@@ -374,9 +374,12 @@ convert, raises `TypeError` when the class is decorated. The message is
 `Model.field:` and the reason, which is also the error's `__cause__`. Such
 types are `Counter[str]`, `int | list[int]`, a mapping whose keys are not
 strings, a model inside a mapping or a fixed-length tuple, a type alias that
-refers to itself. A member of a `TypedDict`, dataclass, or `NamedTuple` is
-analyzed when the field is first used, so that a structure can name itself, and
-raises `FieldConversionError` then.
+refers to itself. A member of a `TypedDict`, dataclass, or `NamedTuple` whose
+type is a class that nothing converts, such as a plain class or `bytes`, is
+refused then too, with a `TypeError`. Any other member that eazyrest cannot
+read, such as `dict[int, str]`, a union of a scalar and a list, or a name that
+is not defined yet, is checked when the field is first used, and raises
+`FieldConversionError` then.
 
 ### Differences from Django
 
@@ -446,14 +449,18 @@ the object was given it as `api=`. The related objects, the values that you
 read before the copy, and the pending updates are the copy's own, so a change
 made to one object, by assignment or in place, is neither read from nor sent by
 the other. An object that is unpickled is such a copy too, so a pickle round
-trip copies the API that was given as `api=`, which a pickle cannot share.
+trip copies the API that was given as `api=`, which a pickle cannot share. That
+copy holds the API's session, with the credentials that it holds, such as an
+`Authorization` header or `auth`, as a pickle of a `requests.Session` does, so
+treat such a pickle as a secret.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
 eazyrest does not convert or a float that is not finite, raises
 `FieldConversionError` at the assignment, which leaves the field unchanged and
-queues nothing. A write that the server refuses is different: its updates stay
-pending, so a later `save()` sends them again.
+queues nothing. A write that the server refuses is different. In lazy mode its
+updates stay pending, so a later `save()` sends them again. In eager mode the
+refused assignment is not pending, and the field keeps its old value.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it. The key is shown as it is sent, so a `UUID` key shows its lowercase
@@ -475,7 +482,10 @@ object embedded in another object's JSON, counts as loaded. Reading a field
 that its JSON lacks raises `AttributeError` rather than sending a request. An
 API whose collection returns summaries, with fewer fields than its detail
 endpoint, therefore gives objects that lack the other fields. Call `refresh()`
-on such an object to load its detail from its `url` at the next read.
+on such an object to load its detail from its `url` at the next read. Assigning
+a field that the object's JSON lacks raises `AttributeError` too, and a lazy
+object sends its `GET` before it raises. Call `refresh()` first to load the
+detail, and assign the field after it.
 
 A model without a primary-key field can be read on its own, as in
 `Entry(json=item)` for each item of an endpoint's collection. Its objects are
@@ -860,8 +870,10 @@ instead. The field's own type raises `TypeError` when the class is decorated,
 except a `TypedDict` that is closed or has extra items. Such a field raises
 `FieldConversionError` when it is first used, also inside an optional or a
 collection, since a conversion of the `TypedDict` may replace the check. A
-member of a `TypedDict`, `NamedTuple`, or dataclass raises
-`FieldConversionError` when the field is first used.
+member of a `TypedDict`, `NamedTuple`, or dataclass that is a class that
+nothing converts raises `TypeError` when the class is decorated, and any other
+member that eazyrest cannot read raises `FieldConversionError` when the field
+is first used.
 
 A dataclass with an init-only field, of type `dataclasses.InitVar`, is refused
 the same way when a field's type names it, because the dataclass does not keep
@@ -1871,16 +1883,17 @@ body, as when the body holds only the new primary key, reading it loads the
 object. The result must hold the new object's key, or `create()` raises
 `ResponseShapeError` after the `POST`, with the response as its `response`. It
 raises the same error, with the response, for a body that is not one JSON
-object, a list among them, and for a response that names another key than the
-one that the request sent, as `save()` does. A response that names no key takes
-the key that was sent. The resource may exist in each case, so the response is
-the only record of it. There is no object until the response names its key, so
-`create()` calls `merge_response()` on an object of the class that has no key
-and no JSON, which only that call sees. The hook may use its `api` and the
-class's other hooks, but its `pk`, its key field, `url`, and `hash()` raise
-`UsageError`, and so does `==` with another object of its model. The object is
-not the one that `create()` returns, so what the hook keeps on it, such as an
-`ETag`, is lost. Keep what is needed in the JSON that the hook returns.
+object, an empty list or a list of several objects among them, and for a
+response that names another key than the one that the request sent, as `save()`
+does. A response that names no key takes the key that was sent. The resource
+may exist in each case, so the response is the only record of it. There is no
+object until the response names its key, so `create()` calls `merge_response()`
+on an object of the class that has no key and no JSON, which only that call
+sees. The hook may use its `api` and the class's other hooks, but its `pk`, its
+key field, `url`, and `hash()` raise `UsageError`, and so does `==` with
+another object of its model. The object is not the one that `create()` returns,
+so what the hook keeps on it, such as an `ETag`, is lost. Keep what is needed
+in the JSON that the hook returns.
 
 `merge_response()` computes the new JSON, and an API whose write responses hold
 something else, such as a status message, can override it on a shared base
@@ -1940,26 +1953,26 @@ raises `DoesNotExist`. The [Django REST Framework guide](drf.md) shows one that
 keeps the default message and `data`.
 
 A write or any request with a body follows no redirect. A request with any
-method but `GET` or `HEAD`, from a model's `create()`, `save()`, or `delete()`
-or from `API.post()`, `put()`, `patch()`, or `delete()`, and a request of any
-method with a non-empty `data` or `files` or a `json` that is not `None`, is
-sent with `allow_redirects=False`, whatever the caller passes, and a 3xx
-response to it raises `RedirectError`. The message says that the server
-redirected the request and that it was not resent. It does not quote the
-`Location`, which is on the error's `response`. A lazy update stays pending.
-The request is not resent because requests changes it when it follows a
-redirect. It sends a `POST` answered with a 301 or 302, and any other method
-answered with a 302 or 303, as a `GET`, and it resends a `PATCH`, `PUT`, or
-`DELETE` answered with a 301 without its body, so the server would never
-receive the write, and a `GET` would reach the server without its body. A 307
-or 308 would resend it, with every header, to a URL that the server chose. A
-redirect of a write happens, for example, when `base_url` uses `http://` and
-the server redirects to HTTPS, or when a URL lacks the trailing slash that
-Django's `APPEND_SLASH` adds, as with `trailing_slash = False` against a DRF
-router. Send the request to the URL that the server expects.
+method but `GET`, from a model's `create()`, `save()`, or `delete()` or from
+`API.post()`, `put()`, `patch()`, or `delete()`, and a request of any method
+with a non-empty `data` or `files` or a `json` that is not `None`, is sent with
+`allow_redirects=False`, whatever the caller passes, and a 3xx response to it
+raises `RedirectError`. The message says that the server redirected the request
+and that it was not resent. It does not quote the `Location`, which is on the
+error's `response`. A lazy update stays pending. The request is not resent
+because requests changes it when it follows a redirect. It sends a `POST`
+answered with a 301 or 302, and any other method answered with a 302 or 303, as
+a `GET`, and it resends a `PATCH`, `PUT`, or `DELETE` answered with a 301
+without its body, so the server would never receive the write, and a `GET`
+would reach the server without its body. A 307 or 308 would resend it, with
+every header, to a URL that the server chose. A redirect of a write happens,
+for example, when `base_url` uses `http://` and the server redirects to HTTPS,
+or when a URL lacks the trailing slash that Django's `APPEND_SLASH` adds, as
+with `trailing_slash = False` against a DRF router. Send the request to the URL
+that the server expects.
 
-A `GET` or `HEAD` without a body follows a redirect only to the origin of the
-request it answers, that is, its scheme, host, and port. Requests drops the
+A `GET` without a body follows a redirect only to the origin of the request it
+answers, that is, its scheme, host, and port. Requests drops the
 `Authorization` header when a redirect leaves the host, but it sends every
 other header, such as an API key or a CSRF token. A redirect to another origin,
 including one from `http://` to `https://`, raises `RedirectError` before
@@ -1983,9 +1996,9 @@ api.redirect_origins = ["https://files.example.com"]
 Give a collection of origins. A single string raises `TypeError` before the
 request, because it would be read as a collection of its characters.
 
-These checks guard the redirects that requests follows. A raw `GET` or `HEAD`
-sent with `allow_redirects=False` follows none, so it returns the 3xx response
-as it is, and the caller decides what to do with it. Requests does prepare
+These checks guard the redirects that requests follows. A raw `GET` sent with
+`allow_redirects=False` follows none, so it returns the 3xx response as it is,
+and the caller decides what to do with it. Requests does prepare
 `Response.next` even then, and raises its own `ValueError` or `UnicodeError`
 when it cannot. The request raises `RedirectError` instead, whether or not it
 follows redirects. Any other exception that requests raises there, such as
@@ -2005,6 +2018,11 @@ prepare, since no rule says which of its text is a host and which a password.
 The error's `response` holds the header. A model write, a query, and a
 next-page request expect a final response, so they raise `RedirectError` for
 any unfollowed 3xx.
+
+`API` has `get()`, `post()`, `patch()`, `put()`, and `delete()`, and sends no
+`HEAD` request. A `HEAD` sent with `api.session.head()` skips these checks,
+and, if it is told to follow redirects, follows one to another origin with the
+session's headers.
 
 Pass `proxy=` to send requests through a proxy. The proxy takes precedence over
 proxy environment variables such as `HTTPS_PROXY`.
@@ -2225,11 +2243,12 @@ exception type that it replaced, so code written for that type keeps working:
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
   the expected shape. Its message does not quote the body. Its `response` is
-  the response whose body is not JSON, and the response that `create()` or
-  `get_or_create()` refuses. It is `None` where the error is raised from
-  decoded JSON elsewhere, as in a hook such as `object_json()` or
-  `collection_items()`.
-- `UsageError`, a `RuntimeError`, for a model without a registered API.
+  the response that is refused, and it may be `None`, as for an error that is
+  raised from decoded JSON in a hook such as `object_json()`, so test it before
+  use.
+- `UsageError`, a `RuntimeError`, for a model without a registered API, and for
+  other uses that eazyrest does not support, such as a model that declares no
+  `class_url`, or a `write_options()` block that ends out of order.
 - `LimitExceeded`, for a response or traversal that exceeds one of the API's
   [limits](#limits).
 
@@ -2246,9 +2265,9 @@ library that sent the request. For `API`, that is the requests exception that
 describes the failure, such as `requests.ConnectionError`. Invalid decorator
 options raise `TypeError` or `ValueError` when the class is defined, and so
 does a field whose own type eazyrest does not convert. A field annotation that
-names a class not defined yet, and a member of a structure, resolve lazily, so
-an invalid conversion declaration there can raise `FieldConversionError` at
-first use.
+names a class not defined yet, and a member of a structure that names one,
+resolve lazily, so an invalid conversion declaration there can raise
+`FieldConversionError` at first use.
 
 ## Threads
 
