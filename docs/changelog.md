@@ -645,6 +645,10 @@ describe them further.
   sent a repeated key as many times as it was given. A set field that the
   server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
   assigning the field its own value sends nothing.
+- A set given to the parameter of a field that is a sequence, as
+  `filter(tags={Tag(slug="b"), Tag(slug="a")})` for a `list[Tag]`, is sent
+  sorted, where `v1.0.0a5` sent it in hash order, so the URL differed between
+  processes.
 - `get_or_create()` raises `ValueError` naming the parameter, before any
   request, for a key's JSON name that holds `__`, as `doc__id`, where
   `v1.0.0a5` looked up `doc__id` and then posted a body without the key. Look

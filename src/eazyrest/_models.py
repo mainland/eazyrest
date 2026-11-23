@@ -7793,6 +7793,10 @@ class JSONObject:
                     parameter.collection.collection_type
                 ] in (set, frozenset):
                     operands = _distinct_sorted(operands)
+                elif isinstance(value, (set, frozenset)) and not several:
+                    # A set has no order, so the same query would otherwise
+                    # give another URL in another process.
+                    operands.sort(key=_lookup_operand_order)
         problem = None
         if not repeated and operands[0] is None:
             problem = "is None, and requests omits it"

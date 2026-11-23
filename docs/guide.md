@@ -1223,7 +1223,8 @@ compare values of its field, such as `ordering`, `title__iexact`,
 except that a model instance, also as an item of a collection, is sent as its
 primary key. A collection repeats the parameter, so `Todo.filter(tag=[a, b])`
 sends `tag=a&tag=b`, which a view that calls Django's `QueryDict.getlist()`
-reads, as django-filter does for a filter on a many-to-many field.
+reads, as django-filter does for a filter on a many-to-many field. A set is
+sent in sorted order, so the same query gives the same URL in every process.
 
 A lookup whose name ends in `__in` or `__range`, such as `user__in` or
 `due__range`, takes an iterable of values that is not a string, bytes, a

@@ -1942,6 +1942,22 @@ def a_set_field_is_queried_by_its_distinct_keys_sorted(world: World) -> None:
 
 
 @row(REL)
+def a_set_for_a_sequence_relation_is_sent_sorted(world: World) -> None:
+    sends_query(
+        world,
+        Post,
+        "tags=a&tags=b",
+        tags={Tag(slug="b"), Tag(slug="a")},
+    )
+    sends_query(
+        world,
+        Post,
+        "readers=3&readers=7",
+        readers=frozenset({User(id=7), User(id=3)}),
+    )
+
+
+@row(REL)
 def a_collection_relation_takes_a_key_or_an_object(world: World) -> None:
     sends_query_but_refuses_creation(
         world,
