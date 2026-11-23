@@ -9051,11 +9051,14 @@ class JSONObject:
     def _prefetch_info(
         cls,
         field: str,
+        api: Client | None,
     ) -> tuple[JSONProperty, RelatedType, type[Any] | None]:
         """Return descriptor and type info for a prefetchable relation.
 
         Args:
             field: Model attribute name to inspect for prefetch support.
+            api: The ``api=`` of the query that prefetches, which the bulk
+                request goes through, or ``None`` if the query has none.
 
         Returns:
             Tuple containing the JSON field descriptor, related-object type
@@ -9067,7 +9070,9 @@ class JSONObject:
             PrefetchNotSupported: If the related model does not override
                 ``bulk_get_by_pks()``.
             UsageError: If a class in the MRO of the related model had ``api``
-                assigned, because the bulk request would be sent through it.
+                assigned, because the bulk request would be sent through it, or
+                if the query has no ``api=`` and no API is registered for the
+                related model.
         """
         descriptor = _field_named(cls, field)
         if descriptor is None:
@@ -9097,6 +9102,13 @@ class JSONObject:
         # The bulk request goes through the related model's class API, which an
         # assignment to its ``api`` would replace.
         _check_api_attribute(model_type, UsageError)
+        # A key that the related model cannot resolve yet is the field's error,
+        # and comes before the API's and before any request.
+        _resolve_key(model_type)
+        if api is None:
+            # The bulk request goes through the related model's API, which must
+            # exist before the request for the parents is sent.
+            _ = model_type.api
 
         return descriptor, analyzed_type, collection_type
 
@@ -9143,7 +9155,7 @@ class JSONObject:
 
         for field in fields:
             descriptor, related_type, collection_type = cls._prefetch_info(
-                field
+                field, query.api
             )
 
             # Each distinct value once, by its JSON type and value, so that
@@ -9412,7 +9424,7 @@ class JSONObject:
         # Check the fields before the request, so a misspelled field or a model
         # without bulk lookup fails even when the query matches nothing.
         for field in prefetch_fields:
-            cls._prefetch_info(field)
+            cls._prefetch_info(field, api)
         if prefetch_fields:
             cls._check_prefetch_batch_size()
 
@@ -9575,7 +9587,7 @@ class JSONObject:
             )
         prefetch_fields = _normalize_prefetch(prefetch)
         for field in prefetch_fields:
-            cls._prefetch_info(field)
+            cls._prefetch_info(field, api)
         if prefetch_fields:
             cls._check_prefetch_batch_size()
 

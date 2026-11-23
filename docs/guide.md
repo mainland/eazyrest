@@ -1508,7 +1508,9 @@ If you request prefetch for a related model that does not implement
 `PrefetchNotSupported` before sending a request. This is intentional: prefetch
 should map to a real API bulk lookup instead of guessing. If a prefetch field
 is not a related-object field, they raise `ValueError`, also before sending a
-request.
+request. A query without `api=` whose prefetch names a related model with no
+registered API raises `UsageError`, also before sending a request, since the
+bulk lookup goes through that model's API.
 
 ## Response-shape hooks
 
