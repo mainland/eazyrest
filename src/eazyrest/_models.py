@@ -7856,9 +7856,11 @@ class JSONObject:
         """Return whether a name that is no field's compares one value.
 
         A field's JSON key and write key are ordinary query names, sent as
-        given, but the model's own key by them, alone or with a suffix that
-        compares one value, and a path through a relation by its JSON key,
-        compare one value as the field's Python name does.
+        given, but by either of them, alone or with a suffix that compares one
+        value, a field compares one value as its Python name does, and so does
+        a path through a relation by its JSON key. The key by which a field
+        compares a collection of items, alone, takes a collection as its Python
+        name does.
 
         Args:
             name: Name of a parameter that is no field and has no field before
@@ -7868,22 +7870,37 @@ class JSONObject:
             Whether a collection given for it names no one value.
         """
         head, _, rest = name.partition("__")
-        key_field = _pk_property_of(cls)
-        if key_field is not None and head in (
-            key_field.json_field,
-            key_field.write_field,
-        ):
-            return not rest or rest in _ONE_VALUE_LOOKUPS
-        if not rest:
-            return False
         for field in getattr(cls, "_json_fields", ()):
             descriptor = getattr(cls, field)
-            if head in (
-                descriptor.json_field,
-                descriptor.write_field,
-            ) and cls._compares_one_value_through(field, rest):
+            if head not in (descriptor.json_field, descriptor.write_field):
+                continue
+            if rest:
+                one = (
+                    rest in _ONE_VALUE_LOOKUPS
+                    or cls._compares_one_value_through(field, rest)
+                )
+            else:
+                one = not cls._holds_items(descriptor)
+            if one:
                 return True
         return False
+
+    @classmethod
+    def _holds_items(cls, descriptor: JSONProperty) -> bool:
+        """Return whether a field is a collection of items.
+
+        Args:
+            descriptor: The field.
+
+        Returns:
+            Whether the field's type is a collection of items, whose own
+            parameter takes a collection. ``False`` for a field whose type
+            cannot be resolved yet, which a name sent as given does not need.
+        """
+        try:
+            return cls._query_collection(descriptor) is not None
+        except (FieldConversionError, NameError):
+            return False
 
     @classmethod
     def _compares_one_value_through(cls, field: str, rest: str) -> bool:

@@ -4144,7 +4144,7 @@ def test_query_rejects_unsendable_other_parameters(
         (lambda: (deque([1]),), "contains a collection"),
     ],
 )
-@pytest.mark.parametrize("name", ["userId", "ordering"])
+@pytest.mark.parametrize("name", ["userId__in", "ordering"])
 @pytest.mark.parametrize("method", ["filter", "get", "get_or_create"])
 def test_query_rejects_unsendable_iterables(
     requests_mock: Any, make: Any, match: str, name: str, method: str
@@ -4158,7 +4158,8 @@ def test_query_rejects_unsendable_iterables(
     Args:
         make: Callable that returns a fresh iterable query value.
         match: Pattern that the ``ValueError`` message should match.
-        name: Parameter name, a JSON key or a name that is not a field.
+        name: Parameter name, a lookup of several values under a JSON key or a
+            name that is not a field.
         method: Name of the query method.
     """
     requests_mock.get("https://example.com/v1/todos/", json=[{"id": 99}])
@@ -4171,6 +4172,37 @@ def test_query_rejects_unsendable_iterables(
 
 
 @pytest.mark.parametrize(
+    "make",
+    [
+        lambda: iter([1, 2]),
+        lambda: deque([1, 2]),
+        lambda: range(1, 3),
+        lambda: iter(()),
+        deque,
+    ],
+)
+@pytest.mark.parametrize("name", ["user", "userId", "userId__exact"])
+def test_query_refuses_an_iterable_for_the_json_name_of_a_relation(
+    requests_mock: Any, make: Any, name: str
+) -> None:
+    """A relation compares one value, by its JSON name as by its own.
+
+    requests would send the name repeated, and a server applies only one of the
+    values.
+
+    Args:
+        make: Callable that returns a fresh iterable.
+        name: Name of the relation, by its JSON name or its own.
+    """
+    requests_mock.get("https://example.com/v1/todos/", json=[])
+
+    with pytest.raises(ValueError, match="compares one value"):
+        list(Todo.filter(**{name: make()}))
+
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
     "make", [lambda: iter([1, 2]), lambda: deque([1, 2]), lambda: range(1, 3)]
 )
 def test_query_sends_every_item_of_an_iterable(
@@ -4178,17 +4210,18 @@ def test_query_sends_every_item_of_an_iterable(
 ) -> None:
     """An iterable query value is read once and sent as its items.
 
-    A field's parameter repeats, and a lookup of several values joins them.
+    A name that is no field's repeats, and a lookup of several values joins
+    them.
 
     Args:
         make: Callable that returns a fresh iterable of two items.
     """
     lookup = requests_mock.get("https://example.com/v1/todos/", json=[])
 
-    list(Todo.filter(userId=make(), id__in=make()))
+    list(Todo.filter(ordering=make(), id__in=make()))
 
     assert parse_qs(urlparse(lookup.last_request.url).query) == {
-        "userId": ["1", "2"],
+        "ordering": ["1", "2"],
         "id__in": ["1,2"],
     }
 

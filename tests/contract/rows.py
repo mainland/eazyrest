@@ -177,6 +177,15 @@ class Task(Base):
     user: User
 
 
+@json_object(field_map={"title": "Title"})
+class Titled(Base):
+    """A field that is not the key, with a JSON name of its own."""
+
+    class_url = "/titled/"
+    id: int
+    title: str
+
+
 @json_object
 class Entry(Base):
     """A model with no key."""
@@ -2213,6 +2222,36 @@ def a_collection_through_the_json_name_of_a_relation_is_refused(
         for value in ([3, 4], (3, 4), {3, 4}):
             refuses_query(world, Task, ValueError, name, **{name: value})
     sends_query(world, Task, "userId__id__in=3,4", userId__id__in=[3, 4])
+
+
+JSON_NAME = "queries-by-a-fields-json-name"
+
+
+@row(JSON_NAME)
+def a_collection_for_the_json_name_of_a_field_is_refused(
+    world: World,
+) -> None:
+    for name in ("title", "Title", "Title__exact", "Title__gt"):
+        for value in (["a", "b"], ("a", "b"), {"a", "b"}):
+            refuses_query(world, Titled, ValueError, name, **{name: value})
+
+
+@row(JSON_NAME)
+def a_collection_for_the_json_name_of_a_relation_is_refused(
+    world: World,
+) -> None:
+    for name in ("user", "userId", "userId__exact"):
+        for value in ([3, 4], (3, 4), {3, 4}):
+            refuses_query(world, Task, ValueError, name, **{name: value})
+
+
+@row(JSON_NAME)
+def a_lookup_of_several_values_or_one_value_by_json_name_is_sent(
+    world: World,
+) -> None:
+    sends_query(world, Titled, "Title__in=a,b", Title__in=["a", "b"])
+    sends_query(world, Task, "userId__in=3,4", userId__in=[3, 4])
+    sends_query(world, Titled, "Title=a", Title="a")
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"

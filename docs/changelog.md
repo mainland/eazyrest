@@ -51,10 +51,12 @@ describe them further.
   field's conversion takes whole. A path through a relation that compares one
   value does the same, as in `filter(owner__id=[7, 8])` or
   `filter(owner__id__gt=[1, 2])`, where `v1.0.0a5` sent the parameter repeated.
-- The same holds when the model's own key is named by its JSON key, as in
-  `filter(postId=[7, 8])` or `filter(postId__gt=[1, 2])`, and when a path
-  through a relation starts with the relation's JSON key, as in
-  `filter(userId__id=[3, 4])`, where `v1.0.0a5` sent the parameter repeated.
+- The same holds when a field is named by its JSON key or its write key, as in
+  `filter(postId=[7, 8])`, `filter(Title__gt=["a", "b"])`, or
+  `filter(userId=[3, 4])`, and when a path through a relation starts with the
+  relation's JSON key, as in `filter(userId__id=[3, 4])`, where `v1.0.0a5` sent
+  the parameter repeated. A field that is a collection still takes a collection
+  by its JSON key.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the
