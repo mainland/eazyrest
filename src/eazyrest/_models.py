@@ -1138,23 +1138,6 @@ def _check_union(union: UnionType, table: Mapping[Any, Conversion]) -> None:
             )
 
 
-def _check_optional_union(
-    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
-) -> None:
-    """Check a union, or an optional one, whose value is ``None``.
-
-    Args:
-        analyzed: Analyzed type of the ``None`` value.
-        table: Conversion table of the model whose field it is.
-
-    Raises:
-        TypeError: If ``analyzed`` is a union with a member that converts.
-    """
-    analyzed = _unwrap_optional_type(analyzed)
-    if isinstance(analyzed, UnionType):
-        _check_union(analyzed, table)
-
-
 def _check_field_unions(
     analyzed: AnalyzedType, table: Mapping[Any, Conversion]
 ) -> None:
@@ -1722,8 +1705,8 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
 def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
     """Refuse a related object that is not of the relation's model.
 
-    Writing the key or URL of an object of another model would name a resource
-    of the wrong collection.
+    Writing the key of an object of another model would name a resource of the
+    wrong collection.
 
     Args:
         value: Object written as a relation.
@@ -3212,9 +3195,9 @@ def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
             not a related object. A sequence's error names the item's position.
             A ``None`` item is refused when the value is encoded.
     """
+    # A NewType of a collection of models analyzes as the collection, so no
+    # NewType wraps the structure here.
     analyzed = _unwrap_optional_type(conversion)
-    while isinstance(analyzed, NewTypeType):
-        analyzed = _unwrap_optional_type(analyzed.inner)
     if not (
         isinstance(analyzed, CollectionType)
         and isinstance(_unwrap_optional_type(analyzed.item_type), RelatedType)
@@ -3550,10 +3533,9 @@ def _refuse_declared_types(
     Raises:
         TypeError: If a field's type is refused, such as ``Counter[str]``, a
             union of a scalar and a list, a mapping whose keys are not strings,
-            a model without a primary-key field, a primary key that is not one
-            value, or is neither a leaf nor a relation to a model keyed by one.
-            The first field in declaration order raises, and then the primary
-            key.
+            a model without a primary-key field, or a primary key whose type is
+            not ``int``, ``str``, or ``UUID``, alone or optional. The first
+            field in declaration order raises, and then the primary key.
     """
     own = [*declared]
     props = [*own]
@@ -5209,11 +5191,6 @@ class JSONProperty:
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
             kept = self._assigned_related(value)
-            # A set drops the objects that are equal by key, so encode what it
-            # keeps. Then the write and the snapshot agree, and a later write
-            # of another field does not send this one again.
-            if isinstance(kept, AbstractSet):
-                new_value = obj._to_json(kept, self.analyzed_type)
         stored = obj._json_with_field(self.json_field, self.field)
 
         # A pending update is not on the server, even though the working JSON
@@ -6036,8 +6013,6 @@ class JSONObject:
                 ``conversion`` is not a supported analyzed type.
         """
         if value is None:
-            # A union that cannot convert is refused whatever its value.
-            _check_optional_union(conversion, _table_of(type(self)))
             return value
 
         found = _class_entry(conversion, _table_of(type(self)))
@@ -6200,8 +6175,6 @@ class JSONObject:
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
         """
         if value is None:
-            # A union that cannot convert is refused whatever its value.
-            _check_optional_union(conversion, _table_of(cls))
             return None
 
         found = _class_entry(conversion, _table_of(cls))
@@ -6618,8 +6591,8 @@ class JSONObject:
         Every changed value is encoded, so a value that cannot be encoded fails
         before anything is queued.
 
-        An object of a model without a key is a read-only value that can never
-        be written, so it has no changes.
+        Every caller has refused an object of a model without a key, which is a
+        read-only value that can never be written, before it asks.
 
         Returns:
             Each changed field, its descriptor, and the value's new encoding.
@@ -6627,16 +6600,12 @@ class JSONObject:
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
         """
-        if _pk_property_of(type(self)) is None:
-            return []
-
         changed: list[tuple[str, JSONProperty, Any]] = []
         for field, snapshot in self._field_snapshots.items():
             descriptor = getattr(type(self), field)
             current = self._field_cache[field]
             with _converting(type(self), field):
                 _refuse_bare_items(current, descriptor.analyzed_type)
-                # An object without a key cannot be written.
                 encoded = self._to_json(current, descriptor.analyzed_type)
             if _json_equal(encoded, snapshot):
                 continue
@@ -6658,17 +6627,14 @@ class JSONObject:
     def _queue_in_place_changes(self) -> None:
         """Queue updates for cached values that were changed in place.
 
-        An object that has not loaded loads first, so the update is made to the
-        object that the server has. The load queues the changes itself.
+        A cached value comes from a read or an assignment, and both load the
+        object first, so the updates are made to the object that the server
+        has.
 
         Raises:
             FieldConversionError: If a changed value cannot be encoded.
         """
-        changed = self._changes_in_place()
-        if changed and self._json is None:
-            self._load_json()
-        else:
-            self._queue_changes(changed)
+        self._queue_changes(self._changes_in_place())
 
     def _apply_patch_response(
         self,
@@ -6809,9 +6775,10 @@ class JSONObject:
                     prop._comparable(new, by_key=True),
                 )
             except (NameError, AttributeError, TypeError):
-                # A type that cannot be resolved yet cannot be compared by key,
-                # so the field has changed.
-                same = False
+                # A type that cannot be resolved yet cannot be compared by key.
+                # Its field has no cached value, since reading one needs the
+                # type, so there is nothing to drop.
+                continue
             if not same:
                 stale.append(field)
 
@@ -7362,7 +7329,9 @@ class JSONObject:
 
         # Some APIs leave the primary key out of a detail response, because the
         # URL holds it. Keep the key that the object was loaded by, so that the
-        # object keeps its identity and URL.
+        # object keeps its identity and URL. Its JSON keeps the spelling that
+        # the server gave, as a created object's JSON does, which the built key
+        # may not have, as a UUID in capitals.
         pk_json_field = getattr(type(self), "_pk_json_field", None)
         if pk_json_field is not None and pk_json_field not in json:
             if self._json is not None and pk_json_field in self._json:
@@ -8301,7 +8270,8 @@ class JSONObject:
         # The object keeps neither a write-only field nor an extra key.
         json_keys = cls._json_keys() - cls._write_only_keys()
         # The payload can hold the caller's own containers, such as a dict
-        # field's value, so copy them before they become saved state.
+        # field's value, and merge_response() may change what it is given, so
+        # it gets copies. The object copies the result again.
         sent = {
             key: _copy_json(value)
             for key, value in payload.items()
