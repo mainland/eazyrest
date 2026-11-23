@@ -4808,6 +4808,23 @@ class JSONProperty:
             Whether the values are equal, as ``_json_equal()`` compares them,
             after sorting a stored set as an encoded one is sorted.
         """
+        return _json_equal(self._comparable(stored, by_key=by_key), new)
+
+    def _comparable(self, stored: Any, *, by_key: bool) -> Any:
+        """Return stored JSON in the form in which it is compared.
+
+        A set field's items are sorted, as an encoded set's are. With
+        ``by_key``, a related object that the JSON holds as a bare key is
+        replaced by its built key, so that two spellings of one key compare
+        equal. An embedded object is kept as it is.
+
+        Args:
+            stored: What the stored JSON holds for this field.
+            by_key: Whether to build the keys of related objects.
+
+        Returns:
+            The value to compare.
+        """
         conversion = self.analyzed_type
         while True:
             if isinstance(conversion, OptionalType):
@@ -4832,7 +4849,7 @@ class JSONProperty:
                 ]
             if _READ_AS[conversion.collection_type] in (set, frozenset):
                 stored = sorted(stored, key=_json_order)
-        return _json_equal(stored, new)
+        return stored
 
     def _is_key_of(self, obj: JSONObject) -> bool:
         """Return whether this property is the primary key of ``obj``.
@@ -5082,7 +5099,7 @@ class JSONProperty:
         # An eager write's response can name other related objects, which
         # then replace the assigned ones, as after save().
         final = obj._working_value(self.json_field)
-        if not self._same_as_stored(final, new_value):
+        if not self._same_as_stored(final, new_value, by_key=True):
             return
 
         if kept is not _MISSING:
@@ -6544,11 +6561,22 @@ class JSONObject:
         after = self._working_json()
 
         for field in getattr(self, "_json_fields", ()):
-            json_field = getattr(type(self), field).json_field
-            if not _json_equal(
-                before.get(json_field, _MISSING),
-                after.get(json_field, _MISSING),
-            ):
+            prop = getattr(type(self), field)
+            old = before.get(prop.json_field, _MISSING)
+            new = after.get(prop.json_field, _MISSING)
+            if _json_equal(old, new):
+                continue
+            try:
+                # Another spelling of one key is no change.
+                same = _json_equal(
+                    prop._comparable(old, by_key=True),
+                    prop._comparable(new, by_key=True),
+                )
+            except (NameError, FieldConversionError):
+                # A type that cannot be resolved yet cannot be compared by key,
+                # so the field has changed.
+                same = False
+            if not same:
                 self._forget_fields([field])
 
     def merge_response(

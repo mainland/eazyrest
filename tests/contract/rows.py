@@ -898,6 +898,48 @@ def a_uuid_key_of_a_relation_refuses_a_spelling_outside_the_four_forms(
             )
 
 
+def shelf_field(obj: Shelf, field: str) -> Any:
+    """Return the object that a shelf's relation holds, or its only item."""
+    value = getattr(obj, field)
+    return value if field == "cover" else next(iter(value))
+
+
+@row(BUILD)
+def a_relation_keeps_its_objects_when_assigned_its_own_value(
+    world: World,
+) -> None:
+    for text in (UP, UC):
+        for field in ("cover", "papers", "docset"):
+            obj = shelf(cover=text, papers=[text], docset=[text])
+            held = shelf_field(obj, field)
+            setattr(obj, field, getattr(obj, field))
+            assert shelf_field(obj, field) is held
+            before = world.count
+            obj.save()
+            assert world.count == before
+
+
+@row(BUILD)
+def a_relation_keeps_its_objects_when_the_server_spells_the_key_otherwise(
+    world: World,
+) -> None:
+    mine = Doc(id=U)
+    obj = shelf(cover=str(uuid.uuid4()))
+    obj.cover = mine
+    world.mocker.patch("https://rows.example/shelves/1/", json={"cover": UP})
+    obj.save()
+    assert obj.cover is mine
+    partial = Shelf(id=1)
+    partial.update_from_json({"cover": LOWER})
+    held = partial.cover
+    world.mocker.get(
+        "https://rows.example/shelves/1/",
+        json={"id": 1, "cover": UP, "papers": [], "docset": []},
+    )
+    assert partial.papers == []
+    assert partial.cover is held
+
+
 @row(BUILD)
 def a_bad_uuid_refused(world: World) -> None:
     for value in ("not-a-uuid", 7):
