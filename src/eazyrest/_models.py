@@ -5087,7 +5087,8 @@ class JSONProperty:
             raise AttributeError(
                 f"{type(obj).__name__}.{self.field} is read-only"
             )
-        stored = obj._json_with_field(self.json_field, self.field)
+        # Convert the value before anything is read from the server, so that a
+        # value that is refused sends no request, not even the load's.
         with _converting(type(obj), self.field):
             new_value = obj._to_json(value, self.analyzed_type)
             # Build the collection that the field keeps before anything is sent
@@ -5099,6 +5100,7 @@ class JSONProperty:
             # of another field does not send this one again.
             if isinstance(kept, AbstractSet):
                 new_value = obj._to_json(kept, self.analyzed_type)
+        stored = obj._json_with_field(self.json_field, self.field)
 
         # A pending update is not on the server, even though the working JSON
         # holds it. In eager mode, assigning the same value must send it.

@@ -1100,6 +1100,40 @@ def objects_that_hold_each_other_in_sets_survive_a_pickle(
         assert friend.friends.pop() is duplicate
 
 
+REFUSED_ASSIGNMENTS: list[tuple[str, Callable[[], Any], tuple[str, ...]]] = [
+    ("owner", lambda: "8", ("Post.owner",)),
+    ("owner", lambda: True, ("Post.owner",)),
+    ("owner", lambda: 8.0, ("Post.owner",)),
+    ("owner", lambda: Other(id=8), ("Post.owner", "User", "Other")),
+    ("owner", lambda: {"id": 8}, ("Post.owner",)),
+    ("readers", lambda: [Other(id=1)], ("Post.readers",)),
+    ("readers", lambda: [None], ("Post.readers", "[0]")),
+    ("readers", lambda: [{"id": 8}], ("Post.readers",)),
+    ("readers", lambda: ["8"], ("Post.readers",)),
+    ("readers", lambda: User(id=8), ("Post.readers", "collections")),
+    ("tags", lambda: Crew(slug="a"), ("Post.tags", "collections")),
+    ("tagset", lambda: {None}, ("Post.tagset",)),
+    ("watchers", lambda: [Other(id=1)], ("Post.watchers",)),
+]
+
+
+@row("assigning-a-relation")
+def a_refused_assignment_to_an_unloaded_object_sends_nothing(
+    world: World,
+) -> None:
+    for status in (200, 404):
+        world.mocker.get(requests_mock.ANY, status_code=status, json={})
+        for field, make, named in REFUSED_ASSIGNMENTS:
+            obj = Post(id=1)
+            raises(
+                world,
+                FieldConversionError,
+                lambda: setattr(obj, field, make()),
+                *named,
+            )
+            assert obj._json is None
+
+
 ASSIGN = "assigning-the-key"
 
 
