@@ -3323,6 +3323,10 @@ def _stored_related_key(
         prop = _pk_property_of(model)
         if not embedded or prop is None or prop.json_field not in stored:
             return stored
+        # A key of ``null`` is no key, so the object stays what it is, as one
+        # without the key does, and ``None`` assigned over it is a change.
+        if stored[prop.json_field] is None:
+            return stored
         stored = stored[prop.json_field]
     try:
         built = _build_key(model, stored)
