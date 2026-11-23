@@ -5663,7 +5663,7 @@ class JSONObject:
         return {
             name: value
             for name, value in vars(self).items()
-            if name != "_write_options"
+            if name not in ("_write_options", "_write_blocks")
         }
 
     def __reduce_ex__(self, protocol: SupportsIndex) -> tuple[Any, ...]:
@@ -6400,21 +6400,38 @@ class JSONObject:
             TypeError: If ``options`` set the body, enable streaming, or name
                 an argument that is not a request option. Nothing has changed
                 then.
+            UsageError: When a block ends while a block of the same object that
+                began later is still open, as two generators that each hold a
+                block open can end in the order they began. The ended block's
+                options are gone from the object by then, and the other block's
+                own keep applying until it ends, and then no options remain.
         """
         checked = _request_options(options)
+        merged = _merge_request_options(self._write_options, checked)
         # An object that has no options of its own reads the class's, so the
-        # block must leave it without any, as it found it.
-        own = vars(self).get("_write_options", _MISSING)
-        self._write_options = _merge_request_options(
-            self._write_options, checked
+        # last block must leave it without any, as it found it.
+        blocks: list[Mapping[str, Any]] = vars(self).setdefault(
+            "_write_blocks", []
         )
+        blocks.append(merged)
+        self._write_options = merged
         try:
             yield self
         finally:
-            if own is _MISSING:
-                del self._write_options
+            out_of_order = blocks[-1] is not merged
+            del blocks[[block is merged for block in blocks].index(True)]
+            if blocks:
+                self._write_options = blocks[-1]
             else:
-                self._write_options = own
+                del self._write_options
+                del vars(self)["_write_blocks"]
+            if out_of_order:
+                raise UsageError(
+                    f"A write_options() block of this {type(self).__name__} "
+                    "ended while a block that began later is still open. End "
+                    "blocks in the reverse of the order that they began, as "
+                    "nested with statements do"
+                )
 
     def _update_json_field(self, json_field: str, value: Any) -> None:
         """Send or queue a JSON field update, as the write mode says.

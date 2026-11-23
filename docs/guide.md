@@ -1816,6 +1816,12 @@ with todo.write_options(headers={"If-Match": etag}):
     todo.title = "new"
 ```
 
+Blocks of one object must end in the reverse of the order that they began, as
+nested `with` statements do. A block that ends while a block that began later
+is still open, as two generators that each hold a block open can, raises
+`UsageError`. The ended block's options are gone by then, and the other block's
+stay until it ends.
+
 The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
 `request_options=` too, for every request that the query sends: the collection
 request, the requests for later pages that a collection hook sends with its

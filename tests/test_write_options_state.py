@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 import requests_mock
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import API, JSONObject, UsageError, json_object
 
 api = API("https://options.example/")
 HEADERS = {"If-Match": "etag"}
@@ -101,3 +101,39 @@ def test_a_copy_made_in_a_block_sends_none_of_its_options(
         mocker.patch("https://options.example/items/1/", json={})
         duplicate.save()
     assert "If-Match" not in mocker.request_history[0].headers
+
+
+def test_blocks_that_end_in_the_order_they_began_are_refused() -> None:
+    """The first block to end raises, and no options stay on the object."""
+
+    def edit(obj: Item, etag: str) -> Any:
+        """Hold a block open across a ``yield``."""
+        with obj.write_options(headers={"If-Match": etag}):
+            yield
+
+    obj = item()
+    first = edit(obj, "v1")
+    next(first)
+    second = edit(obj, "v2")
+    next(second)
+    with pytest.raises(UsageError, match="block that began later"):
+        first.close()
+    # The block that is still open keeps its options until it ends.
+    assert vars(obj)["_write_options"]["headers"]["If-Match"] == "v2"
+    second.close()
+    assert "_write_options" not in vars(obj)
+    obj.title = "b"
+    with requests_mock.Mocker() as mocker:
+        mocker.patch("https://options.example/items/1/", json={})
+        obj.save()
+        assert "If-Match" not in mocker.last_request.headers
+
+
+def test_blocks_that_end_in_the_reverse_order_are_not_refused() -> None:
+    """Nested blocks end in reverse order and restore each level."""
+    obj = item()
+    with obj.write_options(headers={"X-Outer": "1"}):
+        with obj.write_options(headers={"X-Inner": "2"}):
+            pass
+        assert vars(obj)["_write_options"] == {"headers": {"X-Outer": "1"}}
+    assert "_write_options" not in vars(obj)
