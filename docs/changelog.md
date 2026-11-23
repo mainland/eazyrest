@@ -558,6 +558,10 @@ describe them further.
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
   a default swallow.
+- `encode_json()` raises `TypeError` for the annotations that a field refuses,
+  `Collection[User]`, `Iterable[User]`, `list[User | None]`, and
+  `list[list[User]]`, also optional or in a `NewType`, where `v1.0.0a5` encoded
+  them as lists.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

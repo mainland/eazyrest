@@ -3342,9 +3342,7 @@ def _holds_relations(analyzed: CollectionType) -> bool:
     return isinstance(item, RelatedType)
 
 
-def _check_relation_collection(
-    cls: type[JSONObject], field: str, analyzed: AnalyzedType
-) -> None:
+def _check_relation_collection(subject: str, analyzed: AnalyzedType) -> None:
     """Refuse a collection of relations that cannot be compared by its keys.
 
     A change made in place to a collection of relations is found by comparing
@@ -3355,9 +3353,9 @@ def _check_relation_collection(
     itself a collection of relations.
 
     Args:
-        cls: Model class that declares the field.
-        field: Name of the field.
-        analyzed: Analyzed type of the field.
+        subject: What is declared, for the message, as ``Post.tags`` for a
+            field.
+        analyzed: Analyzed type of the field or the annotation.
 
     Raises:
         TypeError: If the field, inside any optional or ``NewType``, is a
@@ -3371,7 +3369,7 @@ def _check_relation_collection(
     if isinstance(item, CollectionType):
         if _holds_relations(item):
             raise _declaration_error(
-                f"{cls.__name__}.{field} is a collection of collections of "
+                f"{subject} is a collection of collections of "
                 "relations. A collection of relations holds relations and "
                 "nothing else, so declare one collection, such as a list of "
                 "the related model."
@@ -3382,7 +3380,7 @@ def _check_relation_collection(
     model = item.model_type.__name__
     if isinstance(analyzed.item_type, OptionalType):
         raise _declaration_error(
-            f"{cls.__name__}.{field} is a collection of optional {model}, "
+            f"{subject} is a collection of optional {model}, "
             f"but every item has a key, so no item is None. Declare "
             f"{model} as the item type, and the collection optional if the "
             "server may send none."
@@ -3400,7 +3398,7 @@ def _check_relation_collection(
         f"set[{model}]"
     )
     raise _declaration_error(
-        f"{cls.__name__}.{field} is {article} {name} of {model}, which does "
+        f"{subject} is {article} {name} of {model}, which does "
         "not say whether the order of its items counts, so eazyrest cannot "
         f"tell a change made in place from none. Declare {advice}."
     )
@@ -3448,7 +3446,7 @@ def _analyze_field(
         raise
     if prop.is_primary_key:
         _check_key_type(owner, prop.field, analyzed)
-    _check_relation_collection(prop.cls, prop.field, analyzed)
+    _check_relation_collection(f"{prop.cls.__name__}.{prop.field}", analyzed)
     return analyzed
 
 
@@ -3671,6 +3669,7 @@ def encode_json(
             f"encode_json(model=) must be a JSONObject subclass, got {model!r}"
         )
     analyzed = analyze_type(annotation)
+    _check_relation_collection("The annotation", analyzed)
     _check_admitted(analyzed, _table_of(model), late=True)
     encoded = model._to_json(value, analyzed)
     _check_json(encoded, "")
