@@ -9,18 +9,20 @@ the field, so that a new entry point that skips the one access point fails
 here.
 """
 
+import collections
 import copy
 import dataclasses
 import pickle
 import types
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 from typing_extensions import TypeAliasType, TypedDict
 
 from eazyrest import (
     API,
+    Conversion,
     FieldConversionError,
     JSONObject,
     json_object,
@@ -776,3 +778,87 @@ def test_a_copy_reads_the_other_fields_and_raises_for_the_field(
     scenario.check_intact(obj)
     if scenario.kind.fixable:
         assert twin.bad == scenario.decode(scenario.bad_json)
+
+
+Point = collections.namedtuple("Point", "x y")
+
+
+class Annotated2D(NamedTuple):
+    """``NamedTuple`` that annotates its fields."""
+
+    x: int
+    y: int
+
+
+class SubPoint(Point):
+    """Subclass of a ``namedtuple()`` class, whose fields stay unannotated."""
+
+
+def _declare(hint: Any, **namespace: Any) -> Any:
+    """Decorate a model with one field ``value`` of a type.
+
+    Args:
+        hint: Annotation of the field.
+        **namespace: Attributes of the class, such as its conversions.
+
+    Returns:
+        The decorated class.
+    """
+    return json_object(
+        type(
+            "Located",
+            (JSONObject,),
+            {
+                "__module__": __name__,
+                "class_url": "/located/",
+                "__annotations__": {"id": int, "value": hint},
+                **namespace,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "hint",
+    [Point, list[Point], Point | None, dict[str, Point], SubPoint],
+    ids=["direct", "list", "optional", "mapping", "subclass"],
+)
+def test_a_tuple_class_without_annotations_is_refused_when_decorated(
+    hint: Any,
+) -> None:
+    """The message names the field and the class, and says what to declare.
+
+    Args:
+        hint: Annotation of the field.
+    """
+    name = "SubPoint" if hint is SubPoint else "Point"
+    with pytest.raises(
+        TypeError, match=rf"Located\.value: {name} has the fields x, y without"
+    ) as caught:
+        _declare(hint)
+
+    assert not isinstance(caught.value, FieldConversionError)
+
+
+def test_a_tuple_class_with_annotations_is_not_refused() -> None:
+    """A ``NamedTuple`` reads and writes by its annotations."""
+    model = _declare(Annotated2D)
+
+    obj = model(json={"id": 1, "value": [1, 2]})
+
+    assert obj.value == Annotated2D(1, 2)
+
+
+def test_a_conversion_of_a_tuple_class_without_annotations_is_used() -> None:
+    """A class that a conversion converts is not entered."""
+    model = _declare(
+        Point,
+        conversions={
+            Point: Conversion(
+                decode=lambda value, _: Point(*value),
+                encode=lambda value, _: list(value),
+            )
+        },
+    )
+
+    assert model(json={"id": 1, "value": [1, 2]}).value == Point(1, 2)

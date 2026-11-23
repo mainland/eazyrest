@@ -1147,6 +1147,33 @@ def _is_named_tuple(ty: Any) -> bool:
     )
 
 
+def _check_named_tuple_annotated(ty: type[Any]) -> None:
+    """Refuse a tuple class whose fields have no annotations.
+
+    A ``NamedTuple`` annotates each field, which says how the field converts.
+    ``collections.namedtuple()`` makes a class without annotations, so nothing
+    says how its fields read or write.
+
+    Args:
+        ty: Tuple class with named fields.
+
+    Raises:
+        TypeError: If a field has no annotation on the class or a base.
+    """
+    missing = [
+        name
+        for name in ty._fields
+        if not any(name in _annotations(base) for base in ty.__mro__)
+    ]
+    if missing:
+        raise TypeError(
+            f"{ty.__name__} has the fields {', '.join(missing)} without "
+            "annotations, so eazyrest cannot tell how they convert. Declare "
+            f"{ty.__name__} with typing.NamedTuple, which annotates each "
+            "field."
+        )
+
+
 def _is_dataclass(ty: Any) -> bool:
     """Return whether a type is a dataclass, rather than an instance of one.
 
@@ -1445,8 +1472,9 @@ def _check_admitted(
             analyzed raises.
 
     Raises:
-        TypeError: If a member is refused. If ``late``, also a union with a
-            member that converts, and whatever analyzing a member raises.
+        TypeError: If a member is refused, or a tuple class has fields without
+            annotations. If ``late``, also a union with a member that converts,
+            and whatever analyzing a member raises.
     """
     if _class_entry(analyzed, table) is not None:
         return
@@ -1492,6 +1520,8 @@ def _check_admitted(
             members = items
         case TypedDictType(cls) | NamedTupleType(cls) | DataclassType(cls):
             _refuse_pydantic_class(cls)
+            if isinstance(analyzed, NamedTupleType):
+                _check_named_tuple_annotated(cls)
             if cls in seen:
                 return
             seen |= {cls}

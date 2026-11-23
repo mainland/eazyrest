@@ -188,6 +188,10 @@ describe them further.
   it. A `NamedTuple` with defaults refuses a shorter array. A parameterized
   generic `TypedDict`, and a parameterized type whose items eazyrest does not
   convert, such as `Counter[str]`, raise `TypeError` when the class is defined.
+- A field annotated with a tuple class whose fields have no annotations, as
+  `collections.namedtuple()` makes one, raises `TypeError` when the class is
+  defined, unless a conversion converts the tuple class. Declare it with
+  `typing.NamedTuple`.
 - A field that is not the key, whose dotted annotation names an attribute that
   its module does not have yet, raises `FieldConversionError` when the field is
   used, not `AttributeError`. Every use of a field whose type cannot be read
