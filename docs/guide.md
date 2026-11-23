@@ -456,7 +456,8 @@ treat such a pickle as a secret.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
-eazyrest does not convert or a float that is not finite, raises
+eazyrest does not convert, a float that is not finite, or a value that holds
+itself or nests more than 128 levels deep, the default `max_json_depth`, raises
 `FieldConversionError` at the assignment, which leaves the field unchanged and
 queues nothing. A write that the server refuses is different. In lazy mode its
 updates stay pending, so a later `save()` sends them again. In eager mode the

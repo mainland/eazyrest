@@ -255,6 +255,13 @@ describe them further.
   `Any` field or a value of `dict[str, Any]`, a tuple, which reads back as a
   list, and a mapping whose keys are not strings are such values. Assign a list
   instead of a tuple.
+- A value that nests more than 128 levels deep, the default of
+  `API.max_json_depth`, or that holds itself, raises `FieldConversionError`
+  when it is assigned or given to `create()`, and `ValueError` from
+  `encode_json()`, before anything is sent. `v1.0.0a5` accepted such a value up
+  to Python's recursion limit, and a value between about 500 and 990 levels
+  raised a bare `RecursionError`, from `create()` after its `POST`. What is
+  written can be read back from a server that answers within the default limit.
 - A set or frozenset field writes its items in a fixed order, sorted as JSON
   values, rather than in the set's order, and assigning a set equal to the
   server's sends no update, whatever order the server lists the items in. That

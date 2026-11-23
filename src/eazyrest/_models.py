@@ -249,6 +249,10 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         yield
     except FieldConversionError:
         raise
+    except RecursionError as err:
+        # A value that holds itself or nests too deeply is a fault of the
+        # value, whatever step ran out of stack.
+        raise FieldConversionError(model, field, _too_deep("")) from err
     except (TypeError, ValueError) as err:
         if _passes_through(err):
             raise
@@ -720,6 +724,8 @@ class DataclassType:
         def hint(name: str) -> Any:
             try:
                 return _dataclass_field_annotation(cls, name)
+            except RecursionError:
+                raise
             except Exception as err:
                 raise TypeError(
                     f"The annotations of {cls.__name__} cannot be resolved: "
@@ -1463,6 +1469,10 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
     )
     try:
         return dict(get_type_hints(cls, include_extras=True))
+    except RecursionError:
+        # A stack that gives out is no fault of the annotations, and a caller
+        # that holds a value too deep for it reports that instead.
+        raise
     except Exception as err:
         raise TypeError(
             f"The annotations of {cls.__name__} cannot be resolved: {err}"
@@ -3788,6 +3798,38 @@ def encode_json(
     return encoded
 
 
+_MAX_WRITE_DEPTH = 128
+"""The greatest nesting depth of a value that a field or a request writes.
+
+It is ``API.max_json_depth``'s default, so what is written can be read back
+from a server that answers with it. Arrays and objects count, so a scalar has
+depth 0 and a flat array depth 1.
+"""
+
+
+class _DepthExceeded(Exception):
+    """A value nests more deeply than ``_MAX_WRITE_DEPTH``.
+
+    The walk of a value raises it, and ``_check_json()`` reports it as the
+    ``ValueError`` that names where the value starts.
+    """
+
+
+def _too_deep(path: str) -> ValueError:
+    """Return the error for a value that nests or holds itself too deeply.
+
+    Args:
+        path: Where the value is, as ``_check_json()`` takes it.
+
+    Returns:
+        The error, which no part of the library reports as anything else.
+    """
+    return ValueError(
+        f"The value{_at(path)} holds itself or nests too deeply to be JSON, "
+        f"which allows {_MAX_WRITE_DEPTH} levels"
+    )
+
+
 def _check_json(value: Any, path: str) -> None:
     """Check that a value is made only of JSON types.
 
@@ -3802,30 +3844,61 @@ def _check_json(value: Any, path: str) -> None:
         TypeError: If ``value`` holds a value of another type, or a mapping
             key that is not a string.
         ValueError: If ``value`` holds a float that is not finite, which JSON
-            cannot write, or holds itself, or nests more deeply than Python can
-            check.
+            cannot write, or holds itself, or nests more deeply than
+            ``_MAX_WRITE_DEPTH``.
     """
     try:
-        _walk_json(value, path)
-    except RecursionError:
-        raise ValueError(
-            f"The value{_at(path)} holds itself or nests too deeply to be JSON"
-        ) from None
+        _walk_json(value, path, 0)
+    except (_DepthExceeded, RecursionError):
+        # Name where the value starts, not the level that was too deep, so that
+        # the message stays short.
+        raise _too_deep(path) from None
 
 
-def _walk_json(value: Any, path: str) -> None:
+def _check_write_depth(value: Any) -> None:
+    """Check that an encoded value is no deeper than a write may be.
+
+    The walk is iterative and stops at the first level that is too deep, so the
+    value needs no more stack than its depth allows, and a value that holds
+    itself ends the walk.
+
+    Args:
+        value: The JSON value that an encoding gave.
+
+    Raises:
+        ValueError: If ``value`` nests more deeply than ``_MAX_WRITE_DEPTH``.
+    """
+    stack: list[Iterator[Any]] = [iter((value,))]
+    while stack:
+        for child in stack[-1]:
+            if isinstance(child, dict):
+                stack.append(iter(child.values()))
+            elif isinstance(child, list):
+                stack.append(iter(child))
+            else:
+                continue
+            if len(stack) - 1 > _MAX_WRITE_DEPTH:
+                raise _too_deep("")
+            break
+        else:
+            stack.pop()
+
+
+def _walk_json(value: Any, path: str, depth: int) -> None:
     """Check each part of a value, which may recurse without bound.
 
     Args:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
+        depth: The number of arrays and objects that hold ``value``.
 
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping key
             that is not a string.
         ValueError: If ``value`` holds a float that is not finite.
-        RecursionError: If ``value`` holds itself, or nests more deeply than
-            Python can check.
+        _DepthExceeded: If ``value`` nests more deeply than
+            ``_MAX_WRITE_DEPTH``.
+        RecursionError: If the stack gives out first.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -3836,18 +3909,20 @@ def _walk_json(value: Any, path: str) -> None:
         return
     if value is None or isinstance(value, (str, int)):
         return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _walk_json(item, f"{path}[{index}]")
-        return
-    if isinstance(value, dict):
+    if isinstance(value, (list, dict)):
+        if depth >= _MAX_WRITE_DEPTH:
+            raise _DepthExceeded
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                _walk_json(item, f"{path}[{index}]", depth + 1)
+            return
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(
                     f"The value{_at(path)} has a key that is not a string, "
                     "which JSON objects cannot have"
                 )
-            _walk_json(item, f"{path}[key]")
+            _walk_json(item, f"{path}[key]", depth + 1)
         return
     raise TypeError(
         f"The value{_at(path)} has the type {type(value).__name__}, which "
@@ -6107,7 +6182,7 @@ class JSONObject:
             The item's JSON value.
         """
         with _at_key(where):
-            return cls._to_json(value, conversion)
+            return cls._encode_value(value, conversion)
 
     def _from_json(
         self,
@@ -6280,6 +6355,10 @@ class JSONObject:
         JSON writes as ``null``, whatever the type, as ``_from_json()`` reads
         ``null``.
 
+        A value is written no deeper than ``_MAX_WRITE_DEPTH``, so that every
+        later step of a write, such as a copy of the encoding, can take it, and
+        what is written can be read back.
+
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
@@ -6292,6 +6371,36 @@ class JSONObject:
                 not a collection. A string, bytes, or a mapping is not a
                 collection of items. Also raised if ``conversion`` is
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
+            ValueError: If ``value`` holds itself, or its encoding nests more
+                deeply than ``_MAX_WRITE_DEPTH``.
+        """
+        try:
+            encoded = cls._encode_value(value, conversion)
+        except RecursionError:
+            raise _too_deep("") from None
+        _check_write_depth(encoded)
+        return encoded
+
+    @classmethod
+    def _encode_value(
+        cls,
+        value: Any,
+        conversion: AnalyzedType,
+    ) -> Any:
+        """Convert a value and each item of it, as ``_to_json()`` does.
+
+        Args:
+            value: Python value to serialize.
+            conversion: Analyzed type metadata that guides conversion.
+
+        Returns:
+            JSON-serializable representation of ``value``, whose depth the
+            caller checks.
+
+        Raises:
+            TypeError: As for ``_to_json()``.
+            RecursionError: If ``value`` holds itself, or nests more deeply
+                than the stack takes.
         """
         if value is None:
             return None
@@ -6306,9 +6415,9 @@ class JSONObject:
 
         match conversion:
             case OptionalType(inner_type):
-                return cls._to_json(value, inner_type)
+                return cls._encode_value(value, inner_type)
             case NewTypeType(_, inner_type):
-                return cls._to_json(value, inner_type)
+                return cls._encode_value(value, inner_type)
             case RelatedType(model_type):
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
@@ -6353,7 +6462,7 @@ class JSONObject:
                 def write_item(item: Any) -> Any:
                     if relates and item is None:
                         raise ValueError(_NULL_ITEM)
-                    return cls._to_json(item, item_type)
+                    return cls._encode_value(item, item_type)
 
                 is_set = _READ_AS[collection_type] in (set, frozenset)
                 items = _each_item(write_item, value, positioned=not is_set)
@@ -6423,7 +6532,7 @@ class JSONObject:
                 for key, item in value.items():
                     if key in keys:
                         with _at_key(f"[{key!r}]"):
-                            written[key] = cls._to_json(item, keys[key])
+                            written[key] = cls._encode_value(item, keys[key])
                     else:
                         # An undeclared key is written as it is, so it must
                         # already be JSON.
@@ -6436,7 +6545,7 @@ class JSONObject:
                 written = {}
                 for key, item in value.items():
                     with _at_key("[key]"):
-                        written[key] = cls._to_json(item, value_type)
+                        written[key] = cls._encode_value(item, value_type)
                 return written
             case _:
                 raise TypeError(
@@ -8562,20 +8671,22 @@ class JSONObject:
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
         client = cls.api if api is None else api
-        resp = client.post(
-            _class_url_of(cls), **cls._write_body(payload, files), **options
-        )
-
         # The object keeps neither a write-only field nor an extra key.
         json_keys = cls._json_keys() - cls._write_only_keys()
         # The payload can hold the caller's own containers, such as a dict
         # field's value, and merge_response() may change what it is given, so
-        # it gets copies. The object copies the result again.
+        # it gets copies. The object copies the result again. The copy comes
+        # before the request, so that a value that cannot be copied is refused
+        # while no resource exists.
         sent = {
             key: _copy_json(value)
             for key, value in payload.items()
             if key in json_keys
         }
+        resp = client.post(
+            _class_url_of(cls), **cls._write_body(payload, files), **options
+        )
+
         # The server may have made the resource, which only the response names,
         # so every refusal of the response holds it.
         try:
