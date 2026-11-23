@@ -224,8 +224,9 @@ is the key as the server names the resource, and these laws follow:
   raises `FieldConversionError`. A path through a relation, such as
   `owner__name` or `owner__id`, compares something that the class does not
   know, so its value is sent as given, with no check, except that a related
-  object in it is sent as its key. Give the key in its field's type, as the
-  server returns it.
+  object in it is sent as its key, and its first segment is sent under the
+  relation's JSON key. Give the key in its field's type, as the server returns
+  it.
 
 An object of a model without a key field equals only itself.
 
@@ -882,16 +883,17 @@ profile.save()
 
 The object detects such a change by comparing the value's encoding with its
 encoding when it was read. A collection of related objects, such as
-`list[User]`, is compared by its items instead, with `==`, which compares
-objects by key. Adding, removing, or reordering items, and replacing an item
-with an object that is not equal to it, change the list, and a change to an
-item's own fields does not. It does so only when `save()` runs, when an eager
-assignment sends a `PATCH`, or before the object loads missing fields, so
-`json` does not show the change before then. In eager mode, a change made in
-place is therefore sent by the next `save()` or eager assignment, not
-immediately. Assigning the field, `refresh()`, and an `update_from_json()`
-payload that holds the field each discard a change made in place that has not
-been sent.
+`list[User]`, is compared by its items' keys instead, in order for a sequence
+and without order for a set. Adding or removing an item, reordering a sequence,
+and replacing an item with an object of another key change the collection, and
+replacing it with an object of the same key, such as one of a subclass, or a
+change to an item's own fields, does not. The change is found only when
+`save()` runs, when an eager assignment sends a `PATCH`, or before the object
+loads missing fields, so `json` does not show the change before then. In eager
+mode, a change made in place is therefore sent by the next `save()` or eager
+assignment, not immediately. Assigning the field, `refresh()`, and an
+`update_from_json()` payload that holds the field each discard a change made in
+place that has not been sent.
 
 ## Custom field conversion
 
@@ -1220,40 +1222,43 @@ cannot read it. Filter such a field through a server filter under another name,
 as in `Todo.filter(point_text="1,2")`. A lookup is sent under the field's JSON
 key, with any suffix, so `field_map={"type_": "type"}` sends `type___in` as
 `type__in`. A name that starts with the name of no field, followed by `__`, is
-sent as given, and so is a path through a relation, such as `owner__id` or
-`owner__pk`, which names a field of the related model. A related model object
-in it is sent as its primary key. If two fields' names fit, the longer one is
-the field. Any other keyword argument, and a lookup whose suffix does not
-compare values of its field, such as `ordering`, `title__iexact`,
-`due__isnull`, or `created__date__gte`, is sent unchanged, as its `str()`,
-except that a model instance, also as an item of a collection, is sent as its
-primary key. A collection repeats the parameter, so `Todo.filter(tag=[a, b])`
-sends `tag=a&tag=b`, which a view that calls Django's `QueryDict.getlist()`
-reads, as django-filter does for a filter on a many-to-many field. A set is
-sent in sorted order, so the same query gives the same URL in every process.
+sent as given. A path through a relation, such as `owner__id` or `owner__pk`,
+names a field of the related model, and is sent with its first segment, the
+relation's name, under the field's JSON key, and the rest as given: for the
+field `user` with the JSON key `userId`, `Todo.filter(user__id=3)` sends
+`userId__id=3`. A related model object in it is sent as its primary key. If two
+fields' names fit, the longer one is the field. Any other keyword argument, and
+a lookup whose suffix does not compare values of its field, such as `ordering`,
+`title__iexact`, `due__isnull`, or `created__date__gte`, is sent unchanged, as
+its `str()`, except that a model instance, also as an item of a collection, is
+sent as its primary key. A collection repeats the parameter, so
+`Todo.filter(tag=[a, b])` sends `tag=a&tag=b`, which a view that calls Django's
+`QueryDict.getlist()` reads, as django-filter does for a filter on a
+many-to-many field. A set is sent in sorted order, so the same query gives the
+same URL in every process.
 
 A lookup whose name ends in `__in` or `__range`, such as `user__in` or
 `due__range`, takes an iterable of values that is not a string, bytes, a
 mapping, or a model, read once, and sends them as one comma-separated
 parameter, which django-filter reads: `Todo.filter(user__in=users)` sends
-`user__in=3,5`, and `due__range=(start, end)` sends the two bounds. Each value
-is encoded as the field's own parameter encodes it. A set is sent in sorted
-order, so the same query gives the same URL in every process. A value that is
-no such iterable, such as `"1,2"` or `7`, one value that the field's conversion
-takes whole, such as an iterable class that `conversions` registers, an empty
-iterable, which django-filter would read as no filter, an item that is `None`
-or a collection, an item whose text is empty, which reads as no filter too, a
-`__range` of other than two items, and an item whose text holds a comma, which
-the server would split, raise `ValueError` naming the parameter. django-filter
-sees only the last of repeated `__in` values, and refuses repeated `__range`
-values.
+`userId__in=3,5`, and `due__range=(start, end)` sends the two bounds. Each
+value is encoded as the field's own parameter encodes it. A set is sent in
+sorted order, so the same query gives the same URL in every process. A value
+that is no such iterable, such as `"1,2"` or `7`, one value that the field's
+conversion takes whole, such as an iterable class that `conversions` registers,
+an empty iterable, which django-filter would read as no filter, an item that is
+`None` or a collection, an item whose text is empty, which reads as no filter
+too, a `__range` of other than two items, and an item whose text holds a comma,
+which the server would split, raise `ValueError` naming the parameter.
+django-filter sees only the last of repeated `__in` values, and refuses
+repeated `__range` values.
 
 A server that reads repeated values of such a lookup, as `getlist()` does,
 needs the other form. Set `list_lookup_style = "repeat"` on the `API`, on an
 instance or in a subclass, and `Todo.filter(user__in=users)` sends
-`user__in=3&user__in=5`. The setting is read from the API that sends the query,
-and applies to every lookup whose name ends in `__in` or `__range`, not to a
-field's own parameter. Another parameter that the server reads as a joined
+`userId__in=3&userId__in=5`. The setting is read from the API that sends the
+query, and applies to every lookup whose name ends in `__in` or `__range`, not
+to a field's own parameter. Another parameter that the server reads as a joined
 value, such as DRF's `ordering`, is yours to join, as in
 `Todo.filter(ordering="due,-priority")`.
 

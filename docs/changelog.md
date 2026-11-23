@@ -23,8 +23,7 @@ describe them further.
   `owner: User`, which the server's serializer sends as the related object's
   primary key, or as an embedded object. A relation by key is read, written,
   queried, and prefetched with `bulk_get_by_pks()`. An object that is known
-  only by its URL no longer exists, except an object of a class that overrides
-  `url`.
+  only by its URL no longer exists.
 - A field that is a collection of related objects must say whether the order of
   its items counts. `Collection[User]` and `Iterable[User]`, also optional or
   in a `NewType`, raise `TypeError` when the class is decorated, naming the

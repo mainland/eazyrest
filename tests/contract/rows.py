@@ -151,6 +151,15 @@ class DK(Base):
     id: int
 
 
+@json_object(field_map={"user": "userId"})
+class Task(Base):
+    """A relation whose JSON name differs from its field's name."""
+
+    class_url = "/tasks/"
+    id: int
+    user: User
+
+
 @json_object
 class Entry(Base):
     """A model with no key."""
@@ -2015,6 +2024,12 @@ def a_key_of_the_wrong_type_among_several_is_refused(world: World) -> None:
 
 
 @row(REL)
+def a_relation_is_queried_under_its_json_name(world: World) -> None:
+    sends_query(world, Task, "userId=3", user=3)
+    sends_query(world, Task, "userId__in=3,5", user__in=[3, User(id=5)])
+
+
+@row(REL)
 def a_set_field_is_queried_by_its_distinct_keys_sorted(world: World) -> None:
     sends_query(
         world,
@@ -2123,6 +2138,14 @@ def an_empty_or_null_collection_through_a_relation_is_refused(
         refuses_query(
             world, Post, ValueError, "owner__id__in", owner__id__in=value
         )
+
+
+@row(THROUGH)
+def the_first_segment_of_a_path_is_sent_under_the_json_name(
+    world: World,
+) -> None:
+    sends_query(world, Task, "userId__id=3", user__id=3)
+    sends_query(world, Task, "userId__name=x", user__name="x")
 
 
 @row(THROUGH)
