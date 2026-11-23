@@ -2394,6 +2394,35 @@ class _BeforeCreation:
 
 
 _BEFORE_CREATION = _BeforeCreation()
+
+
+def _checked_merge(
+    cls: type[Any], merged: Any, resp: Response
+) -> dict[str, Any]:
+    """Return what ``merge_response()`` gave, if it is a mapping.
+
+    Args:
+        cls: The model whose hook was called.
+        merged: The hook's result.
+        resp: The response to the write.
+
+    Returns:
+        The result, which is the object's JSON.
+
+    Raises:
+        ResponseShapeError: If the result is not a mapping, as when an override
+            returns ``None``, a list, or a string. The error holds the
+            response.
+    """
+    if not isinstance(merged, Mapping):
+        raise ResponseShapeError(
+            f"{cls.__name__}.merge_response() must return a JSON object, "
+            f"got {type(merged).__name__}",
+            response=resp,
+        )
+    return cast("dict[str, Any]", merged)
+
+
 """The one key of every object that reads a creation's response."""
 
 
@@ -6767,11 +6796,14 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If the response is a list rather than one
-                object. Its ``response`` is the response, and nothing has
+                object, or ``merge_response()`` returns something that is not a
+                mapping. Its ``response`` is the response, and nothing has
                 changed. Any other error of ``merge_response()`` reaches the
                 caller unchanged.
         """
-        return self.merge_response(resp, current, sent)
+        return _checked_merge(
+            type(self), self.merge_response(resp, current, sent), resp
+        )
 
     def _refuse_other_key(self, key: Any) -> None:
         """Refuse server state that names another key than the object's.
@@ -8238,7 +8270,11 @@ class JSONObject:
         # The server may have made the resource, which only the response names,
         # so every refusal of the response holds it.
         try:
-            merged = cls._before_creation(api).merge_response(resp, {}, sent)
+            merged = _checked_merge(
+                cls,
+                cls._before_creation(api).merge_response(resp, {}, sent),
+                resp,
+            )
             cls._refuse_other_created_key(payload, merged, resp)
             obj = cls(json=merged, api=api)
         except ResponseShapeError as err:

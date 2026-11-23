@@ -151,3 +151,69 @@ def test_a_list_response_still_raises_response_shape_error(
     assert caught.value.response is not None
     assert caught.value.response.json() == body
     assert "not one object" in str(caught.value)
+
+
+RESULT: list[Any] = [None]
+
+
+@json_object
+class Returning(JSONObject):
+    """A model whose override returns what the class attribute holds."""
+
+    class_url = "/returning/"
+    id: int
+    name: str
+
+    def merge_response(  # type: ignore[no-untyped-def]
+        self, resp, current, sent, **kwargs
+    ):
+        """Return the configured result."""
+        return RESULT[0]
+
+
+Returning.register_api(api)
+
+RESULTS = {"none": None, "a_list": [{"id": 1}], "a_string": "created"}
+
+
+def lazy_change(obj: Returning) -> None:
+    """Change a field and save it."""
+    obj.name = "b"
+    obj.save()
+
+
+def eager_change(obj: Returning) -> None:
+    """Change a field of an eager object."""
+    obj.set_write_mode("eager")
+    obj.name = "b"
+
+
+RETURNING_WRITES: dict[str, Callable[[Returning], Any]] = {
+    "create": lambda obj: Returning.create(name="a"),
+    "save": lazy_change,
+    "eager_write": eager_change,
+    "full_save": lambda obj: obj.save(full=True),
+}
+
+
+@pytest.mark.parametrize("result", RESULTS.values(), ids=RESULTS.keys())
+@pytest.mark.parametrize(
+    "write", RETURNING_WRITES.values(), ids=RETURNING_WRITES.keys()
+)
+def test_an_override_that_returns_no_mapping_raises_with_the_response(
+    write: Callable[[Returning], Any], result: Any
+) -> None:
+    """The error is a ``ResponseShapeError`` that holds the response."""
+    RESULT[0] = result
+    obj = Returning(json={"id": 1, "name": "a"})
+    try:
+        with requests_mock.Mocker() as mocker:
+            mocker.post("https://merge.example/returning/", json={"id": 1})
+            mocker.patch("https://merge.example/returning/1/", json={})
+            mocker.put("https://merge.example/returning/1/", json={})
+            with pytest.raises(ResponseShapeError) as caught:
+                write(obj)
+    finally:
+        RESULT[0] = None
+    assert caught.value.response is not None
+    assert "merge_response()" in str(caught.value)
