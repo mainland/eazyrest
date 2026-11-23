@@ -2958,6 +2958,27 @@ def _pk_property_of(cls: type[JSONObject]) -> JSONProperty | None:
     return getattr(cls, "_pk", None)
 
 
+def _field_named(cls: type[Any], name: str) -> JSONProperty | None:
+    """Return the JSON-backed field that a class has under a name.
+
+    The class attribute is read without running its descriptor, since any name
+    may be given, and ``api`` is a descriptor that raises for a class with no
+    registered API.
+
+    Args:
+        cls: Model class.
+        name: Name to look up.
+
+    Returns:
+        The field, or ``None`` if the name is no field of the class.
+    """
+    try:
+        found = inspect.getattr_static(cls, name)
+    except AttributeError:
+        return None
+    return found if isinstance(found, JSONProperty) else None
+
+
 def _missing_field_error(
     obj: JSONObject, field: str, json_field: str
 ) -> AttributeError:
@@ -6548,12 +6569,8 @@ class JSONObject:
                     f"{cls.__name__}, which a request cannot upload. Give "
                     "the key as a field value, or leave it out."
                 )
-            descriptor = getattr(cls, name, None)
-            key = (
-                descriptor.write_field
-                if isinstance(descriptor, JSONProperty)
-                else name
-            )
+            descriptor = _field_named(cls, name)
+            key = name if descriptor is None else descriptor.write_field
             if key in uploads:
                 raise TypeError(f"Multiple files write the form key {key}")
             if key in form:
@@ -7442,19 +7459,15 @@ class JSONObject:
 
         for given, value in fields.items():
             field = cls._created_field(given, key_property)
-            descriptor = getattr(cls, field, None)
-            key = (
-                descriptor.json_field
-                if isinstance(descriptor, JSONProperty)
-                else field
-            )
+            descriptor = _field_named(cls, field)
+            key = field if descriptor is None else descriptor.json_field
             if key in payload:
                 raise TypeError(
                     f"Multiple fields use the JSON key {key}: {names[key]} "
                     f"and {given}"
                 )
             names[key] = given
-            if isinstance(descriptor, JSONProperty):
+            if descriptor is not None:
                 if descriptor.read_only and not query:
                     raise AttributeError(
                         f"{cls.__name__}.{field} is read-only"
@@ -7500,9 +7513,7 @@ class JSONObject:
                 JSON or write key of another field, so that it names no one
                 field.
         """
-        if key_property is None or isinstance(
-            getattr(cls, name, None), JSONProperty
-        ):
+        if key_property is None or _field_named(cls, name) is not None:
             return name
         if name == "pk":
             return key_property.field
@@ -7800,8 +7811,8 @@ class JSONObject:
                 compares cannot be resolved.
         """
         several = name.endswith(("__in", "__range"))
-        descriptor = getattr(cls, name, None)
-        if isinstance(descriptor, JSONProperty):
+        descriptor = _field_named(cls, name)
+        if descriptor is not None:
             return cls._field_parameter(
                 name, descriptor.json_field, several=False, own=True
             )
@@ -8820,11 +8831,11 @@ class JSONObject:
             UsageError: If a class in the MRO of the related model had ``api``
                 assigned, because the bulk request would be sent through it.
         """
-        descriptor = getattr(cls, field, None)
-        if not isinstance(descriptor, JSONProperty):
+        descriptor = _field_named(cls, field)
+        if descriptor is None:
             # The field name is the invalid value, so this is a ValueError even
             # though the check is on the descriptor's type.
-            raise ValueError(  # noqa: TRY004
+            raise ValueError(
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 
@@ -9564,8 +9575,7 @@ class JSONObject:
         create_kwargs = {
             name: value
             for name, value in kwargs.items()
-            if "__" not in name
-            or isinstance(getattr(cls, name, None), JSONProperty)
+            if "__" not in name or _field_named(cls, name) is not None
         }
         if defaults is not None:
             create_kwargs.update(read_once(defaults))
