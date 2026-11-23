@@ -43,6 +43,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    NoReturn,
     Self,
     SupportsIndex,
     TypeAlias,
@@ -246,28 +247,6 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         if _passes_through(err):
             raise
         raise FieldConversionError(model, field, err) from err
-
-
-def _analyzed_in_use(model: type, descriptor: JSONProperty) -> AnalyzedType:
-    """Return a field's analyzed type, refusing it as a conversion would.
-
-    A refusal that waits for the field's first use, such as a member that names
-    a class defined later, raises here as it does when a value is read, so that
-    every operation that uses the field raises the same error.
-
-    Args:
-        model: Model class that owns the field.
-        descriptor: The field.
-
-    Returns:
-        The field's analyzed type.
-
-    Raises:
-        FieldConversionError: If the field's type is refused when it is first
-            used.
-    """
-    with _converting(model, descriptor.field):
-        return descriptor.analyzed_type
 
 
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
@@ -5045,22 +5024,71 @@ class JSONProperty:
     def analyzed_type(self) -> AnalyzedType:
         """Resolve and cache recursive type metadata.
 
+        This is the one place that reads a field's type, so every use of the
+        field raises the same errors. Nothing is cached when it raises, so the
+        field reads once what it names is defined.
+
         Raises:
-            TypeError: If the type is refused, such as a primary key that is
-                not a ``str``, an ``int``, or a ``UUID``. A type that names a
-                class defined later is refused here, when it is first used.
-            NameError: If a field's annotation names a class that is not
-                defined. It is raised as it is, for a primary key too.
-            Exception: If a primary key's type, or the key type of a model that
-                it relates to, holds a name that cannot be resolved yet,
-                whatever resolving it raises. It is cached only once it
-                resolves.
+            NameError: If a field's annotation, or a type alias in it, names a
+                class that is not defined. It is raised as it is, for a primary
+                key too.
+            AttributeError: If a primary key's type, or the key type of a model
+                that it relates to, names an attribute that a module does not
+                have yet. It is raised as it is.
+            TypeError: If a primary key's type is refused, such as one that is
+                not a ``str``, an ``int``, or a ``UUID``, or holds a string in
+                a type alias's value that cannot be resolved. It is raised as
+                it is, as is the refusal of a model's declaration, which is
+                marked as one.
+            FieldConversionError: For every other failure to analyze or resolve
+                the type, with the original error as its ``__cause__``, such as
+                a ``TypedDict`` that is closed or has extra items, a member of
+                a structure that names a class that exists only for type
+                checkers, a dotted annotation whose module lacks the attribute
+                yet, or a member that is refused when the field is first used.
         """
-        analyzed = _field_type(self)
-        # Decoration could not check a member that names something not defined
-        # yet, so check it, once, now that the field is in use.
-        _check_admitted(analyzed, _table_of(self._owner), late=True)
+        try:
+            analyzed = _field_type(self)
+        except Exception as err:  # noqa: BLE001
+            self._refuse_analysis(err)
+        try:
+            # Decoration could not check a member that names something not
+            # defined yet, so check it, once, now that the field is in use.
+            _check_admitted(analyzed, _table_of(self._owner), late=True)
+        except Exception as err:  # noqa: BLE001
+            self._refuse_analysis(err)
         return analyzed
+
+    def _refuse_analysis(self, err: Exception) -> NoReturn:
+        """Raise what reading this field's type raises for a failure.
+
+        Args:
+            err: What analyzing or resolving the type raised.
+
+        Raises:
+            Exception: ``err`` itself if the documented errors of a field at
+                first use include it: a ``NameError``, the refusal of a model's
+                declaration, and, for a primary key, what resolving its type
+                raised.
+            FieldConversionError: Otherwise, naming the model and the field,
+                with ``err`` as its cause.
+        """
+        if (
+            isinstance(err, FieldConversionError | NameError)
+            or _passes_through(err)
+            or (
+                self.is_primary_key
+                and (
+                    isinstance(err, AttributeError)
+                    or (
+                        isinstance(err, TypeError)
+                        and not _refuses_key_type(err)
+                    )
+                )
+            )
+        ):
+            raise err
+        raise FieldConversionError(self._owner, self.field, err) from err
 
     @cached_property
     def _identifier_kind(self) -> str:
@@ -5071,9 +5099,11 @@ class JSONProperty:
             built.
 
         Raises:
-            TypeError: If the type is refused, as ``analyzed_type`` refuses it.
-            Exception: Whatever resolving the type raises, as ``analyzed_type``
-                raises it. Nothing is cached then.
+            NameError: As ``analyzed_type`` raises it.
+            AttributeError: As ``analyzed_type`` raises it.
+            TypeError: As ``analyzed_type`` raises it.
+            FieldConversionError: As ``analyzed_type`` raises it. Nothing is
+                cached when any of them is raised.
         """
         kind = _key_kind(self.analyzed_type, _table_of(self._owner))
         # Analyzing the key's type refused every type that is no key type.
@@ -6781,11 +6811,10 @@ class JSONObject:
             key: str = type(self)._pk.json_field
             if key in json:
                 self._refuse_other_key(json[key])
-        self._json = json
-        if clear_pending:
-            self._pending_updates.clear()
-        after = self._working_json()
-
+        after = self._laid_over(json, {} if clear_pending else None)
+        # Decide what to drop before anything changes, so that no error can
+        # leave the caches behind the JSON.
+        stale = []
         for field in getattr(self, "_json_fields", ()):
             prop = getattr(type(self), field)
             old = before.get(prop.json_field, _MISSING)
@@ -6798,12 +6827,17 @@ class JSONObject:
                     prop._comparable(old, by_key=True),
                     prop._comparable(new, by_key=True),
                 )
-            except (NameError, FieldConversionError):
+            except (NameError, AttributeError, TypeError):
                 # A type that cannot be resolved yet cannot be compared by key,
                 # so the field has changed.
                 same = False
             if not same:
-                self._forget_fields([field])
+                stale.append(field)
+
+        self._json = json
+        if clear_pending:
+            self._pending_updates.clear()
+        self._forget_fields(stale)
 
     def merge_response(
         self,
@@ -6975,7 +7009,7 @@ class JSONObject:
                 # The key is sent as it was built, as every write sends it.
                 payload[descriptor.json_field] = self._key
                 continue
-            conversion = _analyzed_in_use(type(self), descriptor)
+            conversion = descriptor.analyzed_type
             with _converting(type(self), field):
                 payload[descriptor.json_field] = self._to_json(
                     self._from_json(
@@ -7218,15 +7252,33 @@ class JSONObject:
         if self._json is None:
             return {}
 
-        json = dict(self._json)
-        if self._pending_updates:
+        return self._laid_over(self._json, None)
+
+    def _laid_over(
+        self, json: Mapping[str, Any], pending: Mapping[str, Any] | None
+    ) -> dict[str, Any]:
+        """Return JSON with pending updates laid over it.
+
+        Args:
+            json: The server's JSON.
+            pending: The pending updates to lay over it, or ``None`` for this
+                object's own.
+
+        Returns:
+            A new mapping, without write-only fields, whose values are the
+            object's own.
+        """
+        if pending is None:
+            pending = self._pending_updates
+        result = dict(json)
+        if pending:
             hidden = self._write_only_keys()
-            json.update(
+            result.update(
                 (key, value)
-                for key, value in self._pending_updates.items()
+                for key, value in pending.items()
                 if key not in hidden
             )
-        return json
+        return result
 
     def _working_value(self, json_field: str) -> Any:
         """Return a field's pending value, or else its value in server JSON.
@@ -7479,7 +7531,7 @@ class JSONObject:
             The field's ``CollectionType``, inside any optional or ``NewType``,
             or ``None`` for a field that does not convert as a collection.
         """
-        analyzed = _analyzed_in_use(cls, descriptor)
+        analyzed = descriptor.analyzed_type
         while True:
             analyzed = _unwrap_optional_type(analyzed)
             # A NewType is analyzed as one only around a structure, and no
@@ -7512,7 +7564,7 @@ class JSONObject:
         if cls._query_collection(descriptor) is not None:
             return None
         table = _table_of(cls)
-        analyzed = _analyzed_in_use(cls, descriptor)
+        analyzed = descriptor.analyzed_type
         while True:
             analyzed = _unwrap_optional_type(analyzed)
             if _class_entry(analyzed, table) is not None:
@@ -7682,7 +7734,7 @@ class JSONObject:
             structured = cls._writes_structure(field)
             collection = cls._query_collection(descriptor)
             analyzed = (
-                _analyzed_in_use(cls, descriptor)
+                descriptor.analyzed_type
                 if collection is None
                 else collection.item_type
             )
@@ -7790,9 +7842,7 @@ class JSONObject:
         else:
             return False
         try:
-            analyzed = _unwrap_optional_type(
-                _analyzed_in_use(cls, getattr(cls, field))
-            )
+            analyzed = _unwrap_optional_type(getattr(cls, field).analyzed_type)
         except (FieldConversionError, NameError):
             # A lookup that compares no value of the field needs no type of it,
             # so a field that cannot be resolved yet does not stop it.
@@ -8667,9 +8717,7 @@ class JSONObject:
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 
-        analyzed_type = _unwrap_optional_type(
-            _analyzed_in_use(cls, descriptor)
-        )
+        analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
         collection_type = None
         if isinstance(analyzed_type, CollectionType):
             collection_type = analyzed_type.collection_type

@@ -188,6 +188,11 @@ describe them further.
   it. A `NamedTuple` with defaults refuses a shorter array. A parameterized
   generic `TypedDict`, and a parameterized type whose items eazyrest does not
   convert, such as `Counter[str]`, raise `TypeError` when the class is defined.
+- A field that is not the key, whose dotted annotation names an attribute that
+  its module does not have yet, raises `FieldConversionError` when the field is
+  used, not `AttributeError`. Every use of a field whose type cannot be read
+  yet raises the same error, and the object's other fields still read and
+  write.
 - A plain `TypedDict`, dataclass, or `NamedTuple` whose field's annotation
   names a type that is imported only under `TYPE_CHECKING` raises
   `FieldConversionError` when the field is first used, where `v1.0.0a5` passed

@@ -359,7 +359,15 @@ reads.
 A field that is not the key raises a `NameError` when its annotation, or a type
 alias in it, names the class that is not defined yet. It raises a
 `FieldConversionError` when the name is in a `TypedDict`, `NamedTuple`, or
-dataclass that the field names, or in a string in a type alias's value.
+dataclass that the field names, or in a string in a type alias's value. It
+raises a `FieldConversionError` too when a dotted annotation names an attribute
+that its module does not have yet. Whatever else keeps eazyrest from reading
+the field's type when the field is used, such as a closed `TypedDict`, raises a
+`FieldConversionError` naming the model and the field, with the error as its
+`__cause__`, so that every use of the field raises it alike: a read, an
+assignment, a lookup, a prefetch, both schemas, and a write that sends the
+field. The object's other fields still read and write, and the field reads once
+the name is defined.
 
 A field whose annotation resolves, and whose own type eazyrest does not
 convert, raises `TypeError` when the class is decorated. The message is
