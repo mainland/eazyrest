@@ -9264,11 +9264,14 @@ class JSONObject:
         """
         iterator = iter(items)
         start = 0
+        # No collection has more items than sys.maxsize, which is all that
+        # islice() takes, so a larger size reads the collection as one batch.
+        size = cls.prefetch_batch_size
+        if size is not None:
+            size = min(size, sys.maxsize)
 
         while True:
-            raw_items = list(
-                itertools.islice(iterator, cls.prefetch_batch_size)
-            )
+            raw_items = list(itertools.islice(iterator, size))
             if len(raw_items) == 0:
                 return
 
