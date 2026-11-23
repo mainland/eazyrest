@@ -553,6 +553,11 @@ describe them further.
 - A `write_options()` block that ends while a block of the same object that
   began later is still open raises `UsageError`, where `v1.0.0a5` left the
   first block's options on the object for every later write.
+- A keyed model that declares no `class_url` raises `UsageError` naming the
+  class and `class_url`, before any request, from `url`, a read that loads the
+  object, `refresh()`, `delete()`, `create()`, and the query methods, where
+  `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
+  a default swallow.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

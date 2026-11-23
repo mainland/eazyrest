@@ -45,6 +45,7 @@ from typing import (
 )
 from urllib.parse import unquote, urlsplit
 
+import pytest
 import requests_mock
 
 import eazyrest
@@ -157,6 +158,14 @@ class DU(Base):
 
     class_url = "/du/"
     doc__id: int
+
+
+@json_object
+class Bare(Base):
+    """A keyed model that declares no ``class_url``."""
+
+    id: int
+    name: str
 
 
 @json_object(field_map={"user": "userId"})
@@ -2506,6 +2515,26 @@ def an_extra_that_json_would_change_is_refused_by_create(
             lambda: User.get_or_create(id=7, defaults={"x": value}),
         ):
             raises(world, TypeError, call)
+
+
+@row(CREATE)
+def a_keyed_model_without_class_url_is_a_usage_error(world: World) -> None:
+    for call in (
+        lambda: Bare(id=1).url,
+        lambda: Bare(id=1).name,
+        lambda: Bare(id=1).refresh(),
+        lambda: Bare(id=1).delete(),
+        lambda: Bare.create(name="x"),
+        lambda: Bare.filter(),
+        lambda: Bare.all(),
+        lambda: Bare.get(id=1),
+        lambda: Bare.get_page(),
+        lambda: Bare.get_or_create(id=1),
+    ):
+        raises(world, UsageError, call, "Bare", "class_url")
+    # hasattr() swallows an AttributeError only, so it raises too.
+    with pytest.raises(UsageError):
+        hasattr(Bare(id=1), "name")
 
 
 @row(CREATE)

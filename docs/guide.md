@@ -509,6 +509,11 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
+A keyed model that declares no `class_url` has no URL. `url`, a read that loads
+the object, `refresh()`, `delete()`, `create()`, and the query methods raise
+`UsageError` naming the class and `class_url`, before any request. Unlike an
+`AttributeError`, it is not swallowed by `hasattr()`.
+
 `url` ends with a slash, as Django REST Framework's routers expect. For an API
 whose object URLs have no trailing slash, set the API's `trailing_slash`
 attribute to `False`, and `url` becomes `/users/1`:

@@ -3000,6 +3000,29 @@ def _refuse_keyless_request(cls: type[JSONObject], verb: str) -> None:
         )
 
 
+def _class_url_of(cls: type[JSONObject]) -> str:
+    """Return the URL of a model's collection.
+
+    Args:
+        cls: Model class.
+
+    Returns:
+        The class's ``class_url``.
+
+    Raises:
+        UsageError: If the class declares no ``class_url``, so it has no
+            collection to request. Unlike an ``AttributeError``, it is not
+            swallowed by ``hasattr()`` or by ``getattr()`` with a default.
+    """
+    try:
+        return cls.class_url
+    except AttributeError:
+        raise UsageError(
+            f"{cls.__name__} declares no class_url, so it has no URL to "
+            'request. Declare it, as class_url = "/things/"'
+        ) from None
+
+
 _KEY_TYPES: Mapping[Any, str] = MappingProxyType(
     {int: "int", str: "str", uuid.UUID: "UUID"}
 )
@@ -7209,7 +7232,8 @@ class JSONObject:
                 "so it has no URL"
             )
 
-        url = f"{self.class_url.rstrip('/')}/{quote(pk_text, safe='')}"
+        collection = _class_url_of(type(self)).rstrip("/")
+        url = f"{collection}/{quote(pk_text, safe='')}"
 
         try:
             trailing_slash = self.api.trailing_slash
@@ -8218,7 +8242,7 @@ class JSONObject:
         _check_api_attribute(cls, UsageError)
         client = cls.api if api is None else api
         resp = client.post(
-            cls.class_url, **cls._write_body(payload, files), **options
+            _class_url_of(cls), **cls._write_body(payload, files), **options
         )
 
         # The object keeps neither a write-only field nor an extra key.
@@ -9071,7 +9095,9 @@ class JSONObject:
         client = base._scoped(options) if options else base
         context = _Query(api, client, options)
         resp = _check_final_response(
-            client.get(cls.class_url, params=cls._encode_query(query, client)),
+            client.get(
+                _class_url_of(cls), params=cls._encode_query(query, client)
+            ),
             "the query has no collection to read",
         )
         items = cls.collection_items_from_response(resp, api=client)
@@ -9212,7 +9238,8 @@ class JSONObject:
         if url is None:
             resp = _check_final_response(
                 client.get(
-                    cls.class_url, params=cls._encode_query(query, client)
+                    _class_url_of(cls),
+                    params=cls._encode_query(query, client),
                 ),
                 "the query has no collection to read",
             )
