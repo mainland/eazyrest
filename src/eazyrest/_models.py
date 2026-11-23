@@ -6850,10 +6850,11 @@ class JSONObject:
                     prop._comparable(new, by_key=True),
                 )
             except (NameError, AttributeError, TypeError):
-                # A type that cannot be resolved yet cannot be compared by key.
-                # Its field has no cached value, since reading one needs the
-                # type, so there is nothing to drop.
-                continue
+                # A type that cannot be resolved yet cannot be compared by key,
+                # so the field has changed. A relation read as ``null`` and a
+                # collection read as empty are cached without any key built,
+                # and they must not outlive JSON that names related objects.
+                same = False
             if not same:
                 stale.append(field)
 
