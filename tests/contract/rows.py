@@ -2407,9 +2407,16 @@ def a_response_that_names_another_key_is_refused(world: World) -> None:
         (lambda: User.get_or_create(id=7, name="a"), 2),
     ):
         error = raises(
-            world, ResponseShapeError, call, "7", "8", requests=requests
+            world,
+            ResponseShapeError,
+            call,
+            "another",
+            "key",
+            requests=requests,
         )
         assert isinstance(error, ResponseShapeError)
+        # The keys can be secrets, so the message quotes neither.
+        assert not re.search(r"[78]", str(error))
         assert error.response is not None
         assert error.response.json() == {"id": 8, "name": "a"}
 

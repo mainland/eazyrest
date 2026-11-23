@@ -110,15 +110,16 @@ def test_a_body_without_a_key_holds_the_response(which: str) -> None:
 def test_a_response_that_names_another_key_than_was_sent_is_refused(
     which: str, body: str
 ) -> None:
-    """The error names both keys and holds the response."""
+    """The error quotes neither key and holds the response."""
     call, requests = KEYED[which]
     error = refused(call, body, requests)
     assert error.response is not None
     assert error.response.text == body
     message = str(error)
-    assert "8" in message
-    assert "7" in message
+    assert "another key" in message
     assert "contradicts" in message
+    assert "8" not in message
+    assert "7" not in message
 
 
 @pytest.mark.parametrize("which", KEYED)

@@ -8314,11 +8314,12 @@ class JSONObject:
         except (TypeError, ValueError):
             return
         if named != sent:
+            # The keys can be secrets, and the error holds the response, so the
+            # message quotes neither.
             raise ResponseShapeError(
-                f"The response to the creation of a {cls.__name__} names the "
-                f"key {named!r}, but the request sent the key {sent!r}, so "
-                "it contradicts the request, although the resource may have "
-                "been created",
+                f"The response to the creation of a {cls.__name__} names "
+                "another key than the request sent, so it contradicts the "
+                "request, although the resource may have been created",
                 response=resp,
             )
 
