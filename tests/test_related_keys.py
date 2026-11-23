@@ -326,7 +326,7 @@ def test_save_refuses_a_key_replaced_by_an_equal_value_that_is_no_key(
     post = Post(
         json={"id": 1, "owner": 2, "readers": [key]}, write_mode="lazy"
     )
-    post.readers[0] = key
+    post.readers[0] = User(id=key)
     post.save()
     sent = requests_mock.call_count
     post.readers[0] = same

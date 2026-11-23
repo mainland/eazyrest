@@ -645,6 +645,11 @@ describe them further.
   sent a repeated key as many times as it was given. A set field that the
   server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
   assigning the field its own value sends nothing.
+- `save()` and `save(full=True)` raise `FieldConversionError` before any
+  request, naming the field and, for a sequence, the item's position, when a
+  bare key was added in place to a collection of related objects, as in
+  `post.tags.append("b")`. `v1.0.0a5` sent the key and kept the bare value in
+  the list. Add the related object, or assign the keys.
 - Assigning a relation, or a collection of relations, the object or the
   collection that it holds sends nothing when the server embedded the object,
   as `post.owner = post.owner` for `"owner": {"id": 7, "name": "a"}`, where

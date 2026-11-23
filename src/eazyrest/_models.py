@@ -3288,6 +3288,46 @@ def _check_key_type(
         raise _key_type_error(cls, field)
 
 
+def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
+    """Refuse a bare key that was added in place to a collection of relations.
+
+    A collection of relations that a field returns holds related objects, so an
+    item that a caller adds to it in place must be one. An assignment takes a
+    bare key and reads it back as an object, but a change in place would leave
+    the key in the collection.
+
+    Args:
+        value: The value that the field returned and the caller may have
+            changed in place.
+        conversion: The field's analyzed type.
+
+    Raises:
+        ValueError: If the field holds a collection of relations and an item is
+            not a related object. A sequence's error names the item's position.
+            A ``None`` item is refused when the value is encoded.
+    """
+    analyzed = _unwrap_optional_type(conversion)
+    while isinstance(analyzed, NewTypeType):
+        analyzed = _unwrap_optional_type(analyzed.inner)
+    if not (
+        isinstance(analyzed, CollectionType)
+        and isinstance(_unwrap_optional_type(analyzed.item_type), RelatedType)
+        and isinstance(value, Collection)
+    ):
+        return
+
+    def check(item: Any) -> Any:
+        if item is not None and not isinstance(item, JSONObject):
+            raise ValueError(_BARE_ITEM)
+        return item
+
+    if _READ_AS[analyzed.collection_type] in (set, frozenset):
+        for item in value:
+            check(item)
+    else:
+        _each_item(check, value)
+
+
 def _stored_related_key(
     stored: Any, model: type[JSONObject], *, embedded: bool = False
 ) -> Any:
@@ -3354,6 +3394,11 @@ def _require_item_key(item: Any, model: type[JSONObject]) -> None:
 _NULL_ITEM = (
     "A collection of relations holds relations, so no item is null. Leave "
     "the item out"
+)
+
+_BARE_ITEM = (
+    "A collection of relations holds related objects, so an item that is "
+    "added in place is an object, not a bare key. Add the related object"
 )
 
 
@@ -6573,6 +6618,7 @@ class JSONObject:
             descriptor = getattr(type(self), field)
             current = self._field_cache[field]
             with _converting(type(self), field):
+                _refuse_bare_items(current, descriptor.analyzed_type)
                 # An object without a key cannot be written.
                 encoded = self._to_json(current, descriptor.analyzed_type)
             if _json_equal(encoded, snapshot):

@@ -1480,6 +1480,26 @@ def embedded_items_assigned_their_own_collection_send_nothing(
 
 
 @row(COLL)
+def a_bare_key_added_in_place_is_refused_at_save(world: World) -> None:
+    cases: list[tuple[str, Callable[[Post], Any], str]] = [
+        ("tags", lambda p: p.tags.append("b"), "[1]"),  # type: ignore[arg-type]
+        ("readers", lambda p: p.readers.append(8), "[1]"),  # type: ignore[arg-type]
+        ("tagq", lambda p: p.tagq.append("b"), "[1]"),  # type: ignore[arg-type]
+    ]
+    for field, add, position in cases:
+        for full in (False, True):
+            obj = post()
+            add(obj)
+            raises(
+                world,
+                FieldConversionError,
+                lambda: obj.save(full=full),
+                f"Post.{field}",
+                position,
+            )
+
+
+@row(COLL)
 def an_appended_item_is_sent(world: World) -> None:
     for field in CHANGED_IN_PLACE:
         obj = post()
@@ -1691,6 +1711,21 @@ def a_repeated_stored_key_is_not_a_change(world: World) -> None:
             setattr(p, field, getattr(p, field))
 
         assert patch_after(world, obj, assign_own_value) is None
+
+
+@row(SET)
+def a_bare_key_added_to_a_set_in_place_is_refused_at_save(
+    world: World,
+) -> None:
+    for full in (False, True):
+        obj = post()
+        obj.tagset.add("c")  # type: ignore[arg-type]
+        raises(
+            world,
+            FieldConversionError,
+            lambda: obj.save(full=full),
+            "Post.tagset",
+        )
 
 
 @row(SET)

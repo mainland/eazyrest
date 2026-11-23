@@ -732,8 +732,11 @@ naming the field. An item that the server embeds without one raises
 is read, as an embedded single relation without a key does, and so does a
 `null` item. A `None` item in a list, tuple, deque, or set that you assign, add
 in place and save, or pass to `create()` raises `FieldConversionError` naming
-the field, and for a sequence the item's position, before any request. A save
-of another field does not read or send a collection that you did not read.
+the field, and for a sequence the item's position, before any request. An item
+that you add in place is a related object, as in `team.members.append(user)`. A
+bare key added so, as in `team.members.append(7)`, raises the same error when
+you save, where an assignment such as `team.members = [7]` takes the keys. A
+save of another field does not read or send a collection that you did not read.
 Declare items that have no key as a `TypedDict` or a dataclass, which need
 none.
 
