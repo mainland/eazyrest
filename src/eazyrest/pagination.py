@@ -7,7 +7,6 @@ from typing import Any, Generic, TypeVar
 from urllib.parse import urljoin
 
 import requests
-from requests.utils import parse_header_links
 
 from ._errors import (
     LimitExceeded,
@@ -42,8 +41,9 @@ T = TypeVar("T")
 def _link(resp: Response, rels: frozenset[str]) -> str | None:
     """Return the URL of a link with one of ``rels`` in a Link header.
 
-    A link may have several relation types, as in ``rel="next last"``, and
-    registered relation types compare case-insensitively, as RFC 8288 says.
+    The header is read as RFC 8288 section 3 defines it. A link may have
+    several relation types, as in ``rel="next last"``, and registered relation
+    types and parameter names compare case-insensitively.
 
     Args:
         resp: Response whose Link header is read.
@@ -58,17 +58,111 @@ def _link(resp: Response, rels: frozenset[str]) -> str | None:
         return None
     # As requests' Response.links does, key the links by their whole rel
     # value, so that a later link with the same value replaces an earlier one.
-    links: dict[str, dict[str, str]] = {}
-    for link in parse_header_links(header):
-        key = link.get("rel") or link.get("url")
-        if key is not None:
-            links[key] = link
-    for link in links.values():
-        if rels.intersection(link.get("rel", "").lower().split()):
-            url: str | None = link.get("url")
+    links: dict[str, tuple[str, str]] = {}
+    for url, rel in _parse_links(header):
+        links[rel or url] = (url, rel)
+    for url, rel in links.values():
+        if rels.intersection(rel.lower().split()):
             return url
 
     return None
+
+
+def _parse_links(header: str) -> list[tuple[str, str]]:
+    """Read the links of a Link header.
+
+    A link is a target in angle brackets, which may hold ``;`` and ``,``,
+    followed by parameters. A parameter is a name, written in any case, and
+    perhaps ``=`` and a token or a quoted string, which may hold ``;``, ``,``,
+    and ``=``. A parameter without a value is allowed. Only the first ``rel``
+    of a link counts, as RFC 8288 section 3.4.1 says.
+
+    Args:
+        header: The value of a Link header.
+
+    Returns:
+        Each link's target and the value of its first ``rel`` parameter, which
+        is empty if it has none. Text that is no link is skipped.
+    """
+    links: list[tuple[str, str]] = []
+    position = 0
+    size = len(header)
+    while position < size:
+        start = header.find("<", position)
+        if start < 0:
+            break
+        end = header.find(">", start)
+        if end < 0:
+            break
+        url = header[start + 1 : end].strip()
+        position = end + 1
+        rel: str | None = None
+        while position < size:
+            position = _skip_blanks(header, position)
+            if position >= size or header[position] == ",":
+                position += 1
+                break
+            if header[position] != ";":
+                # Text that is no parameter, as a second target without a
+                # comma, ends the link.
+                break
+            position = _skip_blanks(header, position + 1)
+            name_end = position
+            while name_end < size and header[name_end] not in "=;, \t":
+                name_end += 1
+            name = header[position:name_end].lower()
+            position = _skip_blanks(header, name_end)
+            value = ""
+            if position < size and header[position] == "=":
+                value, position = _parameter_value(
+                    header, _skip_blanks(header, position + 1)
+                )
+            if name == "rel" and rel is None:
+                rel = value
+        links.append((url, rel or ""))
+    return links
+
+
+def _skip_blanks(text: str, position: int) -> int:
+    """Return the position of the first character that is no space or tab.
+
+    Args:
+        text: The text.
+        position: Where to start.
+
+    Returns:
+        The position, which is the text's length if only blanks remain.
+    """
+    while position < len(text) and text[position] in " \t":
+        position += 1
+    return position
+
+
+def _parameter_value(text: str, position: int) -> tuple[str, int]:
+    """Read a parameter's value, a quoted string or a token.
+
+    Args:
+        text: The header.
+        position: The value's first character.
+
+    Returns:
+        The value, with the quotes and the escapes of a quoted string removed,
+        and the position after it.
+    """
+    size = len(text)
+    if position < size and text[position] == '"':
+        value: list[str] = []
+        position += 1
+        while position < size and text[position] != '"':
+            if text[position] == "\\" and position + 1 < size:
+                position += 1
+            value.append(text[position])
+            position += 1
+        return "".join(value), position + 1
+    end = position
+    while end < size and text[end] not in ";, \t":
+        end += 1
+    return text[position:end], end
 
 
 def _page_link(page: Mapping[str, Any], key: str, base: str) -> str | None:
