@@ -2471,6 +2471,22 @@ class _Parameter:
     with one suffix name one comparison."""
 
 
+def _distinct_sorted(items: Iterable[Any]) -> list[Any]:
+    """Return JSON values in the order of ``_json_order()`` without repeats.
+
+    Args:
+        items: JSON values, as a set's items are written.
+
+    Returns:
+        The values sorted, with each run of equal values reduced to one.
+    """
+    distinct: list[Any] = []
+    for item in sorted(items, key=_json_order):
+        if not distinct or not _json_equal(distinct[-1], item):
+            distinct.append(item)
+    return distinct
+
+
 def _lookup_operand_order(value: Any) -> tuple[int, Any]:
     """Return a key that orders the operands of a lookup given a set.
 
@@ -4868,7 +4884,7 @@ class JSONProperty:
                     for value in stored
                 ]
             if _READ_AS[conversion.collection_type] in (set, frozenset):
-                stored = sorted(stored, key=_json_order)
+                stored = _distinct_sorted(stored)
         return stored
 
     def _is_key_of(self, obj: JSONObject) -> bool:
@@ -7709,7 +7725,7 @@ class JSONObject:
                 if parameter.collection is not None and _READ_AS[
                     parameter.collection.collection_type
                 ] in (set, frozenset):
-                    operands.sort(key=_json_order)
+                    operands = _distinct_sorted(operands)
         problem = None
         if not repeated and operands[0] is None:
             problem = "is None, and requests omits it"

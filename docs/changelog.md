@@ -636,6 +636,11 @@ describe them further.
   before any request. `v1.0.0a5` posted `null`, and the creation then raised
   `ResponseShapeError` whatever the server answered, after the resource might
   exist.
+- A query on a set field sends the field's distinct keys, sorted, so
+  `watchers={User(id=7), Admin(id=7)}` sends `watchers=7`, where `v1.0.0a5`
+  sent a repeated key as many times as it was given. A set field that the
+  server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
+  assigning the field its own value sends nothing.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

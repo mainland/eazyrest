@@ -1186,10 +1186,10 @@ last value, so the call raises `ValueError` naming the parameter before any
 request. Use a lookup that takes several values, such as `id__in`. A value that
 the field's conversion takes whole, such as an iterable class that
 `conversions` registers, is one value and is sent. The name of a field that is
-a collection takes a collection, and sends each item. An empty text in a
-parameter that takes one value is sent, as in `Todo.filter(title="")`, which
-sends `title=`, and django-filter reads it as no filter, so the query matches
-every object.
+a collection takes a collection, and sends each item, and a set field sends its
+distinct items in sorted order. An empty text in a parameter that takes one
+value is sent, as in `Todo.filter(title="")`, which sends `title=`, and
+django-filter reads it as no filter, so the query matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,

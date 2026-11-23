@@ -1634,6 +1634,17 @@ def a_new_object_of_a_present_key_sends_nothing(world: World) -> None:
 
 
 @row(SET)
+def a_repeated_stored_key_is_not_a_change(world: World) -> None:
+    for field in SETS:
+        obj = post(**{field: ["a", "a"]})
+
+        def assign_own_value(p: Post) -> None:
+            setattr(p, field, getattr(p, field))
+
+        assert patch_after(world, obj, assign_own_value) is None
+
+
+@row(SET)
 def a_saved_set_change_is_not_sent_again(world: World) -> None:
     obj = post()
     obj.tagset.add(tag("c"))
@@ -1877,6 +1888,22 @@ def several_keys_are_joined(world: World) -> None:
 def a_key_of_the_wrong_type_among_several_is_refused(world: World) -> None:
     refuses_query(
         world, Post, FieldConversionError, "Post.owner", owner__in=["7"]
+    )
+
+
+@row(REL)
+def a_set_field_is_queried_by_its_distinct_keys_sorted(world: World) -> None:
+    sends_query(
+        world,
+        Post,
+        "watchers=7",
+        watchers={User(id=7), Admin(id=7)},
+    )
+    sends_query(
+        world,
+        Post,
+        "tagset=a&tagset=b",
+        tagset=[Tag(slug="b"), Tag(slug="a"), Tag(slug="b")],
     )
 
 
