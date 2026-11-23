@@ -2426,6 +2426,23 @@ def a_query_item_without_the_key_is_refused(world: World) -> None:
 
 
 @row(FULL)
+def a_query_item_that_is_no_object_is_refused(world: World) -> None:
+    bad: tuple[Any, ...] = (None, 7, [])
+    for item in bad:
+        world.mocker.get(
+            requests_mock.ANY, json=[{"id": 1, "name": "a"}, item]
+        )
+        for call in (
+            lambda: list(User.filter()),
+            lambda: list(User.all()),
+            lambda: User.get_page(),
+        ):
+            raises(world, ResponseShapeError, call, "[1]", requests=1)
+        world.mocker.get(requests_mock.ANY, json=[item])
+        raises(world, ResponseShapeError, User.get, "[0]", requests=1)
+
+
+@row(FULL)
 def a_response_key_of_the_wrong_type_is_refused(world: World) -> None:
     body = {"id": "7", "name": "a"}
     world.mocker.post(requests_mock.ANY, json=body)
@@ -2766,3 +2783,31 @@ def the_read_schema_requires_the_key(world: World) -> None:
 def the_write_schema_requires_nothing(world: World) -> None:
     for model in (User, Tag, Doc, Post):
         assert "required" not in model.json_schema("write")
+
+
+@row(PREFETCH)
+def a_parent_without_its_key_is_refused_before_the_hook(
+    world: World,
+) -> None:
+    hook_calls.clear()
+    world.mocker.get(
+        requests_mock.ANY, json=[{"id": 1, "owner": 7}, {"owner": 7}]
+    )
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: list(PPost.filter(prefetch=["owner"])),
+        "[1]",
+        "PPost.id",
+        requests=1,
+    )
+    assert hook_calls == []
+    world.mocker.get(requests_mock.ANY, json=[{"id": 1, "owner": 7}, None])
+    raises(
+        world,
+        ResponseShapeError,
+        lambda: list(PPost.filter(prefetch=["owner"])),
+        "[1]",
+        requests=1,
+    )
+    assert hook_calls == []

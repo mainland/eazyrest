@@ -8207,10 +8207,15 @@ class JSONObject:
             The object.
 
         Raises:
-            ResponseShapeError: If the item lacks the key, holds ``null`` for
-                it, or holds a key that is not of the key's type. The message
-                names the item's position.
+            ResponseShapeError: If the item is not a JSON object, lacks the
+                key, holds ``null`` for it, or holds a key that is not of the
+                key's type. The message names the item's position.
         """
+        if not isinstance(item, Mapping):
+            raise ResponseShapeError(
+                f"Item [{index}] of the {cls.__name__} collection must be a "
+                f"JSON object, got {type(item).__name__}"
+            )
         try:
             return cls(json=_OwnedJSON(item), api=api)
         except FieldConversionError as err:
@@ -8746,21 +8751,22 @@ class JSONObject:
         start = 0
 
         while True:
-            batch_items = [
-                _OwnedJSON(item)
-                for item in itertools.islice(iterator, cls.prefetch_batch_size)
-            ]
-            if len(batch_items) == 0:
+            raw_items = list(
+                itertools.islice(iterator, cls.prefetch_batch_size)
+            )
+            if len(raw_items) == 0:
                 return
 
-            prefetched_related = cls._apply_prefetch(
-                batch_items, fields, query
-            )
+            # Build the parents first, so that an item that cannot be one is
+            # refused before any hook sends a request for the batch.
             parents = [
                 cls._from_item(item, index, query.api)
-                for index, item in enumerate(batch_items, start)
+                for index, item in enumerate(raw_items, start)
             ]
-            start += len(batch_items)
+            prefetched_related = cls._apply_prefetch(
+                [_OwnedJSON(item) for item in raw_items], fields, query
+            )
+            start += len(raw_items)
 
             # Related objects inherit their parent's write mode and API. A
             # prefetched object is shared by every parent in the batch, so set
