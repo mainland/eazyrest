@@ -602,6 +602,10 @@ def _decimal_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
 def _enum_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
     """Return the schema of an enum: the values of its members.
 
+    A ``Flag`` reads and writes the combinations of its members, as ``3`` for
+    two members of values ``1`` and ``2``, so its schema is an integer, not the
+    values of the single members that iteration yields.
+
     Args:
         cls: The declared enum type.
         mode: ``"read"`` or ``"write"``, which an enum's schema does not
@@ -611,6 +615,8 @@ def _enum_schema(cls: type[Any], mode: str) -> Mapping[str, Any]:
         The schema.
     """
     del mode
+    if issubclass(cls, enum.Flag):
+        return {"type": "integer"}
     return {"enum": [member.value for member in cls]}
 
 

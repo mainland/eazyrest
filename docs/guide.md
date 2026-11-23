@@ -1112,21 +1112,23 @@ write-only fields. The write schema's are the keys after `write_map`, without
 read-only fields and with write-only ones. A type with a conversion has the
 conversion's schema, so a built-in one gives its JSON form, such as a string
 with `format` `date-time` for `datetime.datetime` and an enum the values of its
-members, and a `Literal` gives its members' JSON values. A read schema also
-allows a number for `datetime.datetime` and `datetime.timedelta`, which read a
-Unix timestamp and a number of seconds, and for `decimal.Decimal`. `T | None`
-also allows `null`, and a collection is an array, whose items are unique for a
-set. A primary key has the type that its builder sends, in reads and writes
-alike: an integer, a string, or a string with `format` `uuid`, never `null`,
-even when its annotation is optional. A relation is the related model's primary
-key, and a read also accepts the related object embedded as JSON, which must
-hold the related model's key. The definitions of a conversion's schema move
-into the schema's `$defs`, renamed with the references to them when two share a
-name. A plain `TypedDict` is an object with a property for each declared key
-that allows other properties, and one inside itself is any object. A
-`NamedTuple` or dataclass inside itself is likewise any array or object.
-`dict[str, T]` is an object whose properties all have `T`'s schema. A type
-whose JSON form `eazyrest` does not check, such as `Any`, allows any value.
+members, except a `Flag` or `IntFlag`, which is an integer because the field
+reads and writes the combinations of its members, and a `Literal` gives its
+members' JSON values. A read schema also allows a number for
+`datetime.datetime` and `datetime.timedelta`, which read a Unix timestamp and a
+number of seconds, and for `decimal.Decimal`. `T | None` also allows `null`,
+and a collection is an array, whose items are unique for a set. A primary key
+has the type that its builder sends, in reads and writes alike: an integer, a
+string, or a string with `format` `uuid`, never `null`, even when its
+annotation is optional. A relation is the related model's primary key, and a
+read also accepts the related object embedded as JSON, which must hold the
+related model's key. The definitions of a conversion's schema move into the
+schema's `$defs`, renamed with the references to them when two share a name. A
+plain `TypedDict` is an object with a property for each declared key that
+allows other properties, and one inside itself is any object. A `NamedTuple` or
+dataclass inside itself is likewise any array or object. `dict[str, T]` is an
+object whose properties all have `T`'s schema. A type whose JSON form
+`eazyrest` does not check, such as `Any`, allows any value.
 
 A read schema requires the primary key's JSON name, because every object that
 is read holds its key, and the key of a related object that a read embeds. A

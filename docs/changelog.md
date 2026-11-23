@@ -253,6 +253,9 @@ describe them further.
   `time`, `int | str`, `dict[str, Any]`, and tuples, and names its dialect,
   JSON Schema 2020-12, in `$schema`, so a schema that a client compared with a
   saved copy changes.
+- The schema of a `Flag` or `IntFlag` field is `{"type": "integer"}`, because
+  the field reads and writes the combinations of its members, such as `3` for
+  `READ | WRITE`, which a list of the single members would reject.
 - The default `collection_items_from_response()` returns a `Results` iterator,
   which reads once, for a list payload. Code that calls the hook itself and
   reads the result twice must make a list of it.
