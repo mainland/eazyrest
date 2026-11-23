@@ -2712,6 +2712,27 @@ def a_merge_keeps_a_related_object_whose_key_is_unchanged(
     assert obj.owner.pk == 8
 
 
+@row(FULL)
+def a_response_with_a_bare_key_replaces_an_embedded_owner(
+    world: World,
+) -> None:
+    obj = post(owner={"id": 7, "name": "a"})
+    held = obj.owner
+    assert held is not None
+    held.name = "b"
+    obj.title = "x"
+    world.mocker.patch(requests_mock.ANY, json={"owner": 7})
+    obj.save()
+    # The field's JSON changed from an embedded object to a bare key, so the
+    # field reads a new object, without the unsaved change.
+    assert obj.owner is not held
+    assert obj.owner is not None
+    assert obj.owner.pk == 7
+    sent = world.count
+    obj.owner.save()
+    assert world.count == sent
+
+
 LISTS: list[list[dict[str, Any]]] = [[], [{"id": 7}, {"id": 8}]]
 
 
