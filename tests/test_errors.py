@@ -25,8 +25,10 @@ from eazyrest import (
     FieldConversionError,
     JSONObject,
     LimitExceeded,
+    MultipleObjectsReturned,
     NotFound,
     PaginationError,
+    PrefetchNotSupported,
     RedirectError,
     ResponseShapeError,
     UsageError,
@@ -46,6 +48,11 @@ from eazyrest.api import _check_final_response, _prepare_redirect
         (UsageError, (RuntimeError,)),
         (APIError, (requests.HTTPError,)),
         (NotFound, (requests.HTTPError, DoesNotExist)),
+        (PrefetchNotSupported, ()),
+        (DoesNotExist, ()),
+        (MultipleObjectsReturned, ()),
+        (LimitExceeded, ()),
+        (FieldConversionError, (TypeError, ValueError)),
     ],
 )
 def test_policy_errors_keep_the_types_they_replace(
@@ -511,6 +518,9 @@ def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
         (b"http://user:dummy@host/x?a=b", "http://host/x?a=b"),
         (b"http://host/x", "http://host/x"),
         ("http://user:dummy@h\u00f6st/x".encode(), "http://h\u00f6st/x"),
+        ("http://user:dummy@host/\rx", "http://host/x"),
+        ("http://user:dummy@\rhost/x", "http://host/x"),
+        (b"http://user:dummy@host/\xffx", "http://host/\ufffdx"),
     ],
 )
 def test_redacted_url_leaves_out_a_user_and_password(
@@ -554,6 +564,44 @@ def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:
     assert "'n08'" not in message
     assert "and 12 more" in message
     assert len(message) < 600
+
+
+@pytest.mark.parametrize(
+    ("names", "shown", "tail"),
+    [
+        (["x" * 40], "'" + "x" * 40 + "'", None),
+        (["x" * 41], "'" + "x" * 40 + "...'", None),
+        ([f"n{i}" for i in range(10)], "'n9'", None),
+        ([f"n{i}" for i in range(11)], "'n8'", "and 1 more"),
+    ],
+    ids=["40_characters", "41_characters", "ten_names", "eleven_names"],
+)
+def test_error_body_names_at_the_bounds(
+    requests_mock: Any, names: list[str], shown: str, tail: str | None
+) -> None:
+    """A name of 40 characters is whole, and ten names leave nothing out.
+
+    Args:
+        names: Names of the error body.
+        shown: What the message must show of the last name that it names.
+        tail: What it says of the names left out, or ``None`` for nothing.
+    """
+    api = API("https://example.com/v1/")
+    requests_mock.get(
+        "https://example.com/v1/x",
+        status_code=400,
+        json=dict.fromkeys(names, 1),
+    )
+
+    with pytest.raises(APIError) as raised:
+        api.get("/x")
+
+    message = str(raised.value)
+    assert shown in message
+    if tail is None:
+        assert "more" not in message
+    else:
+        assert tail in message
 
 
 @pytest.fixture

@@ -31,6 +31,14 @@ class Topic(JSONObject):
     slug: str
 
 
+@json_object(field_map={"id": "reviewId"})
+class Review(JSONObject):
+    """A related model whose key has another JSON name."""
+
+    class_url = "/reviews/"
+    id: int
+
+
 @json_object
 class Article(JSONObject):
     """A model with a relation and a collection of them."""
@@ -39,9 +47,10 @@ class Article(JSONObject):
     id: int
     author: Author
     topics: list[Topic]
+    review: Review
 
 
-for model in (Author, Topic, Article):
+for model in (Author, Topic, Review, Article):
     model.register_api(api)
 
 CALLS: dict[str, Callable[..., Any]] = {
@@ -66,6 +75,9 @@ CALLS: dict[str, Callable[..., Any]] = {
         "author__name__gt",
         "topics__slug",
         "topics__pk",
+        "review__id",
+        "review__reviewId",
+        "review__reviewId__gt",
     ],
 )
 @pytest.mark.parametrize("value", [[7, 8], (7, 8), {7, 8}])
@@ -88,6 +100,7 @@ def test_a_collection_is_refused_naming_the_parameter(
         ({"author__id__in": [7, 8]}, "author__id__in=7,8"),
         ({"author__name": ["a", "b"]}, "author__name=a&author__name=b"),
         ({"author__id__gt": 7}, "author__id__gt=7"),
+        ({"review__reviewId__in": [7, 8]}, "review__reviewId__in=7,8"),
     ],
 )
 def test_a_value_or_a_lookup_of_several_values_is_sent(

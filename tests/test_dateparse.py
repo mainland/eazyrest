@@ -100,6 +100,18 @@ def test_parse_duration_returns_timedelta() -> None:
             "02:03:04.000005",
             datetime.timedelta(hours=2, minutes=3, seconds=4, microseconds=5),
         ),
+        (
+            "02:03:04.5",
+            datetime.timedelta(
+                hours=2, minutes=3, seconds=4, milliseconds=500
+            ),
+        ),
+        (
+            "02:03:04.25",
+            datetime.timedelta(
+                hours=2, minutes=3, seconds=4, milliseconds=250
+            ),
+        ),
         ("-1 day, 23:00:00", datetime.timedelta(hours=-1)),
         ("3 days, 0:00:00", datetime.timedelta(days=3)),
         (

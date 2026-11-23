@@ -1132,6 +1132,12 @@ def objects_that_hold_each_other_in_sets_survive_a_pickle(
         assert friend.pk == 2
         assert friend.friends == {duplicate}
         assert friend.friends.pop() is duplicate
+        # A deep copy of a cycle keeps the cycle, so the copy's friend holds
+        # the copy itself, not a third object.
+        (copied_friend,) = expected.friends
+        (back,) = copied_friend.friends
+        assert back is expected
+        assert copied_friend is not n
 
 
 REFUSED_ASSIGNMENTS: list[tuple[str, Callable[[], Any], tuple[str, ...]]] = [
@@ -2676,6 +2682,23 @@ def a_response_key_of_the_wrong_type_is_refused(world: World) -> None:
         "[0]",
         requests=1,
     )
+    # A creation that sent a key is answered with one that cannot be read.
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json=body)
+    for call, requests in (
+        (lambda: User.create(id=7, name="a"), 1),
+        (lambda: User.get_or_create(id=7, name="a"), 2),
+    ):
+        error = raises(
+            world,
+            ResponseShapeError,
+            call,
+            "User.id",
+            requests=requests,
+        )
+        assert isinstance(error, ResponseShapeError)
+        assert error.response is not None
+        assert error.response.json() == body
 
 
 @row(FULL)
@@ -3085,3 +3108,22 @@ def a_parent_without_its_key_is_refused_before_the_hook(
         requests=1,
     )
     assert hook_calls == []
+    # An item of a later batch is named by its place in the whole collection.
+    world.mocker.get(
+        requests_mock.ANY,
+        json=[{"id": 1, "owner": 7}, {"id": 2, "owner": 8}, {"owner": 9}],
+    )
+    saved = PPost.prefetch_batch_size
+    PPost.prefetch_batch_size = 2
+    try:
+        raises(
+            world,
+            ResponseShapeError,
+            lambda: list(PPost.filter(prefetch=["owner"])),
+            "[2]",
+            "PPost.id",
+            requests=1,
+        )
+    finally:
+        PPost.prefetch_batch_size = saved
+    assert hook_calls == [{7, 8}]

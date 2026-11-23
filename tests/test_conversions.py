@@ -976,8 +976,11 @@ def test_an_entry_writes_other_values_as_they_are() -> None:
 
     item.price = "15 USD"  # type: ignore[assignment]
     item.point = "5,6"  # type: ignore[assignment]
+    # A TypedDict has no instances, so its entry encodes mappings only.
+    item.pair = "7=8"  # type: ignore[assignment]
     assert item.json["price"] == "15 USD"
     assert item.json["point"] == "5,6"
+    assert item.json["pair"] == "7=8"
     assert encode_json("3 EUR", Money, model=Item) == "3 EUR"
     with pytest.raises(FieldConversionError, match="does not encode to JSON"):
         item.price = object()  # type: ignore[assignment]

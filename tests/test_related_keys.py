@@ -1141,6 +1141,8 @@ def test_a_collection_of_optional_relations_is_refused(
     "annotation",
     [
         list[list[User]],
+        list[list[list[User]]],
+        list[list[set[User]]],
         list[set[User]],
         tuple[list[User], ...],
         Collection[list[User]],

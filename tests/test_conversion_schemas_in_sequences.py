@@ -1,25 +1,41 @@
-"""A conversion's schema is checked and hoisted inside a tuple too."""
+"""A conversion's schema is checked and hoisted inside a list or a tuple."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Literal
 
 import pytest
 
 from eazyrest import Conversion, JSONObject, json_object
 
-UNEMBEDDABLE: dict[str, dict[str, Any]] = {
-    "a_reference_to_the_root": {"anyOf": ({"$ref": "#"}, {"type": "null"})},
-    "an_id": {"anyOf": ({"$id": "https://x.example/s"}, {"type": "null"})},
-    "an_anchor": {"anyOf": ({"$anchor": "a"}, {"type": "null"})},
-    "defs_below_the_root": {
-        "anyOf": ({"$defs": {"A": {"type": "null"}}}, {"type": "null"})
-    },
-    "a_reference_to_nothing": {
-        "anyOf": ({"$ref": "#/$defs/Missing"}, {"type": "null"})
-    },
-}
+SEQUENCES: dict[str, Callable[..., Any]] = {"list": list, "tuple": tuple}
+
+
+def unembeddable(sequence: Callable[..., Any]) -> dict[str, dict[str, Any]]:
+    """Return schemas that cannot be embedded, with the sequence kind given."""
+    return {
+        "a_reference_to_the_root": {
+            "anyOf": sequence([{"$ref": "#"}, {"type": "null"}])
+        },
+        "an_id": {
+            "anyOf": sequence(
+                [{"$id": "https://x.example/s"}, {"type": "null"}]
+            )
+        },
+        "an_anchor": {"anyOf": sequence([{"$anchor": "a"}, {"type": "null"}])},
+        "defs_below_the_root": {
+            "anyOf": sequence(
+                [{"$defs": {"A": {"type": "null"}}}, {"type": "null"}]
+            )
+        },
+        "a_reference_to_nothing": {
+            "anyOf": sequence([{"$ref": "#/$defs/Missing"}, {"type": "null"}])
+        },
+    }
+
+
+NAMES = list(unembeddable(list))
 
 
 class Thing:
@@ -35,27 +51,30 @@ def conversion(schema: Any) -> Conversion:
     )
 
 
-@pytest.mark.parametrize("name", UNEMBEDDABLE)
-def test_a_schema_given_as_a_mapping_is_refused_inside_a_tuple(
-    name: str,
+@pytest.mark.parametrize("kind", SEQUENCES)
+@pytest.mark.parametrize("name", NAMES)
+def test_a_schema_given_as_a_mapping_is_refused_inside_a_sequence(
+    name: str, kind: str
 ) -> None:
     """The conversion raises ``TypeError`` when it is made."""
     with pytest.raises(TypeError):
-        conversion(UNEMBEDDABLE[name])
+        conversion(unembeddable(SEQUENCES[kind])[name])
 
 
-@pytest.mark.parametrize("name", UNEMBEDDABLE)
-def test_a_schema_given_by_a_function_is_refused_inside_a_tuple(
-    name: str,
+@pytest.mark.parametrize("kind", SEQUENCES)
+@pytest.mark.parametrize("name", NAMES)
+def test_a_schema_given_by_a_function_is_refused_inside_a_sequence(
+    name: str, kind: str
 ) -> None:
     """The model's schema raises ``TypeError`` when it calls the function."""
+    schema = unembeddable(SEQUENCES[kind])[name]
 
     @json_object
     class Holder(JSONObject):
         """A model whose conversion gives the schema."""
 
         conversions: ClassVar[Mapping[Any, Conversion]] = {
-            Thing: conversion(lambda ty, mode: UNEMBEDDABLE[name])
+            Thing: conversion(lambda ty, mode: schema)
         }
         id: int
         thing: Thing
