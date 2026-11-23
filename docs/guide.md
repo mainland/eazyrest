@@ -1239,10 +1239,16 @@ value takes no collection either: one that ends with `exact`, `gt`, `gte`,
 with such a suffix, as `Title` and `Title__gt` for a field `title` with
 `field_map={"title": "Title"}`, `postId` for a key `id`, and `userId` for a
 relation `user`, and a path through a relation by the relation's JSON key, as
-`userId__id`. A field that is a collection takes a collection by its JSON key
-alone, as by its name. An empty text in a parameter that takes one value is
-sent, as in `Todo.filter(title="")`, which sends `title=`, and django-filter
-reads it as no filter, so the query matches every object.
+`userId__id`. A name is read as the longest key of a field that it starts with,
+so a key that holds `__`, as `doc__id` for a key `id` or `the__title` for a
+field `title`, refuses a collection too. A field that is a collection takes a
+collection by its JSON key alone, as by its name. A JSON key and a write key
+send no conversion, so one given an iterable value that the field's name would
+convert whole, such as an instance of a class that `conversions` registers,
+raises `ValueError` naming the parameter. Pass it by the field's name, as
+`span=Span(1, 2)`. An empty text in a parameter that takes one value is sent,
+as in `Todo.filter(title="")`, which sends `title=`, and django-filter reads it
+as no filter, so the query matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,
@@ -1329,11 +1335,12 @@ any request: a tuple, which would read back as a list, and a mapping with a key
 that is not a string. The lookup of `get_or_create()` builds the key under its
 JSON or write key too, so a `UUID` given in uppercase is sent in the query and
 in the `POST` in one spelling, where `filter()` sends such a name as it was
-given. A key whose JSON name holds `__`, as `doc__id` for a field `id`, is no
-lookup of `get_or_create()`, which would read it as a field and a suffix, so
-the call raises `ValueError` naming the parameter before any request. Look such
-a key up as `id` or `pk`. A key whose field name holds `__`, as `doc__id` for
-`pk="doc__id"`, is looked up and created by that name.
+given. A JSON key or write key that holds `__`, as `doc__id` for a field `id`
+or `the__title` for a field `title`, is no lookup of `get_or_create()`, which
+would read it as a field and a suffix, so the call raises `ValueError` naming
+the parameter before any request. Look the field up by its name, as `title`,
+and the key as `id` or `pk`. A key whose field name holds `__`, as `doc__id`
+for `pk="doc__id"`, is looked up and created by that name.
 
 A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the
 key under its JSON or write key, in `fields=`, or in the `defaults` of

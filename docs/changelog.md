@@ -55,8 +55,15 @@ describe them further.
   `filter(postId=[7, 8])`, `filter(Title__gt=["a", "b"])`, or
   `filter(userId=[3, 4])`, and when a path through a relation starts with the
   relation's JSON key, as in `filter(userId__id=[3, 4])`, where `v1.0.0a5` sent
-  the parameter repeated. A field that is a collection still takes a collection
-  by its JSON key.
+  the parameter repeated. So is it when the key holds `__`, as `doc__id` for a
+  key `id` or `the__title` for a field `title`, which the query now reads as
+  that key and not as another field's name and a suffix. A field that is a
+  collection still takes a collection by its JSON key.
+- A field's JSON key or write key sends no conversion, so it raises
+  `ValueError` naming the parameter, as in `filter(Span__in=Span(1, 2))`, for
+  an iterable value that the field's name would convert whole, such as an
+  instance of a class that `conversions` registers. `v1.0.0a5` sent its items.
+  Pass it by the field's name.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the
@@ -65,12 +72,13 @@ describe them further.
   schema of such an item requires the related model's key.
 - A query that compares the model's own key under two names, as in
   `filter(pk=7, id=8)`, `filter(pk__exact=7, id=8)`, `filter(pk=7, postId=8)`,
-  or `filter(pk__gt=7, postId__gt=8)`, raises `ValueError` naming both
-  parameters before any request, and so do two parameters that are sent under
-  one name, as in `filter(id=7, postId=8)`. `create(id=7, postId=8)` raises
-  `TypeError` naming both. The key's JSON key, `postId` for a field `id`, is
-  otherwise an ordinary query name, sent as given, and so is it with a suffix
-  that compares no value, as `postId__icontains`.
+  `filter(pk__gt=7, postId__gt=8)`, or `filter(pk=7, ident=8)` for a key with
+  `write_map={"id": "ident"}`, raises `ValueError` naming both parameters
+  before any request, and so do two parameters that are sent under one name, as
+  in `filter(id=7, postId=8)`. `create(id=7, postId=8)` raises `TypeError`
+  naming both. The key's JSON key, `postId` for a field `id`, is otherwise an
+  ordinary query name, sent as given, and so is it with a suffix that compares
+  no value, as `postId__icontains`.
 - The hooks `collection_items()`, `collection_items_from_response()`,
   `collection_page()`, and `bulk_get_by_pks()` must accept `api=` and
   `**kwargs`, and `object_json()`, `merge_response()`, and
@@ -718,10 +726,11 @@ describe them further.
   processes. So is any other `collections.abc.Set` in a query, as a dict's key
   view, which is sorted now where `v1.0.0a5` sent it in its own order.
 - `get_or_create()` raises `ValueError` naming the parameter, before any
-  request, for a key's JSON name that holds `__`, as `doc__id`, where
-  `v1.0.0a5` looked up `doc__id` and then posted a body without the key. Look
-  the key up as `id` or `pk`. A key whose field name holds `__` is looked up
-  and created by that name.
+  request, for a JSON key or write key that holds `__`, as `doc__id` for a key
+  `id` or `the__title` for a field `title`, where `v1.0.0a5` looked up the name
+  and then posted a body without the field. Look the key up as `id` or `pk`,
+  and any other field by its name. A key whose field name holds `__` is looked
+  up and created by that name.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

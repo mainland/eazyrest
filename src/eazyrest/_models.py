@@ -9545,7 +9545,10 @@ class JSONObject:
 
         As in Django, a key that contains ``__`` and does not name a field,
         such as ``name__iexact`` or ``created__gte``, is a lookup rather than a
-        field value. It is sent in the query but not in the creation payload.
+        field value. It is sent in the query but not in the creation payload. A
+        field's JSON key or write key that holds ``__`` is neither, since the
+        lookup would read it as a field and a suffix, so it raises. Pass the
+        field by its name.
 
         As in ``get()``, the server must apply every lookup parameter. If it
         ignores one, this method can return an object that does not match it,
@@ -9591,8 +9594,9 @@ class JSONObject:
                 nothing to create. No request is sent.
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
-                not send intact, or is the key's JSON name, which differs from
-                the key's field name, and holds ``__``.
+                not send intact, or is the JSON key or write key of a field,
+                which differs from the field's name, and holds ``__``, as the
+                key's JSON name ``doc__id`` does.
             FieldConversionError: If a field's value cannot be converted, as
                 when a field that holds a collection is given a single item, or
                 if the creation's key is ``None``. Also if a lookup value is of
