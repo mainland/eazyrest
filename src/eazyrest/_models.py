@@ -6493,21 +6493,23 @@ class JSONObject:
                 own keep applying until it ends, and then no options remain.
         """
         checked = _request_options(options)
-        merged = _merge_request_options(self._write_options, checked)
-        # An object that has no options of its own reads the class's, so the
-        # last block must leave it without any, as it found it.
+        # Each block keeps its own options, and the object's are the merge of
+        # the open blocks' in the order that they began. A block that ends out
+        # of order then takes only its own options with it. An object that has
+        # no options of its own reads the class's, so the last block must leave
+        # it without any, as it found it.
         blocks: list[Mapping[str, Any]] = vars(self).setdefault(
             "_write_blocks", []
         )
-        blocks.append(merged)
-        self._write_options = merged
+        blocks.append(checked)
+        self._write_options = self._merged_write_blocks(blocks)
         try:
             yield self
         finally:
-            out_of_order = blocks[-1] is not merged
-            del blocks[[block is merged for block in blocks].index(True)]
+            out_of_order = blocks[-1] is not checked
+            del blocks[[block is checked for block in blocks].index(True)]
             if blocks:
-                self._write_options = blocks[-1]
+                self._write_options = self._merged_write_blocks(blocks)
             else:
                 del self._write_options
                 del vars(self)["_write_blocks"]
@@ -6518,6 +6520,23 @@ class JSONObject:
                     "blocks in the reverse of the order that they began, as "
                     "nested with statements do"
                 )
+
+    def _merged_write_blocks(
+        self, blocks: Sequence[Mapping[str, Any]]
+    ) -> Mapping[str, Any]:
+        """Return the request options that the open blocks give together.
+
+        Args:
+            blocks: The options of each open ``write_options()`` block, in the
+                order that the blocks began.
+
+        Returns:
+            The class's options with each block's merged over them in turn.
+        """
+        merged = type(self)._write_options
+        for block in blocks:
+            merged = _merge_request_options(merged, block)
+        return merged
 
     def _update_json_field(self, json_field: str, value: Any) -> None:
         """Send or queue a JSON field update, as the write mode says.

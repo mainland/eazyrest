@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import pickle
 from collections.abc import Callable
 from typing import Any
@@ -137,3 +138,76 @@ def test_blocks_that_end_in_the_reverse_order_are_not_refused() -> None:
             pass
         assert vars(obj)["_write_options"] == {"headers": {"X-Outer": "1"}}
     assert "_write_options" not in vars(obj)
+
+
+TITLES = itertools.count()
+
+
+def edit(obj: Item, headers: dict[str, str]) -> Any:
+    """Hold a block of the object open across a ``yield``."""
+    with obj.write_options(headers=headers):
+        yield
+
+
+def sent_headers(obj: Item) -> Any:
+    """Save a change to the object and return the headers that it sent."""
+    obj.title = f"title {next(TITLES)}"
+    with requests_mock.Mocker() as mocker:
+        mocker.patch("https://options.example/items/1/", json={})
+        obj.save()
+    return mocker.last_request.headers
+
+
+def test_an_ended_block_keeps_none_of_its_options_for_the_next_write() -> None:
+    """The block that is still open sends only what it and the class set."""
+    obj = item()
+    first = edit(obj, {"If-Match": "v1"})
+    next(first)
+    second = edit(obj, {"X-Second": "2"})
+    next(second)
+    with pytest.raises(UsageError, match="block that began later"):
+        first.close()
+    headers = sent_headers(obj)
+    assert headers["X-Second"] == "2"
+    assert "If-Match" not in headers
+    second.close()
+
+
+def test_the_object_takes_the_merge_of_the_blocks_still_open() -> None:
+    """Of three nested blocks, the middle one ends first."""
+    obj = item()
+    blocks = [
+        edit(obj, {"X-First": "1", "X-Shared": "first"}),
+        edit(obj, {"X-Second": "2"}),
+        edit(obj, {"X-Third": "3", "X-Shared": "third"}),
+    ]
+    for block in blocks:
+        next(block)
+    with pytest.raises(UsageError, match="block that began later"):
+        blocks[1].close()
+    headers = sent_headers(obj)
+    assert "X-Second" not in headers
+    assert (headers["X-First"], headers["X-Third"]) == ("1", "3")
+    # The blocks that remain merge in the order that they began.
+    assert headers["X-Shared"] == "third"
+    with pytest.raises(UsageError, match="block that began later"):
+        blocks[0].close()
+    headers = sent_headers(obj)
+    assert "X-First" not in headers
+    assert headers["X-Third"] == "3"
+    blocks[2].close()
+    assert "_write_options" not in vars(obj)
+
+
+@pytest.mark.parametrize("make", COPIES.values(), ids=COPIES.keys())
+def test_a_copy_made_in_a_block_sends_only_the_options_of_its_own_block(
+    make: Callable[[Any], Any],
+) -> None:
+    """A copy takes none of the original's options, then its own block's."""
+    obj = item()
+    with obj.write_options(headers=HEADERS):
+        duplicate = make(obj)
+    with duplicate.write_options(headers={"X-Copy": "1"}):
+        headers = sent_headers(duplicate)
+    assert headers["X-Copy"] == "1"
+    assert "If-Match" not in headers
