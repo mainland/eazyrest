@@ -270,10 +270,13 @@ def test_a_nested_class_is_refused_when_its_annotation_resolves_late() -> None:
 
 
 @pytest.mark.parametrize("name", ["model", "root_model"])
-def test_a_class_configured_for_pydantic_is_refused_in_a_primary_key(
+def test_a_class_configured_for_pydantic_is_refused_as_a_primary_key(
     name: str,
 ) -> None:
-    """A primary key of such a class is refused, as another field is.
+    """A primary key of such a class gets the refusal of any key type.
+
+    A key cannot be converted, so advice to register a conversion would be
+    wrong. The refusal names the types that a key may be.
 
     Args:
         name: Which class.
@@ -281,8 +284,11 @@ def test_a_class_configured_for_pydantic_is_refused_in_a_primary_key(
     cls, _ = _CLASSES[name]
     body = {"__module__": __name__, "__annotations__": {"id": cls}}
 
-    with pytest.raises(TypeError, match="is configured for Pydantic"):
+    with pytest.raises(TypeError, match=r"Keyed\.id") as caught:
         json_object(type("Keyed", (JSONObject,), body))
+    for text in ("str", "int", "UUID"):
+        assert text in str(caught.value)
+    assert "Conversion" not in str(caught.value)
 
 
 def test_a_subclass_of_a_pydantic_model_is_refused() -> None:

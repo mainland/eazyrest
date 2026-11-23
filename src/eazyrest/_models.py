@@ -3275,16 +3275,12 @@ def _check_key_type(
 
     Raises:
         TypeError: If the key is a relation, or its type is not one that
-            ``_key_kind()`` admits. A class that Pydantic configures is refused
-            as it is for any field, saying so.
+            ``_key_kind()`` admits, as a class that Pydantic configures is not.
     """
     related = _related_key_type(analyzed)
     if related is not None:
         raise _relation_key_error(cls, field, related.model_type)
     if _key_kind(analyzed, _table_of(cls)) is None:
-        inner = _unwrap_optional_type(analyzed)
-        if isinstance(inner, BaseType):
-            _refuse_pydantic_class(inner.base_type)
         raise _key_type_error(cls, field)
 
 
