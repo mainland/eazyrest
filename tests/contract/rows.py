@@ -1035,6 +1035,43 @@ def a_pickle_round_trip_is_a_deep_copy(world: World) -> None:
         assert_copy_as_deepcopy(original, duplicate)
 
 
+def copies_of(original: Post) -> list[Post]:
+    """Return a shallow copy, a deep copy, and a pickle round trip."""
+    return [
+        copy.copy(original),
+        copy.deepcopy(original),
+        *(
+            pickle.loads(pickle.dumps(original, protocol=protocol))
+            for protocol in range(pickle.HIGHEST_PROTOCOL + 1)
+        ),
+    ]
+
+
+@row(EQ)
+def a_copy_after_a_write_options_block_is_a_deep_copy(world: World) -> None:
+    original = post()
+    assert original.owner is not None
+    with original.write_options(headers={"If-Match": "x"}):
+        pass
+    with original.owner.write_options(headers={"If-Match": "y"}):
+        pass
+    for duplicate in copies_of(original):
+        assert_copy_as_deepcopy(original, duplicate)
+
+
+@row(EQ)
+def a_copy_made_in_a_write_options_block_sends_none_of_its_options(
+    world: World,
+) -> None:
+    original = post()
+    with original.write_options(headers={"If-Match": "x"}):
+        duplicates = copies_of(original)
+    for duplicate in duplicates:
+        duplicate.title = "new"
+        world.body(duplicate.save, "PATCH")
+        assert "If-Match" not in world.requests[-1].headers
+
+
 ASSIGN = "assigning-the-key"
 
 

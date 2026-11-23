@@ -5527,13 +5527,28 @@ class JSONObject:
         copied = object.__new__(type(self))
         memo[id(self)] = copied
         state = vars(copied)
-        for name, value in vars(self).items():
+        for name, value in self.__getstate__().items():
             state[name] = (
                 value
                 if name == "_api_override"
                 else copy.deepcopy(value, memo)
             )
         return copied
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return the state that a copy or a pickle keeps.
+
+        The options of a ``write_options()`` block belong to the block, so a
+        copy or a pickle made inside one does not hold them.
+
+        Returns:
+            The object's attributes, without the write options.
+        """
+        return {
+            name: value
+            for name, value in vars(self).items()
+            if name != "_write_options"
+        }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore the state of a pickled or copied object.
@@ -6251,12 +6266,19 @@ class JSONObject:
                 then.
         """
         checked = _request_options(options)
-        previous = self._write_options
-        self._write_options = _merge_request_options(previous, checked)
+        # An object that has no options of its own reads the class's, so the
+        # block must leave it without any, as it found it.
+        own = vars(self).get("_write_options", _MISSING)
+        self._write_options = _merge_request_options(
+            self._write_options, checked
+        )
         try:
             yield self
         finally:
-            self._write_options = previous
+            if own is _MISSING:
+                del self._write_options
+            else:
+                self._write_options = own
 
     def _update_json_field(self, json_field: str, value: Any) -> None:
         """Send or queue a JSON field update, as the write mode says.
