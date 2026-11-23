@@ -2790,6 +2790,35 @@ def bulk_get_by_urls_is_not_a_hook(world: World) -> None:
     assert not hasattr(JSONObject, "bulk_get_by_urls")
 
 
+@row(PREFETCH)
+def a_batch_size_that_no_batch_can_have_is_refused(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json=[{"id": 1, "owner": 7}])
+    calls: list[Callable[[], Any]] = [
+        lambda: list(PPost.filter(prefetch="owner")),
+        lambda: list(PPost.all(prefetch="owner")),
+        lambda: PPost.get_page(prefetch="owner"),
+        lambda: PPost.get(prefetch="owner"),
+    ]
+    saved = PPost.prefetch_batch_size
+    try:
+        for size, exc in (
+            (0, ValueError),
+            (-1, ValueError),
+            (1.5, TypeError),
+            (True, TypeError),
+            ("2", TypeError),
+        ):
+            PPost.prefetch_batch_size = size  # type: ignore[assignment]
+            for call in calls:
+                raises(world, exc, call, "prefetch_batch_size", "PPost")
+        PPost.prefetch_batch_size = None
+        hook_calls.clear()
+        assert [p.pk for p in PPost.filter(prefetch="owner")] == [1]
+        assert hook_calls == [{7}]
+    finally:
+        PPost.prefetch_batch_size = saved
+
+
 OVERRIDE = "a-class-that-overrides-url"
 
 

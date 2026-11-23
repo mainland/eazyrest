@@ -1458,6 +1458,10 @@ each related bulk lookup:
 Todo.prefetch_batch_size = 250
 ```
 
+A query with `prefetch=` raises `TypeError` before it sends a request if the
+size is not an `int`, `True` among them, and `ValueError` if it is below 1.
+`None` reads the whole collection as one batch.
+
 If you request prefetch for a related model that does not implement
 `bulk_get_by_pks()`, `filter()`, `all()`, and `get()` raise
 `PrefetchNotSupported` before sending a request. This is intentional: prefetch

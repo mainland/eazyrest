@@ -541,6 +541,11 @@ describe them further.
   read new related objects and dropped the changes. A payload that names
   another key still gives new objects, and a change made in place to the
   field's own collection and a pending update of the field are still discarded.
+- A query with `prefetch=` raises `TypeError` before any request if the model's
+  `prefetch_batch_size` is not an `int`, and `ValueError` if it is below 1,
+  where `v1.0.0a5` read no object for 0, and raised the `ValueError` of
+  `itertools.islice()` after the request for another value. `None` reads the
+  collection as one batch.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

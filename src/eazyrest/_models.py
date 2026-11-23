@@ -5338,8 +5338,14 @@ class JSONObject:
     _json_fields: ClassVar[AbstractSet[str]]
     """All JSON fields."""
 
-    prefetch_batch_size: ClassVar[int] = 100
-    """Maximum number of parent objects to prefetch in one batch."""
+    prefetch_batch_size: ClassVar[int | None] = 100
+    """Maximum number of parent objects to prefetch in one batch.
+
+    A query with ``prefetch=`` refuses a value that is not an ``int``, a
+    ``bool`` among them, with ``TypeError``, and one below ``1`` with
+    ``ValueError``, before it sends a request. ``None`` reads the whole
+    collection as one batch.
+    """
 
     conversions: ClassVar[Mapping[Any, Conversion]] = MappingProxyType({})
     """Conversions of field types, keyed by the type they convert.
@@ -8848,6 +8854,29 @@ class JSONObject:
         return prefetched_related
 
     @classmethod
+    def _check_prefetch_batch_size(cls) -> None:
+        """Refuse a ``prefetch_batch_size`` that no batch can have.
+
+        Raises:
+            TypeError: If the size is neither an ``int`` nor ``None``. A
+                ``bool`` is not a size.
+            ValueError: If the size is below 1, which reads no object.
+        """
+        size = cls.prefetch_batch_size
+        if size is None:
+            return
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise TypeError(
+                f"The prefetch_batch_size of {cls.__name__} must be an int or "
+                f"None, got {type(size).__name__}"
+            )
+        if size < 1:
+            raise ValueError(
+                f"The prefetch_batch_size of {cls.__name__} must be at least "
+                "1, or None to read the collection as one batch"
+            )
+
+    @classmethod
     def _prefetched_filter(
         cls: type[Self],
         items: Iterable[Any],
@@ -8978,8 +9007,9 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field or is named twice, or if a parameter has a
-                value that requests would not send intact.
+                related-object field or is named twice, if a parameter has a
+                value that requests would not send intact, or if
+                ``prefetch_batch_size`` is below 1 and ``prefetch`` is given.
             FieldConversionError: If a parameter's value is of the wrong type
                 for its field, as a text for an ``int`` key, or a related key
                 that ``prefetch`` reads from an item is.
@@ -8989,8 +9019,9 @@ class JSONObject:
                 raised when iteration reaches the item.
             TypeError: If the model's key type is refused, before the lookup.
                 Also raised if a parameter is given both as a keyword argument
-                and in ``params``, or ``request_options`` is not valid for a
-                query.
+                and in ``params``, ``request_options`` is not valid for a
+                query, or ``prefetch_batch_size`` is neither an ``int`` nor
+                ``None`` and ``prefetch`` is given.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
@@ -9004,6 +9035,8 @@ class JSONObject:
         # without bulk lookup fails even when the query matches nothing.
         for field in prefetch_fields:
             cls._prefetch_info(field)
+        if prefetch_fields:
+            cls._check_prefetch_batch_size()
 
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
@@ -9139,6 +9172,8 @@ class JSONObject:
         prefetch_fields = _normalize_prefetch(prefetch)
         for field in prefetch_fields:
             cls._prefetch_info(field)
+        if prefetch_fields:
+            cls._check_prefetch_batch_size()
 
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
