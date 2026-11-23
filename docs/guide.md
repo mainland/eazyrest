@@ -1268,7 +1268,10 @@ before any request, as do two names of one field, such as
 `create(id=7, postId=8)`. Any other name that is no field is sent as it is. The
 lookup of `get_or_create()` builds the key under its JSON or write key too, so
 a `UUID` given in uppercase is sent in the query and in the `POST` in one
-spelling, where `filter()` sends such a name as it was given.
+spelling, where `filter()` sends such a name as it was given. A key whose JSON
+name holds `__`, as `doc__id`, is no lookup of `get_or_create()`, which would
+read it as a field and a suffix, so the call raises `ValueError` naming the
+parameter before any request. Look such a key up as `id` or `pk`.
 
 A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the
 key under its JSON or write key, in `fields=`, or in the `defaults` of

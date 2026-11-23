@@ -641,6 +641,10 @@ describe them further.
   sent a repeated key as many times as it was given. A set field that the
   server lists with a repeated key, as `["a", "a"]`, is the set `{"a"}`, so
   assigning the field its own value sends nothing.
+- `get_or_create()` raises `ValueError` naming the parameter, before any
+  request, for a key's JSON name that holds `__`, as `doc__id`, where
+  `v1.0.0a5` looked up `doc__id` and then posted a body without the key. Look
+  the key up as `id` or `pk`.
 - A type alias whose value is `Annotated[list["datetime.datetime"], "a note"]`
   reads the string in its metadata as written. On Python 3.11 to 3.13, a string
   there that is not an expression, such as `"a note"`, made the alias raise

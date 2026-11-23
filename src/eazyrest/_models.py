@@ -8997,7 +8997,7 @@ class JSONObject:
                 nothing to create. No request is sent.
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
-                not send intact.
+                not send intact, or is the key's JSON name and holds ``__``.
             FieldConversionError: If a field's value cannot be converted, as
                 when a field that holds a collection is given a single item, or
                 if the creation's key is ``None``.
@@ -9035,6 +9035,22 @@ class JSONObject:
             }
 
         kwargs = read_once(_query_params(params, kwargs))
+        key_property = _pk_property_of(cls)
+        for name in kwargs:
+            if (
+                key_property is not None
+                and "__" in name
+                and cls._created_field(name, key_property)
+                == key_property.field
+            ):
+                # The lookup would read the name as a field and a suffix, and
+                # the creation would not send it as the key.
+                raise ValueError(
+                    f"Query parameter {name} for {cls.__name__} is the "
+                    f"key's JSON name, which holds '__', so a lookup would "
+                    "read it as a field and a suffix. Look the key up as "
+                    f"{key_property.field} or pk"
+                )
         create_kwargs = {
             name: value
             for name, value in kwargs.items()
@@ -9057,15 +9073,17 @@ class JSONObject:
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
         # such a name as given, because it is an ordinary query parameter.
-        key_property = _pk_property_of(cls)
-        lookup = {
-            name: _build_key(cls, value)
-            if key_property is not None
-            and name not in ("pk", key_property.field)
-            and cls._created_field(name, key_property) == key_property.field
-            else value
-            for name, value in kwargs.items()
-        }
+        lookup = {}
+        for name, value in kwargs.items():
+            if (
+                key_property is not None
+                and name not in ("pk", key_property.field)
+                and cls._created_field(name, key_property)
+                == key_property.field
+            ):
+                with _converting(cls, key_property.field):
+                    value = _build_key(cls, value)
+            lookup[name] = value
         results = cls.filter(
             api=api, request_options=request_options, params=lookup
         )

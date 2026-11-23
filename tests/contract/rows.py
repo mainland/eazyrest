@@ -143,6 +143,14 @@ class Member(Base):
     friends: set[Member]
 
 
+@json_object(field_map={"id": "doc__id"})
+class DK(Base):
+    """A key whose JSON name holds two underscores."""
+
+    class_url = "/dk/"
+    id: int
+
+
 @json_object
 class Entry(Base):
     """A model with no key."""
@@ -2272,6 +2280,18 @@ def a_none_key_is_refused_on_create(world: World) -> None:
     ):
         error = raises(world, FieldConversionError, call, name, "out")
         assert "leave the key out" in str(error).lower()
+
+
+@row(CREATE)
+def a_json_name_with_two_underscores_is_no_lookup_of_get_or_create(
+    world: World,
+) -> None:
+    world.mocker.get(requests_mock.ANY, json=[{"doc__id": 7}])
+    for value in (7, "7"):
+        for call in creations(DK, doc__id=value):
+            raises(world, ValueError, call, "doc__id")
+    assert world.query(lambda: list(DK.filter(doc__id=7))) == "doc__id=7"
+    assert world.query(lambda: DK.get_or_create(id=7)) == "doc__id=7"
 
 
 @row(CREATE)
