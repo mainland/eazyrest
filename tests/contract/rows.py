@@ -1798,6 +1798,19 @@ def an_object_of_another_model_is_refused_in_a_query(world: World) -> None:
 
 
 @row(OWN)
+def an_object_of_a_base_class_is_refused_as_the_key_of_a_subclass(
+    world: World,
+) -> None:
+    for name in ("id", "pk"):
+        for call in lookups(Admin, **{name: User(id=7)}):
+            error = raises(
+                world, FieldConversionError, call, "Admin.id", "Admin", "User"
+            )
+            assert "relation" not in str(error)
+            assert "key" in str(error)
+
+
+@row(OWN)
 def two_parameters_naming_the_key_are_refused(world: World) -> None:
     refuses_query(world, Post, ValueError, "pk", "id", pk=7, id=8)
     refuses_query(

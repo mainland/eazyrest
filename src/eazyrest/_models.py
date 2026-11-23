@@ -1883,6 +1883,35 @@ def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
         )
 
 
+def _check_own_key_object(value: JSONObject, model_type: type[Any]) -> None:
+    """Refuse an object that is given for a model's own key.
+
+    A model's key is not a relation, so the refusal calls it the key. An object
+    of the model, or of a subclass that keeps its key, is the key it names.
+
+    Args:
+        value: Object given for the key of ``model_type``.
+        model_type: The model whose key is compared.
+
+    Raises:
+        TypeError: If ``value``'s class is not ``model_type`` or a subclass of
+            it that keeps its key. The field's name is added where the
+            conversion runs.
+    """
+    if not isinstance(value, model_type):
+        raise TypeError(
+            f"The key of {model_type.__name__} cannot be an object of "
+            f"{type(value).__name__}, which is another model. Pass its key, "
+            f"or an object of {model_type.__name__}"
+        )
+    if not _has_key_of(type(value), model_type):
+        raise TypeError(
+            f"The key of {model_type.__name__} cannot be an object of "
+            f"{type(value).__name__}, which chose another primary key than "
+            f"{model_type.__name__}'s"
+        )
+
+
 def _has_key_of(cls: type[Any], model_type: type[Any]) -> bool:
     """Return whether a class is keyed by the field of a related model.
 
@@ -7757,6 +7786,8 @@ class JSONObject:
         def convert(item: Any) -> Any:
             conversion = parameter.conversion
             if conversion is not None:
+                if parameter.key is not None and isinstance(item, JSONObject):
+                    _check_own_key_object(item, cls)
                 if (
                     parameter.model is not None
                     and isinstance(item, JSONObject)
