@@ -3949,7 +3949,8 @@ def json_object(
             class or the primary key that the class inherits. If omitted, the
             class keeps the primary key it inherits, and a redeclaration of
             that field must have the base's type. A class that inherits none
-            uses a field named ``id`` declared on the class.
+            uses a field named ``id`` declared on the class. The guide's "What
+            a key may be" says which types a key may have.
         field_map: Optional mapping from Python attribute name to JSON key.
         exclude: Set of annotated attribute names to ignore.
         write_map: Optional mapping from Python attribute name to the JSON
@@ -3998,7 +3999,10 @@ def json_object(
             is first used. A key whose type is not yet defined raises when the
             key is first used. Also raised if the class redeclares the key
             field that it inherits with another type, such as a ``NewType`` or
-            an optional of the base's type.
+            an optional of the base's type. Also raised if the key's type is
+            not one that a key may have, such as a relation, a ``float``, or a
+            class that Pydantic configures. The message names the types that a
+            key may be.
     """
     if field_map is None:
         field_map = {}
@@ -4021,7 +4025,8 @@ def json_object(
             TypeError: If a field's type is a model without a primary-key
                 field, a ``Collection`` or an ``Iterable`` of a model, or a
                 collection of models with an optional item or an item that is a
-                collection of models.
+                collection of models. Also if the key's type is not one that a
+                key may have.
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
@@ -8932,6 +8937,13 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field or is named twice, or if a parameter has a
                 value that requests would not send intact.
+            FieldConversionError: If a parameter's value is of the wrong type
+                for its field, as a text for an ``int`` key, or a related key
+                that ``prefetch`` reads from an item is.
+            ResponseShapeError: If an item of the response is not a JSON
+                object, or holds no key, or a key that is not of the key's
+                type. The message names the item's position, and the error is
+                raised when iteration reaches the item.
             TypeError: If the model's key type is refused, before the lookup.
                 Also raised if a parameter is given both as a keyword argument
                 and in ``params``, or ``request_options`` is not valid for a
@@ -9057,6 +9069,12 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field or is named twice, or if a parameter has a
                 value that requests would not send intact.
+            FieldConversionError: If a parameter's value is of the wrong type
+                for its field, as a text for an ``int`` key, or a related key
+                that ``prefetch`` reads from an item is.
+            ResponseShapeError: If an item of the page is not a JSON object, or
+                holds no key, or a key that is not of the key's type. The
+                message names the item's position.
             TypeError: If ``url`` is given with query parameters, a parameter
                 is given both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, or
@@ -9141,6 +9159,12 @@ class JSONObject:
             ValueError: If a ``prefetch`` field is not a JSON-backed
                 related-object field or is named twice, or if a parameter has a
                 value that requests would not send intact.
+            FieldConversionError: If a parameter's value is of the wrong type
+                for its field, as a text for an ``int`` key, or a related key
+                that ``prefetch`` reads from an item is.
+            ResponseShapeError: If an item of the response is not a JSON
+                object, or holds no key, or a key that is not of the key's
+                type. The message names the item's position.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, or ``request_options`` is not valid for a
                 query.
@@ -9246,7 +9270,13 @@ class JSONObject:
                 not send intact, or is the key's JSON name and holds ``__``.
             FieldConversionError: If a field's value cannot be converted, as
                 when a field that holds a collection is given a single item, or
-                if the creation's key is ``None``.
+                if the creation's key is ``None``. Also if a lookup value is of
+                the wrong type for its field.
+            ResponseShapeError: If an item of the lookup's response is not a
+                JSON object, or holds no key, or a key that is not of the key's
+                type. The creation raises what ``create()`` raises, as
+                ``APIError`` for an HTTP error status and
+                ``ResponseShapeError`` for a response that names no key.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, ``request_options`` is not valid for a query and
                 a creation, or a creation payload value is not made of JSON
