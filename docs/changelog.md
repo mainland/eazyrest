@@ -67,7 +67,8 @@ describe them further.
   each such item of a lookup that takes several values. `v1.0.0a5` sent the
   value's `str()`, as `True` for a boolean, or its items. Pass it by the
   field's name, which converts it. A model object given for a relation is still
-  sent as its key.
+  sent as its key, but one given for a field whose type is not defined yet is
+  refused.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
   `FieldConversionError` naming the field and the item's position when the

@@ -410,13 +410,14 @@ def test_a_json_key_refuses_none_as_before() -> None:
         list(Colored.filter(Color=None))
 
 
-def test_a_field_not_defined_yet_sends_a_model_by_its_json_key(
+def test_a_field_not_defined_yet_refuses_a_model_by_its_json_key(
     server: Any,
 ) -> None:
-    """The type is unknown, so a model may be a relation's and is its key."""
-    list(Late.filter(Later=User(id=3)))
+    """The type is unknown, so a model is no relation's key and is refused."""
+    with pytest.raises(ValueError, match="Later"):
+        list(Late.filter(Later=User(id=3)))
 
-    assert query_of(server) == "Later=3"
+    assert not server.called
 
 
 def test_a_field_not_defined_yet_refuses_a_value_that_is_no_scalar() -> None:

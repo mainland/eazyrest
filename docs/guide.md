@@ -1249,11 +1249,11 @@ instance of a class that `conversions` registers, raises `ValueError` naming
 the parameter and advising the field's name with the same suffix, as
 `span=Span(1, 2)`. So does each item of a lookup that takes several values. The
 name `flag` sends `true` for `True`, which its JSON key would send as `True`. A
-model object is the exception for a relation, which both names send as its key.
-A string, an integer, or a float is sent as given. An empty text in a parameter
-that takes one value is sent, as in `Todo.filter(title="")`, which sends
-`title=`, and django-filter reads it as no filter, so the query matches every
-object.
+model object is the exception for a relation, which both names send as its key,
+but one given for a field whose type is not defined yet is refused. A string,
+an integer, or a float is sent as given. An empty text in a parameter that
+takes one value is sent, as in `Todo.filter(title="")`, which sends `title=`,
+and django-filter reads it as no filter, so the query matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,

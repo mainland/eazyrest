@@ -8003,9 +8003,9 @@ class JSONObject:
 
         Returns:
             Whether the field is a relation or a collection of them, which
-            takes a model object as its key. ``True`` for a field whose type
-            cannot be resolved yet, since a model given for it may be a
-            relation's, and a name sent as given needs no type.
+            takes a model object as its key. ``False`` for a field whose type
+            cannot be resolved yet, which a name sent as given needs no type
+            for, but a model given for it is then refused.
         """
         assert parameter.named is not None
         try:
@@ -8013,7 +8013,7 @@ class JSONObject:
                 getattr(cls, parameter.named.field).analyzed_type
             )
         except (FieldConversionError, NameError):
-            return True
+            return False
         if isinstance(analyzed, CollectionType):
             analyzed = _unwrap_optional_type(analyzed.item_type)
         return isinstance(analyzed, RelatedType)
