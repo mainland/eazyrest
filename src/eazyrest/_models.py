@@ -7379,11 +7379,15 @@ class JSONObject:
 
         Returns:
             Whether ``value`` is one operand even if it is iterable: a model
-            for a relation, or a value that a registered conversion encodes.
+            object, or a value that a registered conversion encodes.
         """
+        if isinstance(value, JSONObject):
+            # A model object is one value for any parameter, and never its
+            # members, whatever it iterates as.
+            return True
         conversion = _unwrap_optional_type(conversion)
         if isinstance(conversion, RelatedType):
-            return isinstance(value, JSONObject)
+            return False
         if structured:
             return True
         found = _class_entry(conversion, _table_of(cls))

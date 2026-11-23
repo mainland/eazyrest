@@ -1704,6 +1704,27 @@ def an_object_of_the_model_is_sent_as_the_key(world: World) -> None:
 
 
 @row(OWN)
+def an_iterable_model_is_sent_as_the_key(world: World) -> None:
+    crew = Crew(slug="a")
+    for name, expected in (("slug", "slug=a"), ("pk", "pk=a")):
+        sends_query_but_refuses_creation(
+            world,
+            Tag,
+            expected,
+            FieldConversionError,
+            "Tag.slug",
+            **{name: crew},
+        )
+
+
+@row(OWN)
+def a_model_is_refused_by_a_lookup_of_several_values(world: World) -> None:
+    refuses_query(world, Tag, ValueError, "pk__in", pk__in=Crew(slug="a"))
+    refuses_query(world, Post, ValueError, "id__range", id__range=Crowd(id=5))
+    refuses_query(world, Post, ValueError, "title__in", title__in=Crowd(id=5))
+
+
+@row(OWN)
 def a_subclass_object_is_sent_as_its_key(world: World) -> None:
     sends_query_but_refuses_creation(
         world, User, "id=7", FieldConversionError, "User.id", id=Admin(id=7)
