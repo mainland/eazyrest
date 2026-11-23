@@ -6932,7 +6932,9 @@ class JSONObject:
         carry a full or partial object payload. Incoming fields are treated as
         authoritative server state, so any pending local updates for the same
         JSON fields are discarded. A payload may lack the key field, but one
-        that has it must name the object's own key.
+        that has it must name the object's own key. A relation field whose JSON
+        the payload leaves unchanged keeps its related objects, with their
+        unsaved changes, as a load does.
 
         If this object has not been loaded, the payload becomes its JSON
         without a request. Reading a field that the payload lacks then loads
@@ -6968,20 +6970,79 @@ class JSONObject:
     def _merge_json(self, payload: dict[str, Any]) -> None:
         """Merge authoritative JSON members into this object's JSON.
 
+        The members replace those of the same keys, and discard the cached
+        values and pending updates of their fields. A field of related objects
+        whose JSON the payload leaves unchanged is not dropped, as a load
+        leaves it, so that a related object keeps its unsaved changes. A change
+        made in place to the field's own collection, or a pending update of the
+        field, still goes.
+
         Args:
-            payload: JSON members, which replace those of the same keys, and
-                discard their cached values and pending updates.
+            payload: JSON members to merge.
         """
         assert self._json is not None
-        self._json.update(self._readable_json(payload))
+        payload = self._readable_json(payload)
+        named = [
+            field
+            for field in self._json_fields
+            if getattr(type(self), field).json_field in payload
+        ]
+        # Decide what to drop before anything changes, so that no error can
+        # leave the caches behind the JSON.
+        stale = [
+            field
+            for field in named
+            if not self._keeps_related_objects(field, payload)
+        ]
+        self._json.update(payload)
+        self._forget_fields(stale)
+        for field in named:
+            self._pending_updates.pop(
+                getattr(type(self), field).json_field, None
+            )
 
-        for field in self._json_fields:
-            descriptor: JSONProperty = getattr(type(self), field)
-            if descriptor.json_field not in payload:
-                continue
+    def _keeps_related_objects(
+        self, field: str, payload: Mapping[str, Any]
+    ) -> bool:
+        """Return whether a merge leaves a field's cached objects as they are.
 
-            self._forget_fields([field])
-            self._pending_updates.pop(descriptor.json_field, None)
+        Args:
+            field: Python attribute name of a field that the payload names.
+            payload: The JSON that the merge applies.
+
+        Returns:
+            Whether the field holds related objects that are cached, its JSON
+            is unchanged as a load would compare it, it has no pending update,
+            and its collection was not changed in place.
+        """
+        prop: JSONProperty = getattr(type(self), field)
+        if (
+            field not in self._field_cache
+            or prop.json_field in self._pending_updates
+        ):
+            return False
+        assert self._json is not None
+        try:
+            if not _holds_model(prop.analyzed_type):
+                return False
+            old = self._json.get(prop.json_field, _MISSING)
+            if not _json_equal(
+                prop._comparable(old, by_key=True),
+                prop._comparable(payload[prop.json_field], by_key=True),
+            ):
+                return False
+            snapshot = self._field_snapshots.get(field, _MISSING)
+            if snapshot is _MISSING:
+                return True
+            with _converting(type(self), field):
+                current = self._field_cache[field]
+                _refuse_bare_items(current, prop.analyzed_type)
+                encoded = self._to_json(current, prop.analyzed_type)
+            return _json_equal(encoded, snapshot)
+        except (NameError, AttributeError, TypeError):
+            # A type that cannot be resolved yet, or a value that cannot be
+            # encoded, cannot be compared by key, so the field is dropped.
+            return False
 
     def refresh(self) -> None:
         """Mark this object stale and discard pending local updates.

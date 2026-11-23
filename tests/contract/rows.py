@@ -2587,6 +2587,24 @@ def a_loaded_response_with_a_null_key_is_refused(world: World) -> None:
     raises(world, ResponseShapeError, lambda: user.name, requests=1)
 
 
+@row(FULL)
+def a_merge_keeps_a_related_object_whose_key_is_unchanged(
+    world: World,
+) -> None:
+    embedded = {"id": 7, "name": "a"}
+    obj = post(owner=embedded)
+    owner = obj.owner
+    assert owner is not None
+    owner.name = "b"
+    obj.update_from_json({"owner": {"id": 7, "name": "a"}})
+    assert obj.owner is owner
+    assert world.body(owner.save, "PATCH") == {"name": "b"}
+    obj.update_from_json({"owner": 8})
+    assert obj.owner is not owner
+    assert obj.owner is not None
+    assert obj.owner.pk == 8
+
+
 LISTS: list[list[dict[str, Any]]] = [[], [{"id": 7}, {"id": 8}]]
 
 

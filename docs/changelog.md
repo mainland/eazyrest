@@ -535,6 +535,12 @@ describe them further.
   raises `AttributeError`. A load, a write's response, and `update_from_json()`
   that name another key raise `ResponseShapeError`, a `ValueError`, and change
   nothing.
+- `update_from_json()` keeps the related objects of a relation field whose key
+  the payload leaves unchanged, as a load does, so that a related object keeps
+  its unsaved changes when a payload repeats the field's JSON, where `v1.0.0a5`
+  read new related objects and dropped the changes. A payload that names
+  another key still gives new objects, and a change made in place to the
+  field's own collection and a pending update of the field are still discarded.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

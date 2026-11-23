@@ -750,10 +750,11 @@ Declare items that have no key as a `TypedDict` or a dataclass, which need
 none.
 
 A related object that a field returns keeps your unsaved changes for as long as
-the field's JSON is unchanged. Loading the missing fields of an object keeps
-the related objects whose JSON the load left unchanged, and assigning a related
-object, or a `list`, `tuple`, or `set` of them, keeps the objects you assigned.
-Assigning a field the object or the collection that it holds, as in
+the field's JSON is unchanged. Loading the missing fields of an object, and
+merging a payload with `update_from_json()`, keep the related objects whose
+JSON the load or the payload left unchanged, and assigning a related object, or
+a `list`, `tuple`, or `set` of them, keeps the objects you assigned. Assigning
+a field the object or the collection that it holds, as in
 `post.owner = post.owner`, sends nothing, also when the server embedded the
 object, since an assignment compares the keys. When the server changes a
 relation, the field reads new related objects, and an object that you still
@@ -1895,7 +1896,9 @@ todo.update_from_json({"id": 1, "completed": True})
 Incoming fields are treated as authoritative server state, so queued lazy
 updates for those same JSON fields are discarded. If the object has not been
 loaded, the payload becomes its JSON without a request. Reading a field that
-the payload lacks then loads the full object.
+the payload lacks then loads the full object. A payload that repeats the JSON
+of a relation field leaves its related objects as they are, with their unsaved
+changes, as a load does.
 
 ## API client
 
