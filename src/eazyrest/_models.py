@@ -6770,12 +6770,19 @@ class JSONObject:
                 has changed. Any other error of ``merge_response()`` reaches
                 the caller unchanged.
         """
+        # The hook may change what it is given, as an override that sorts a
+        # list does, so it gets copies. The object's own JSON and the values
+        # that it sent stay as they were, whatever the hook does or raises.
         return cast(
             "dict[str, Any]",
             _hook_result(
                 type(self),
                 "merge_response",
-                self.merge_response(resp, current, sent),
+                self.merge_response(
+                    resp,
+                    {key: _copy_json(value) for key, value in current.items()},
+                    {key: _copy_json(value) for key, value in sent.items()},
+                ),
                 Mapping,
                 "a JSON object",
                 resp=resp,
