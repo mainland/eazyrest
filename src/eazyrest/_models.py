@@ -376,12 +376,7 @@ class _ModelPageSource(_PageSource[Any]):
             TypeError: If ``collection_page()`` does not return a ``Page``.
         """
         model = self._model
-        raw = model.collection_page(resp, api=self.api)
-        if not isinstance(raw, Page):
-            raise TypeError(
-                f"{model.__name__}.collection_page() must return a Page, got "
-                f"{type(raw).__name__}"
-            )
+        raw = _checked_page(model, model.collection_page(resp, api=self.api))
         _check_page_size(self.api, raw.items)
         if self._prefetch:
             objects: list[JSONObject] = list(
@@ -406,6 +401,27 @@ class _ModelPageSource(_PageSource[Any]):
             page._allow_other_origins = raw._allow_other_origins
         page._asked_url = _asked_url(resp)
         return page
+
+
+def _checked_page(model: type[Any], page: Any) -> Page[Any]:
+    """Return what a model's ``collection_page()`` gave, if it is a page.
+
+    Args:
+        model: The model whose hook was called.
+        page: The hook's result.
+
+    Returns:
+        ``page``.
+
+    Raises:
+        TypeError: If ``page`` is not a ``Page``.
+    """
+    if not isinstance(page, Page):
+        raise TypeError(
+            f"{model.__name__}.collection_page() must return a Page, got "
+            f"{type(page).__name__}"
+        )
+    return page
 
 
 class APIDescriptor:
@@ -8405,14 +8421,15 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If the payload is neither a list nor a page.
+            TypeError: If ``collection_page()`` does not return a ``Page``.
         """
         if cls._overrides_hook("collection_items"):
             return cls.collection_items(api.json(resp), api=api, **kwargs)
         return _follow_pages(
             api,
-            cls.collection_page(resp, api=api, **kwargs),
-            lambda page_resp: cls.collection_page(
-                page_resp, api=api, **kwargs
+            _checked_page(cls, cls.collection_page(resp, api=api, **kwargs)),
+            lambda page_resp: _checked_page(
+                cls, cls.collection_page(page_resp, api=api, **kwargs)
             ),
         )
 
