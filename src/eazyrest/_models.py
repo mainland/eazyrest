@@ -7113,7 +7113,15 @@ class JSONObject:
                 another key than the object's, or ``null``, or a key that is
                 not of the key's type, so that the payload does not name this
                 object. It is a ``ValueError``, and nothing is merged.
+            TypeError: If this object's class is not decorated with
+                ``@json_object``, so that it has no fields to merge.
         """
+        if not hasattr(type(self), "_json_fields"):
+            raise TypeError(
+                f"{type(self).__name__} is not decorated, so it has no "
+                "fields to merge a payload into. Decorate it with "
+                "@json_object"
+            )
         payload = copy.deepcopy(dict(json))
         if _pk_property_of(type(self)) is None:
             # An object without a key has no key to compare.
