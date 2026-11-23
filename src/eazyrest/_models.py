@@ -8974,9 +8974,10 @@ class JSONObject:
 
         Raises:
             ResponseShapeError: If ``object_json()`` raises ``DoesNotExist`` or
-                ``MultipleObjectsReturned`` for a list, or does not return a
-                mapping. The error holds the response. Any other error of
-                ``object_json()`` reaches the caller unchanged.
+                ``MultipleObjectsReturned`` for a payload that is a list, or
+                does not return a mapping. The error holds the response. Any
+                other error of ``object_json()``, those two for another payload
+                included, reaches the caller unchanged.
         """
         cls = type(self)
         try:
@@ -8984,6 +8985,10 @@ class JSONObject:
         except (DoesNotExist, MultipleObjectsReturned) as err:
             # A list is not the object that a write, a load, or a creation
             # returns. These errors describe a query, which none of them is.
+            # The default hook raises them for a list only, so one that an
+            # override raises for another payload is its own error.
+            if not isinstance(payload, list):
+                raise
             if self._wire_key is _BEFORE_CREATION:
                 where = (
                     f"creation of a {cls.__name__} is not one object, "
