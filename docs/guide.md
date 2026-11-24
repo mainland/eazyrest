@@ -2057,8 +2057,10 @@ api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
 
-Give a collection of origins. A single string raises `TypeError` before the
-request, because it would be read as a collection of its characters.
+Give a tuple, a list, or a frozenset of absolute URLs. Any other value raises
+`TypeError` naming the attribute and the type that it found, before the
+request. A single string would be read as a collection of its characters, and
+bytes and a `bytearray` as a collection of integers.
 
 These checks guard the redirects that requests follows. A raw `GET` sent with
 `allow_redirects=False` follows none, so it returns the 3xx response as it is,

@@ -634,11 +634,15 @@ describe them further.
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
   a default swallow.
-- A string or bytes given as `API.redirect_origins` raises `TypeError` before
-  the request, saying to give a collection of origins, where `v1.0.0a5` read it
-  as a collection of its characters, so that every request raised the
-  `Invalid URL` error of requests. Every request checks it, a request for a
-  page that must stay on the API's origin included.
+- `API.redirect_origins` must be a tuple, a list, or a frozenset of strings.
+  Any other value raises `TypeError` naming the attribute and the type that it
+  found, before the request, from `get()`, `post()`, `patch()`, `put()`, and
+  `delete()` and from a request for a page, one that must stay on the API's
+  origin included. That covers a string, bytes, a `bytearray`, a set, a
+  generator, a mapping, and a list that holds anything but strings. `v1.0.0a5`
+  read a string as a collection of its characters and a `bytearray` as a
+  collection of integers, so that every request raised the `Invalid URL` error
+  of requests, and it took a set or a generator without a word.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

@@ -238,9 +238,12 @@ def _leaves_allowed_origins(
 
 
 def _permitted_origins(
-    base_url: str, redirect_origins: Collection[str]
+    base_url: str,
+    redirect_origins: tuple[str, ...] | list[str] | frozenset[str],
 ) -> set[tuple[str, str | None, int | None]]:
     """Return the origins that a request starting at ``base_url`` may reach.
+
+    Every request reads ``API.redirect_origins`` here and nowhere else.
 
     Args:
         base_url: Absolute URL of the request, or an API's base URL.
@@ -250,15 +253,25 @@ def _permitted_origins(
         The origin of ``base_url`` and the origins of ``redirect_origins``.
 
     Raises:
-        TypeError: If ``redirect_origins`` is a string or bytes, which a type
-            checker takes for a collection of strings and which would be read
-            as a collection of its characters or of its integers.
+        TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+            frozenset, or holds anything but strings. A string or bytes would
+            be read as a collection of its characters or its integers, and a
+            type checker takes a string for a collection of strings.
     """
-    if isinstance(redirect_origins, (str, bytes)):
+    if not isinstance(redirect_origins, (tuple, list, frozenset)):
         raise TypeError(
-            "API.redirect_origins must be a collection of origins, such as "
-            '["https://cdn.example.com"], not a string'
+            "API.redirect_origins must be a collection of origins, a tuple, "
+            "list, or frozenset of URLs such as "
+            '["https://cdn.example.com"], not a '
+            f"{type(redirect_origins).__name__}"
         )
+    for origin in redirect_origins:
+        if not isinstance(origin, str):
+            raise TypeError(
+                "API.redirect_origins must be a collection of origins, such "
+                f'as "https://cdn.example.com", but it holds a '
+                f"{type(origin).__name__}"
+            )
     return {_origin(base_url), *map(_origin, redirect_origins)}
 
 
@@ -1059,7 +1072,7 @@ class API:
     have none, as in ``/users/1``.
     """
 
-    redirect_origins: Collection[str] = ()
+    redirect_origins: tuple[str, ...] | list[str] | frozenset[str] = ()
     """Other origins to which a redirect may lead, as URLs.
 
     By default, a redirect must lead to the scheme, host, and port of the
@@ -1067,8 +1080,10 @@ class API:
     too. Add an origin here, such as ``"https://cdn.example.com"``, on an
     instance or in a subclass, to follow redirects to it. Only the scheme,
     host, and port of each URL count. Every header and any body of the
-    redirected request is sent to these origins. Give a collection of origins:
-    a single string or bytes raises ``TypeError`` before a request is sent.
+    redirected request is sent to these origins. Give a tuple, a list, or a
+    frozenset of absolute URLs. Any other value, such as a single string,
+    bytes, a set, or a list that holds anything but strings, raises
+    ``TypeError`` before a request is sent.
     """
 
     default_write_mode: WriteMode
@@ -1407,6 +1422,8 @@ class API:
                 response.
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         return self._transmit(method, send, uri, args, kwargs, None)
 
@@ -1453,6 +1470,8 @@ class API:
                 response is a redirect that was not followed.
             requests.RequestException: If the request fails, as for any
                 request.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         url = self.resolve_url(url)
         # Prepare the link as requests will, before anything is sent, so that
@@ -1782,6 +1801,8 @@ class API:
                 response exceeds ``max_response_bytes``.
             requests.RequestException: If the request fails to send, as
                 ``requests.ConnectionError`` does.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         return self._send("GET", self.session.get, uri, *args, **kwargs)
 
@@ -1805,6 +1826,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("POST", self.session.post, uri, *args, **kwargs)
 
@@ -1830,6 +1852,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("PATCH", self.session.patch, uri, *args, **kwargs)
 
@@ -1853,6 +1876,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("PUT", self.session.put, uri, *args, **kwargs)
 
@@ -1875,6 +1899,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 
