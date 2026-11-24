@@ -3,9 +3,34 @@
 from __future__ import annotations
 
 from typing import NamedTuple
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _port_of(prepared: SplitResult, sent: str) -> int | None:
+    """Return the port that a URL names, which can be 0.
+
+    ``requests`` drops port 0 when it prepares a URL, but it sends a redirect's
+    destination as it stands, so the adapter connects to port 0. Reading the
+    prepared URL alone takes that port for the scheme's default.
+
+    Args:
+        prepared: The URL after ``requests`` prepared it.
+        sent: The URL as it was before it was prepared.
+
+    Returns:
+        The prepared URL's port, or 0 if it has none and ``sent`` names 0, or
+        ``None`` if neither names a port.
+    """
+    port = prepared.port
+    if port is None:
+        try:
+            if urlsplit(sent).port == 0:
+                return 0
+        except ValueError:
+            pass
+    return port
 
 
 class _ServerURL(NamedTuple):
@@ -23,12 +48,16 @@ class _ServerURL(NamedTuple):
     """Whether the session has an adapter for the URL."""
 
     @classmethod
-    def from_prepared(cls, url: str, sendable: bool = True) -> _ServerURL:
+    def from_prepared(
+        cls, url: str, sendable: bool = True, sent: str | None = None
+    ) -> _ServerURL:
         """Read a URL that requests has prepared.
 
         Args:
             url: The prepared URL.
             sendable: Whether the session has an adapter for the URL.
+            sent: The URL as it was before it was prepared, if it was, so that
+                a port of 0, which preparing drops, is read as 0.
 
         Returns:
             The URL with its scheme, host, and port, read as
@@ -41,7 +70,10 @@ class _ServerURL(NamedTuple):
         scheme = parts.scheme.lower()
         http = scheme in _DEFAULT_PORTS
         host = parts.hostname if http else None
-        port = parts.port or _DEFAULT_PORTS[scheme] if http else None
+        port = None
+        if http:
+            named = _port_of(parts, url if sent is None else sent)
+            port = _DEFAULT_PORTS[scheme] if named is None else named
         return cls(url, scheme, host, port, sendable)
 
     @property

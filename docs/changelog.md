@@ -644,6 +644,10 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A redirect or a page link to port 0 of the request's host is refused as a
+  redirect or a link to another origin, where `v1.0.0a5` took it for the
+  scheme's default port, and the request then failed with a `ConnectionError`
+  for port 0.
 - `API.redirect_origins` must be a tuple, a list, or a frozenset of strings.
   Any other value raises `TypeError` naming the attribute and the type that it
   found, before the request, from `get()`, `post()`, `patch()`, `put()`, and

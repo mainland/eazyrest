@@ -43,7 +43,7 @@ from ._errors import (
     _response_name,
 )
 from ._protocols import Client, Response
-from ._urls import _DEFAULT_PORTS, _ServerURL
+from ._urls import _DEFAULT_PORTS, _port_of, _ServerURL
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -107,7 +107,12 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     assert request.url is not None
     parts = urlsplit(request.url)
     scheme = parts.scheme.lower()
-    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+    port = _port_of(parts, url)
+    return (
+        scheme,
+        parts.hostname,
+        _DEFAULT_PORTS.get(scheme) if port is None else port,
+    )
 
 
 def _prepare_server_url(
@@ -143,7 +148,7 @@ def _prepare_server_url(
         request.prepare_headers(None)
         request.prepare_auth(None)
         assert request.url is not None
-        prepared = _ServerURL.from_prepared(request.url)
+        prepared = _ServerURL.from_prepared(request.url, sent=url)
         if not prepared.scheme:
             return None
         try:
