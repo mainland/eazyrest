@@ -412,12 +412,12 @@ def _count_of(payload: Any, count_key: str) -> int | None:
 
     Returns:
         The member's value, if the payload is a mapping and the value is an
-        integer, and ``None`` otherwise.
+        integer that is not negative, and ``None`` otherwise.
     """
     if not isinstance(payload, Mapping):
         return None
     count = payload.get(count_key)
-    if isinstance(count, int) and not isinstance(count, bool):
+    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
         return count
     return None
 

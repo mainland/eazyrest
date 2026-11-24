@@ -269,6 +269,19 @@ describe them further.
   `Any` field or a value of `dict[str, Any]`, a tuple, which reads back as a
   list, and a mapping whose keys are not strings are such values. Assign a list
   instead of a tuple.
+- A field of a plain type writes the plain value of a subclass of `str`, `int`,
+  or `float`, such as a member of an enum that mixes in one of them, in a JSON
+  body, in a form field of a write with `files=`, in a query by the field's
+  name, and from `encode_json()`, also inside `Any`, `list`, and `dict` values,
+  a `TypedDict`, and a dataclass. `v1.0.0a5` sent Python's `str()` of such a
+  value in a form field and in a query, as `Level.HIGH` for `3`, so a lookup
+  and the creation by `get_or_create()` named different values.
+- An integer of more than 4300 digits, which Python cannot write as text,
+  raises `FieldConversionError` when it is assigned or given to `create()` or
+  `get_or_create()`, and `ValueError` from `encode_json()` and from a query. An
+  enum or a `Literal` with such a value raises `TypeError` when the class is
+  decorated. `v1.0.0a5` queued the assignment, so that every later `save()`
+  raised `requests.exceptions.InvalidJSONError`.
 - A value that nests more than 127 levels deep, or that holds itself, raises
   `FieldConversionError` when it is assigned or given to `create()` or
   `get_or_create()` as a field, and `ValueError` naming the value as `[key]`
@@ -620,12 +633,116 @@ describe them further.
   class and `class_url`, before any request, from `url`, a read that loads the
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
-  a default swallow.
-- A string or bytes given as `API.redirect_origins` raises `TypeError` before
-  the request, saying to give a collection of origins, where `v1.0.0a5` read it
-  as a collection of its characters, so that every request raised the
-  `Invalid URL` error of requests. Every request checks it, a request for a
-  page that must stay on the API's origin included.
+  a default swallow. `get_page(url=...)` raises it too, where it sent its
+  request.
+- A class whose `url` returns anything but a `str` raises `TypeError` naming
+  the class and `url`, from a field read that loads, `refresh()`, `delete()`,
+  `save()`, an eager assignment, and `absolute_url`. `v1.0.0a5` failed with an
+  `AttributeError` from the library's own code, so `hasattr()` was `False` and
+  `getattr()` with a default gave the default for a field.
+- A load, a write, or a creation that the server answers with a JSON scalar or
+  `null`, for a class that does not override `object_json()`, raises
+  `ResponseShapeError` that blames the response. It named a method that the
+  program never wrote.
+- A `count` below zero in a page is read as no count, as a `count` of another
+  type is, so `Page.count` and the `count` of a query's results are `None`.
+  `v1.0.0a5` passed the negative number on.
+- A `uuid.UUID` field that is no key reads only the four spellings that a key
+  reads: the hyphenated, compact, braced, and URN forms, in ASCII hex. Any
+  other text raises `FieldConversionError`, as a date, a time, a decimal, a
+  duration, and a key refuse it. `v1.0.0a5` read whatever `uuid.UUID()` reads,
+  so 31 hex digits after a space, a `+`, or an underscore read as a UUID with a
+  leading zero.
+- The constructor checks every name and converts every value of its keywords
+  before its first request, so a keyword that is refused after another, as a
+  name that is no field, a read-only field, a second key, or a value that
+  cannot convert, leaves no `GET` or `PATCH` behind. `v1.0.0a5` assigned the
+  keywords in order, so the caller had no object after requests that had
+  changed the server.
+- An assignment to a public name that is no field raises `AttributeError` whose
+  message says that the name is no field, where it said that the object has no
+  such attribute, which is false of a property with a setter.
+- A set, a frozenset, or another set-like value given to a sequence of related
+  objects, as `post.tags = {tag_a, tag_b}` for `tags: list[Tag]`, or to
+  `create()` or `get_or_create()`, raises `FieldConversionError` naming the
+  field and saying that a set has no order to write, before any request.
+  `v1.0.0a5` wrote the keys in the set's iteration order, which differs from
+  one run to the next for a model's hash. A set field still takes a set, and a
+  query still sends a set sorted, but `get_or_create()` with such a set raises
+  before its lookup, since its creation could not write it.
+- A set whose items have no hash raises `TypeError` when the class is
+  decorated, also for items that are a `NewType` of `list` or `dict`, or a
+  `NamedTuple` or a frozen dataclass with a member that has no hash, as a list
+  or a dict. `v1.0.0a5` decorated such a set and then refused every item that
+  it read. An item without a hash that a set meets at a read, as `set[Any]`
+  does for a list, raises `FieldConversionError` with eazyrest's own message,
+  `Set items must have a hash, got list`, where Python's own text differs from
+  one version to the next.
+- An enum, and a `Literal` of its members, is checked while eazyrest's own
+  conversion of enums converts it. An entry in `conversions` that is keyed by
+  `enum.Enum` replaces that conversion, so its `encode` is no longer called for
+  every member when the class is decorated and again when the field is first
+  used. `v1.0.0a5` refused every enum field of a model whose entry wrote
+  members as objects, and let an entry that refused one member fail at every
+  use of the field.
+- A conversion's schema with `$schema`, or with a `$defs` at its root that is
+  no mapping, raises `TypeError` when the conversion is made, or when
+  `json_schema()` calls the function that returns it, as one with `$id` does.
+  `v1.0.0a5` accepted both, and `json_schema()` then raised the bare error of
+  `dict()`, in words that differ between Python versions, or embedded the
+  `$schema` below the root of the model's schema, which JSON Schema 2020-12
+  forbids.
+- `parse_duration()` reads the letters of a unit only as ASCII letters, with
+  the micro sign and the Greek small mu, in either case. `v1.0.0a5` matched the
+  unit without regard to case, so U+212A, the Kelvin sign, read as `k`, and
+  `"1w"` followed by it was one week. A spelling that read through such a
+  letter is refused, as is the Greek capital mu, which read as the small one.
+- A default in the class body of a decorated model, as in
+  `name: str = "anonymous"`, raises `TypeError` naming the class and the field
+  when the class is decorated. `v1.0.0a5` decorated it and dropped the default,
+  so reading the field when the JSON lacked it raised `AttributeError`. 1.0 has
+  no defaults. A field that the server may leave out is declared optional.
+- `@json_object` on a class that is no `JSONObject` subclass raises `TypeError`
+  naming the class and `JSONObject`. `v1.0.0a5` decorated it, and the class
+  then raised a `TypeError` about its arguments and an `AttributeError` for
+  each field.
+- A class attribute of a subclass that has the name of an inherited field, such
+  as a property, a method, a plain value, or `None`, raises `TypeError` naming
+  the class and the field when the subclass is decorated, and for a subclass
+  that is not decorated, when it is first used, before any request. `v1.0.0a5`
+  raised a bare `AttributeError` when it decorated the class, and from a read,
+  a query, or a write of the undecorated one, after its `GET`.
+- `files=` of `create()` and `save()`, and `json=` of an object's constructor
+  and of `update_from_json()`, raise `TypeError` naming the argument, before
+  anything else, for a value that is no mapping of string names, as the other
+  mapping arguments do. `v1.0.0a5` raised an `AttributeError` for `files=` that
+  was a list of pairs, a string, or an integer, and from the library that sends
+  it for a name that is no string, and the `ValueError` of `dict()` for a
+  `json=` that was a list. A list of pairs is no longer taken as `json=`.
+- A related object's key that the JSON holds in a form that the key's type
+  cannot build, such as `7.0` for an `int` key, equals no key that a program
+  writes, so assigning the key or an object of that key over it sends the
+  write, for a relation, a sequence of relations, and a set of them. It
+  compared equal to `7`, and nothing was sent, so the field kept raising.
+- A response body is decoded as UTF-8, or as the charset that the response
+  declares, and one that does not decode raises `ResponseShapeError`, as a body
+  that is not JSON does. `v1.0.0a5` replaced each bad byte with U+FFFD and read
+  the result, so that `save(full=True)` wrote the replacement character back,
+  and it guessed the charset of a body that declared none. A body in UTF-16
+  that declares no charset no longer reads.
+- A redirect or a page link to port 0 of the request's host is refused as a
+  redirect or a link to another origin, where `v1.0.0a5` took it for the
+  scheme's default port, and the request then failed with a `ConnectionError`
+  for port 0.
+- `API.redirect_origins` must be a tuple, a list, or a frozenset of strings.
+  Any other value raises `TypeError` naming the attribute and the type that it
+  found, before the request, from `get()`, `post()`, `patch()`, `put()`, and
+  `delete()` and from a request for a page, one that must stay on the API's
+  origin included. That covers a string, bytes, a `bytearray`, a set, a
+  generator, a mapping, and a list that holds anything but strings. `v1.0.0a5`
+  read a string as a collection of its characters and a `bytearray` as a
+  collection of integers, so that every request raised the `Invalid URL` error
+  of requests, and it took a set or a generator without a word.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two

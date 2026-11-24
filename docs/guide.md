@@ -123,6 +123,14 @@ use it. The error cannot come when the class is defined, because the decorator
 runs after the class exists. A base class that sets `conversions` and has no
 decorated ancestor, as a model's own base class usually does, is not refused.
 
+A class attribute of a subclass that has the name of an inherited field, such
+as a property, a method, a plain value, or `None`, hides the field's
+descriptor, which the library reads. A decorated subclass raises `TypeError`
+naming the class and the field when it is defined. An undecorated one raises it
+the first time it is used, in the same places, before any request. Declare the
+field again in the subclass with an annotation to replace it, or rename the
+attribute.
+
 Use `read_only=` for returned values that ordinary writes must omit, such as
 computed values and file URLs. These fields remain readable and usable in
 queries, but assigning them or passing their ordinary values to `create()`
@@ -426,7 +434,18 @@ primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
 a change to its name, and in eager mode it also sends a `PATCH`. Use `create()`
 to create a new object. An object needs its key from construction, so `User()`
 and `User(name="Ada")` raise `TypeError`, as
-[Equality by key](#equality-by-key) says.
+[Equality by key](#equality-by-key) says. The constructor checks every name and
+converts every value before its first request, as an assignment converts a
+value before it loads, so a keyword that is refused, such as a misspelled
+field, a read-only field, or a value that cannot convert, leaves no `GET` or
+`PATCH` behind it.
+
+An object refuses the assignment of a public name that is no field. A field,
+`pk`, and a name that begins with an underscore can be assigned. A property
+with a setter, a public attribute that a method sets, and a class attribute are
+no fields, so assigning them raises `AttributeError` whose message says that
+the name is no field. Keep such state under a name that begins with an
+underscore.
 
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or
@@ -456,18 +475,29 @@ treat such a pickle as a secret.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
-eazyrest does not convert, a float that is not finite, or a value that holds
-itself or nests more than 127 levels deep, raises `FieldConversionError` at the
-assignment, which leaves the field unchanged and queues nothing. A body that
-holds the value nests one level more, and 128 levels is the default
-`max_json_depth`, so what is written can be read back from a server that echoes
-it. Only a write counts the depth. Reading a field, copying an object, and
-comparing JSON take any depth that `max_json_depth` let through, or that
-`json=` and `update_from_json()` were given, and `save()` sends a field that
-was read and not changed in place as it was. A write that the server refuses is
-different. In lazy mode its updates stay pending, so a later `save()` sends
-them again. In eager mode the refused assignment is not pending, and the field
-keeps its old value.
+eazyrest does not convert, a float that is not finite, an integer of more than
+4300 digits, which is the interpreter's limit for writing an integer as text,
+or a value that holds itself or nests more than 127 levels deep, raises
+`FieldConversionError` at the assignment, which leaves the field unchanged and
+queues nothing. A body that holds the value nests one level more, and 128
+levels is the default `max_json_depth`, so what is written can be read back
+from a server that echoes it. Only a write counts the depth. Reading a field,
+copying an object, and comparing JSON take any depth that `max_json_depth` let
+through, or that `json=` and `update_from_json()` were given, and `save()`
+sends a field that was read and not changed in place as it was. A write that
+the server refuses is different. In lazy mode its updates stay pending, so a
+later `save()` sends them again. In eager mode the refused assignment is not
+pending, and the field keeps its old value.
+
+A field of a plain type writes a subclass's plain value. A member of an enum
+that mixes in `str`, `int`, or `float`, and any other subclass of those types
+except `bool`, is written as the `str`, `int`, or `float` that it holds,
+whatever its `__str__()` gives. That is so wherever a value is encoded: in a
+JSON body, in a form field of a write with `files=`, in a query by the field's
+name, alone or in a lookup of several values, in a value inside `Any`, `list`,
+`dict`, a `TypedDict`, or a dataclass, including a mapping key, and from
+`encode_json()`. The caller's value is not changed. A name that is no field is
+sent as given in a query.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it. The key is shown as it is sent, so a `UUID` key shows its lowercase
@@ -567,7 +597,10 @@ me = User(json=api.json(api.get("/me/")))
 ```
 
 Its `url` is the model's own, such as `/users/7/`, and it saves and reloads
-there.
+there. An override must return a `str`. Any other result raises `TypeError`
+naming the class and `url` from the request that reads it, not an
+`AttributeError`, which `hasattr()` and `getattr()` with a default would
+swallow.
 
 ## Field conversion
 
@@ -587,10 +620,14 @@ Python types are converted automatically:
   Python. Basic and week dates are rejected. A date with a time is rejected,
   and so is a `datetime.datetime` assigned to the field, although it is also a
   `datetime.date`.
-- `uuid.UUID` values decode from UUID strings and encode to the standard
-  hyphenated form. A primary key of type `UUID` is built without this
-  conversion, as [What a key may be](#what-a-key-may-be) says, and is written
-  in the same form.
+- `uuid.UUID` values decode from UUID strings in the hyphenated, compact,
+  braced, or URN form, in ASCII hex of either case, as a key reads them, and
+  encode to the standard hyphenated form. Any other string, such as one that
+  has a `0x` prefix, a sign, an underscore, or surrounding whitespace, raises
+  `FieldConversionError`, though `uuid.UUID` reads it. A primary key of type
+  `UUID` is built without this conversion, as
+  [What a key may be](#what-a-key-may-be) says, and is written in the same
+  form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as
@@ -614,14 +651,16 @@ Python types are converted automatically:
   `"0E-20000"`, which writes each zero after the point.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values. An enum or a `Literal` whose values are not JSON scalars, a
-  string, an integer, a finite float, or a `bool`, such as bytes, a tuple, or
-  `math.inf`, raises `TypeError` when the class is decorated, since JSON could
-  neither give nor take such a value. So does an enum with a member whose value
-  is `None`, and so does a `Literal` that holds such a member, which every
-  field reads as no value, so the member would never be read. A `Literal` may
-  hold `None` itself. An enum with an entry of its own in `conversions` is not
-  checked, and a `Literal` of its members is not either, even for a member that
-  the entry writes as `None`.
+  string, an integer of no more than 4300 digits, a finite float, or a `bool`,
+  such as bytes, a tuple, or `math.inf`, raises `TypeError` when the class is
+  decorated, since JSON could neither give nor take such a value. So does an
+  enum with a member whose value is `None`, and so does a `Literal` that holds
+  such a member, which every field reads as no value, so the member would never
+  be read. A `Literal` may hold `None` itself. An enum is checked while
+  eazyrest's own conversion of enums converts it. An enum with an entry of its
+  own in `conversions`, whether the entry is keyed by `enum.Enum` or by the
+  enum, is not checked, and a `Literal` of its members is not either, even for
+  a member that the entry writes as `None`.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
 Every field reads JSON `null` as `None` and writes `None` as `null`, whatever
@@ -760,18 +799,21 @@ say whether the order of the items counts. A sequence, a `list`, a `tuple`, a
 `deque`, `Sequence`, or `MutableSequence`, compares its keys in order. A set,
 `set`, `frozenset`, `Set`, or `MutableSet`, compares them without order and is
 sent as its distinct keys, sorted. A set field may hold two objects of one key,
-such as `User(id=7)` and `Admin(id=7)`, and sends the key once. Replacing an
-item with an object of the same key, such as one of a subclass, is not a
-change. `Collection[User]` and `Iterable[User]`, also optional or in a
-`NewType`, raise `TypeError` when the class is decorated, naming the field,
-because neither says. Declare `list[User]` or `set[User]` instead. `Iterable`
-is left for a related collection that a query loads. Every item has a key, so
-no item is `None` and no item is a collection of related objects:
-`list[User | None]` and `list[list[User]]`, also optional, in a `NewType`, or
-under another collection type, raise `TypeError` when the class is decorated,
-naming the field. An item that the server embeds without one raises
-`FieldConversionError` naming the field and the item's position when the field
-is read, as an embedded single relation without a key does, and so does a
+such as `User(id=7)` and `Admin(id=7)`, and sends the key once. A sequence
+cannot take a set, which has no order to write, so assigning a `set` or a
+`frozenset` to `members` raises `FieldConversionError` before any request, as
+does giving one to `create()` or `get_or_create()`. A query still sends a set
+for such a field sorted. Replacing an item with an object of the same key, such
+as one of a subclass, is not a change. `Collection[User]` and `Iterable[User]`,
+also optional or in a `NewType`, raise `TypeError` when the class is decorated,
+naming the field, because neither says. Declare `list[User]` or `set[User]`
+instead. `Iterable` is left for a related collection that a query loads. Every
+item has a key, so no item is `None` and no item is a collection of related
+objects: `list[User | None]` and `list[list[User]]`, also optional, in a
+`NewType`, or under another collection type, raise `TypeError` when the class
+is decorated, naming the field. An item that the server embeds without one
+raises `FieldConversionError` naming the field and the item's position when the
+field is read, as an embedded single relation without a key does, and so does a
 `null` item. A `None` item in a list, tuple, deque, or set that you assign, add
 in place and save, or pass to `create()` raises `FieldConversionError` naming
 the field, and for a sequence the item's position, before any request. An item
@@ -912,6 +954,13 @@ a `TypedDict`, `NamedTuple`, or dataclass. An entry of the model's
 entries admit it for the subclass. Its message names the class and says to
 annotate `Any` or register a `Conversion`.
 
+A field has no default. A default in the class body, as in
+`name: str = "anonymous"`, raises `TypeError` naming the class and the field
+when the class is decorated, since no read applies it and the field raises
+`AttributeError` when the JSON lacks it. Declare a field that the server may
+leave out as optional, as in `name: str | None`. A class that is no
+`JSONObject` subclass raises `TypeError` when `@json_object` decorates it.
+
 A field whose annotation is `None` as a whole is refused the same way. It
 happens when a field is named like its type and has the default `None`, as in
 `date: date = None`, because the default replaces the type in the class body.
@@ -991,23 +1040,23 @@ declared type and the mode, `"read"` or `"write"`, that returns it. Without
 one, the type's schema allows any value. `json_schema()` moves the schema's
 `$defs` into the model's, so its references may name only its own definitions,
 as `#/$defs/Name` or a pointer into one. A schema that refers to itself as `#`,
-or has `$id`, an anchor, or `$defs` below its root, raises `TypeError`. Put the
-recursive part in `$defs` and refer to it there. Both receive the declared
-type, so one conversion can serve a family of types, as the default one for
-enums does. The conversion applies wherever its type appears, so `Host.allowed`
-converts each item. `null` reads as `None` and `None` writes as `null` without
-a conversion, and `encode` is called only for instances of the type that the
-entry is keyed by: any other value, such as a string assigned to
-`Host.address`, is written as it is. `decode` and `encode` report a value that
-they cannot convert by raising `TypeError` or `ValueError`, which reaches the
-caller as a `FieldConversionError` that names the field, with the error as its
-cause. Their messages should not quote the value, which may be a secret. Any
-other exception is a bug in the conversion and propagates unchanged, and so
-does an error of eazyrest, such as a `ResponseShapeError` or a
-`PaginationError` that the code raises, though each is a `ValueError`. A value
-written, or returned by `encode`, must be JSON: one that is not, such as an
-`IPv4Address` assigned to a field annotated `Any`, raises
-`FieldConversionError` when it is assigned.
+or has `$id`, `$schema`, an anchor, `$defs` below its root, or `$defs` at its
+root that is no mapping, raises `TypeError`. Put the recursive part in `$defs`
+and refer to it there. Both receive the declared type, so one conversion can
+serve a family of types, as the default one for enums does. The conversion
+applies wherever its type appears, so `Host.allowed` converts each item. `null`
+reads as `None` and `None` writes as `null` without a conversion, and `encode`
+is called only for instances of the type that the entry is keyed by: any other
+value, such as a string assigned to `Host.address`, is written as it is.
+`decode` and `encode` report a value that they cannot convert by raising
+`TypeError` or `ValueError`, which reaches the caller as a
+`FieldConversionError` that names the field, with the error as its cause. Their
+messages should not quote the value, which may be a secret. Any other exception
+is a bug in the conversion and propagates unchanged, and so does an error of
+eazyrest, such as a `ResponseShapeError` or a `PaginationError` that the code
+raises, though each is a `ValueError`. A value written, or returned by
+`encode`, must be JSON: one that is not, such as an `IPv4Address` assigned to a
+field annotated `Any`, raises `FieldConversionError` when it is assigned.
 
 A class's `conversions` are merged over those of its bases, and theirs over the
 default table, so a subclass can add conversions or replace its bases'. A field
@@ -1750,10 +1799,11 @@ origins as `follow_next_links()` does.
 `filter()` iterates every page of a collection. To show one page at a time
 instead, as a paginated view does, call `get_page()`, which takes the same
 arguments as `filter()`, and `url=`, and returns a `Page` of objects. Its
-`count` is the size of the whole collection, if the page reports it, and
-`next_url` and `previous_url` are the URLs of the pages around it.
-`next_page()` and `previous_page()` request those pages with the same API,
-request options, and prefetch, and return `None` at either end:
+`count` is the size of the whole collection, if the page reports it as an
+integer that is not negative, and `next_url` and `previous_url` are the URLs of
+the pages around it. `next_page()` and `previous_page()` request those pages
+with the same API, request options, and prefetch, and return `None` at either
+end:
 
 ```python
 page = Todo.get_page(completed=False)
@@ -2046,8 +2096,10 @@ api = API("https://api.example.com/")
 api.redirect_origins = ["https://files.example.com"]
 ```
 
-Give a collection of origins. A single string raises `TypeError` before the
-request, because it would be read as a collection of its characters.
+Give a tuple, a list, or a frozenset of absolute URLs. Any other value raises
+`TypeError` naming the attribute and the type that it found, before the
+request. A single string would be read as a collection of its characters, and
+bytes and a `bytearray` as a collection of integers.
 
 These checks guard the redirects that requests follows. A raw `GET` sent with
 `allow_redirects=False` follows none, so it returns the 3xx response as it is,
@@ -2296,10 +2348,12 @@ exception type that it replaced, so code written for that type keeps working:
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
-  the expected shape. Its message does not quote the body. Its `response` is
-  the response that is refused, and it may be `None`, as for an error that is
-  raised from decoded JSON in a hook such as `object_json()`, so test it before
-  use.
+  the expected shape. A body is decoded as UTF-8, or as the charset that the
+  response declares, and a body that does not decode, as Latin-1 text served as
+  `application/json`, is not JSON. Its message does not quote the body. Its
+  `response` is the response that is refused, and it may be `None`, as for an
+  error that is raised from decoded JSON in a hook such as `object_json()`, so
+  test it before use.
 - `UsageError`, a `RuntimeError`, for a model without a registered API, and for
   other uses that eazyrest does not support, such as a model that declares no
   `class_url`, or a `write_options()` block that ends out of order.

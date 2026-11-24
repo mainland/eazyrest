@@ -43,7 +43,7 @@ from ._errors import (
     _response_name,
 )
 from ._protocols import Client, Response
-from ._urls import _DEFAULT_PORTS, _ServerURL
+from ._urls import _DEFAULT_PORTS, _port_of, _ServerURL
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -107,7 +107,12 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     assert request.url is not None
     parts = urlsplit(request.url)
     scheme = parts.scheme.lower()
-    return scheme, parts.hostname, parts.port or _DEFAULT_PORTS.get(scheme)
+    port = _port_of(parts, url)
+    return (
+        scheme,
+        parts.hostname,
+        _DEFAULT_PORTS.get(scheme) if port is None else port,
+    )
 
 
 def _prepare_server_url(
@@ -143,7 +148,7 @@ def _prepare_server_url(
         request.prepare_headers(None)
         request.prepare_auth(None)
         assert request.url is not None
-        prepared = _ServerURL.from_prepared(request.url)
+        prepared = _ServerURL.from_prepared(request.url, sent=url)
         if not prepared.scheme:
             return None
         try:
@@ -238,9 +243,12 @@ def _leaves_allowed_origins(
 
 
 def _permitted_origins(
-    base_url: str, redirect_origins: Collection[str]
+    base_url: str,
+    redirect_origins: tuple[str, ...] | list[str] | frozenset[str],
 ) -> set[tuple[str, str | None, int | None]]:
     """Return the origins that a request starting at ``base_url`` may reach.
+
+    Every request reads ``API.redirect_origins`` here and nowhere else.
 
     Args:
         base_url: Absolute URL of the request, or an API's base URL.
@@ -250,15 +258,25 @@ def _permitted_origins(
         The origin of ``base_url`` and the origins of ``redirect_origins``.
 
     Raises:
-        TypeError: If ``redirect_origins`` is a string or bytes, which a type
-            checker takes for a collection of strings and which would be read
-            as a collection of its characters or of its integers.
+        TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+            frozenset, or holds anything but strings. A string or bytes would
+            be read as a collection of its characters or its integers, and a
+            type checker takes a string for a collection of strings.
     """
-    if isinstance(redirect_origins, (str, bytes)):
+    if not isinstance(redirect_origins, (tuple, list, frozenset)):
         raise TypeError(
-            "API.redirect_origins must be a collection of origins, such as "
-            '["https://cdn.example.com"], not a string'
+            "API.redirect_origins must be a collection of origins, a tuple, "
+            "list, or frozenset of URLs such as "
+            '["https://cdn.example.com"], not a '
+            f"{type(redirect_origins).__name__}"
         )
+    for origin in redirect_origins:
+        if not isinstance(origin, str):
+            raise TypeError(
+                "API.redirect_origins must be a collection of origins, such "
+                f'as "https://cdn.example.com", but it holds a '
+                f"{type(origin).__name__}"
+            )
     return {_origin(base_url), *map(_origin, redirect_origins)}
 
 
@@ -648,7 +666,9 @@ class _Budget:
         body of each redirect in ``resp.history``, so the bodies of one request
         count against one size limit. The length that a response declares is
         not checked for a response that has no body, a 1xx, 204, or 304
-        response, which may declare the length of the entity that it describes.
+        response or the response to a ``HEAD`` request, which may declare the
+        length of the entity that it describes. A session hook can send a
+        ``HEAD`` request while a request of the API is in flight.
 
         Args:
             resp: Response sent with ``stream=True``, whose body is unread.
@@ -675,7 +695,9 @@ class _Budget:
         # urllib3 reads no body for it, whatever it declares.
         declared = (
             ""
-            if resp.status_code < 200 or resp.status_code in (204, 304)
+            if resp.status_code < 200
+            or resp.status_code in (204, 304)
+            or resp.request.method == "HEAD"
             else resp.headers.get("Content-Length", "")
         )
         # A length longer than the limit's has more digits than int() reads
@@ -1059,7 +1081,7 @@ class API:
     have none, as in ``/users/1``.
     """
 
-    redirect_origins: Collection[str] = ()
+    redirect_origins: tuple[str, ...] | list[str] | frozenset[str] = ()
     """Other origins to which a redirect may lead, as URLs.
 
     By default, a redirect must lead to the scheme, host, and port of the
@@ -1067,8 +1089,10 @@ class API:
     too. Add an origin here, such as ``"https://cdn.example.com"``, on an
     instance or in a subclass, to follow redirects to it. Only the scheme,
     host, and port of each URL count. Every header and any body of the
-    redirected request is sent to these origins. Give a collection of origins:
-    a single string or bytes raises ``TypeError`` before a request is sent.
+    redirected request is sent to these origins. Give a tuple, a list, or a
+    frozenset of absolute URLs. Any other value, such as a single string,
+    bytes, a set, or a list that holds anything but strings, raises
+    ``TypeError`` before a request is sent.
     """
 
     default_write_mode: WriteMode
@@ -1304,7 +1328,8 @@ class API:
 
         Raises:
             ResponseShapeError: If the body is not valid JSON with finite,
-                representable numbers.
+                representable numbers, or does not decode as UTF-8 or as the
+                charset that the response declares.
             LimitExceeded: If JSON nesting exceeds ``max_json_depth``.
         """
         return _response_json(resp, self.max_json_depth)
@@ -1407,6 +1432,8 @@ class API:
                 response.
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         return self._transmit(method, send, uri, args, kwargs, None)
 
@@ -1453,6 +1480,8 @@ class API:
                 response is a redirect that was not followed.
             requests.RequestException: If the request fails, as for any
                 request.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         url = self.resolve_url(url)
         # Prepare the link as requests will, before anything is sent, so that
@@ -1782,6 +1811,8 @@ class API:
                 response exceeds ``max_response_bytes``.
             requests.RequestException: If the request fails to send, as
                 ``requests.ConnectionError`` does.
+            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
+                frozenset of strings. The request is not sent.
         """
         return self._send("GET", self.session.get, uri, *args, **kwargs)
 
@@ -1805,6 +1836,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("POST", self.session.post, uri, *args, **kwargs)
 
@@ -1830,6 +1862,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("PATCH", self.session.patch, uri, *args, **kwargs)
 
@@ -1853,6 +1886,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("PUT", self.session.put, uri, *args, **kwargs)
 
@@ -1875,6 +1909,7 @@ class API:
                 follows none, and as for ``get()``.
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
+            TypeError: As for ``get()``.
         """
         return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 

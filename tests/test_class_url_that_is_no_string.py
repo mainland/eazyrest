@@ -1,4 +1,7 @@
-"""A ``class_url`` that is no string is refused as a missing one is."""
+"""A ``class_url`` that is no string is refused as a missing one is.
+
+Every request of a class's collection reads it before anything is sent.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +11,13 @@ from typing import Any, ClassVar
 import pytest
 import requests_mock
 
-from eazyrest import API, JSONObject, UsageError, json_object
+from eazyrest import (
+    API,
+    JSONObject,
+    PrefetchNotSupported,
+    UsageError,
+    json_object,
+)
 
 api = API("https://class-url.example/")
 
@@ -39,8 +48,13 @@ CALLS: dict[str, Callable[[], Any]] = {
     "delete": lambda: Base(id=1).delete(),
     "create": lambda: Base.create(name="x"),
     "filter": lambda: Base.filter(),
+    "all": lambda: list(Base.all()),
+    "create with files": lambda: Base.create(name="x", files={"f": b"x"}),
     "get": lambda: Base.get(id=1),
     "get_page": lambda: Base.get_page(),
+    "get_page by url": lambda: Base.get_page(
+        url="https://class-url.example/things/?page=2"
+    ),
     "get_or_create": lambda: Base.get_or_create(id=1),
 }
 
@@ -54,6 +68,15 @@ def test_a_class_url_of_none_is_a_usage_error_before_any_request(
         mocker.register_uri(requests_mock.ANY, requests_mock.ANY, json={})
         with pytest.raises(UsageError, match=r"Base\.class_url is a NoneType"):
             CALLS[call]()
+        assert mocker.call_count == 0
+
+
+def test_the_default_bulk_lookup_sends_no_request() -> None:
+    """The default ``bulk_get_by_pks()`` reads no collection at all."""
+    with requests_mock.Mocker() as mocker:
+        mocker.register_uri(requests_mock.ANY, requests_mock.ANY, json={})
+        with pytest.raises(PrefetchNotSupported):
+            Base.bulk_get_by_pks({1}, api=api)
         assert mocker.call_count == 0
 
 

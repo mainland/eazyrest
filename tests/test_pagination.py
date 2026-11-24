@@ -1748,10 +1748,26 @@ def test_filter_reports_the_collection_count(requests_mock: Any) -> None:
 
 
 @pytest.mark.parametrize(
-    "payload", [[{"id": 1}], {"next": None, "results": []}, {"count": "3"}]
+    "payload",
+    [
+        [{"id": 1}],
+        {"next": None, "results": []},
+        {"count": "3"},
+        {"count": -1},
+        {"count": -5, "results": []},
+    ],
+    ids=[
+        "a list",
+        "no count",
+        "a text",
+        "minus one",
+        "a negative count",
+    ],
 )
 def test_count_is_none_when_the_response_has_none(payload: Any) -> None:
-    """A list, a page without ``count``, or a non-integer count gives None.
+    """A list, a page without ``count``, or no size gives None.
+
+    A size is an integer that is not negative.
 
     Args:
         payload: First response of the collection.
@@ -1759,6 +1775,32 @@ def test_count_is_none_when_the_response_has_none(payload: Any) -> None:
     api = API("https://example.com/v1/")
 
     assert follow_next_links(api, payload).count is None
+
+
+@pytest.mark.parametrize("count", [0, 1, 10**6])
+def test_a_count_that_is_not_negative_is_kept(count: int) -> None:
+    """A collection that has no item has a size of zero."""
+    api = API("https://example.com/v1/")
+
+    page = follow_next_links(api, {"count": count, "results": []})
+
+    assert page.count == count
+
+
+@pytest.mark.parametrize("count", [-1, -5])
+def test_get_page_reads_a_negative_count_as_none(
+    requests_mock: Any, count: int
+) -> None:
+    """The count of a page is no size when it is below zero."""
+    requests_mock.get(
+        "https://example.com/v1/items/",
+        json={"count": count, "next": None, "results": []},
+    )
+    api = API("https://example.com/v1/")
+
+    page = next_links_page(api, api.get("/items/"))
+
+    assert page.count is None
 
 
 def test_count_comes_from_a_custom_hook(requests_mock: Any) -> None:

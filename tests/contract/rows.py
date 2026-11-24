@@ -58,6 +58,7 @@ from eazyrest import (
     JSONObject,
     ResponseShapeError,
     UsageError,
+    encode_json,
     json_object,
 )
 
@@ -1726,6 +1727,52 @@ def a_full_save_refuses_a_collection_without_keys(world: World) -> None:
         )
 
 
+@row(COLL)
+def a_key_assigned_over_a_float_key_is_sent(world: World) -> None:
+    for stored in ([7.0], [{"id": 7.0}]):
+        for value in ([User(id=7)], [7]):
+            obj = post(readers=stored)
+            obj.readers = value  # type: ignore[assignment]
+            assert world.body(obj.save, "PATCH") == {"readers": [7]}
+
+
+@row(COLL)
+def a_set_given_to_a_sequence_of_relations_is_refused(world: World) -> None:
+    tags = {Tag(slug="a"), Tag(slug="b")}
+    readers = {User(id=1), User(id=2)}
+    for field, value in (
+        ("tags", tags),
+        ("tags", frozenset(tags)),
+        ("tagt", tags),
+        ("tagt", frozenset(tags)),
+        ("tagq", tags),
+        ("tagq", frozenset(tags)),
+        ("readers", readers),
+        ("readers", {User(id=1): 1}.keys()),
+    ):
+        obj = post()
+        refuses_assignment(world, obj, field, value, f"Post.{field}", "order")
+        given: dict[str, Any] = {field: value}
+        raises(
+            world,
+            FieldConversionError,
+            lambda: Post.create(**given),
+            f"Post.{field}",
+            "order",
+        )
+
+
+@row(OWNER)
+def a_key_assigned_over_a_float_key_is_sent_for_a_single_relation(
+    world: World,
+) -> None:
+    for stored in (7.0, {"id": 7.0}):
+        for value in (User(id=7), 7):
+            obj = post(owner=stored)
+            obj.owner = value  # type: ignore[assignment]
+            assert world.body(obj.save, "PATCH") == {"owner": 7}
+
+
 SET = "a-set-of-relations"
 
 
@@ -2196,16 +2243,22 @@ def a_set_field_is_queried_by_its_distinct_keys_sorted(world: World) -> None:
 
 @row(REL)
 def a_set_for_a_sequence_relation_is_sent_sorted(world: World) -> None:
-    sends_query(
+    # The creation of get_or_create() could not write a set to a sequence, so
+    # it refuses before any request, as create() does.
+    sends_query_but_refuses_creation(
         world,
         Post,
         "tags=a&tags=b",
+        FieldConversionError,
+        "Post.tags",
         tags={Tag(slug="b"), Tag(slug="a")},
     )
-    sends_query(
+    sends_query_but_refuses_creation(
         world,
         Post,
         "readers=3&readers=7",
+        FieldConversionError,
+        "Post.readers",
         readers=frozenset({User(id=7), User(id=3)}),
     )
 
@@ -2851,6 +2904,19 @@ def a_keyed_model_without_class_url_is_a_usage_error(world: World) -> None:
 
 
 @row(CREATE)
+def a_page_by_url_of_a_model_without_class_url_is_a_usage_error(
+    world: World,
+) -> None:
+    raises(
+        world,
+        UsageError,
+        lambda: Bare.get_page(url="https://rows.example/bares/?page=2"),
+        "Bare",
+        "class_url",
+    )
+
+
+@row(CREATE)
 def a_model_without_a_key_cannot_be_created(world: World) -> None:
     raises(world, UsageError, lambda: Entry.create(name="x"))
 
@@ -3473,3 +3539,50 @@ def a_parent_without_its_key_is_refused_before_the_hook(
     finally:
         PPost.prefetch_batch_size = saved
     assert hook_calls == [{7, 8}]
+
+
+SUBCLASS = "a-plain-field-given-a-subclasss-value"
+
+
+@row(SUBCLASS)
+def a_subclass_is_sent_as_its_plain_value_in_a_query(world: World) -> None:
+    for call in queries(Colored, level=Level.HIGH):
+        assert world.query(call) == "Level=3"
+    for call in queries(Colored, level__in=[Level.HIGH, Level.LOW]):
+        assert world.query(call) == "Level__in=3,1"
+
+
+@row(SUBCLASS)
+def a_lookup_and_a_creation_send_the_plain_value(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 9, "Level": 3})
+    sent = world.bodies(lambda: Colored.get_or_create(level=Level.HIGH))
+    assert sent == [("GET", None), ("POST", {"Level": 3})]
+    assert unquote(urlsplit(world.requests[-2].url).query) == "Level=3"
+
+
+@row(SUBCLASS)
+def a_form_field_holds_the_plain_value(world: World) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 9})
+    Colored.create(level=Level.HIGH, files={"f": b"x"})
+    assert b'name="Level"\r\n\r\n3\r\n' in world.requests[-1].body
+
+
+@row(SUBCLASS)
+def a_subclass_is_written_as_its_plain_value_in_a_body(
+    world: World,
+) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 9, "Level": 3})
+    assert world.body(lambda: Colored.create(level=Level.HIGH), "POST") == {
+        "Level": 3
+    }
+    colored = Colored(json={"id": 1, "Level": 1})
+    colored.level = Level.HIGH
+    assert world.body(colored.save, "PATCH") == {"Level": 3}
+
+
+@row(SUBCLASS)
+def encode_json_returns_the_plain_value(world: World) -> None:
+    encoded = encode_json(Level.HIGH, int)
+    assert encoded == 3
+    assert type(encoded) is int

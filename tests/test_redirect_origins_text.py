@@ -24,7 +24,7 @@ REQUESTS: dict[str, Callable[[API], Any]] = {
 class Subclassed(API):
     """An API whose subclass sets the attribute to a string."""
 
-    redirect_origins = ORIGIN
+    redirect_origins = ORIGIN  # type: ignore[assignment]
 
 
 @pytest.mark.parametrize("request_", REQUESTS.values(), ids=REQUESTS.keys())
@@ -33,7 +33,7 @@ def test_a_string_assigned_to_an_instance_is_refused(
 ) -> None:
     """The error names the attribute and says to give a collection."""
     api = API("https://api.example.com/")
-    api.redirect_origins = ORIGIN
+    api.redirect_origins = ORIGIN  # type: ignore[assignment]
     with requests_mock.Mocker() as mocker:
         mocker.register_uri(requests_mock.ANY, requests_mock.ANY, json={})
         with pytest.raises(TypeError, match="redirect_origins") as caught:

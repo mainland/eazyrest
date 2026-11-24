@@ -300,8 +300,8 @@ class _Coded(JSONObject):
     class_url = "/coded/"
 
     id: int
-    value: _Code | int | None = None
-    seen: _Code | int | None = None
+    value: _Code | int | None
+    seen: _Code | int | None
 
 
 _Coded.register_api(API(BASE))

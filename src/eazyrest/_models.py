@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import datetime
@@ -62,6 +63,7 @@ from ._aliases import (
     _UnresolvedAliasError,
 )
 from ._conversion import (
+    _UUID_TEXT,
     DEFAULT_CONVERSIONS,
     Conversion,
     _annotated_supertype,
@@ -228,7 +230,9 @@ def _require_decorated(cls: type) -> None:
     Raises:
         TypeError: If ``cls`` is not decorated, has a decorated ancestor, and
             sets ``conversions`` itself or inherits them from a class that is
-            not an ancestor of that decorated class, such as a mixin.
+            not an ancestor of that decorated class, such as a mixin. Also if a
+            class attribute of ``cls`` hides a field that the ancestor
+            declares.
     """
     if cls in _USABLE_CLASSES:
         return
@@ -240,6 +244,9 @@ def _require_decorated(cls: type) -> None:
         # table, and a decorated class checked its own.
         _USABLE_CLASSES.add(cls)
         return
+    _refuse_hidden_fields(
+        cls, getattr(decorated, "_json_fields", ()), frozenset()
+    )
     # Every class that contributes to the table but not to the decorated
     # ancestor's, whether it comes before the ancestor in the MRO or after it.
     undecorated = [
@@ -258,6 +265,49 @@ def _require_decorated(cls: type) -> None:
             setattr(error, _RAISED_AS_IS, True)
             raise error
     _USABLE_CLASSES.add(cls)
+
+
+def _refuse_hidden_fields(
+    cls: type, fields: Collection[str], redeclared: AbstractSet[str]
+) -> None:
+    """Refuse a class attribute that hides an inherited field.
+
+    A subclass can define a property, a method, or a plain value under the name
+    of an inherited field. The attribute then hides the field's descriptor,
+    which the library reads, so every use of the model would fail with an
+    ``AttributeError`` that names neither the class nor the field.
+
+    Args:
+        cls: The class that inherits the fields.
+        fields: The names of the fields that it inherits.
+        redeclared: The names that ``cls`` declares again as fields, which
+            replace the inherited descriptors.
+
+    Raises:
+        TypeError: If a class attribute of ``cls`` hides an inherited field.
+    """
+    for field in sorted(set(fields) - set(redeclared)):
+        if not isinstance(
+            inspect.getattr_static(cls, field, None), JSONProperty
+        ):
+            hider = next(
+                (
+                    base
+                    for base in cls.__mro__
+                    if field in vars(base)
+                    and not isinstance(vars(base)[field], JSONProperty)
+                ),
+                cls,
+            )
+            error = TypeError(
+                f"{cls.__name__}.{field} is a class attribute of "
+                f"{hider.__name__} that hides the inherited field of that "
+                "name, which eazyrest reads through its descriptor. Rename "
+                f"the attribute, or declare {field} again in "
+                f"{cls.__name__} with an annotation"
+            )
+            setattr(error, _RAISED_AS_IS, True)
+            raise error
 
 
 @contextlib.contextmanager
@@ -1310,15 +1360,16 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
     bytes or a tuple, has no reading from JSON and cannot be written to it, so
     a field of the type could neither be read nor be given a value. A float
     that is not finite is no JSON number either, and the schema that holds it
-    is no JSON.
+    is no JSON. Neither is an integer of more digits than Python writes as
+    text.
 
     Args:
         name: What to call the type in the message.
         values: The JSON values that the type's members stand for.
 
     Raises:
-        TypeError: If a value is not a JSON scalar, or is a float that is not
-            finite.
+        TypeError: If a value is not a JSON scalar, is a float that is not
+            finite, or is an integer that Python cannot write as text.
     """
     for value in values:
         if value is not None and not isinstance(value, (str, int, float)):
@@ -1332,6 +1383,17 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
                 f"{name} has a float that is not finite, which JSON cannot "
                 "carry, so its JSON could not be read or written. Use finite "
                 "numbers."
+            )
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and not _is_writable_int(value)
+        ):
+            raise TypeError(
+                f"{name} has an integer of more than "
+                f"{sys.get_int_max_str_digits()} digits, which Python cannot "
+                "write as JSON, so its JSON could not be written. Use a "
+                "smaller number."
             )
 
 
@@ -1388,21 +1450,26 @@ def _check_admitted(
     match analyzed:
         case BaseType(base_type):
             if (literal := _literal_of(base_type)) is not None:
+                # As for an enum, a conversion of its own decides what a member
+                # writes, so only eazyrest's conversion of enums is checked.
                 _check_json_scalars(
                     "A Literal",
                     (
                         _literal_json(member, table)
                         for member in typing.get_args(literal)
+                        if not isinstance(member, enum.Enum)
+                        or _is_default_enum_entry(
+                            _conversion_of(type(member), table)
+                        )
                     ),
                 )
                 for member in typing.get_args(literal):
                     if not isinstance(member, enum.Enum):
                         continue
                     held = _conversion_of(type(member), table)
-                    # As for an enum, a conversion of its own decides.
                     if (
                         held is not None
-                        and held.key is enum.Enum
+                        and _is_default_enum_entry(held)
                         and held.entry.encode(member, held.declared) is None
                     ):
                         raise TypeError(
@@ -1414,7 +1481,8 @@ def _check_admitted(
                             "instead."
                         )
             found = _conversion_of(base_type, table)
-            if found is not None and found.key is enum.Enum:
+            if _is_default_enum_entry(found):
+                assert found is not None
                 _check_json_scalars(
                     found.declared.__name__,
                     (
@@ -1496,18 +1564,42 @@ def _has_no_hash(cls: type[Any]) -> bool:
     return cast("object", cls.__hash__) is None
 
 
+def _is_default_enum_entry(found: _Found | None) -> bool:
+    """Return whether a found conversion is eazyrest's own conversion of enums.
+
+    An entry that a model's ``conversions`` sets for ``enum.Enum`` replaces it,
+    and decides for itself what a member writes, so its members are not checked
+    as eazyrest's own writes are.
+
+    Args:
+        found: What ``_conversion_of()`` found for a type, or ``None``.
+
+    Returns:
+        Whether ``found`` is the default conversion of ``enum.Enum``.
+    """
+    return found is not None and found.entry is DEFAULT_CONVERSIONS.get(
+        enum.Enum
+    )
+
+
 def _unhashable_kind(
-    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+    analyzed: AnalyzedType,
+    table: Mapping[Any, Conversion],
+    seen: frozenset[type[Any]] = frozenset(),
 ) -> str | None:
     """Return what makes the value of a type unhashable, if anything does.
 
     A conversion of its own decides what its class reads as, so a class that
     the table converts is taken to have a hash. So is a type whose members
-    cannot be analyzed yet.
+    cannot be analyzed yet. The class that a ``NewType`` stands for decides for
+    the ``NewType``, and the fields of a ``NamedTuple`` and of a dataclass that
+    has a hash decide for it, as the items of a fixed-length tuple do.
 
     Args:
         analyzed: Analyzed type of a set's items.
         table: Conversion table of the model that owns the field.
+        seen: The ``NamedTuple`` and dataclass classes that are being walked,
+            so that a class that refers to itself ends the walk.
 
     Returns:
         A name for the kind of value that has no hash, such as ``dict`` or a
@@ -1519,14 +1611,15 @@ def _unhashable_kind(
         case BaseType(base_type):
             if _conversion_of(base_type, table) is not None:
                 return None
-            if _has_no_hash(base_type):
-                return base_type.__name__
+            final = _final_supertype(base_type)
+            if _has_no_hash(final):
+                return str(getattr(final, "__name__", final))
         case OptionalType(inner) | NewTypeType(_, inner):
-            return _unhashable_kind(inner, table)
+            return _unhashable_kind(inner, table, seen)
         case CollectionType(collection_type, item):
             if _READ_AS[collection_type] not in (tuple, frozenset):
                 return _READ_AS[collection_type].__name__
-            return _unhashable_kind(item, table)
+            return _unhashable_kind(item, table, seen)
         case MappingType():
             return "dict"
         case TypedDictType(cls):
@@ -1534,16 +1627,75 @@ def _unhashable_kind(
         case DataclassType(cls):
             if _has_no_hash(cls):
                 return cls.__name__
+            if cls in seen:
+                return None
+            try:
+                members = [item for _, item, _ in analyzed.fields]
+            except Exception:  # noqa: BLE001
+                # A field that cannot be analyzed yet is left to its first use.
+                return None
+            return _first_unhashable(members, table, seen | {cls})
+        case NamedTupleType(cls):
+            if cls in seen:
+                return None
+            try:
+                members = [item for _, item in analyzed.fields]
+            except Exception:  # noqa: BLE001
+                return None
+            return _first_unhashable(members, table, seen | {cls})
         case FixedTupleType(items):
-            return next(
-                (
-                    kind
-                    for item in items
-                    if (kind := _unhashable_kind(item, table)) is not None
-                ),
-                None,
-            )
+            return _first_unhashable(items, table, seen)
     return None
+
+
+def _first_unhashable(
+    items: Iterable[AnalyzedType],
+    table: Mapping[Any, Conversion],
+    seen: frozenset[type[Any]],
+) -> str | None:
+    """Return what makes the first of some types unhashable, if anything does.
+
+    Args:
+        items: Analyzed types of the members of a value that is hashed whole.
+        table: Conversion table of the model that owns the field.
+        seen: As for ``_unhashable_kind()``.
+
+    Returns:
+        The kind of the first member that has no hash, or ``None``.
+    """
+    return next(
+        (
+            kind
+            for item in items
+            if (kind := _unhashable_kind(item, table, seen)) is not None
+        ),
+        None,
+    )
+
+
+def _read_collection(kind: type[Any], items: list[Any]) -> Any:
+    """Build the collection that a field reads from its converted items.
+
+    Args:
+        kind: The concrete class that the field reads as.
+        items: The converted items.
+
+    Returns:
+        The collection.
+
+    Raises:
+        TypeError: If ``kind`` is a set and an item has no hash. The message is
+            eazyrest's own, since Python's differs between versions.
+    """
+    if kind in (set, frozenset):
+        for item in items:
+            try:
+                hash(item)
+            except TypeError:
+                raise TypeError(
+                    f"Set items must have a hash, got {type(item).__name__}"
+                ) from None
+    return kind(items)
 
 
 def _refuse_unhashable_item(
@@ -2156,21 +2308,6 @@ def _key_kind_of(cls: type[JSONObject]) -> str:
     return kind
 
 
-_UUID_TEXT = re.compile(
-    r"(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
-    r"|\{[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}"
-    r"|urn:uuid:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
-    r"|[0-9a-fA-F]{32})"
-)
-"""The spellings of a ``UUID`` key's text that a key reads, in ASCII hex.
-
-These are the hyphenated, compact, braced, and URN forms. ``uuid.UUID`` reads
-more, such as a ``0x`` prefix, a sign, an underscore, hyphens anywhere,
-surrounding whitespace, and digits that are not ASCII, so a key of another
-spelling is refused rather than read as the UUID that its digits name.
-"""
-
-
 def _build_identifier(kind: str, value: Any) -> int | str:
     """Build the wire scalar of a key from the value that names it.
 
@@ -2469,6 +2606,64 @@ def _hook_result(
     raise TypeError(message)
 
 
+def _replace_api(root: JSONObject, old: _AnyAPI, new: _AnyAPI | None) -> None:
+    """Give a client to the related objects that an object has read.
+
+    Walks the relation caches of ``root`` and of the objects that it holds, to
+    any depth, and replaces ``old`` with ``new`` where an object keeps it.
+
+    Args:
+        root: The object whose relation caches are walked, and which is changed
+            too.
+        old: The client to replace, which compares by identity.
+        new: The client that replaces it, or ``None`` for the API registered
+            for each object's class.
+    """
+    seen: set[int] = set()
+    stack: list[Any] = [root]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, JSONObject):
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if value._api_override is old:
+                value._api_override = new
+            stack.extend(value._field_cache.values())
+        elif isinstance(value, Mapping):
+            stack.extend(value.values())
+        elif isinstance(
+            value, (list, tuple, set, frozenset, collections.deque)
+        ):
+            stack.extend(value)
+
+
+def _object_url(obj: JSONObject) -> str:
+    """Return the URL that a request of an object goes to.
+
+    Every request of an object reads its ``url`` here, since a subclass may
+    override the property, and a wrong result must not fail later in the
+    library's own code as an ``AttributeError``, which ``hasattr()`` and
+    ``getattr()`` with a default swallow.
+
+    Args:
+        obj: The object.
+
+    Returns:
+        ``obj.url``.
+
+    Raises:
+        TypeError: If ``obj.url`` is not a string, naming the class and
+            ``url``.
+    """
+    url = obj.url
+    if isinstance(url, str):
+        return url
+    raise TypeError(
+        f"{type(obj).__name__}.url must return a str, got {type(url).__name__}"
+    )
+
+
 class _OwnedJSON(dict[str, Any]):
     """JSON object that the library owns, so a constructor need not copy it.
 
@@ -2692,6 +2887,21 @@ def _check_names_mapping(values: Any, argument: str) -> None:
                 f"A name in {argument}= must be a string, got "
                 f"{type(name).__name__}"
             )
+
+
+def _check_files(files: Any) -> None:
+    """Refuse ``files=`` that is given and is no mapping of string names.
+
+    Args:
+        files: What the caller gave for ``files=``.
+
+    Raises:
+        TypeError: If ``files`` is neither ``None`` nor a mapping whose names
+            are all strings, as a list of pairs, a string, and a mapping with
+            an integer name are not.
+    """
+    if files is not None:
+        _check_names_mapping(files, "files")
 
 
 def _query_params(
@@ -2934,7 +3144,7 @@ def _form_value(name: str, value: Any) -> Any:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (str, int, float)):
-        return str(value)
+        return str(_plain_scalar(value))
     if (
         isinstance(value, list)
         and value
@@ -3645,6 +3855,97 @@ def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
         _each_item(check, value)
 
 
+_WRITING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eazyrest_writing", default=False
+)
+"""Whether a value that a caller gave to be written is being encoded.
+
+A query encodes values too, and sends a set in sorted order, which a write of
+a set to a sequence has no order to match.
+"""
+
+
+def _refuse_unassignable_name(obj: JSONObject, name: str) -> None:
+    """Refuse the assignment of a public name that is no field.
+
+    A misspelled field is caught this way. ``pk`` and a name that begins with
+    an underscore may be set, and so may a field of the object's class, which
+    may be a decorated subclass with more fields than the class that installed
+    the check.
+
+    Args:
+        obj: The object that the name is assigned on.
+        name: The name.
+
+    Raises:
+        AttributeError: If the name is no field of the object's class and is
+            not ``pk`` or a private name. The message says so, since a property
+            with a setter, a class attribute, or an attribute that a method
+            sets is no field either.
+    """
+    cls = type(obj)
+    if (
+        name != "pk"
+        and not name.startswith("_")
+        and name not in getattr(cls, "_json_fields", ())
+    ):
+        raise AttributeError(
+            f"'{cls.__name__}' object has no attribute '{name}'. {name} is no "
+            f"field of {cls.__name__}, and only a field, pk, or a name that "
+            "begins with an underscore can be assigned"
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class _Unbuildable:
+    """A related object's stored key that the key's type cannot build.
+
+    It equals another such value that holds equal JSON, and nothing else, so a
+    comparison with the encoding of a key never finds it equal, though JSON
+    compares ``7.0`` and ``7`` equal.
+    """
+
+    raw: Any
+
+    def __eq__(self, other: object) -> bool:
+        """Return whether ``other`` holds the same JSON.
+
+        Args:
+            other: Value to compare.
+
+        Returns:
+            Whether ``other`` is an unbuildable key of equal JSON.
+        """
+        return isinstance(other, _Unbuildable) and _json_equal(
+            self.raw, other.raw
+        )
+
+    def __hash__(self) -> int:
+        """Return a hash of the kind of value, which equal values share."""
+        return hash(type(self.raw))
+
+
+def _holds_float(value: Any) -> bool:
+    """Return whether a JSON value is or holds a float.
+
+    Args:
+        value: JSON value.
+
+    Returns:
+        Whether a float is the value or is nested in it, at any depth.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, float):
+            return True
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return False
+
+
 def _stored_related_key(
     stored: Any, model: type[JSONObject], *, embedded: bool = False
 ) -> Any:
@@ -3679,7 +3980,9 @@ def _stored_related_key(
     try:
         built = _build_key(model, stored)
     except (TypeError, ValueError):
-        return stored
+        # No encoding that the program writes is such a value, so it is equal
+        # to none, though JSON compares ``7.0`` equal to ``7``.
+        return _Unbuildable(stored)
     return stored if built is None else built
 
 
@@ -4098,9 +4401,7 @@ def encode_json(
     analyzed = analyze_type(annotation)
     _check_relation_collection("The annotation", analyzed)
     _check_admitted(analyzed, _table_of(model), late=True)
-    encoded = model._to_written_json(value, analyzed)
-    _check_json(encoded, "")
-    return encoded
+    return _checked_json(model._to_written_json(value, analyzed))
 
 
 _MAX_WRITE_DEPTH = 127
@@ -4142,7 +4443,7 @@ def _too_deep(path: str) -> ValueError:
     )
 
 
-def _check_json(value: Any, path: str) -> None:
+def _check_json(value: Any, path: str) -> bool:
     """Check that a value is made only of JSON types.
 
     Args:
@@ -4152,15 +4453,20 @@ def _check_json(value: Any, path: str) -> None:
             input or an encoder, not declared, and can be a secret, so it is
             shown as ``[key]``.
 
+    Returns:
+        Whether ``value`` holds a string, an integer, or a float of a subclass,
+        which ``_reduced_json()`` writes as the plain value.
+
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping
             key that is not a string.
         ValueError: If ``value`` holds a float that is not finite, which JSON
-            cannot write, or holds itself. It does not count depth, which
-            ``_check_write_depth()`` does for a value that is written.
+            cannot write, an integer that Python cannot write as text, or holds
+            itself. It does not count depth, which ``_check_write_depth()``
+            does for a value that is written.
     """
     try:
-        _walk_json(value, path)
+        return _walk_json(value, path)
     except _DepthExceeded:
         # Name where the value starts, not the container that repeats, so that
         # the message stays short.
@@ -4199,16 +4505,44 @@ def _check_write_depth(value: Any, path: str) -> None:
             stack.pop()
 
 
-def _check_json_leaf(value: Any, path: str) -> None:
+def _is_writable_int(value: int) -> bool:
+    """Return whether Python can write an integer as decimal text.
+
+    Python refuses to convert an integer of more than
+    ``sys.get_int_max_str_digits()`` digits, so ``json.dumps()`` cannot write
+    it.
+
+    Args:
+        value: The integer.
+
+    Returns:
+        Whether ``str(value)`` succeeds.
+    """
+    # An integer has no more digits than bits, so a short one needs no test.
+    if value.bit_length() <= sys.get_int_max_str_digits():
+        return True
+    try:
+        str(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_json_leaf(value: Any, path: str) -> bool:
     """Check that a value that holds no other value is a JSON scalar.
 
     Args:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
 
+    Returns:
+        Whether ``value`` is a string, an integer, or a float of a subclass,
+        such as a member of an enum that mixes in ``str``.
+
     Raises:
         TypeError: If ``value`` is of another type.
-        ValueError: If ``value`` is a float that is not finite.
+        ValueError: If ``value`` is a float that is not finite, or an integer
+            that Python cannot write as text.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -4216,9 +4550,19 @@ def _check_json_leaf(value: Any, path: str) -> None:
                 f"The value{_at(path)} is a float that is not finite, which "
                 "JSON cannot write"
             )
-        return
-    if value is None or isinstance(value, (str, int)):
-        return
+        return type(value) is not float
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not _is_writable_int(value):
+            raise ValueError(
+                f"The value{_at(path)} is an integer of more than "
+                f"{sys.get_int_max_str_digits()} digits, which Python cannot "
+                "write as JSON"
+            )
+        return type(value) is not int
+    if isinstance(value, str):
+        return type(value) is not str
+    if value is None or isinstance(value, bool):
+        return False
     raise TypeError(
         f"The value{_at(path)} has the type {type(value).__name__}, which "
         "does not encode to JSON. Annotate it with a type that eazyrest "
@@ -4226,7 +4570,88 @@ def _check_json_leaf(value: Any, path: str) -> None:
     )
 
 
-def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
+def _plain_scalar(value: Any) -> Any:
+    """Return a JSON scalar as the plain value of its base type.
+
+    Args:
+        value: A JSON scalar, possibly of a subclass of ``str``, ``int``, or
+            ``float``, such as a member of an enum that mixes in one.
+
+    Returns:
+        The ``str``, ``int``, or ``float`` that holds the same value, which no
+        ``__str__()`` or ``__int__()`` of the subclass changes. ``None`` and a
+        ``bool`` are returned as they are.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        return str.__str__(value) if type(value) is not str else value
+    if isinstance(value, int):
+        return int.__int__(value)
+    if isinstance(value, float):
+        return float.__float__(value)
+    return value
+
+
+def _reduced_json(value: Any) -> Any:
+    """Return a JSON value with each scalar as the plain value of its type.
+
+    The walk is iterative, so that it takes any depth. The value is not
+    changed. ``_check_json()`` has refused a value that holds itself.
+
+    Args:
+        value: A value that ``_check_json()`` accepted.
+
+    Returns:
+        A copy of ``value`` whose strings, mapping keys, integers, and floats
+        are of the types ``str``, ``int``, and ``float``.
+    """
+    if not isinstance(value, (list, dict)):
+        return _plain_scalar(value)
+    result: Any = [] if isinstance(value, list) else {}
+    stack = [(_reduced_members(value), result)]
+    while stack:
+        members, target = stack[-1]
+        for key, item in members:
+            nested = isinstance(item, (list, dict))
+            child: Any = (
+                ([] if isinstance(item, list) else {})
+                if nested
+                else _plain_scalar(item)
+            )
+            if isinstance(target, list):
+                target.append(child)
+            else:
+                target[key] = child
+            if nested:
+                stack.append((_reduced_members(item), child))
+                break
+        else:
+            stack.pop()
+    return result
+
+
+def _reduced_members(container: Any) -> Iterator[tuple[Any, Any]]:
+    """Yield the members of an array or an object, with each key as plain text.
+
+    Args:
+        container: A list or a dict.
+
+    Yields:
+        ``(None, item)`` for each item of a list, and ``(key, item)`` for each
+        member of a dict, with ``key`` a plain ``str``.
+    """
+    if isinstance(container, list):
+        for item in container:
+            yield None, item
+    else:
+        for key, item in container.items():
+            yield _plain_scalar(key), item
+
+
+def _walk_json_members(
+    container: Any, path: str
+) -> Iterator[tuple[str, Any, bool]]:
     """Yield the members of an array or an object, with where each is.
 
     Args:
@@ -4234,15 +4659,15 @@ def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
         path: Where ``container`` is, as ``_check_json()`` takes it.
 
     Yields:
-        Each member's place within the container, as ``[0]`` or ``[key]``, and
-        the member.
+        Each member's place within the container, as ``[0]`` or ``[key]``, the
+        member, and whether its key is a string of a subclass.
 
     Raises:
         TypeError: If ``container`` is a dict with a key that is not a string.
     """
     if isinstance(container, list):
         for index, item in enumerate(container):
-            yield f"[{index}]", item
+            yield f"[{index}]", item, False
         return
     for key, item in container.items():
         if not isinstance(key, str):
@@ -4250,10 +4675,10 @@ def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
                 f"The value{_at(path)} has a key that is not a string, "
                 "which JSON objects cannot have"
             )
-        yield "[key]", item
+        yield "[key]", item, type(key) is not str
 
 
-def _walk_json(value: Any, path: str) -> None:
+def _walk_json(value: Any, path: str) -> bool:
     """Check each part of a value, which may hold itself.
 
     The walk is iterative, so that it takes any depth.
@@ -4262,21 +4687,27 @@ def _walk_json(value: Any, path: str) -> None:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
 
+    Returns:
+        Whether a part of ``value`` is a string, an integer, or a float of a
+        subclass, or a mapping key that is a string of a subclass.
+
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping key
             that is not a string.
-        ValueError: If ``value`` holds a float that is not finite.
+        ValueError: If ``value`` holds a float that is not finite, or an
+            integer that Python cannot write as text.
         _DepthExceeded: If ``value`` holds itself.
     """
     if not isinstance(value, (list, dict)):
-        _check_json_leaf(value, path)
-        return
+        return _check_json_leaf(value, path)
+    reducible = False
     open_containers = {id(value)}
     stack = [(_walk_json_members(value, path), path, id(value))]
     while stack:
         members, here, identity = stack[-1]
-        for place, item in members:
+        for place, item, reduces_key in members:
             there = here + place
+            reducible = reducible or reduces_key
             if isinstance(item, (list, dict)):
                 if id(item) in open_containers:
                     raise _DepthExceeded
@@ -4285,10 +4716,11 @@ def _walk_json(value: Any, path: str) -> None:
                     (_walk_json_members(item, there), there, id(item))
                 )
                 break
-            _check_json_leaf(item, there)
+            reducible = _check_json_leaf(item, there) or reducible
         else:
             stack.pop()
             open_containers.discard(identity)
+    return reducible
 
 
 def _literal_json(member: Any, table: Mapping[Any, Conversion]) -> Any:
@@ -4332,39 +4764,57 @@ def _literal_member(
     return _copy_json(value)
 
 
-def _checked_json(value: Any) -> Any:
+def _checked_json(value: Any, path: str = "") -> Any:
     """Return a value after checking that it is made only of JSON types.
 
     Args:
         value: Encoded value.
+        path: Where ``value`` is, as ``_check_json()`` takes it.
 
     Returns:
-        ``value``.
+        ``value``, or a copy of it in which each string, integer, float, and
+        mapping key of a subclass, such as a member of an enum that mixes in
+        ``str``, is the plain value that it stands for. Every caller must use
+        the result.
 
     Raises:
         TypeError: If ``value`` holds a value of another type.
+        ValueError: As for ``_check_json()``.
     """
-    _check_json(value, "")
+    if _check_json(value, path):
+        return _reduced_json(value)
     return value
 
 
-def _checked_body(wire: Mapping[str, Any]) -> None:
+def _checked_payload(
+    cls: type[JSONObject], payload: Mapping[str, Any]
+) -> dict[str, Any]:
     """Check that each member of a request's JSON body can be written.
 
     Args:
-        wire: The body, under the names that it is sent by.
+        cls: The model whose fields the body writes.
+        payload: The body, keyed by the fields' JSON keys and the names of
+            extras.
+
+    Returns:
+        ``payload`` in which each member is as ``_checked_json()`` returns it.
 
     Raises:
         TypeError: If a member holds a value of another type, as an extra can,
-            or a mapping key that is not a string.
-        ValueError: If a member holds a float that is not finite, holds itself,
-            or nests more deeply than ``_MAX_WRITE_DEPTH``, which makes the
-            body nest more than 128 levels. The message names the member as
-            ``[key]``, since its name can be a secret.
+            or a mapping key that is not a string, or if two members are
+            written under one key.
+        ValueError: If a member holds a float that is not finite, an integer
+            that Python cannot write as text, holds itself, or nests more
+            deeply than ``_MAX_WRITE_DEPTH``, which makes the body nest more
+            than 128 levels. The message names the member as ``[key]``, since
+            its name can be a secret.
     """
-    for value in wire.values():
-        _check_json(value, "[key]")
-        _check_write_depth(value, "[key]")
+    cls._to_wire(payload)
+    checked = {}
+    for key, value in payload.items():
+        checked[key] = _checked_json(value, "[key]")
+        _check_write_depth(checked[key], "[key]")
+    return checked
 
 
 def _at(path: str) -> str:
@@ -4473,12 +4923,13 @@ def json_object(
             on the class, if ``exclude`` names no annotated attribute of the
             class, or if two fields, declared or inherited, map to the same
             JSON key.
-        TypeError: If the class overrides a hook that takes ``api``, such as
-            ``collection_items()``, with a method that takes no ``**kwargs``.
-            Also raised if a field's type is a model without a primary-key
-            field, alone or inside an optional, a collection, or a ``NewType``.
-            Declare nested JSON without a key as a ``TypedDict`` or a
-            dataclass. Also raised if a field is a ``Collection`` or an
+        TypeError: If the class is no ``JSONObject`` subclass, or a field has a
+            default in the class body. Also if it overrides a hook that takes
+            ``api``, such as ``collection_items()``, with a method that takes
+            no ``**kwargs``. Also raised if a field's type is a model without a
+            primary-key field, alone or inside an optional, a collection, or a
+            ``NewType``. Declare nested JSON without a key as a ``TypedDict``
+            or a dataclass. Also raised if a field is a ``Collection`` or an
             ``Iterable`` of a model, alone or inside an optional or a
             ``NewType``, which does not say whether order counts, or a
             collection of models whose item type is optional or is itself a
@@ -4509,14 +4960,22 @@ def json_object(
             ValueError: If a field would replace a ``JSONObject`` attribute, if
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
-            TypeError: If a field's type is a model without a primary-key
-                field, a ``Collection`` or an ``Iterable`` of a model, or a
-                collection of models with an optional item or an item that is a
-                collection of models. Also if the key's type is not one that a
-                key may have.
+            TypeError: If ``cls`` is no ``JSONObject`` subclass, or a field has
+                a default in the class body. Also if a field's type is a model
+                without a primary-key field, a ``Collection`` or an
+                ``Iterable`` of a model, or a collection of models with an
+                optional item or an item that is a collection of models. Also
+                if the key's type is not one that a key may have.
         """
+        if not lenient_issubclass(cls, JSONObject):
+            raise TypeError(
+                f"{getattr(cls, '__name__', repr(cls))} is not a JSONObject "
+                "subclass, so @json_object cannot give it fields. Derive it "
+                "from JSONObject"
+            )
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
+        _refuse_hidden_fields(cls, fields, set(_declared_fields(cls, exclude)))
         read_keys = dict(field_map)
         write_keys = dict(write_map)
         hidden = set(write_only or ())
@@ -4557,9 +5016,14 @@ def json_object(
         # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
         declared: list[JSONProperty] = []
+        defaulted: list[str] = []
         for field, annotation in _annotations(cls).items():
             if field in exclude or _is_class_var(annotation):
                 continue
+
+            given = vars(cls).get(field, _MISSING)
+            if given is not _MISSING and not isinstance(given, JSONProperty):
+                defaulted.append(field)
 
             if field in reserved:
                 raise ValueError(
@@ -4593,6 +5057,17 @@ def json_object(
                 if prop.field == pk_field:
                     _check_redeclared_key(cls, above, prop)
         _refuse_declared_types(cls, declared)
+        if defaulted:
+            # A default replaced the descriptor's place in the class body, and
+            # no read applies it. The refusal of a type that the default
+            # shadows, which is a likelier mistake, comes first.
+            raise TypeError(
+                f"Field {cls.__name__}.{defaulted[0]} has a default in the "
+                "class body, which eazyrest does not apply, so reading the "
+                "field when the JSON lacks it raises AttributeError. Remove "
+                "the default, and declare the field optional if the server "
+                "may leave it out"
+            )
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
@@ -4603,18 +5078,9 @@ def json_object(
                 value: Attribute value being assigned.
 
             Raises:
-                AttributeError: If assignment targets an undeclared field.
+                AttributeError: If assignment targets a name that is no field.
             """
-            # Check the fields of the instance's class, which may be a
-            # decorated subclass with more fields than cls.
-            if (
-                name != "pk"
-                and not name.startswith("_")
-                and name not in type(self)._json_fields
-            ):
-                raise AttributeError(
-                    f"'{type(self).__name__}' object has no attribute '{name}'"
-                )
+            _refuse_unassignable_name(self, name)
 
             super(cls, self).__setattr__(name, value)
 
@@ -5213,6 +5679,8 @@ def _json_order(value: Any) -> tuple[int, Any]:
         return (2, value)
     if isinstance(value, str):
         return (3, value)
+    if isinstance(value, _Unbuildable):
+        return (5, _json_order(value.raw))
     return (
         4,
         json.dumps(
@@ -5811,6 +6279,40 @@ class JSONProperty:
                 # from JSON.
                 obj._field_snapshots[self.field] = _copy_json(new_value)
 
+    def _check_assignment(self, obj: JSONObject, value: Any) -> None:
+        """Refuse the value that assigning to this field would refuse.
+
+        This is what ``__set__()`` checks before it reads anything from the
+        server, without its changes, so that a caller can check a group of
+        assignments before it makes the first.
+
+        Args:
+            obj: ``JSONObject`` instance that the value would be assigned to.
+            value: Python value to assign.
+
+        Raises:
+            UsageError: If the model has no primary-key field.
+            AttributeError: If the field is read-only, or is the key and the
+                value names another key.
+            FieldConversionError: If the value cannot be converted to the
+                field's JSON value, or a key is not of the key's type.
+        """
+        _refuse_keyless_assignment(type(obj))
+        if self.write_only:
+            with _converting(type(obj), self.field):
+                obj._to_written_json(value, self.analyzed_type)
+            return
+        if self._is_key_of(obj):
+            self._set_key(obj, value)
+            return
+        if self.read_only:
+            raise AttributeError(
+                f"{type(obj).__name__}.{self.field} is read-only"
+            )
+        with _converting(type(obj), self.field):
+            obj._to_written_json(value, self.analyzed_type)
+            self._assigned_related(value)
+
     def _set_key(self, obj: JSONObject, value: Any) -> None:
         """Check that an assignment to an object's key keeps its key.
 
@@ -6088,8 +6590,9 @@ class JSONObject:
                 ``PATCH``. A model without a primary-key field takes none.
 
         Raises:
-            TypeError: If the model has a key field, ``json`` is omitted, and
-                no key is given, or ``None`` is. The message names the key
+            TypeError: If ``json`` is given and is not a mapping of string
+                names. Also if the model has a key field, ``json`` is omitted,
+                and no key is given, or ``None`` is. The message names the key
                 field and points to ``create()``, which makes a new resource.
             FieldConversionError: If the key that is given, or the key in
                 ``json``, is not of the key's type, or ``json`` lacks the key
@@ -6098,6 +6601,8 @@ class JSONObject:
                 primary-key field. Its objects are read-only values, built with
                 ``json=``.
         """
+        if json is not None and not isinstance(json, _OwnedJSON):
+            _check_names_mapping(json, "json")
         # A class's api can be assigned after the class is defined.
         _require_decorated(type(self))
         _check_api_attribute(type(self), UsageError)
@@ -6138,6 +6643,18 @@ class JSONObject:
         pk_property = _pk_property_of(type(self))
         if pk_property is not None:
             self._wire_key = self._initial_key(pk_property, kwargs)
+        # Check every name and convert every value before the first request,
+        # as an assignment converts a value before it loads the object, so that
+        # a keyword that is refused leaves no request behind it.
+        for name, value in kwargs.items():
+            _refuse_unassignable_name(self, name)
+            descriptor = (
+                pk_property
+                if name == "pk"
+                else getattr(type(self), name, None)
+            )
+            if isinstance(descriptor, JSONProperty):
+                descriptor._check_assignment(self, value)
         for name, value in kwargs.items():
             setattr(self, name, value)
 
@@ -6722,7 +7239,9 @@ class JSONObject:
 
                 converted_items = _each_item(read_item, value)
 
-                return _READ_AS[collection_type](converted_items)
+                return _read_collection(
+                    _READ_AS[collection_type], converted_items
+                )
 
             case _:
                 raise TypeError(
@@ -6795,7 +7314,11 @@ class JSONObject:
             ValueError: As for ``_to_json()``, and if the encoding nests more
                 deeply than ``_MAX_WRITE_DEPTH``.
         """
-        encoded = cls._to_json(value, conversion)
+        token = _WRITING.set(True)
+        try:
+            encoded = cls._to_json(value, conversion)
+        finally:
+            _WRITING.reset(token)
         _check_write_depth(encoded, "")
         return encoded
 
@@ -6875,13 +7398,27 @@ class JSONObject:
                 relates = isinstance(
                     _unwrap_optional_type(item_type), RelatedType
                 )
+                is_set = _READ_AS[collection_type] in (set, frozenset)
+                if (
+                    relates
+                    and not is_set
+                    and _WRITING.get()
+                    and isinstance(value, AbstractSet)
+                ):
+                    # A set's iteration order depends on how it was built, and
+                    # an object's hash on its address, so a sequence written
+                    # from one would differ from one run to the next.
+                    raise TypeError(
+                        "A set has no order to write as a sequence of "
+                        "related objects. Give a list or a tuple, or declare "
+                        "the field as a set"
+                    )
 
                 def write_item(item: Any) -> Any:
                     if relates and item is None:
                         raise ValueError(_NULL_ITEM)
                     return cls._encode_value(item, item_type)
 
-                is_set = _READ_AS[collection_type] in (set, frozenset)
                 items = _each_item(write_item, value, positioned=not is_set)
                 if is_set:
                     # A set's iteration order depends on how it was built, and
@@ -6954,8 +7491,7 @@ class JSONObject:
                         # An undeclared key is written as it is, so it must
                         # already be JSON.
                         with _at_key("[key]"):
-                            _check_json(item, "")
-                        written[key] = item
+                            written[key] = _checked_json(item)
                 return written
             case MappingType(value_type):
                 _check_mapping(value, conversion)
@@ -6998,7 +7534,7 @@ class JSONObject:
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
-        self._request_api().delete(self.url, **options)
+        self._request_api().delete(_object_url(self), **options)
 
     def _request_api(self) -> API:
         """Return the API that this object's own requests go through.
@@ -7120,7 +7656,9 @@ class JSONObject:
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self._request_api().patch(
-                self.url, json=self._to_wire(payload), **self._write_options
+                _object_url(self),
+                json=self._to_wire(payload),
+                **self._write_options,
             )
             self._apply_patch_response(resp, payload)
             return
@@ -7449,7 +7987,12 @@ class JSONObject:
             prop = getattr(type(self), field)
             old = before.get(prop.json_field, _MISSING)
             new = after.get(prop.json_field, _MISSING)
-            if _json_equal(old, new):
+            # JSON compares ``7`` and ``7.0`` equal, but a key that is spelled
+            # as a float cannot be built, so only values without a float are
+            # the same by that comparison alone.
+            if _json_equal(old, new) and not (
+                _holds_float(old) or _holds_float(new)
+            ):
                 continue
             try:
                 # Another spelling of one key is no change.
@@ -7591,15 +8134,17 @@ class JSONObject:
                 object, as when it is an empty list or a list of several
                 objects, or names another primary key than the object has. The
                 server may have applied the updates, but they remain pending.
-            TypeError: If ``request_options`` is not a mapping, sets the body,
-                or streams the response, its ``headers`` or ``hooks`` are not
-                mappings of names to values that can be merged, or a field
-                cannot be sent as a form field.
+            TypeError: If ``files`` is not a mapping of string names, or
+                ``request_options`` is not a mapping, sets the body, or streams
+                the response, its ``headers`` or ``hooks`` are not mappings of
+                names to values that can be merged, or a field cannot be sent
+                as a form field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
+        _check_files(files)
         _refuse_keyless_request(type(self), "save")
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
@@ -7608,7 +8153,9 @@ class JSONObject:
         if full:
             payload = self._full_payload()
             body = self._write_body(payload, files)
-            resp = self._request_api().put(self.url, **body, **options)
+            resp = self._request_api().put(
+                _object_url(self), **body, **options
+            )
             self._apply_patch_response(resp, payload)
             return
         if len(self._pending_updates) == 0 and not files:
@@ -7616,7 +8163,7 @@ class JSONObject:
 
         payload = dict(self._pending_updates)
         body = self._write_body(payload, files)
-        resp = self._request_api().patch(self.url, **body, **options)
+        resp = self._request_api().patch(_object_url(self), **body, **options)
         self._apply_patch_response(resp, payload)
 
     def _full_payload(self) -> dict[str, Any]:
@@ -7687,9 +8234,11 @@ class JSONObject:
                 another key than the object's, or ``null``, or a key that is
                 not of the key's type, so that the payload does not name this
                 object. It is a ``ValueError``, and nothing is merged.
-            TypeError: If this object's class is not decorated with
-                ``@json_object``, so that it has no fields to merge.
+            TypeError: If ``json`` is not a mapping of string names, or this
+                object's class is not decorated with ``@json_object``, so that
+                it has no fields to merge.
         """
+        _check_names_mapping(json, "json")
         if not hasattr(type(self), "_json_fields"):
             raise TypeError(
                 f"{type(self).__name__} is not decorated, so it has no "
@@ -7810,7 +8359,7 @@ class JSONObject:
         _refuse_keyless_request(type(self), "refresh")
         # An object without a URL cannot reload, so refuse before discarding
         # its state.
-        _ = self.url
+        _object_url(self)
         # The key stays, so the object still has its key without its JSON.
         # Discard unsaved local changes
         self._pending_updates.clear()
@@ -7898,6 +8447,9 @@ class JSONObject:
                 resource, such as the collection.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has nothing to build the URL from.
+
+        A subclass that overrides this property must return a ``str``. A
+        request that reads it raises ``TypeError`` for any other result.
         """
         if getattr(type(self), "_pk", None) is None:
             raise ValueError(
@@ -7934,8 +8486,10 @@ class JSONObject:
             ValueError: As for ``url``.
             UsageError: If the model has a key field and declares no
                 ``class_url``, or no API is registered for it.
+            TypeError: If a subclass overrides ``url`` and it returns no
+                ``str``.
         """
-        return self.api.resolve_url(self.url)
+        return self.api.resolve_url(_object_url(self))
 
     @property
     def json(self) -> Any:
@@ -8037,7 +8591,7 @@ class JSONObject:
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())
-        resp = self._request_api().get(self.url)
+        resp = self._request_api().get(_object_url(self))
         json = self._object_from_response(self.api.json(resp), resp)
 
         # Some APIs leave the primary key out of a detail response, because the
@@ -9171,14 +9725,15 @@ class JSONObject:
                 to be JSON. The error names the extra as ``[key]``, and nothing
                 is sent.
             TypeError: If the model's key type is refused, which is checked
-                before any request. Also raised if a field is given both as a
-                keyword argument and in ``fields``, if ``request_options`` is
-                not a mapping, sets the body, or has ``headers`` or ``hooks``
-                that cannot be merged, or if a field's value cannot be sent as
-                a form field with ``files``. Also raised for response streaming
-                or conflicting wire names, and for a value under a name that is
-                no field that is not made of JSON types, as a tuple, or a
-                mapping with a key that is not a string.
+                before any request. Also raised if ``files`` is not a mapping
+                of string names, if a field is given both as a keyword argument
+                and in ``fields``, if ``request_options`` is not a mapping,
+                sets the body, or has ``headers`` or ``hooks`` that cannot be
+                merged, or if a field's value cannot be sent as a form field
+                with ``files``. Also raised for response streaming or
+                conflicting wire names, and for a value under a name that is no
+                field that is not made of JSON types, as a tuple, or a mapping
+                with a key that is not a string.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
@@ -9187,6 +9742,7 @@ class JSONObject:
                 the key is ``None``. Leave the key out to let the server assign
                 it.
         """
+        _check_files(files)
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
         # The response is read for a key of this type, so a type that cannot be
@@ -9203,7 +9759,7 @@ class JSONObject:
             # The body is JSON, as _write_body() decides. An extra has no
             # annotation, so eazyrest cannot say how a tuple, or a mapping with
             # a key that is not a string, reads back as JSON.
-            _checked_body(cls._to_wire(payload))
+            payload = _checked_payload(cls, payload)
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
@@ -9700,9 +10256,10 @@ class JSONObject:
         Raises:
             ResponseShapeError: If ``object_json()`` raises ``DoesNotExist`` or
                 ``MultipleObjectsReturned`` for a payload that is a list, or
-                does not return a mapping. The error holds the response. Any
-                other error of ``object_json()``, those two for another payload
-                included, reaches the caller unchanged.
+                does not return a mapping, or if the payload is no object and
+                ``object_json()`` is the default hook. The error holds the
+                response. Any other error of ``object_json()``, those two for
+                another payload included, reaches the caller unchanged.
         """
         cls = type(self)
         try:
@@ -9724,6 +10281,22 @@ class JSONObject:
             raise ResponseShapeError(
                 f"The response to the {where}: {err}", response=resp
             ) from err
+        if not cls._overrides_hook("object_json") and not isinstance(
+            json, Mapping
+        ):
+            # The default hook returns any payload that is no list, so the
+            # server's answer is what is wrong, and the program wrote no hook
+            # to blame.
+            raise ResponseShapeError(
+                "The response to the "
+                + (
+                    f"creation of a {cls.__name__}"
+                    if self._wire_key is _BEFORE_CREATION
+                    else f"write or load of a {cls.__name__}"
+                )
+                + f" is not a JSON object, but a {type(json).__name__}",
+                response=resp,
+            )
         json = _hook_result(
             cls, "object_json", json, Mapping, "a JSON object", resp=resp
         )
@@ -9884,16 +10457,23 @@ class JSONObject:
             # key. A key that cannot be read yet matches none, so raise before
             # the request rather than keep an empty prefetch.
             _resolve_key(model_type)
+            scoped = query.related_client(model_type)
             related_objects = _hook_result(
                 model_type,
                 "bulk_get_by_pks",
                 model_type.bulk_get_by_pks(
                     _prefetch_keys(cls, field, model_type, raw_keys.values()),
-                    api=query.related_client(model_type),
+                    api=scoped,
                 ),
                 Mapping,
                 "the related objects by key, as a mapping",
             )
+            # A hook that reads a relation of an object that it built gives the
+            # related object the client that built its parent, which carries
+            # the query's request options, and the object keeps it.
+            for related in related_objects.values():
+                if isinstance(related, JSONObject):
+                    _replace_api(related, scoped, query.api)
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
             for obj in related_objects.values():
@@ -10305,11 +10885,13 @@ class JSONObject:
         source = _ModelPageSource(
             cls, _Query(api, client, options), prefetch_fields
         )
+        # The collection's URL is read whether or not a page's own URL is
+        # given, so that a class that cannot name its collection sends nothing.
+        collection = _class_url_of(cls)
         if url is None:
             resp = _check_final_response(
                 client.get(
-                    _class_url_of(cls),
-                    params=cls._encode_query(query, client),
+                    collection, params=cls._encode_query(query, client)
                 ),
                 "the query has no collection to read",
             )
@@ -10614,8 +11196,7 @@ class JSONObject:
         _check_api_attribute(cls, UsageError)
         client = cls.api if api is None else _as_client(api)
         cls._encode_query(kwargs, client)
-        payload = cls._encode_fields(create_kwargs)
-        _checked_body(cls._to_wire(payload))
+        _checked_payload(cls, cls._encode_fields(create_kwargs))
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
         # such a name as given, because it is an ordinary query parameter.

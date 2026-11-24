@@ -5390,7 +5390,7 @@ def test_save_rejects_patch_response_without_object(
     user = User(json={"id": 1, "name": "Ada"})
 
     user.name = "Grace"
-    with pytest.raises(TypeError, match="must return a JSON object"):
+    with pytest.raises(TypeError, match="is not a JSON object"):
         user.save()
 
     assert user.json == {"id": 1, "name": "Grace"}
@@ -5411,9 +5411,9 @@ def test_create_and_load_reject_response_without_object(
     requests_mock.post("https://example.com/v1/users/", text=body)
     requests_mock.get("https://example.com/v1/users/1/", text=body)
 
-    with pytest.raises(TypeError, match="must return a JSON object"):
+    with pytest.raises(TypeError, match="is not a JSON object"):
         User.create(name="Ada")
-    with pytest.raises(TypeError, match="must return a JSON object"):
+    with pytest.raises(TypeError, match="is not a JSON object"):
         _ = User(id=1).name
 
 
@@ -8559,11 +8559,7 @@ def test_json_schema_of_a_self_relation_has_the_models_key_schema() -> None:
 
 
 def test_json_schema_follows_declaration_order() -> None:
-    """Properties follow declaration order, with or without defaults.
-
-    A field with a default stays in the class's namespace where the class
-    declares it, while ``json_object()`` adds a field without one at the end.
-    """
+    """Properties follow declaration order, a redeclared field staying put."""
 
     @json_object
     class Base(ModelBase):
@@ -8571,11 +8567,11 @@ def test_json_schema_follows_declaration_order() -> None:
 
         id: int
         a: str
-        b: int = 0
+        b: int
 
     @json_object
     class Ordered(Base):
-        c: str = ""
+        c: str
         d: str
         a: str
 
@@ -8971,7 +8967,7 @@ class Address(ModelBase):
     """Model without a key, as a nested serializer without an id sends."""
 
     street: str
-    city: str = ""
+    city: str
 
 
 @json_object
@@ -8981,7 +8977,7 @@ class AddressWithUrl(ModelBase):
     class_url = "/addresses/"
 
     street: str
-    city: str = ""
+    city: str
 
 
 @json_object
@@ -8989,7 +8985,7 @@ class AddressWithTags(ModelBase):
     """Model without a key that has a list field."""
 
     street: str
-    city: str = ""
+    city: str
     tags: list[str]
 
 
