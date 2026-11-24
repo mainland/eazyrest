@@ -934,6 +934,13 @@ a `TypedDict`, `NamedTuple`, or dataclass. An entry of the model's
 entries admit it for the subclass. Its message names the class and says to
 annotate `Any` or register a `Conversion`.
 
+A field has no default. A default in the class body, as in
+`name: str = "anonymous"`, raises `TypeError` naming the class and the field
+when the class is decorated, since no read applies it and the field raises
+`AttributeError` when the JSON lacks it. Declare a field that the server may
+leave out as optional, as in `name: str | None`. A class that is no
+`JSONObject` subclass raises `TypeError` when `@json_object` decorates it.
+
 A field whose annotation is `None` as a whole is refused the same way. It
 happens when a field is named like its type and has the default `None`, as in
 `date: date = None`, because the default replaces the type in the class body.

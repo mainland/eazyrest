@@ -644,6 +644,15 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A default in the class body of a decorated model, as in
+  `name: str = "anonymous"`, raises `TypeError` naming the class and the field
+  when the class is decorated. `v1.0.0a5` decorated it and dropped the default,
+  so reading the field when the JSON lacked it raised `AttributeError`. 1.0 has
+  no defaults. A field that the server may leave out is declared optional.
+- `@json_object` on a class that is no `JSONObject` subclass raises `TypeError`
+  naming the class and `JSONObject`. `v1.0.0a5` decorated it, and the class
+  then raised a `TypeError` about its arguments and an `AttributeError` for
+  each field.
 - A class attribute of a subclass that has the name of an inherited field, such
   as a property, a method, a plain value, or `None`, raises `TypeError` naming
   the class and the field when the subclass is decorated, and for a subclass

@@ -4805,12 +4805,13 @@ def json_object(
             on the class, if ``exclude`` names no annotated attribute of the
             class, or if two fields, declared or inherited, map to the same
             JSON key.
-        TypeError: If the class overrides a hook that takes ``api``, such as
-            ``collection_items()``, with a method that takes no ``**kwargs``.
-            Also raised if a field's type is a model without a primary-key
-            field, alone or inside an optional, a collection, or a ``NewType``.
-            Declare nested JSON without a key as a ``TypedDict`` or a
-            dataclass. Also raised if a field is a ``Collection`` or an
+        TypeError: If the class is no ``JSONObject`` subclass, or a field has a
+            default in the class body. Also if it overrides a hook that takes
+            ``api``, such as ``collection_items()``, with a method that takes
+            no ``**kwargs``. Also raised if a field's type is a model without a
+            primary-key field, alone or inside an optional, a collection, or a
+            ``NewType``. Declare nested JSON without a key as a ``TypedDict``
+            or a dataclass. Also raised if a field is a ``Collection`` or an
             ``Iterable`` of a model, alone or inside an optional or a
             ``NewType``, which does not say whether order counts, or a
             collection of models whose item type is optional or is itself a
@@ -4841,12 +4842,19 @@ def json_object(
             ValueError: If a field would replace a ``JSONObject`` attribute, if
                 an option names no field of the class, or if two fields map to
                 the same JSON key.
-            TypeError: If a field's type is a model without a primary-key
-                field, a ``Collection`` or an ``Iterable`` of a model, or a
-                collection of models with an optional item or an item that is a
-                collection of models. Also if the key's type is not one that a
-                key may have.
+            TypeError: If ``cls`` is no ``JSONObject`` subclass, or a field has
+                a default in the class body. Also if a field's type is a model
+                without a primary-key field, a ``Collection`` or an
+                ``Iterable`` of a model, or a collection of models with an
+                optional item or an item that is a collection of models. Also
+                if the key's type is not one that a key may have.
         """
+        if not lenient_issubclass(cls, JSONObject):
+            raise TypeError(
+                f"{getattr(cls, '__name__', repr(cls))} is not a JSONObject "
+                "subclass, so @json_object cannot give it fields. Derive it "
+                "from JSONObject"
+            )
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
         _refuse_hidden_fields(cls, fields, set(_declared_fields(cls, exclude)))
@@ -4890,9 +4898,14 @@ def json_object(
         # delay resolving references, whereas typing.get_type_hints *does*
         # resolve references.
         declared: list[JSONProperty] = []
+        defaulted: list[str] = []
         for field, annotation in _annotations(cls).items():
             if field in exclude or _is_class_var(annotation):
                 continue
+
+            given = vars(cls).get(field, _MISSING)
+            if given is not _MISSING and not isinstance(given, JSONProperty):
+                defaulted.append(field)
 
             if field in reserved:
                 raise ValueError(
@@ -4926,6 +4939,17 @@ def json_object(
                 if prop.field == pk_field:
                     _check_redeclared_key(cls, above, prop)
         _refuse_declared_types(cls, declared)
+        if defaulted:
+            # A default replaced the descriptor's place in the class body, and
+            # no read applies it. The refusal of a type that the default
+            # shadows, which is a likelier mistake, comes first.
+            raise TypeError(
+                f"Field {cls.__name__}.{defaulted[0]} has a default in the "
+                "class body, which eazyrest does not apply, so reading the "
+                "field when the JSON lacks it raises AttributeError. Remove "
+                "the default, and declare the field optional if the server "
+                "may leave it out"
+            )
 
         def _setattr(self: JSONObject, name: str, value: Any) -> None:
             """Restrict arbitrary attribute assignment on JSON-backed models.
