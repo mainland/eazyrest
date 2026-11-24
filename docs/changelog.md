@@ -282,6 +282,10 @@ describe them further.
   and copies, from a response whose limit was raised or removed, from `json=`,
   and from `update_from_json()`, as do `copy.copy()` and `copy.deepcopy()` of
   its object.
+- A conversion's own `RecursionError`, and one from a dataclass's
+  `__post_init__`, propagates unchanged, as any other error of a conversion
+  that is no `TypeError` or `ValueError` does. Only the walk of a value reports
+  one as a value that holds itself or nests too deeply.
 - A set or frozenset field writes its items in a fixed order, sorted as JSON
   values, rather than in the set's order, and assigning a set equal to the
   server's sends no update, whatever order the server lists the items in. That

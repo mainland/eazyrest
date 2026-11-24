@@ -155,6 +155,34 @@ position added. It marks a ``TypeError`` that refuses a model's declaration,
 which is no conversion of a value, and a refusal of a query parameter that
 names its own item."""
 
+_CONVERSION_RECURSION = "_eazyrest_conversion_recursion"
+"""Attribute that marks a ``RecursionError`` that a conversion's code raised.
+
+Such an error is a bug in the conversion, not a value that holds itself, so
+the walk of a value does not report it as one.
+"""
+
+
+def _encode_by(found: _Found, value: Any) -> Any:
+    """Encode a value by a conversion entry.
+
+    Args:
+        found: The entry that applies, with the type that it was found for.
+        value: The value to encode.
+
+    Returns:
+        What the entry's ``encode`` gives.
+
+    Raises:
+        RecursionError: If the entry's code raises it, marked so that the walk
+            of a value does not report it as a value that holds itself.
+    """
+    try:
+        return found.entry.encode(value, found.declared)
+    except RecursionError as err:
+        setattr(err, _CONVERSION_RECURSION, True)
+        raise
+
 
 def _passes_through(err: Exception) -> bool:
     """Tell whether a conversion error keeps its own type.
@@ -254,10 +282,6 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         yield
     except FieldConversionError:
         raise
-    except RecursionError as err:
-        # A value that holds itself or nests too deeply is a fault of the
-        # value, whatever step ran out of stack.
-        raise FieldConversionError(model, field, _too_deep("")) from err
     except (TypeError, ValueError) as err:
         if _passes_through(err):
             raise
@@ -4281,7 +4305,7 @@ def _literal_json(member: Any, table: Mapping[Any, Conversion]) -> Any:
     if isinstance(member, enum.Enum):
         found = _conversion_of(type(member), table)
         if found is not None:
-            return found.entry.encode(member, found.declared)
+            return _encode_by(found, member)
     return member
 
 
@@ -5690,7 +5714,7 @@ class JSONProperty:
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
             with _converting(type(obj), self.field):
-                encoded = obj._to_json(value, self.analyzed_type)
+                encoded = obj._to_json(value, self.analyzed_type, reading=True)
 
         # Cache the value only once its encoding is known, so that a field
         # whose value cannot be encoded fails on every read, rather than
@@ -6710,6 +6734,8 @@ class JSONObject:
         cls,
         value: Any,
         conversion: AnalyzedType,
+        *,
+        reading: bool = False,
     ) -> Any:
         """Convert a typed Python value to a JSON-serializable value.
 
@@ -6724,6 +6750,9 @@ class JSONObject:
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
+            reading: Whether ``value`` was just read from JSON, so that it
+                cannot hold itself, and a stack that gives out is not its
+                fault.
 
         Returns:
             JSON-serializable representation of ``value``.
@@ -6734,11 +6763,15 @@ class JSONObject:
                 collection of items. Also raised if ``conversion`` is
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
             ValueError: If ``value`` holds itself, or so deeply that the
-                conversion of its parts runs out of stack.
+                conversion of its parts runs out of stack, unless ``reading``.
+                A ``RecursionError`` that a conversion's own code raises, or
+                that a read meets, propagates unchanged.
         """
         try:
             return cls._encode_value(value, conversion)
-        except RecursionError:
+        except RecursionError as err:
+            if reading or getattr(err, _CONVERSION_RECURSION, False):
+                raise
             raise _too_deep("") from None
 
     @classmethod
@@ -6784,7 +6817,9 @@ class JSONObject:
         Raises:
             TypeError: As for ``_to_json()``.
             RecursionError: If ``value`` holds itself, or nests more deeply
-                than the stack takes.
+                than the stack takes, or a conversion's own code raises it. The
+                error of a conversion's code carries the mark that
+                ``_to_json()`` looks for.
         """
         if value is None:
             return None
@@ -6792,7 +6827,7 @@ class JSONObject:
         found = _class_entry(conversion, _table_of(cls))
         if found is not None:
             if _encodes(value, found):
-                return _checked_json(found.entry.encode(value, found.declared))
+                return _checked_json(_encode_by(found, value))
             # The entry replaces the structure, so another value is written
             # as it is, as for an entry of a leaf type.
             return _checked_json(value)
@@ -6815,9 +6850,7 @@ class JSONObject:
                 # plain datetime for a subclass of datetime, which must write
                 # back.
                 if found is not None and _encodes(value, found):
-                    return _checked_json(
-                        found.entry.encode(value, found.declared)
-                    )
+                    return _checked_json(_encode_by(found, value))
 
                 if _literal_of(base_type) is not None and isinstance(
                     value, enum.Enum
@@ -7619,6 +7652,7 @@ class JSONObject:
                         json[descriptor.json_field], conversion, field=field
                     ),
                     conversion,
+                    reading=True,
                 )
         write_only = self._write_only_keys()
         payload.update(
