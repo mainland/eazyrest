@@ -521,7 +521,8 @@ print(user.absolute_url)
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
 A keyed model that declares no `class_url` has no URL. `url`, a read that loads
-the object, `refresh()`, `delete()`, `create()`, and the query methods raise
+the object, `refresh()`, `delete()`, `save()` when it has something to send,
+`save(full=True)`, an eager assignment, `create()`, and the query methods raise
 `UsageError` naming the class and `class_url`, before any request. Unlike an
 `AttributeError`, it is not swallowed by `hasattr()`.
 
@@ -1341,16 +1342,19 @@ or write key and also another field's raises `TypeError`, naming the fields,
 before any request, as do two names of one field, such as
 `create(id=7, postId=8)`. Any other name that is no field is sent as it is,
 except a value that is not made of JSON types, which raises `TypeError` before
-any request: a tuple, which would read back as a list, and a mapping with a key
-that is not a string. The lookup of `get_or_create()` builds the key under its
-JSON or write key too, so a `UUID` given in uppercase is sent in the query and
-in the `POST` in one spelling, where `filter()` sends such a name as it was
-given. A JSON key or write key that holds `__`, as `doc__id` for a field `id`
-or `the__title` for a field `title`, is no lookup of `get_or_create()`, which
-would read it as a field and a suffix, so the call raises `ValueError` naming
-the parameter before any request. Look the field up by its name, as `title`,
-and the key as `id` or `pk`. A key whose field name holds `__`, as `doc__id`
-for `pk="doc__id"`, is looked up and created by that name.
+any request: a tuple, which would read back as a list, a mapping with a key
+that is not a string, and a generator. A float that is not finite, and a value
+that holds itself or nests more than 128 levels deep, raise `ValueError` before
+any request, and the message names the value as `[key]`. The lookup of
+`get_or_create()` builds the key under its JSON or write key too, so a `UUID`
+given in uppercase is sent in the query and in the `POST` in one spelling,
+where `filter()` sends such a name as it was given. A JSON key or write key
+that holds `__`, as `doc__id` for a field `id` or `the__title` for a field
+`title`, is no lookup of `get_or_create()`, which would read it as a field and
+a suffix, so the call raises `ValueError` naming the parameter before any
+request. Look the field up by its name, as `title`, and the key as `id` or
+`pk`. A key whose field name holds `__`, as `doc__id` for `pk="doc__id"`, is
+looked up and created by that name.
 
 A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the
 key under its JSON or write key, in `fields=`, or in the `defaults` of

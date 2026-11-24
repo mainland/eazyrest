@@ -6690,7 +6690,8 @@ class JSONObject:
 
         Raises:
             UsageError: If the model has no primary-key field, or a class had
-                ``api`` assigned.
+                ``api`` assigned. Also if the model declares no ``class_url``,
+                or no API is registered for it.
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
             TypeError: If ``request_options`` is not a mapping, sets the body,
@@ -7279,8 +7280,11 @@ class JSONObject:
 
         Raises:
             UsageError: If the model has no primary-key field, even when
-                nothing is pending, or a class had ``api`` assigned. Nothing is
-                sent, and the pending updates stay.
+                nothing is pending, or a class had ``api`` assigned. Also, when
+                there is something to send, if the model declares no
+                ``class_url``, or no API is registered for it. Nothing is sent,
+                and the pending updates stay.
+
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
             ResponseShapeError: If the response body does not hold a JSON
@@ -7493,8 +7497,9 @@ class JSONObject:
         and its ``url``.
 
         Raises:
-            UsageError: If the model has no key field. Such an object has
-                nothing to reload.
+            UsageError: If the model has no key field, so that the object has
+                nothing to reload, or the model declares no ``class_url``.
+
             ValueError: If the object has no URL to reload from, because its
                 primary key is empty or a dot segment. Nothing is discarded
                 then. Before 1.0.0, an object with an empty key was reset
@@ -7589,6 +7594,8 @@ class JSONObject:
             ValueError: If the primary key is empty or a dot segment, or the
                 class has no primary-key field. The URL would name another
                 resource, such as the collection.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, so it has nothing to build the URL from.
         """
         if getattr(type(self), "_pk", None) is None:
             raise ValueError(
@@ -7620,6 +7627,11 @@ class JSONObject:
 
         Returns:
             Absolute URL resolved against the object's API base URL.
+
+        Raises:
+            ValueError: As for ``url``.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, or no API is registered for it.
         """
         return self.api.resolve_url(self.url)
 
@@ -7640,6 +7652,11 @@ class JSONObject:
 
         Returns:
             JSON payload representing this object.
+
+        Raises:
+            UsageError: If the object has not loaded, and the model has a key
+                field and declares no ``class_url``, or no API is registered
+                for it, so that it cannot load.
         """
         if self._json is None:
             self._load_json()
@@ -8747,7 +8764,9 @@ class JSONObject:
         Raises:
             UsageError: If the model has no primary-key field, so there is
                 nothing to create. Post with the API and build the object with
-                ``json=`` instead.
+                ``json=`` instead. Also if the model declares no ``class_url``,
+                or no API is registered for it and no ``api=`` is given.
+
             Exception: Whatever resolving a name in the key's type raises, such
                 as a ``NameError`` for a class that is not defined, before any
                 request.
@@ -8758,6 +8777,10 @@ class JSONObject:
                 names another key than the one that the request sent. The
                 resource may have been created, and the error's ``response``
                 holds the response.
+            ValueError: If an extra, a value under a name that is no field, is
+                a float that is not finite, or holds itself or nests too deeply
+                to be JSON. The error names the extra as ``[key]``, and nothing
+                is sent.
             TypeError: If the model's key type is refused, which is checked
                 before any request. Also raised if a field is given both as a
                 keyword argument and in ``fields``, if ``request_options`` is
@@ -9676,6 +9699,11 @@ class JSONObject:
                 ``request_options`` is not valid for a query, or
                 ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
                 ``prefetch`` is given.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, so it has no collection to read, or no API is
+                registered for it and no ``api=`` is given, or a ``prefetch``
+                field's related model has none, or a class had ``api``
+                assigned. No request is sent.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
@@ -9770,6 +9798,11 @@ class JSONObject:
                 raised when iteration reaches the item.
             TypeError: If ``request_options`` is not valid for a query, or the
                 model's key type is refused, as for ``filter()``.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, so it has no collection to read, or no API is
+                registered for it and no ``api=`` is given, or a ``prefetch``
+                field's related model has none, or a class had ``api``
+                assigned. No request is sent.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
@@ -9826,8 +9859,9 @@ class JSONObject:
 
         Raises:
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field or is named twice, or if a parameter has a
-                value that requests would not send intact.
+                related-object field or is named twice, if a parameter has a
+                value that requests would not send intact, or if
+                ``prefetch_batch_size`` is below 1 and ``prefetch`` is given.
             FieldConversionError: If a parameter's value is of the wrong type
                 for its field, as a text for an ``int`` key, or a related key
                 that ``prefetch`` reads from an item is.
@@ -9838,7 +9872,14 @@ class JSONObject:
                 is given both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, or
                 ``collection_page()`` does not return a ``Page``. Also if the
-                model's key type is refused, as for ``filter()``.
+                model's key type is refused, as for ``filter()``, or
+                ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
+                ``prefetch`` is given.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, so it has no collection to read, or no API is
+                registered for it and no ``api=`` is given, or a ``prefetch``
+                field's related model has none, or a class had ``api``
+                assigned. No request is sent.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement its bulk lookup.
             PaginationError: If ``url`` has another origin.
@@ -9924,8 +9965,9 @@ class JSONObject:
             DoesNotExist: If no objects matched.
             MultipleObjectsReturned: If more than one object matched.
             ValueError: If a ``prefetch`` field is not a JSON-backed
-                related-object field or is named twice, or if a parameter has a
-                value that requests would not send intact.
+                related-object field or is named twice, if a parameter has a
+                value that requests would not send intact, or if
+                ``prefetch_batch_size`` is below 1 and ``prefetch`` is given.
             FieldConversionError: If a parameter's value is of the wrong type
                 for its field, as a text for an ``int`` key, or a related key
                 that ``prefetch`` reads from an item is.
@@ -9934,7 +9976,14 @@ class JSONObject:
                 type. The message names the item's position.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, or ``request_options`` is not valid for a query.
-                Also if the model's key type is refused, as for ``filter()``.
+                Also if the model's key type is refused, as for ``filter()``,
+                or ``prefetch_batch_size`` is neither an ``int`` nor ``None``
+                and ``prefetch`` is given.
+            UsageError: If the model has a key field and declares no
+                ``class_url``, so it has no collection to read, or no API is
+                registered for it and no ``api=`` is given, or a ``prefetch``
+                field's related model has none, or a class had ``api``
+                assigned. No request is sent.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement ``bulk_get_by_pks()``.
             RedirectError: If the response is a redirect that was not
@@ -10042,7 +10091,9 @@ class JSONObject:
 
         Raises:
             UsageError: If the model has no primary-key field, so there is
-                nothing to create. No request is sent.
+                nothing to create, or declares no ``class_url``, or no API is
+                registered for it and no ``api=`` is given. No request is sent.
+
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
                 not send intact, or is the JSON key or write key of a field,
