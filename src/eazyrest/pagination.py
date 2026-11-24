@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Generic, TypeVar
-from urllib.parse import urljoin
 
 import requests
 
@@ -17,13 +16,12 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results
-from ._urls import Source, _asked_text
+from ._urls import Source, _asked_text, _join, _origin
 from .api import (
     _UNPARSABLE_PAGE_URL,
     _as_api,
     _as_sender,
     _check_final_response,
-    _origin,
     _page_url_subject,
 )
 
@@ -206,7 +204,7 @@ def _resolve(base: str, link: str) -> str:
             one that rejected the link can quote it.
     """
     try:
-        return urljoin(base, link)
+        return _join(base, link)
     except ValueError:
         pass
     raise PaginationError(_UNPARSABLE_PAGE_URL) from None

@@ -928,7 +928,7 @@ CONFIG_CASES = {
     "config-redirect-origin-without-scheme": Case(
         _config_unpreparable(
             "https://h.test/",
-            redirect_origins=[f"{USER}:{PASSWORD}@{HOST}/"],
+            redirect_origins=[f"//{USER}:{PASSWORD}@{HOST}/"],
         ),
         hides=(HOST,),
         unreadable=True,
@@ -951,42 +951,8 @@ CASES: dict[str, tuple[str, Case]] = {
     **{name: ("config", case) for name, case in CONFIG_CASES.items()},
 }
 
-# Cases that show more than the rule for their source allows, with the behavior
-# that each one gets wrong. Each is a strict expected failure until the code
-# that parses a URL does so as requests prepares it.
-_RAW_ERROR = "an error of requests for a URL that it cannot send quotes it"
-KNOWN_FAILURES: dict[str, str] = {
-    "caller-scheme-without-adapter": _RAW_ERROR,
-    "caller-port-out-of-range": _RAW_ERROR,
-    "caller-url-without-scheme": _RAW_ERROR,
-    "caller-host-that-normalizes": _RAW_ERROR,
-    "config-base-without-scheme": _RAW_ERROR,
-    "config-base-port-out-of-range": _RAW_ERROR,
-    "config-base-host-that-normalizes": _RAW_ERROR,
-    "config-redirect-origin-without-scheme": _RAW_ERROR,
-    "config-redirect-origin-port-out-of-range": _RAW_ERROR,
-}
 
-
-def _param(name: str) -> Any:
-    """Return the pytest parameter for a case.
-
-    Args:
-        name: Case name.
-
-    Returns:
-        The parameter, marked as an expected failure if the case is known to
-        fail.
-    """
-    marks = []
-    if name in KNOWN_FAILURES:
-        marks.append(
-            pytest.mark.xfail(strict=True, reason=KNOWN_FAILURES[name])
-        )
-    return pytest.param(name, id=name, marks=marks)
-
-
-@pytest.mark.parametrize("name", [_param(name) for name in CASES])
+@pytest.mark.parametrize("name", CASES)
 def test_message_shows_only_what_its_source_allows(
     name: str, request: pytest.FixtureRequest
 ) -> None:

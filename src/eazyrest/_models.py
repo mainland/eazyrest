@@ -88,13 +88,13 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
+from ._urls import _origin
 from .api import (
     API,
     _AnyAPI,
     _as_client,
     _check_final_response,
     _merge_request_options,
-    _origin,
     _registered_api,
     _takes_kwargs,
 )

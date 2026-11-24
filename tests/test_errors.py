@@ -36,7 +36,8 @@ from eazyrest import (
     json_object,
 )
 from eazyrest._errors import _redact_url, _response_name
-from eazyrest.api import _check_final_response, _prepare_redirect
+from eazyrest._urls import _prepare_redirect
+from eazyrest.api import _check_final_response
 
 
 @pytest.mark.parametrize(

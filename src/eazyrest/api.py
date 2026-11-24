@@ -8,18 +8,11 @@ from collections.abc import Callable, Collection, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
 from typing import Any, Literal, Self, TypeAlias
-from urllib.parse import (
-    parse_qsl,
-    urljoin,
-    urlparse,
-    urlsplit,
-)
 
 import requests
 import requests.adapters
 import requests.cookies
 from requests.structures import CaseInsensitiveDict
-from requests.utils import requote_uri
 from urllib3.exceptions import (
     DecodeError,
     MaxRetryError,
@@ -43,14 +36,18 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._urls import (
-    _DEFAULT_PORTS,
     Source,
     _asked_text,
-    _port_of,
+    _is_absolute,
+    _origin,
+    _prepare_redirect,
+    _query_names,
     _read_url,
     _request_name,
+    _scheme_of,
     _ServerURL,
     _shown,
+    _unreadable_error,
 )
 from .write_mode import WriteMode, validate_write_mode
 
@@ -95,90 +92,6 @@ def _takes_kwargs(method: Any) -> bool:
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
-
-
-def _origin(url: str) -> tuple[str, str | None, int | None]:
-    """Return the scheme, host, and port of an absolute URL.
-
-    Args:
-        url: Absolute URL.
-
-    Returns:
-        Lowercased scheme, host, and port of ``url`` as Requests would send it.
-        If ``url`` names no port, the port is the scheme's default port, or
-        ``None`` if the scheme has no known default.
-    """
-    # Requests and urlsplit disagree about backslashes in an authority. Check
-    # the URL Requests would send, before attaching session credentials.
-    request = requests.PreparedRequest()
-    request.prepare_url(url, None)
-    assert request.url is not None
-    parts = urlsplit(request.url)
-    scheme = parts.scheme.lower()
-    port = _port_of(parts, url)
-    return (
-        scheme,
-        parts.hostname,
-        _DEFAULT_PORTS.get(scheme) if port is None else port,
-    )
-
-
-def _redirect_destination(resp: requests.Response, target: str) -> str:
-    """Return the URL to which requests follows a redirect.
-
-    This repeats the steps of ``requests.Session.resolve_redirects()``.
-    requests sends the resulting string without preparing it again, so an
-    origin check must examine exactly this string, as ``_prepare_redirect()``
-    does. In particular, requests percent-encodes a backslash in an absolute
-    target, which moves the end of its userinfo, so ``urljoin()`` of the raw
-    target can name a different host.
-
-    Args:
-        resp: Redirect response.
-        target: Redirect target, from ``Session.get_redirect_target()``.
-
-    Returns:
-        Absolute URL of the redirected request.
-    """
-    url = target
-    if url.startswith("//"):
-        url = f"{urlparse(resp.url).scheme}:{url}"
-    parsed = urlparse(url)
-    url = parsed.geturl()
-    if not parsed.netloc:
-        return urljoin(resp.url, requote_uri(url))
-    return requote_uri(url)
-
-
-def _prepare_redirect(
-    session: requests.Session, resp: requests.Response, target: str
-) -> tuple[_ServerURL, _ServerURL] | None:
-    r"""Read the destination of a redirect as requests sends the request.
-
-    A redirect is safe only if every reading of its target names an allowed
-    origin. The destination is read as requests reads it. The target joined
-    onto the request's URL without percent-encoding is read too, since a proxy,
-    or a client that treats a backslash as a slash, as browsers do, may read it
-    differently: ``https://a.test\@b.test/`` names ``a.test`` to a browser but
-    ``b.test`` to ``urlsplit()``.
-
-    Args:
-        session: Session that follows the redirect.
-        resp: Redirect response.
-        target: Redirect target, from ``Session.get_redirect_target()``.
-
-    Returns:
-        The destination and the joined reading, or ``None`` if requests cannot
-        prepare either.
-
-    Raises:
-        ValueError: If the target cannot be joined onto the request's URL.
-    """
-    destination = _read_url(_redirect_destination(resp, target), session)
-    joined = _read_url(urljoin(resp.url, target), session)
-    if destination is None or joined is None:
-        return None
-    return destination, joined
 
 
 def _leaves_allowed_origins(
@@ -1201,7 +1114,7 @@ class API:
         if verify is not None:
             session.verify = verify
 
-        scheme = urlparse(self.base_url).scheme + "://"
+        scheme = _scheme_of(self.base_url) + "://"
         for prefix in ("http://", "https://"):
             session.adapters[prefix].close()
             session.mount(
@@ -1312,8 +1225,7 @@ class API:
         Returns:
             Fully resolved request URL.
         """
-        parsed = urlparse(uri)
-        if parsed.scheme or parsed.netloc:
+        if _is_absolute(uri):
             return uri
 
         return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
@@ -1353,7 +1265,7 @@ class API:
         session_params = self.session.params
         if not isinstance(session_params, Mapping):
             return {}
-        query = {name for name, _ in parse_qsl(urlsplit(url).query, True)}
+        query = _query_names(url)
         return {name: None for name in session_params if name in query}
 
     def _scoped(self, options: Mapping[str, Any]) -> _ScopedAPI:
@@ -1600,7 +1512,13 @@ class API:
         # reads, so those are bounded too.
         streamed = bool(kwargs.get("stream"))
         url = self.resolve_url(uri)
-        asked = _asked_text(url, self.session, source)
+        # Prepare the URL as requests will, before anything is sent, so that an
+        # error that requests raises for it, which can quote it, is not the
+        # request's. An error from the request itself keeps its own type.
+        reading = _read_url(url, self.session)
+        if reading is None or not reading.sendable:
+            raise _unreadable_error(url, self.session)
+        asked = _shown(reading, source, quoted=False)
         name = _request_name(method, asked, page)
         budget = _Budget(
             self.max_response_bytes, self.total_timeout, streamed, name

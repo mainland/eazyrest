@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import enum
 from typing import NamedTuple
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, parse_qsl, urljoin, urlparse, urlsplit
 
 import requests
+from requests.utils import requote_uri
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -216,9 +217,7 @@ def _read_url(
 
 
 def _unreadable_error(
-    text: str | bytes,
-    session: requests.Session | None = None,
-    source: Source = Source.CALLER,
+    text: str | bytes, session: requests.Session | None = None
 ) -> requests.RequestException:
     """Return the error that requests raises for a URL it cannot send.
 
@@ -231,16 +230,20 @@ def _unreadable_error(
     Args:
         text: The URL.
         session: Session that would send a request to it, or ``None``.
-        source: Where the URL came from.
 
     Returns:
-        The error to raise, or ``InvalidSchema`` if the session has no adapter
-        for a URL that is readable.
+        The error to raise. It is ``InvalidSchema`` for a URL that is readable
+        but has no adapter, and ``InvalidURL`` for any other URL that requests
+        reads but a parser of ``urllib.parse`` does not.
     """
-    failure = _attempt(text, session)[1]
+    reading, failure = _attempt(text, session)
     if failure is None:
-        failure = requests.exceptions.InvalidSchema
-    named = _shown(None, source)
+        failure = (
+            requests.exceptions.InvalidSchema
+            if reading is not None and not reading.sendable
+            else requests.exceptions.InvalidURL
+        )
+    named = _shown(None, Source.CALLER)
     if failure is requests.exceptions.MissingSchema:
         return failure(f"Invalid URL {named}: no scheme was supplied")
     if failure is requests.exceptions.InvalidSchema:
@@ -322,3 +325,173 @@ def _asked_text(
         The text that follows a method in the name of a request.
     """
     return _shown(_read_url(url, session), source, quoted=False)
+
+
+def _origin(text: str) -> tuple[str, str | None, int | None]:
+    """Return the scheme, host, and port of an absolute URL.
+
+    Args:
+        text: Absolute URL.
+
+    Returns:
+        Lowercased scheme, host, and port of ``text`` as requests would send
+        it. If ``text`` names no port, the port is the scheme's default port,
+        or ``None`` if the scheme has no known default.
+
+    Raises:
+        requests.RequestException: If requests cannot prepare the URL, as
+            ``_unreadable_error()`` describes it.
+    """
+    # Requests and urlsplit disagree about backslashes in an authority, so the
+    # URL that requests would send is read, before it attaches credentials.
+    reading = _read_url(text)
+    if reading is None:
+        raise _unreadable_error(text)
+    parts = urlsplit(reading.url)
+    scheme = parts.scheme.lower()
+    port = _port_of(parts, text)
+    return (
+        scheme,
+        parts.hostname,
+        _DEFAULT_PORTS.get(scheme) if port is None else port,
+    )
+
+
+def _is_absolute(uri: str | bytes) -> bool:
+    """Return whether a request URI names a scheme or a host.
+
+    Args:
+        uri: Relative or absolute request URI.
+
+    Returns:
+        Whether the URI is absolute, as ``urlparse()`` reads it.
+
+    Raises:
+        requests.RequestException: If ``urlparse()`` rejects the URI, which
+            is ``InvalidURL`` with a message that quotes none of it.
+    """
+    try:
+        parts = urlparse(uri)
+    except ValueError:
+        parts = None
+    if parts is None:
+        raise _unreadable_error(uri)
+    return bool(parts.scheme or parts.netloc)
+
+
+def _scheme_of(text: str) -> str:
+    """Return the scheme that ``urlparse()`` reads from a configured URL.
+
+    Args:
+        text: URL, such as an API's base URL.
+
+    Returns:
+        The scheme, which is empty if there is none.
+
+    Raises:
+        requests.RequestException: If ``urlparse()`` rejects the URL, which is
+            ``InvalidURL`` with a message that quotes none of it.
+    """
+    try:
+        scheme = urlparse(text).scheme
+    except ValueError:
+        scheme = None
+    if scheme is None:
+        raise _unreadable_error(text)
+    return scheme
+
+
+def _join(base: str, link: str) -> str:
+    """Resolve a link against the URL of the page that holds it.
+
+    Args:
+        base: URL of the page.
+        link: Link, absolute or relative.
+
+    Returns:
+        The absolute URL.
+
+    Raises:
+        ValueError: If ``urljoin()`` cannot parse either. Its message can quote
+            the text, so a caller raises its own error after the handler ends
+            and attaches none.
+    """
+    return urljoin(base, link)
+
+
+def _query_names(text: str) -> set[str]:
+    """Return the names in the query of a URL, as requests sends it.
+
+    Args:
+        text: Absolute URL of a page.
+
+    Returns:
+        The names of the query's parameters, including those with empty values,
+        or an empty set if requests cannot prepare the URL.
+    """
+    reading = _read_url(text)
+    if reading is None:
+        return set()
+    return {name for name, _ in parse_qsl(urlsplit(reading.url).query, True)}
+
+
+def _redirect_destination(resp: requests.Response, target: str) -> str:
+    """Return the URL to which requests follows a redirect.
+
+    This repeats the steps of ``requests.Session.resolve_redirects()``.
+    requests sends the resulting string without preparing it again, so an
+    origin check must examine exactly this string, as ``_prepare_redirect()``
+    does. In particular, requests percent-encodes a backslash in an absolute
+    target, which moves the end of its userinfo, so ``urljoin()`` of the raw
+    target can name a different host.
+
+    Args:
+        resp: Redirect response.
+        target: Redirect target, from ``Session.get_redirect_target()``.
+
+    Returns:
+        Absolute URL of the redirected request.
+
+    Raises:
+        ValueError: If the target cannot be parsed or joined, as for
+            ``_join()``.
+    """
+    url = target
+    if url.startswith("//"):
+        url = f"{urlparse(resp.url).scheme}:{url}"
+    parsed = urlparse(url)
+    url = parsed.geturl()
+    if not parsed.netloc:
+        return urljoin(resp.url, requote_uri(url))
+    return requote_uri(url)
+
+
+def _prepare_redirect(
+    session: requests.Session, resp: requests.Response, target: str
+) -> tuple[_ServerURL, _ServerURL] | None:
+    r"""Read the destination of a redirect as requests sends the request.
+
+    A redirect is safe only if every reading of its target names an allowed
+    origin. The destination is read as requests reads it. The target joined
+    onto the request's URL without percent-encoding is read too, since a proxy,
+    or a client that treats a backslash as a slash, as browsers do, may read it
+    differently: ``https://a.test\@b.test/`` names ``a.test`` to a browser but
+    ``b.test`` to ``urlsplit()``.
+
+    Args:
+        session: Session that follows the redirect.
+        resp: Redirect response.
+        target: Redirect target, from ``Session.get_redirect_target()``.
+
+    Returns:
+        The destination and the joined reading, or ``None`` if requests cannot
+        prepare either.
+
+    Raises:
+        ValueError: If the target cannot be joined onto the request's URL.
+    """
+    destination = _read_url(_redirect_destination(resp, target), session)
+    joined = _read_url(urljoin(resp.url, target), session)
+    if destination is None or joined is None:
+        return None
+    return destination, joined

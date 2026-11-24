@@ -10,7 +10,11 @@ import requests
 from eazyrest._urls import (
     UNREADABLE,
     Source,
+    _is_absolute,
+    _origin,
+    _query_names,
     _read_url,
+    _scheme_of,
     _shown,
     _unreadable_error,
 )
@@ -186,3 +190,61 @@ def test_host_is_the_one_that_requests_connects_to(source: Source) -> None:
 
     assert url.host == "a.test"
     assert _shown(url, source).startswith("'https://a.test")
+
+
+def test_origin_of_a_url_is_the_one_that_requests_connects_to() -> None:
+    """The origin is read from the prepared URL, with the default port."""
+    assert _origin("https://User:x@H.test/p") == ("https", "h.test", 443)
+    assert _origin("http://h.test:8080/") == ("http", "h.test", 8080)
+    assert _origin("https://a.test\\@b.test/") == ("https", "a.test", 443)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://user:SECRET@h.test:99999/",
+        "//user:SECRET@h.test/",
+        "https://user:SECRET@h.test" + chr(0x2100) + "/",
+    ],
+)
+def test_origin_of_a_url_that_requests_cannot_prepare_has_no_chain(
+    text: str,
+) -> None:
+    """The error quotes none of the URL, and a handler can catch ValueError."""
+    with pytest.raises(requests.RequestException) as raised:
+        _origin(text)
+
+    assert isinstance(raised.value, ValueError)
+    assert "SECRET" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+def test_uri_that_urlparse_rejects_raises_an_error_without_a_chain() -> None:
+    """A host that normalizes to another host is refused without quoting it."""
+    uri = "https://user:SECRET@h.test" + chr(0x2100) + "/x"
+
+    with pytest.raises(requests.exceptions.InvalidURL) as raised:
+        _is_absolute(uri)
+    with pytest.raises(requests.exceptions.InvalidURL) as configured:
+        _scheme_of(uri)
+
+    for error in (raised.value, configured.value):
+        assert "SECRET" not in str(error)
+        assert error.__cause__ is None
+        assert error.__context__ is None
+
+
+def test_uri_with_a_scheme_or_a_host_is_absolute() -> None:
+    """A URI is absolute if urlparse reads a scheme or a network location."""
+    assert _is_absolute("https://h.test/x")
+    assert _is_absolute("//h.test/x")
+    assert _is_absolute(b"https://h.test/x")
+    assert not _is_absolute("/x")
+    assert not _is_absolute("x?y=1")
+
+
+def test_query_names_are_read_from_the_prepared_url() -> None:
+    """Names with an empty value count, and an unpreparable URL has none."""
+    assert _query_names("https://h.test/x?a=1&b=&a=2") == {"a", "b"}
+    assert _query_names("https://h.test:99999/x?a=1") == set()
