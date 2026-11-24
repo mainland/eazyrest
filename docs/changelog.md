@@ -644,6 +644,14 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A set whose items have no hash raises `TypeError` when the class is
+  decorated, also for items that are a `NewType` of `list` or `dict`, or a
+  `NamedTuple` or a frozen dataclass with a member that has no hash, as a list
+  or a dict. `v1.0.0a5` decorated such a set and then refused every item that
+  it read. An item without a hash that a set meets at a read, as `set[Any]`
+  does for a list, raises `FieldConversionError` with eazyrest's own message,
+  `Set items must have a hash, got list`, where Python's own text differs from
+  one version to the next.
 - An enum, and a `Literal` of its members, is checked while eazyrest's own
   conversion of enums converts it. An entry in `conversions` that is keyed by
   `enum.Enum` replaces that conversion, so its `encode` is no longer called for

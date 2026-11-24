@@ -1581,17 +1581,23 @@ def _is_default_enum_entry(found: _Found | None) -> bool:
 
 
 def _unhashable_kind(
-    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+    analyzed: AnalyzedType,
+    table: Mapping[Any, Conversion],
+    seen: frozenset[type[Any]] = frozenset(),
 ) -> str | None:
     """Return what makes the value of a type unhashable, if anything does.
 
     A conversion of its own decides what its class reads as, so a class that
     the table converts is taken to have a hash. So is a type whose members
-    cannot be analyzed yet.
+    cannot be analyzed yet. The class that a ``NewType`` stands for decides for
+    the ``NewType``, and the fields of a ``NamedTuple`` and of a dataclass that
+    has a hash decide for it, as the items of a fixed-length tuple do.
 
     Args:
         analyzed: Analyzed type of a set's items.
         table: Conversion table of the model that owns the field.
+        seen: The ``NamedTuple`` and dataclass classes that are being walked,
+            so that a class that refers to itself ends the walk.
 
     Returns:
         A name for the kind of value that has no hash, such as ``dict`` or a
@@ -1603,14 +1609,15 @@ def _unhashable_kind(
         case BaseType(base_type):
             if _conversion_of(base_type, table) is not None:
                 return None
-            if _has_no_hash(base_type):
-                return base_type.__name__
+            final = _final_supertype(base_type)
+            if _has_no_hash(final):
+                return str(getattr(final, "__name__", final))
         case OptionalType(inner) | NewTypeType(_, inner):
-            return _unhashable_kind(inner, table)
+            return _unhashable_kind(inner, table, seen)
         case CollectionType(collection_type, item):
             if _READ_AS[collection_type] not in (tuple, frozenset):
                 return _READ_AS[collection_type].__name__
-            return _unhashable_kind(item, table)
+            return _unhashable_kind(item, table, seen)
         case MappingType():
             return "dict"
         case TypedDictType(cls):
@@ -1618,16 +1625,75 @@ def _unhashable_kind(
         case DataclassType(cls):
             if _has_no_hash(cls):
                 return cls.__name__
+            if cls in seen:
+                return None
+            try:
+                members = [item for _, item, _ in analyzed.fields]
+            except Exception:  # noqa: BLE001
+                # A field that cannot be analyzed yet is left to its first use.
+                return None
+            return _first_unhashable(members, table, seen | {cls})
+        case NamedTupleType(cls):
+            if cls in seen:
+                return None
+            try:
+                members = [item for _, item in analyzed.fields]
+            except Exception:  # noqa: BLE001
+                return None
+            return _first_unhashable(members, table, seen | {cls})
         case FixedTupleType(items):
-            return next(
-                (
-                    kind
-                    for item in items
-                    if (kind := _unhashable_kind(item, table)) is not None
-                ),
-                None,
-            )
+            return _first_unhashable(items, table, seen)
     return None
+
+
+def _first_unhashable(
+    items: Iterable[AnalyzedType],
+    table: Mapping[Any, Conversion],
+    seen: frozenset[type[Any]],
+) -> str | None:
+    """Return what makes the first of some types unhashable, if anything does.
+
+    Args:
+        items: Analyzed types of the members of a value that is hashed whole.
+        table: Conversion table of the model that owns the field.
+        seen: As for ``_unhashable_kind()``.
+
+    Returns:
+        The kind of the first member that has no hash, or ``None``.
+    """
+    return next(
+        (
+            kind
+            for item in items
+            if (kind := _unhashable_kind(item, table, seen)) is not None
+        ),
+        None,
+    )
+
+
+def _read_collection(kind: type[Any], items: list[Any]) -> Any:
+    """Build the collection that a field reads from its converted items.
+
+    Args:
+        kind: The concrete class that the field reads as.
+        items: The converted items.
+
+    Returns:
+        The collection.
+
+    Raises:
+        TypeError: If ``kind`` is a set and an item has no hash. The message is
+            eazyrest's own, since Python's differs between versions.
+    """
+    if kind in (set, frozenset):
+        for item in items:
+            try:
+                hash(item)
+            except TypeError:
+                raise TypeError(
+                    f"Set items must have a hash, got {type(item).__name__}"
+                ) from None
+    return kind(items)
 
 
 def _refuse_unhashable_item(
@@ -7108,7 +7174,9 @@ class JSONObject:
 
                 converted_items = _each_item(read_item, value)
 
-                return _READ_AS[collection_type](converted_items)
+                return _read_collection(
+                    _READ_AS[collection_type], converted_items
+                )
 
             case _:
                 raise TypeError(
