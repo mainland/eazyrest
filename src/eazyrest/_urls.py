@@ -123,8 +123,8 @@ class Source(enum.Enum):
     builds from the base URL, the class URL, and a key. A message shows its
     origin and path, and ``?...`` for a query."""
     CONFIG = "config"
-    """The base URL, or an entry of ``API.redirect_origins``. A message shows
-    its origin and path."""
+    """The base URL. A message shows its origin and path. No message shows an
+    entry of ``API.redirect_origins``, which can hold a credential."""
     SERVER = "server"
     """A URL of which any part a response chose: a ``Location``, the URL that a
     redirect reached, a next-page or previous-page link, or a URL read from a
@@ -495,3 +495,76 @@ def _prepare_redirect(
     if destination is None or joined is None:
         return None
     return destination, joined
+
+
+def _refusal(entry: str) -> str | None:
+    """Say why an entry of ``API.redirect_origins`` is no origin.
+
+    Args:
+        entry: A string that should be an absolute ``http`` or ``https`` URL.
+
+    Returns:
+        ``None`` if ``entry`` is an ``http`` or ``https`` URL with a host, else
+        a clause that says which check failed, as the message of
+        ``_redirect_origin()`` ends. It quotes nothing of ``entry``.
+    """
+    reading, failure = _attempt(entry, None)
+    if reading is not None and reading.is_http:
+        return None
+    if failure is requests.exceptions.MissingSchema:
+        return "it has no scheme"
+    if reading is not None:
+        if reading.scheme in _DEFAULT_PORTS:
+            return "it has no host"
+        return "its scheme is not http or https"
+    # Requests refuses an HTTP or HTTPS URL with no host as it refuses one with
+    # a bad port, so ask the parser. Record what it says here and decide after
+    # the handler, so that no error is chained.
+    scheme = hostname = None
+    try:
+        parts = urlsplit(entry)
+    except ValueError:
+        pass
+    else:
+        scheme, hostname = parts.scheme.lower(), parts.hostname
+    if scheme in _DEFAULT_PORTS and not hostname:
+        return "it has no host"
+    return "requests cannot parse it"
+
+
+def _redirect_origin(
+    position: int | None, entry: str
+) -> tuple[str, str | None, int | None]:
+    """Return the origin of an entry of ``API.redirect_origins``.
+
+    Args:
+        position: Position of ``entry`` in a tuple or a list, or ``None`` for a
+            frozenset, whose iteration order is no position.
+        entry: A string that should be an absolute ``http`` or ``https`` URL.
+
+    Returns:
+        The scheme, host, and port of ``entry``, as ``_origin()`` gives them.
+
+    Raises:
+        ValueError: If ``entry`` is no ``http`` or ``https`` URL with a host
+            that requests can prepare. The error names the attribute and the
+            position, if any, and says which check failed: that the entry has
+            no scheme, that its scheme is not ``http`` or ``https``, that it
+            has no host, or that requests cannot parse it. It quotes nothing of
+            ``entry``, whose text can read as a user and password, and it has
+            no cause or context.
+    """
+    why = _refusal(entry)
+    if why is not None:
+        where = (
+            "An entry of API.redirect_origins"
+            if position is None
+            else f"API.redirect_origins[{position}]"
+        )
+        raise ValueError(
+            f"{where} must be an absolute http or https URL with a host, "
+            f'such as "https://files.example.com", but {why}'
+        )
+    reading = _read_url(entry)
+    assert reading is not None
+    return reading.origin

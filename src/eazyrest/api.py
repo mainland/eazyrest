@@ -43,6 +43,7 @@ from ._urls import (
     _prepare_redirect,
     _query_names,
     _read_url,
+    _redirect_origin,
     _request_name,
     _scheme_of,
     _ServerURL,
@@ -134,6 +135,8 @@ def _permitted_origins(
             frozenset, or holds anything but strings. A string or bytes would
             be read as a collection of its characters or its integers, and a
             type checker takes a string for a collection of strings.
+        ValueError: If a string in ``redirect_origins`` is no absolute ``http``
+            or ``https`` URL with a host.
     """
     if not isinstance(redirect_origins, (tuple, list, frozenset)):
         raise TypeError(
@@ -149,7 +152,16 @@ def _permitted_origins(
                 f'as "https://cdn.example.com", but it holds a '
                 f"{type(origin).__name__}"
             )
-    return {_origin(base_url), *map(_origin, redirect_origins)}
+    return {
+        _origin(base_url),
+        *(
+            _redirect_origin(
+                None if isinstance(redirect_origins, frozenset) else index,
+                entry,
+            )
+            for index, entry in enumerate(redirect_origins)
+        ),
+    }
 
 
 _UNPARSABLE_PAGE_URL = "A page URL cannot be parsed, so nothing was sent."
@@ -968,9 +980,13 @@ class API:
     instance or in a subclass, to follow redirects to it. Only the scheme,
     host, and port of each URL count. Every header and any body of the
     redirected request is sent to these origins. Give a tuple, a list, or a
-    frozenset of absolute URLs. Any other value, such as a single string,
-    bytes, a set, or a list that holds anything but strings, raises
-    ``TypeError`` before a request is sent.
+    frozenset of absolute ``http`` or ``https`` URLs, each with a host. Any
+    other value, such as a single string, bytes, a set, or a list that holds
+    anything but strings, raises ``TypeError`` before a request is sent. A
+    string that is no such URL, as ``"files.example.com"``, ``"https://"``, or
+    ``"ftp://files.example.com"``, raises ``ValueError`` naming the attribute
+    and the entry's position, if it is in a tuple or a list, and saying which
+    check failed. The message does not quote the entry.
     """
 
     default_write_mode: WriteMode
@@ -1329,6 +1345,8 @@ class API:
                 ``__context__``.
             TypeError: If ``redirect_origins`` is not a tuple, a list, or a
                 frozenset of strings. The request is not sent.
+            ValueError: If a string in ``redirect_origins`` is no absolute
+                ``http`` or ``https`` URL with a host. The request is not sent.
         """
         return self._transmit(method, send, uri, args, kwargs, None)
 
@@ -1381,6 +1399,8 @@ class API:
                 request.
             TypeError: If ``redirect_origins`` is not a tuple, a list, or a
                 frozenset of strings. The request is not sent.
+            ValueError: If a string in ``redirect_origins`` is no absolute
+                ``http`` or ``https`` URL with a host. The request is not sent.
         """
         url = self.resolve_url(url)
         # Prepare the link as requests will, before anything is sent, so that
@@ -1758,6 +1778,8 @@ class API:
                 ``requests.ConnectionError`` does.
             TypeError: If ``redirect_origins`` is not a tuple, a list, or a
                 frozenset of strings. The request is not sent.
+            ValueError: If a string in ``redirect_origins`` is no absolute
+                ``http`` or ``https`` URL with a host. The request is not sent.
         """
         return self._send("GET", self.session.get, uri, *args, **kwargs)
 

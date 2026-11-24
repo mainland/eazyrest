@@ -2118,6 +2118,21 @@ Give a tuple, a list, or a frozenset of absolute URLs. Any other value raises
 request. A single string would be read as a collection of its characters, and
 bytes and a `bytearray` as a collection of integers.
 
+An entry must be an absolute `http` or `https` URL with a host, the scheme
+compared without case, since requests follows redirects only to those. A string
+such as `"files.example.com"`, `"//files.example.com"`, `"https://"`,
+`"mailto:a@example.com"`, or `"ftp://files.example.com"` raises `ValueError`
+naming `API.redirect_origins` and the entry's position, before the request. A
+frozenset has no position, so its message says "an entry of
+`API.redirect_origins`". The message names the entry by position and says which
+check failed: that it has no scheme, that its scheme is not `http` or `https`,
+that it has no host, or that requests cannot parse it. It quotes none of the
+entry, whose text can read as a user and password. The error is not a
+`requests.RequestException`, which requests would raise for most of them, so
+code that caught that for a bad entry must catch `ValueError`. A port, a path,
+and an IPv6 host such as `"http://[::1]:8080"` are fine, and the path is
+ignored.
+
 These checks guard the redirects that requests follows. A raw `GET` sent with
 `allow_redirects=False` follows none, so it returns the 3xx response as it is,
 and the caller decides what to do with it. Requests does prepare

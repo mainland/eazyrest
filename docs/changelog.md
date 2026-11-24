@@ -751,7 +751,19 @@ describe them further.
   generator, a mapping, and a list that holds anything but strings. `v1.0.0a5`
   read a string as a collection of its characters and a `bytearray` as a
   collection of integers, so that every request raised the `Invalid URL` error
-  of requests, and it took a set or a generator without a word.
+  of requests, and it took a set or a generator without a word. An entry that
+  is no absolute `http` or `https` URL with a host, the scheme compared without
+  case, as `"files.example.com"`, `"//files.example.com"`, `"https://"`,
+  `"mailto:a@example.com"`, or `"ftp://files.example.com"`, raises `ValueError`
+  naming `API.redirect_origins` and the entry's position, or "an entry of" it
+  for a frozenset, before the request. The message says which check failed,
+  that the entry has no scheme, that its scheme is not `http` or `https`, that
+  it has no host, or that requests cannot parse it, and does not quote the
+  entry, so a credential in a pasted URL stays out of logs. Requests' own
+  `MissingSchema` or `InvalidURL` did not name the attribute, and a string with
+  another scheme, or with a scheme and no host, was taken and could never match
+  a redirect. The new error is a plain `ValueError`, so code that caught
+  `requests.RequestException` for it no longer does.
 - A prefetched relation matches the objects that `bulk_get_by_pks()` returns by
   the key that each object holds, compared as `==` compares keys, not by the
   key of the returned dictionary, so `str` keys `"a"` and `"A"` get two
