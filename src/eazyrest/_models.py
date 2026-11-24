@@ -149,14 +149,19 @@ class FieldConversionError(EazyrestError, TypeError, ValueError):
         self.field = field
 
 
-_DECLARATION_ERROR = "_eazyrest_declaration_error"
-"""Attribute that marks a ``TypeError`` that refuses a model's declaration."""
+_RAISED_AS_IS = "_eazyrest_raised_as_is"
+"""Attribute that marks an error that is raised as it is, with no field or
+position added. It marks a ``TypeError`` that refuses a model's declaration,
+which is no conversion of a value, and a refusal of a query parameter that
+names its own item."""
 
 
 def _passes_through(err: Exception) -> bool:
     """Tell whether a conversion error keeps its own type.
 
-    A refusal of a model's declaration is no conversion of a value. An
+    An error that carries the ``_RAISED_AS_IS`` marker keeps its type. That is
+    a refusal of a model's declaration, which is no conversion of a value, and
+    a refusal of a query parameter that names its own item. An
     ``EazyrestError`` other than ``FieldConversionError``, such as the
     ``ResponseShapeError`` or ``PaginationError`` that a conversion's own code
     raises, reports something other than a value that a field cannot convert.
@@ -167,7 +172,7 @@ def _passes_through(err: Exception) -> bool:
     Returns:
         Whether to raise ``err`` as it is.
     """
-    if getattr(err, _DECLARATION_ERROR, False):
+    if getattr(err, _RAISED_AS_IS, False):
         return True
     return isinstance(err, EazyrestError) and not isinstance(
         err, FieldConversionError
@@ -222,7 +227,7 @@ def _require_decorated(cls: type) -> None:
             )
             # A conversion reports the error as a plain TypeError, as
             # decorating the class would, not as the conversion of a value.
-            setattr(error, _DECLARATION_ERROR, True)
+            setattr(error, _RAISED_AS_IS, True)
             raise error
     _USABLE_CLASSES.add(cls)
 
@@ -577,13 +582,13 @@ def _is_sent_as_given(value: Any) -> bool:
         value: Value to test.
 
     Returns:
-        Whether the value is a string, a number, or ``None``. A boolean is not,
-        since a field's Python name sends it as ``true`` where ``str()`` gives
-        ``True``, though a ``bool`` is an ``int``.
+        Whether the value's type is exactly ``str``, ``int``, ``float``, or
+        ``NoneType``. A boolean is not, since a field's Python name sends it as
+        ``true`` where ``str()`` gives ``True``, though a ``bool`` is an
+        ``int``. Neither is a member of an enum that mixes in one of those
+        types, nor any other subclass, whose ``str()`` is not its value.
     """
-    return value is None or (
-        isinstance(value, (str, int, float)) and not isinstance(value, bool)
-    )
+    return type(value) in (str, int, float, type(None))
 
 
 def _is_collection_value(value: Any) -> bool:
@@ -3350,7 +3355,7 @@ def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
         "service's type, and expose another view of it as a property, such "
         "as one that returns Code(self.id)."
     )
-    setattr(error, _DECLARATION_ERROR, True)
+    setattr(error, _RAISED_AS_IS, True)
     return error
 
 
@@ -3387,7 +3392,7 @@ def _relation_key_error(
         f"{key_type}the type of {name}'s key, and expose the related object "
         f"as a property that builds the {name} from the key."
     )
-    setattr(error, _DECLARATION_ERROR, True)
+    setattr(error, _RAISED_AS_IS, True)
     return error
 
 
@@ -3412,7 +3417,7 @@ def _refuses_key_type(error: TypeError) -> bool:
             | _UnresolvedAliasError
             | _PydanticMetadataError,
         )
-        or getattr(error, _DECLARATION_ERROR, False)
+        or getattr(error, _RAISED_AS_IS, False)
     )
 
 
@@ -3613,7 +3618,7 @@ def _declaration_error(message: str) -> TypeError:
         decorating the class does, not as the conversion of a value.
     """
     error = TypeError(message)
-    setattr(error, _DECLARATION_ERROR, True)
+    setattr(error, _RAISED_AS_IS, True)
     return error
 
 
@@ -3815,11 +3820,11 @@ def _refuse_declared_type(
         ):
             return
         if isinstance(err, _KeylessFieldTypeError) or getattr(
-            err, _DECLARATION_ERROR, False
+            err, _RAISED_AS_IS, False
         ):
             raise
         refusal = TypeError(f"{cls.__name__}.{prop.field}: {err}")
-        setattr(refusal, _DECLARATION_ERROR, True)
+        setattr(refusal, _RAISED_AS_IS, True)
         raise refusal from err
 
 
@@ -4515,7 +4520,7 @@ def _check_redeclared_key(
         f"subclass keeps its base's key, so declare {prop.field} as {shown}, "
         "or leave it out."
     )
-    setattr(error, _DECLARATION_ERROR, True)
+    setattr(error, _RAISED_AS_IS, True)
     raise error
 
 
@@ -5397,7 +5402,7 @@ class JSONProperty:
                 related model had been defined then.
         """
         own_declaration = (
-            getattr(err, _DECLARATION_ERROR, False) and not self.is_primary_key
+            getattr(err, _RAISED_AS_IS, False) and not self.is_primary_key
         )
         if (
             isinstance(err, FieldConversionError | NameError)
@@ -6264,7 +6269,7 @@ class JSONObject:
         try:
             _resolve_key(ty)
         except Exception as err:
-            if getattr(err, _DECLARATION_ERROR, False):
+            if getattr(err, _RAISED_AS_IS, False):
                 raise
             return
         with _converting(type(self), field):
@@ -8449,17 +8454,18 @@ class JSONObject:
         )
 
     @classmethod
-    def _names_relation(cls, parameter: _Parameter) -> bool:
-        """Return whether a parameter's field is a relation.
+    def _related_model(cls, parameter: _Parameter) -> type[Any] | None:
+        """Return the model that a parameter's field is a relation to.
 
         Args:
             parameter: A parameter that resolves to a field.
 
         Returns:
-            Whether the field is a relation or a collection of them, which
-            takes a model object as its key. ``False`` for a field whose type
-            cannot be resolved yet, which a name sent as given needs no type
-            for, but a model given for it is then refused.
+            The model of the relation, or of each item of a collection of
+            relations, which takes a model object as its key. ``None`` for a
+            field that is no relation, and for a field whose type cannot be
+            resolved yet, which a name sent as given needs no type for, but a
+            model given for it is then refused.
         """
         assert parameter.named is not None
         try:
@@ -8467,10 +8473,12 @@ class JSONObject:
                 getattr(cls, parameter.named.field).analyzed_type
             )
         except (FieldConversionError, NameError):
-            return False
+            return None
         if isinstance(analyzed, CollectionType):
             analyzed = _unwrap_optional_type(analyzed.item_type)
-        return isinstance(analyzed, RelatedType)
+        return (
+            analyzed.model_type if isinstance(analyzed, RelatedType) else None
+        )
 
     @classmethod
     def _compared_parameter(cls, named: _Name, wire: str) -> _Parameter:
@@ -8582,10 +8590,12 @@ class JSONObject:
                 ``gte``, ``lt``, and ``lte`` do, unless the field's conversion
                 takes it whole or it is a collection field's own parameter.
                 Also if the parameter is a field's JSON key or write key, alone
-                or with a suffix that compares values, and an operand is a
-                boolean or is no string, number, or ``None``, except a model
+                or with a suffix that compares values, and an operand's type is
+                not exactly ``str``, ``int``, ``float``, or ``None``, which a
+                boolean and a member of a mixed-in enum are not, except a model
                 given for a relation, since the key sends no conversion and the
-                field's name would send one. Also if the value is a mapping or
+                field's name would send one. The message names an item's
+                position after the parameter. Also if the value is a mapping or
                 ``None``, an empty collection, or holds ``None`` or another
                 collection, which requests would omit, flatten, or send as its
                 keys, or is one value that its field's conversion writes as a
@@ -8595,7 +8605,8 @@ class JSONObject:
                 ``__range`` is given other than two operands, or an operand's
                 text is empty, or holds a comma under ``"comma"``.
             FieldConversionError: If the parameter's conversion refuses an
-                operand.
+                operand, or the parameter is the JSON key or write key of a
+                relation and an operand is a model of another class.
         """
         parameter = cls._parameter(name)
         guard = (
@@ -8652,8 +8663,14 @@ class JSONObject:
             )
         unconverted = cls._sends_no_conversion(parameter)
 
-        def refuse_unconverted() -> NoReturn:
-            """Raise the refusal of a value that is sent as given by no key."""
+        def refuse_unconverted(position: int | None) -> NoReturn:
+            """Raise the refusal of a value that is sent as given by no key.
+
+            Args:
+                position: The position of the refused item, or ``None`` for a
+                    value that is no item of a collection or that has no stable
+                    position.
+            """
             named = parameter.named
             assert named is not None
             python_name = (
@@ -8662,16 +8679,20 @@ class JSONObject:
                 else f"{named.field}__{named.suffix}"
             )
             kind = "JSON" if named.by == "json" else "write"
-            raise ValueError(
-                f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                f"because it is the {kind} key of {named.field}, which sends "
-                "no conversion, so a value other than a string, number, or "
-                "None would go out other than as the field's name sends it. "
-                f"Pass it as {python_name}"
+            where = "" if position is None else f"[{position}]"
+            error = ValueError(
+                f"Query parameter {name}{where} for {cls.__name__} cannot be "
+                f"sent, because it is the {kind} key of {named.field}, which "
+                "sends no conversion, so a value other than a string, number, "
+                "or None would go out other than as the field's name sends "
+                f"it. Pass it as {python_name}"
             )
+            # The message names the position, so the item loop adds none.
+            setattr(error, _RAISED_AS_IS, True)
+            raise error
 
         if unconverted and whole and not isinstance(value, JSONObject):
-            refuse_unconverted()
+            refuse_unconverted(None)
         if several and (
             isinstance(value, JSONObject)
             or not _is_collection_value(value)
@@ -8683,7 +8704,16 @@ class JSONObject:
                 "collection of them. Pass a list"
             )
 
+        # The position of the item that convert() reads next, which stays None
+        # for a value that is one operand and for the items of a set, which
+        # have no order.
+        position: int | None = None
+
         def convert(item: Any) -> Any:
+            nonlocal position
+            at = position
+            if position is not None:
+                position += 1
             conversion = parameter.conversion
             if conversion is not None:
                 if parameter.key is not None:
@@ -8703,12 +8733,20 @@ class JSONObject:
                 return _query_value(cls._to_json(item, conversion))
             if unconverted and not _is_sent_as_given(item):
                 if isinstance(item, JSONObject):
-                    if not cls._names_relation(parameter):
-                        refuse_unconverted()
+                    model_type = cls._related_model(parameter)
+                    if model_type is None:
+                        refuse_unconverted(at)
+                    # The field's Python name refuses an object of another
+                    # model or of a class keyed by another field, so its JSON
+                    # key and write key do too.
+                    assert parameter.named is not None
+                    with _converting(cls, parameter.named.field):
+                        _check_related_class(item, model_type)
+                        _check_related_key(item, model_type)
                 elif not isinstance(item, Mapping) and not (
                     _is_collection_value(item)
                 ):
-                    refuse_unconverted()
+                    refuse_unconverted(at)
             if not isinstance(item, JSONObject):
                 return item
             return item._key
@@ -8722,6 +8760,8 @@ class JSONObject:
             ):
                 operands, repeated = [convert(value)], False
             else:
+                if not isinstance(value, AbstractSet):
+                    position = 0
                 operands, repeated = _each_item(convert, value), True
                 if parameter.collection is not None and _READ_AS[
                     parameter.collection.collection_type

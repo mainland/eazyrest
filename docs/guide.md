@@ -1258,18 +1258,22 @@ collection by its JSON key alone, as by its name. A name is resolved once, to
 the field, the kind of key, and the suffix after it, and what the parameter
 takes follows from that. A JSON key that ends in `__in` or `__range`, as
 `opt__in` for a field `opt`, takes one value, and `opt__in__in` takes several.
-A JSON key and a write key send no conversion, so one given a value other than
-a string, a number, or `None`, such as a boolean, an enum member, a `datetime`,
-a `Decimal`, or an instance of a class that `conversions` registers, raises
-`ValueError` naming the parameter and advising the field's name with the same
-suffix, as `span=Span(1, 2)`. So does each item of a lookup that takes several
-values. The name `flag` sends `true` for `True`, which its JSON key would send
-as `True`. A model object is the exception for a relation, which both names
-send as its key, but one given for a field whose type is not defined yet is
-refused. A string, an integer, or a float is sent as given. An empty text in a
-parameter that takes one value is sent, as in `Todo.filter(title="")`, which
-sends `title=`, and django-filter reads it as no filter, so the query matches
-every object.
+A JSON key and a write key send no conversion, so one given a value whose type
+is not exactly `str`, `int`, `float`, or `None`, such as a boolean, an enum
+member, also a member of an enum that mixes in `str`, `int`, or `float`, a
+subclass of those types, a `datetime`, a `Decimal`, or an instance of a class
+that `conversions` registers, raises `ValueError` naming the parameter and
+advising the field's name with the same suffix, as `span=Span(1, 2)`. So does
+each item of a lookup that takes several values, and the message names the
+item's position after the parameter, as `Hue__in[1]`. The name `flag` sends
+`true` for `True`, which its JSON key would send as `True`. A model object is
+the exception for a relation, which both names send as its key, but a model of
+another class raises `FieldConversionError` naming the field and both classes,
+as the field's name does, and one given for a field whose type is not defined
+yet is refused. A string, an integer, or a float is sent as given. An empty
+text in a parameter that takes one value is sent, as in
+`Todo.filter(title="")`, which sends `title=`, and django-filter reads it as no
+filter, so the query matches every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,

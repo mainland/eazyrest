@@ -237,11 +237,23 @@ class Color(enum.Enum):
     RED = "red"
 
 
+class Level(int, enum.Enum):
+    """An enum that mixes in a plain type."""
+
+    LOW = 1
+    HIGH = 3
+
+
 W = datetime.datetime(2024, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
 
 
 @json_object(
-    field_map={"color": "Color", "when": "When", "flag": "Flag"},
+    field_map={
+        "color": "Color",
+        "when": "When",
+        "flag": "Flag",
+        "level": "Level",
+    },
     write_map={"when": "When_w"},
 )
 class Colored(Base):
@@ -252,6 +264,7 @@ class Colored(Base):
     color: Color
     when: datetime.datetime
     flag: bool
+    level: int
 
 
 @json_object
@@ -2427,6 +2440,39 @@ def a_json_scalar_is_sent_by_json_name_as_given(world: World) -> None:
     )
     for call in queries(Task, userId=User(id=3)):
         assert world.query(call) == "userId=3"
+
+
+@row(JSON_NAME)
+def a_member_of_a_mixed_in_enum_is_refused_by_json_name(
+    world: World,
+) -> None:
+    for name, advice, value in (
+        ("Level", "level", Level.HIGH),
+        ("Level__in", "level__in", [Level.HIGH]),
+        ("Color", "color", Level.HIGH),
+    ):
+        refuses_query(
+            world, Colored, ValueError, name, advice, **{name: value}
+        )
+
+
+@row(JSON_NAME)
+def a_model_of_another_class_is_refused_by_the_json_name_of_a_relation(
+    world: World,
+) -> None:
+    for name, value in (
+        ("userId", Other(id=3)),
+        ("userId__in", [Other(id=3)]),
+    ):
+        refuses_query(
+            world,
+            Task,
+            FieldConversionError,
+            "Task.user",
+            "User",
+            "Other",
+            **{name: value},
+        )
 
 
 STRUCT = "value-suffix-lookups-on-a-structured-field"
