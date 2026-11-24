@@ -34,7 +34,8 @@ from eazyrest import (
     next_links_page,
     pagination,
 )
-from eazyrest.api import _as_api, _prepare_server_url
+from eazyrest._urls import _read_url
+from eazyrest.api import _as_api
 
 
 class PagedBase(JSONObject):
@@ -3366,9 +3367,7 @@ def test_api_reads_a_server_url_as_its_session_sends_it(
     api = API("https://api.test/")
     client = api._scoped({"timeout": 3}) if scoped else api
 
-    assert _as_api(client)._read_server_url(url) == _prepare_server_url(
-        api.session, url
-    )
+    assert _as_api(client)._read_server_url(url) == _read_url(url, api.session)
 
 
 @pytest.mark.parametrize("scoped", [False, True])

@@ -43,7 +43,7 @@ from ._errors import (
     _response_name,
 )
 from ._protocols import Client, Response
-from ._urls import _DEFAULT_PORTS, _port_of, _ServerURL
+from ._urls import _DEFAULT_PORTS, _port_of, _read_url, _ServerURL
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -115,53 +115,6 @@ def _origin(url: str) -> tuple[str, str | None, int | None]:
     )
 
 
-def _prepare_server_url(
-    session: requests.Session, url: str
-) -> _ServerURL | None:
-    """Prepare a URL that the server supplied, as requests will send it.
-
-    A server chooses such a URL, a redirect's ``Location`` or a link to another
-    page, so no rule says which of its text is a host and which is a password.
-    The only reading to trust is requests', so this takes the steps that
-    requests takes before it sends a request to the URL: ``prepare_url()``, the
-    Basic authentication that it takes from the URL's user and password, and
-    the session's choice of adapter. A check of the URL's origin must use the
-    result and not the text.
-
-    Args:
-        session: Session that would send a request to the URL.
-        url: Absolute URL, such as a redirect's destination or a link joined
-            onto the URL of its page.
-
-    Returns:
-        The prepared URL with its scheme, host, and port, or ``None`` if any
-        step fails, or if the scheme is HTTP or HTTPS and the session has no
-        adapter for the URL, as for a URL that begins with a control character,
-        which ``urlsplit()`` reads as HTTP and requests does not, or if the URL
-        has no scheme. A URL whose scheme is not HTTP or HTTPS has no host and
-        port in the result. Its ``sendable`` says whether the session has an
-        adapter for it.
-    """
-    request = requests.PreparedRequest()
-    try:
-        request.prepare_url(url, None)
-        request.prepare_headers(None)
-        request.prepare_auth(None)
-        assert request.url is not None
-        prepared = _ServerURL.from_prepared(request.url, sent=url)
-        if not prepared.scheme:
-            return None
-        try:
-            session.get_adapter(request.url)
-        except requests.exceptions.InvalidSchema:
-            if prepared.scheme in _DEFAULT_PORTS:
-                return None
-            return prepared._replace(sendable=False)
-        return prepared
-    except (ValueError, requests.RequestException):
-        return None
-
-
 def _redirect_destination(resp: requests.Response, target: str) -> str:
     """Return the URL to which requests follows a redirect.
 
@@ -213,10 +166,8 @@ def _prepare_redirect(
     Raises:
         ValueError: If the target cannot be joined onto the request's URL.
     """
-    destination = _prepare_server_url(
-        session, _redirect_destination(resp, target)
-    )
-    joined = _prepare_server_url(session, urljoin(resp.url, target))
+    destination = _read_url(_redirect_destination(resp, target), session)
+    joined = _read_url(urljoin(resp.url, target), session)
     if destination is None or joined is None:
         return None
     return destination, joined
@@ -233,7 +184,7 @@ def _leaves_allowed_origins(
     Args:
         prepared: The readings of the destination, which are the two that
             ``_prepare_redirect()`` returned for a redirect, and the one that
-            ``_prepare_server_url()`` returned for a page's URL.
+            ``_read_url()`` returned for a page's URL.
         allowed: The origins that the destination may have.
 
     Returns:
@@ -1364,10 +1315,10 @@ class API:
             url: Absolute URL, such as a link to another page.
 
         Returns:
-            The reading that ``_prepare_server_url()`` gives for this API's
-            session, or ``None`` if requests cannot prepare the URL.
+            The reading that ``_read_url()`` gives for this API's session, or
+            ``None`` if requests cannot prepare the URL.
         """
-        return _prepare_server_url(self.session, url)
+        return _read_url(url, self.session)
 
     def _repeated_params(self, url: str) -> dict[str, None]:
         """Name the session parameters that the query of ``url`` already has.
