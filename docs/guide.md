@@ -456,18 +456,29 @@ treat such a pickle as a secret.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
-eazyrest does not convert, a float that is not finite, or a value that holds
-itself or nests more than 127 levels deep, raises `FieldConversionError` at the
-assignment, which leaves the field unchanged and queues nothing. A body that
-holds the value nests one level more, and 128 levels is the default
-`max_json_depth`, so what is written can be read back from a server that echoes
-it. Only a write counts the depth. Reading a field, copying an object, and
-comparing JSON take any depth that `max_json_depth` let through, or that
-`json=` and `update_from_json()` were given, and `save()` sends a field that
-was read and not changed in place as it was. A write that the server refuses is
-different. In lazy mode its updates stay pending, so a later `save()` sends
-them again. In eager mode the refused assignment is not pending, and the field
-keeps its old value.
+eazyrest does not convert, a float that is not finite, an integer of more than
+4300 digits, which is the interpreter's limit for writing an integer as text,
+or a value that holds itself or nests more than 127 levels deep, raises
+`FieldConversionError` at the assignment, which leaves the field unchanged and
+queues nothing. A body that holds the value nests one level more, and 128
+levels is the default `max_json_depth`, so what is written can be read back
+from a server that echoes it. Only a write counts the depth. Reading a field,
+copying an object, and comparing JSON take any depth that `max_json_depth` let
+through, or that `json=` and `update_from_json()` were given, and `save()`
+sends a field that was read and not changed in place as it was. A write that
+the server refuses is different. In lazy mode its updates stay pending, so a
+later `save()` sends them again. In eager mode the refused assignment is not
+pending, and the field keeps its old value.
+
+A field of a plain type writes a subclass's plain value. A member of an enum
+that mixes in `str`, `int`, or `float`, and any other subclass of those types
+except `bool`, is written as the `str`, `int`, or `float` that it holds,
+whatever its `__str__()` gives. That is so wherever a value is encoded: in a
+JSON body, in a form field of a write with `files=`, in a query by the field's
+name, alone or in a lookup of several values, in a value inside `Any`, `list`,
+`dict`, a `TypedDict`, or a dataclass, including a mapping key, and from
+`encode_json()`. The caller's value is not changed. A name that is no field is
+sent as given in a query.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it. The key is shown as it is sent, so a `UUID` key shows its lowercase
@@ -614,14 +625,14 @@ Python types are converted automatically:
   `"0E-20000"`, which writes each zero after the point.
 - `enum.Enum` values decode from their JSON values and encode back to their
   enum values. An enum or a `Literal` whose values are not JSON scalars, a
-  string, an integer, a finite float, or a `bool`, such as bytes, a tuple, or
-  `math.inf`, raises `TypeError` when the class is decorated, since JSON could
-  neither give nor take such a value. So does an enum with a member whose value
-  is `None`, and so does a `Literal` that holds such a member, which every
-  field reads as no value, so the member would never be read. A `Literal` may
-  hold `None` itself. An enum with an entry of its own in `conversions` is not
-  checked, and a `Literal` of its members is not either, even for a member that
-  the entry writes as `None`.
+  string, an integer of no more than 4300 digits, a finite float, or a `bool`,
+  such as bytes, a tuple, or `math.inf`, raises `TypeError` when the class is
+  decorated, since JSON could neither give nor take such a value. So does an
+  enum with a member whose value is `None`, and so does a `Literal` that holds
+  such a member, which every field reads as no value, so the member would never
+  be read. A `Literal` may hold `None` itself. An enum with an entry of its own
+  in `conversions` is not checked, and a `Literal` of its members is not
+  either, even for a member that the entry writes as `None`.
 - `JSONObject` subclasses decode from embedded objects or primary keys.
 
 Every field reads JSON `null` as `None` and writes `None` as `null`, whatever

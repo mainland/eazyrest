@@ -1310,15 +1310,16 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
     bytes or a tuple, has no reading from JSON and cannot be written to it, so
     a field of the type could neither be read nor be given a value. A float
     that is not finite is no JSON number either, and the schema that holds it
-    is no JSON.
+    is no JSON. Neither is an integer of more digits than Python writes as
+    text.
 
     Args:
         name: What to call the type in the message.
         values: The JSON values that the type's members stand for.
 
     Raises:
-        TypeError: If a value is not a JSON scalar, or is a float that is not
-            finite.
+        TypeError: If a value is not a JSON scalar, is a float that is not
+            finite, or is an integer that Python cannot write as text.
     """
     for value in values:
         if value is not None and not isinstance(value, (str, int, float)):
@@ -1332,6 +1333,17 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
                 f"{name} has a float that is not finite, which JSON cannot "
                 "carry, so its JSON could not be read or written. Use finite "
                 "numbers."
+            )
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and not _is_writable_int(value)
+        ):
+            raise TypeError(
+                f"{name} has an integer of more than "
+                f"{sys.get_int_max_str_digits()} digits, which Python cannot "
+                "write as JSON, so its JSON could not be written. Use a "
+                "smaller number."
             )
 
 
@@ -2934,7 +2946,7 @@ def _form_value(name: str, value: Any) -> Any:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (str, int, float)):
-        return str(value)
+        return str(_plain_scalar(value))
     if (
         isinstance(value, list)
         and value
@@ -4098,9 +4110,7 @@ def encode_json(
     analyzed = analyze_type(annotation)
     _check_relation_collection("The annotation", analyzed)
     _check_admitted(analyzed, _table_of(model), late=True)
-    encoded = model._to_written_json(value, analyzed)
-    _check_json(encoded, "")
-    return encoded
+    return _checked_json(model._to_written_json(value, analyzed))
 
 
 _MAX_WRITE_DEPTH = 127
@@ -4142,7 +4152,7 @@ def _too_deep(path: str) -> ValueError:
     )
 
 
-def _check_json(value: Any, path: str) -> None:
+def _check_json(value: Any, path: str) -> bool:
     """Check that a value is made only of JSON types.
 
     Args:
@@ -4152,15 +4162,20 @@ def _check_json(value: Any, path: str) -> None:
             input or an encoder, not declared, and can be a secret, so it is
             shown as ``[key]``.
 
+    Returns:
+        Whether ``value`` holds a string, an integer, or a float of a subclass,
+        which ``_reduced_json()`` writes as the plain value.
+
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping
             key that is not a string.
         ValueError: If ``value`` holds a float that is not finite, which JSON
-            cannot write, or holds itself. It does not count depth, which
-            ``_check_write_depth()`` does for a value that is written.
+            cannot write, an integer that Python cannot write as text, or holds
+            itself. It does not count depth, which ``_check_write_depth()``
+            does for a value that is written.
     """
     try:
-        _walk_json(value, path)
+        return _walk_json(value, path)
     except _DepthExceeded:
         # Name where the value starts, not the container that repeats, so that
         # the message stays short.
@@ -4199,16 +4214,44 @@ def _check_write_depth(value: Any, path: str) -> None:
             stack.pop()
 
 
-def _check_json_leaf(value: Any, path: str) -> None:
+def _is_writable_int(value: int) -> bool:
+    """Return whether Python can write an integer as decimal text.
+
+    Python refuses to convert an integer of more than
+    ``sys.get_int_max_str_digits()`` digits, so ``json.dumps()`` cannot write
+    it.
+
+    Args:
+        value: The integer.
+
+    Returns:
+        Whether ``str(value)`` succeeds.
+    """
+    # An integer has no more digits than bits, so a short one needs no test.
+    if value.bit_length() <= sys.get_int_max_str_digits():
+        return True
+    try:
+        str(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_json_leaf(value: Any, path: str) -> bool:
     """Check that a value that holds no other value is a JSON scalar.
 
     Args:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
 
+    Returns:
+        Whether ``value`` is a string, an integer, or a float of a subclass,
+        such as a member of an enum that mixes in ``str``.
+
     Raises:
         TypeError: If ``value`` is of another type.
-        ValueError: If ``value`` is a float that is not finite.
+        ValueError: If ``value`` is a float that is not finite, or an integer
+            that Python cannot write as text.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -4216,9 +4259,19 @@ def _check_json_leaf(value: Any, path: str) -> None:
                 f"The value{_at(path)} is a float that is not finite, which "
                 "JSON cannot write"
             )
-        return
-    if value is None or isinstance(value, (str, int)):
-        return
+        return type(value) is not float
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not _is_writable_int(value):
+            raise ValueError(
+                f"The value{_at(path)} is an integer of more than "
+                f"{sys.get_int_max_str_digits()} digits, which Python cannot "
+                "write as JSON"
+            )
+        return type(value) is not int
+    if isinstance(value, str):
+        return type(value) is not str
+    if value is None or isinstance(value, bool):
+        return False
     raise TypeError(
         f"The value{_at(path)} has the type {type(value).__name__}, which "
         "does not encode to JSON. Annotate it with a type that eazyrest "
@@ -4226,7 +4279,88 @@ def _check_json_leaf(value: Any, path: str) -> None:
     )
 
 
-def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
+def _plain_scalar(value: Any) -> Any:
+    """Return a JSON scalar as the plain value of its base type.
+
+    Args:
+        value: A JSON scalar, possibly of a subclass of ``str``, ``int``, or
+            ``float``, such as a member of an enum that mixes in one.
+
+    Returns:
+        The ``str``, ``int``, or ``float`` that holds the same value, which no
+        ``__str__()`` or ``__int__()`` of the subclass changes. ``None`` and a
+        ``bool`` are returned as they are.
+    """
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, str):
+        return str.__str__(value) if type(value) is not str else value
+    if isinstance(value, int):
+        return int.__int__(value)
+    if isinstance(value, float):
+        return float.__float__(value)
+    return value
+
+
+def _reduced_json(value: Any) -> Any:
+    """Return a JSON value with each scalar as the plain value of its type.
+
+    The walk is iterative, so that it takes any depth. The value is not
+    changed. ``_check_json()`` has refused a value that holds itself.
+
+    Args:
+        value: A value that ``_check_json()`` accepted.
+
+    Returns:
+        A copy of ``value`` whose strings, mapping keys, integers, and floats
+        are of the types ``str``, ``int``, and ``float``.
+    """
+    if not isinstance(value, (list, dict)):
+        return _plain_scalar(value)
+    result: Any = [] if isinstance(value, list) else {}
+    stack = [(_reduced_members(value), result)]
+    while stack:
+        members, target = stack[-1]
+        for key, item in members:
+            nested = isinstance(item, (list, dict))
+            child: Any = (
+                ([] if isinstance(item, list) else {})
+                if nested
+                else _plain_scalar(item)
+            )
+            if isinstance(target, list):
+                target.append(child)
+            else:
+                target[key] = child
+            if nested:
+                stack.append((_reduced_members(item), child))
+                break
+        else:
+            stack.pop()
+    return result
+
+
+def _reduced_members(container: Any) -> Iterator[tuple[Any, Any]]:
+    """Yield the members of an array or an object, with each key as plain text.
+
+    Args:
+        container: A list or a dict.
+
+    Yields:
+        ``(None, item)`` for each item of a list, and ``(key, item)`` for each
+        member of a dict, with ``key`` a plain ``str``.
+    """
+    if isinstance(container, list):
+        for item in container:
+            yield None, item
+    else:
+        for key, item in container.items():
+            yield _plain_scalar(key), item
+
+
+def _walk_json_members(
+    container: Any, path: str
+) -> Iterator[tuple[str, Any, bool]]:
     """Yield the members of an array or an object, with where each is.
 
     Args:
@@ -4234,15 +4368,15 @@ def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
         path: Where ``container`` is, as ``_check_json()`` takes it.
 
     Yields:
-        Each member's place within the container, as ``[0]`` or ``[key]``, and
-        the member.
+        Each member's place within the container, as ``[0]`` or ``[key]``, the
+        member, and whether its key is a string of a subclass.
 
     Raises:
         TypeError: If ``container`` is a dict with a key that is not a string.
     """
     if isinstance(container, list):
         for index, item in enumerate(container):
-            yield f"[{index}]", item
+            yield f"[{index}]", item, False
         return
     for key, item in container.items():
         if not isinstance(key, str):
@@ -4250,10 +4384,10 @@ def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
                 f"The value{_at(path)} has a key that is not a string, "
                 "which JSON objects cannot have"
             )
-        yield "[key]", item
+        yield "[key]", item, type(key) is not str
 
 
-def _walk_json(value: Any, path: str) -> None:
+def _walk_json(value: Any, path: str) -> bool:
     """Check each part of a value, which may hold itself.
 
     The walk is iterative, so that it takes any depth.
@@ -4262,21 +4396,27 @@ def _walk_json(value: Any, path: str) -> None:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
 
+    Returns:
+        Whether a part of ``value`` is a string, an integer, or a float of a
+        subclass, or a mapping key that is a string of a subclass.
+
     Raises:
         TypeError: If ``value`` holds a value of another type, or a mapping key
             that is not a string.
-        ValueError: If ``value`` holds a float that is not finite.
+        ValueError: If ``value`` holds a float that is not finite, or an
+            integer that Python cannot write as text.
         _DepthExceeded: If ``value`` holds itself.
     """
     if not isinstance(value, (list, dict)):
-        _check_json_leaf(value, path)
-        return
+        return _check_json_leaf(value, path)
+    reducible = False
     open_containers = {id(value)}
     stack = [(_walk_json_members(value, path), path, id(value))]
     while stack:
         members, here, identity = stack[-1]
-        for place, item in members:
+        for place, item, reduces_key in members:
             there = here + place
+            reducible = reducible or reduces_key
             if isinstance(item, (list, dict)):
                 if id(item) in open_containers:
                     raise _DepthExceeded
@@ -4285,10 +4425,11 @@ def _walk_json(value: Any, path: str) -> None:
                     (_walk_json_members(item, there), there, id(item))
                 )
                 break
-            _check_json_leaf(item, there)
+            reducible = _check_json_leaf(item, there) or reducible
         else:
             stack.pop()
             open_containers.discard(identity)
+    return reducible
 
 
 def _literal_json(member: Any, table: Mapping[Any, Conversion]) -> Any:
@@ -4332,39 +4473,57 @@ def _literal_member(
     return _copy_json(value)
 
 
-def _checked_json(value: Any) -> Any:
+def _checked_json(value: Any, path: str = "") -> Any:
     """Return a value after checking that it is made only of JSON types.
 
     Args:
         value: Encoded value.
+        path: Where ``value`` is, as ``_check_json()`` takes it.
 
     Returns:
-        ``value``.
+        ``value``, or a copy of it in which each string, integer, float, and
+        mapping key of a subclass, such as a member of an enum that mixes in
+        ``str``, is the plain value that it stands for. Every caller must use
+        the result.
 
     Raises:
         TypeError: If ``value`` holds a value of another type.
+        ValueError: As for ``_check_json()``.
     """
-    _check_json(value, "")
+    if _check_json(value, path):
+        return _reduced_json(value)
     return value
 
 
-def _checked_body(wire: Mapping[str, Any]) -> None:
+def _checked_payload(
+    cls: type[JSONObject], payload: Mapping[str, Any]
+) -> dict[str, Any]:
     """Check that each member of a request's JSON body can be written.
 
     Args:
-        wire: The body, under the names that it is sent by.
+        cls: The model whose fields the body writes.
+        payload: The body, keyed by the fields' JSON keys and the names of
+            extras.
+
+    Returns:
+        ``payload`` in which each member is as ``_checked_json()`` returns it.
 
     Raises:
         TypeError: If a member holds a value of another type, as an extra can,
-            or a mapping key that is not a string.
-        ValueError: If a member holds a float that is not finite, holds itself,
-            or nests more deeply than ``_MAX_WRITE_DEPTH``, which makes the
-            body nest more than 128 levels. The message names the member as
-            ``[key]``, since its name can be a secret.
+            or a mapping key that is not a string, or if two members are
+            written under one key.
+        ValueError: If a member holds a float that is not finite, an integer
+            that Python cannot write as text, holds itself, or nests more
+            deeply than ``_MAX_WRITE_DEPTH``, which makes the body nest more
+            than 128 levels. The message names the member as ``[key]``, since
+            its name can be a secret.
     """
-    for value in wire.values():
-        _check_json(value, "[key]")
-        _check_write_depth(value, "[key]")
+    cls._to_wire(payload)
+    checked = {}
+    for key, value in payload.items():
+        checked[key] = _checked_json(value, "[key]")
+        _check_write_depth(checked[key], "[key]")
+    return checked
 
 
 def _at(path: str) -> str:
@@ -6954,8 +7113,7 @@ class JSONObject:
                         # An undeclared key is written as it is, so it must
                         # already be JSON.
                         with _at_key("[key]"):
-                            _check_json(item, "")
-                        written[key] = item
+                            written[key] = _checked_json(item)
                 return written
             case MappingType(value_type):
                 _check_mapping(value, conversion)
@@ -9203,7 +9361,7 @@ class JSONObject:
             # The body is JSON, as _write_body() decides. An extra has no
             # annotation, so eazyrest cannot say how a tuple, or a mapping with
             # a key that is not a string, reads back as JSON.
-            _checked_body(cls._to_wire(payload))
+            payload = _checked_payload(cls, payload)
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
@@ -10614,8 +10772,7 @@ class JSONObject:
         _check_api_attribute(cls, UsageError)
         client = cls.api if api is None else _as_client(api)
         cls._encode_query(kwargs, client)
-        payload = cls._encode_fields(create_kwargs)
-        _checked_body(cls._to_wire(payload))
+        _checked_payload(cls, cls._encode_fields(create_kwargs))
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
         # such a name as given, because it is an ordinary query parameter.

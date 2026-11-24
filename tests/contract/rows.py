@@ -58,6 +58,7 @@ from eazyrest import (
     JSONObject,
     ResponseShapeError,
     UsageError,
+    encode_json,
     json_object,
 )
 
@@ -3473,3 +3474,50 @@ def a_parent_without_its_key_is_refused_before_the_hook(
     finally:
         PPost.prefetch_batch_size = saved
     assert hook_calls == [{7, 8}]
+
+
+SUBCLASS = "a-plain-field-given-a-subclasss-value"
+
+
+@row(SUBCLASS)
+def a_subclass_is_sent_as_its_plain_value_in_a_query(world: World) -> None:
+    for call in queries(Colored, level=Level.HIGH):
+        assert world.query(call) == "Level=3"
+    for call in queries(Colored, level__in=[Level.HIGH, Level.LOW]):
+        assert world.query(call) == "Level__in=3,1"
+
+
+@row(SUBCLASS)
+def a_lookup_and_a_creation_send_the_plain_value(world: World) -> None:
+    world.mocker.get(requests_mock.ANY, json=[])
+    world.mocker.post(requests_mock.ANY, json={"id": 9, "Level": 3})
+    sent = world.bodies(lambda: Colored.get_or_create(level=Level.HIGH))
+    assert sent == [("GET", None), ("POST", {"Level": 3})]
+    assert unquote(urlsplit(world.requests[-2].url).query) == "Level=3"
+
+
+@row(SUBCLASS)
+def a_form_field_holds_the_plain_value(world: World) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 9})
+    Colored.create(level=Level.HIGH, files={"f": b"x"})
+    assert b'name="Level"\r\n\r\n3\r\n' in world.requests[-1].body
+
+
+@row(SUBCLASS)
+def a_subclass_is_written_as_its_plain_value_in_a_body(
+    world: World,
+) -> None:
+    world.mocker.post(requests_mock.ANY, json={"id": 9, "Level": 3})
+    assert world.body(lambda: Colored.create(level=Level.HIGH), "POST") == {
+        "Level": 3
+    }
+    colored = Colored(json={"id": 1, "Level": 1})
+    colored.level = Level.HIGH
+    assert world.body(colored.save, "PATCH") == {"Level": 3}
+
+
+@row(SUBCLASS)
+def encode_json_returns_the_plain_value(world: World) -> None:
+    encoded = encode_json(Level.HIGH, int)
+    assert encoded == 3
+    assert type(encoded) is int

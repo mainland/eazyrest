@@ -269,6 +269,19 @@ describe them further.
   `Any` field or a value of `dict[str, Any]`, a tuple, which reads back as a
   list, and a mapping whose keys are not strings are such values. Assign a list
   instead of a tuple.
+- A field of a plain type writes the plain value of a subclass of `str`, `int`,
+  or `float`, such as a member of an enum that mixes in one of them, in a JSON
+  body, in a form field of a write with `files=`, in a query by the field's
+  name, and from `encode_json()`, also inside `Any`, `list`, and `dict` values,
+  a `TypedDict`, and a dataclass. `v1.0.0a5` sent Python's `str()` of such a
+  value in a form field and in a query, as `Level.HIGH` for `3`, so a lookup
+  and the creation by `get_or_create()` named different values.
+- An integer of more than 4300 digits, which Python cannot write as text,
+  raises `FieldConversionError` when it is assigned or given to `create()` or
+  `get_or_create()`, and `ValueError` from `encode_json()` and from a query. An
+  enum or a `Literal` with such a value raises `TypeError` when the class is
+  decorated. `v1.0.0a5` queued the assignment, so that every later `save()`
+  raised `requests.exceptions.InvalidJSONError`.
 - A value that nests more than 127 levels deep, or that holds itself, raises
   `FieldConversionError` when it is assigned or given to `create()` or
   `get_or_create()` as a field, and `ValueError` naming the value as `[key]`
