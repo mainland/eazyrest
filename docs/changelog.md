@@ -644,6 +644,12 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A `uuid.UUID` field that is no key reads only the four spellings that a key
+  reads: the hyphenated, compact, braced, and URN forms, in ASCII hex. Any
+  other text raises `FieldConversionError`, as a date, a time, a decimal, a
+  duration, and a key refuse it. `v1.0.0a5` read whatever `uuid.UUID()` reads,
+  so 31 hex digits after a space, a `+`, or an underscore read as a UUID with a
+  leading zero.
 - The constructor checks every name and converts every value of its keywords
   before its first request, so a keyword that is refused after another, as a
   name that is no field, a read-only field, a second key, or a value that

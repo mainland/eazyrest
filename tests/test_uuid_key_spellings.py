@@ -1,4 +1,4 @@
-"""A UUID key is read from four spellings and no other."""
+"""A UUID key, and a UUID field, are read from four spellings and no other."""
 
 from __future__ import annotations
 
@@ -109,3 +109,40 @@ def test_a_uuid_key_refuses_every_other_spelling(text: str) -> None:
     holder = Holder(json={"id": 1, "doc": text, "docs": [text]})
     _refused(lambda: holder.doc, "Holder.doc")
     _refused(lambda: holder.docs, "Holder.docs")
+
+
+@json_object
+class Profile(JSONObject):
+    """A model with a UUID field that is no key."""
+
+    class_url = "/profiles/"
+    id: int
+    token: uuid.UUID
+    tokens: list[uuid.UUID]
+
+
+Profile.register_api(api)
+
+
+@pytest.mark.parametrize("text", ADMITTED.values(), ids=ADMITTED.keys())
+def test_a_uuid_field_that_is_no_key_reads_each_of_four_spellings(
+    text: str,
+) -> None:
+    """A field reads the spellings that a key reads, and writes one."""
+    profile = Profile(json={"id": 1, "token": text, "tokens": [text]})
+    assert profile.token == TARGET
+    assert profile.tokens == [TARGET]
+    profile.token = TARGET
+    assert profile.json["token"] == CANONICAL
+
+
+@pytest.mark.parametrize("text", REFUSED.values(), ids=REFUSED.keys())
+def test_a_uuid_field_that_is_no_key_refuses_every_other_spelling(
+    text: str,
+) -> None:
+    """A date, a time, a decimal, a duration, and a key refuse such text."""
+    profile = Profile(json={"id": 1, "token": text, "tokens": [text]})
+    with pytest.raises(FieldConversionError, match=r"Profile\.token"):
+        profile.token  # noqa: B018
+    with pytest.raises(FieldConversionError, match=r"Profile\.tokens"):
+        profile.tokens  # noqa: B018

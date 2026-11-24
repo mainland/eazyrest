@@ -620,10 +620,14 @@ Python types are converted automatically:
   Python. Basic and week dates are rejected. A date with a time is rejected,
   and so is a `datetime.datetime` assigned to the field, although it is also a
   `datetime.date`.
-- `uuid.UUID` values decode from UUID strings and encode to the standard
-  hyphenated form. A primary key of type `UUID` is built without this
-  conversion, as [What a key may be](#what-a-key-may-be) says, and is written
-  in the same form.
+- `uuid.UUID` values decode from UUID strings in the hyphenated, compact,
+  braced, or URN form, in ASCII hex of either case, as a key reads them, and
+  encode to the standard hyphenated form. Any other string, such as one that
+  has a `0x` prefix, a sign, an underscore, or surrounding whitespace, raises
+  `FieldConversionError`, though `uuid.UUID` reads it. A primary key of type
+  `UUID` is built without this conversion, as
+  [What a key may be](#what-a-key-may-be) says, and is written in the same
+  form.
 - `datetime.timedelta` values decode from duration strings and encode to ISO
   8601 durations such as `P1DT2H`. Decoding accepts ISO 8601, Django's
   `DurationField` format, the format of `str(timedelta)`, unit forms such as

@@ -262,11 +262,27 @@ def _check_embeddable(
         _check_embeddable(value, root=False, defs=defs)
 
 
+_UUID_TEXT = re.compile(
+    r"(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+    r"|\{[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}"
+    r"|urn:uuid:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
+    r"|[0-9a-fA-F]{32})"
+)
+"""The spellings of a ``UUID``'s text that eazyrest reads, in ASCII hex.
+
+These are the hyphenated, compact, braced, and URN forms. ``uuid.UUID`` reads
+more, such as a ``0x`` prefix, a sign, an underscore, hyphens anywhere,
+surrounding whitespace, and digits that are not ASCII, so a key or a field of
+another spelling is refused rather than read as the UUID that its digits name.
+"""
+
+
 def _decode_uuid(value: Any) -> uuid.UUID:
     """Decode a JSON UUID string.
 
     Args:
-        value: UUID in any form that ``uuid.UUID`` accepts, such as
+        value: UUID in the hyphenated, compact, braced, or URN form, in ASCII
+            hex of either case, such as
             ``"6f1c0f5e-0d3c-4bd9-9c3e-2f6a1d1a7b40"``.
 
     Returns:
@@ -282,10 +298,9 @@ def _decode_uuid(value: Any) -> uuid.UUID:
             f"UUID values must be strings, got {type(value).__name__}"
         )
 
-    try:
-        return uuid.UUID(value)
-    except ValueError as err:
-        raise ValueError("UUID is not valid") from err
+    if _UUID_TEXT.fullmatch(value) is None:
+        raise ValueError("UUID is not valid")
+    return uuid.UUID(value)
 
 
 def _decode_date(value: Any) -> datetime.date:

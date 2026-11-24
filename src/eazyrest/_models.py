@@ -63,6 +63,7 @@ from ._aliases import (
     _UnresolvedAliasError,
 )
 from ._conversion import (
+    _UUID_TEXT,
     DEFAULT_CONVERSIONS,
     Conversion,
     _annotated_supertype,
@@ -2305,21 +2306,6 @@ def _key_kind_of(cls: type[JSONObject]) -> str:
     """
     kind: str = cls._pk._identifier_kind
     return kind
-
-
-_UUID_TEXT = re.compile(
-    r"(?:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
-    r"|\{[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\}"
-    r"|urn:uuid:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}"
-    r"|[0-9a-fA-F]{32})"
-)
-"""The spellings of a ``UUID`` key's text that a key reads, in ASCII hex.
-
-These are the hyphenated, compact, braced, and URN forms. ``uuid.UUID`` reads
-more, such as a ``0x`` prefix, a sign, an underscore, hyphens anywhere,
-surrounding whitespace, and digits that are not ASCII, so a key of another
-spelling is refused rather than read as the UUID that its digits name.
-"""
 
 
 def _build_identifier(kind: str, value: Any) -> int | str:
