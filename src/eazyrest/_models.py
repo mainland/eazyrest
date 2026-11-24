@@ -1448,21 +1448,26 @@ def _check_admitted(
     match analyzed:
         case BaseType(base_type):
             if (literal := _literal_of(base_type)) is not None:
+                # As for an enum, a conversion of its own decides what a member
+                # writes, so only eazyrest's conversion of enums is checked.
                 _check_json_scalars(
                     "A Literal",
                     (
                         _literal_json(member, table)
                         for member in typing.get_args(literal)
+                        if not isinstance(member, enum.Enum)
+                        or _is_default_enum_entry(
+                            _conversion_of(type(member), table)
+                        )
                     ),
                 )
                 for member in typing.get_args(literal):
                     if not isinstance(member, enum.Enum):
                         continue
                     held = _conversion_of(type(member), table)
-                    # As for an enum, a conversion of its own decides.
                     if (
                         held is not None
-                        and held.key is enum.Enum
+                        and _is_default_enum_entry(held)
                         and held.entry.encode(member, held.declared) is None
                     ):
                         raise TypeError(
@@ -1474,7 +1479,8 @@ def _check_admitted(
                             "instead."
                         )
             found = _conversion_of(base_type, table)
-            if found is not None and found.key is enum.Enum:
+            if _is_default_enum_entry(found):
+                assert found is not None
                 _check_json_scalars(
                     found.declared.__name__,
                     (
@@ -1554,6 +1560,24 @@ def _has_no_hash(cls: type[Any]) -> bool:
         dataclass that is not frozen does.
     """
     return cast("object", cls.__hash__) is None
+
+
+def _is_default_enum_entry(found: _Found | None) -> bool:
+    """Return whether a found conversion is eazyrest's own conversion of enums.
+
+    An entry that a model's ``conversions`` sets for ``enum.Enum`` replaces it,
+    and decides for itself what a member writes, so its members are not checked
+    as eazyrest's own writes are.
+
+    Args:
+        found: What ``_conversion_of()`` found for a type, or ``None``.
+
+    Returns:
+        Whether ``found`` is the default conversion of ``enum.Enum``.
+    """
+    return found is not None and found.entry is DEFAULT_CONVERSIONS.get(
+        enum.Enum
+    )
 
 
 def _unhashable_kind(

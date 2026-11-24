@@ -644,6 +644,13 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- An enum, and a `Literal` of its members, is checked while eazyrest's own
+  conversion of enums converts it. An entry in `conversions` that is keyed by
+  `enum.Enum` replaces that conversion, so its `encode` is no longer called for
+  every member when the class is decorated and again when the field is first
+  used. `v1.0.0a5` refused every enum field of a model whose entry wrote
+  members as objects, and let an entry that refused one member fail at every
+  use of the field.
 - A conversion's schema with `$schema`, or with a `$defs` at its root that is
   no mapping, raises `TypeError` when the conversion is made, or when
   `json_schema()` calls the function that returns it, as one with `$id` does.
