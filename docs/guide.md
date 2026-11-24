@@ -578,7 +578,10 @@ me = User(json=api.json(api.get("/me/")))
 ```
 
 Its `url` is the model's own, such as `/users/7/`, and it saves and reloads
-there.
+there. An override must return a `str`. Any other result raises `TypeError`
+naming the class and `url` from the request that reads it, not an
+`AttributeError`, which `hasattr()` and `getattr()` with a default would
+swallow.
 
 ## Field conversion
 

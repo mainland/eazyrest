@@ -2481,6 +2481,32 @@ def _hook_result(
     raise TypeError(message)
 
 
+def _object_url(obj: JSONObject) -> str:
+    """Return the URL that a request of an object goes to.
+
+    Every request of an object reads its ``url`` here, since a subclass may
+    override the property, and a wrong result must not fail later in the
+    library's own code as an ``AttributeError``, which ``hasattr()`` and
+    ``getattr()`` with a default swallow.
+
+    Args:
+        obj: The object.
+
+    Returns:
+        ``obj.url``.
+
+    Raises:
+        TypeError: If ``obj.url`` is not a string, naming the class and
+            ``url``.
+    """
+    url = obj.url
+    if isinstance(url, str):
+        return url
+    raise TypeError(
+        f"{type(obj).__name__}.url must return a str, got {type(url).__name__}"
+    )
+
+
 class _OwnedJSON(dict[str, Any]):
     """JSON object that the library owns, so a constructor need not copy it.
 
@@ -7156,7 +7182,7 @@ class JSONObject:
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
         )
-        self._request_api().delete(self.url, **options)
+        self._request_api().delete(_object_url(self), **options)
 
     def _request_api(self) -> API:
         """Return the API that this object's own requests go through.
@@ -7278,7 +7304,9 @@ class JSONObject:
             payload = dict(self._pending_updates)
             payload[json_field] = value
             resp = self._request_api().patch(
-                self.url, json=self._to_wire(payload), **self._write_options
+                _object_url(self),
+                json=self._to_wire(payload),
+                **self._write_options,
             )
             self._apply_patch_response(resp, payload)
             return
@@ -7766,7 +7794,9 @@ class JSONObject:
         if full:
             payload = self._full_payload()
             body = self._write_body(payload, files)
-            resp = self._request_api().put(self.url, **body, **options)
+            resp = self._request_api().put(
+                _object_url(self), **body, **options
+            )
             self._apply_patch_response(resp, payload)
             return
         if len(self._pending_updates) == 0 and not files:
@@ -7774,7 +7804,7 @@ class JSONObject:
 
         payload = dict(self._pending_updates)
         body = self._write_body(payload, files)
-        resp = self._request_api().patch(self.url, **body, **options)
+        resp = self._request_api().patch(_object_url(self), **body, **options)
         self._apply_patch_response(resp, payload)
 
     def _full_payload(self) -> dict[str, Any]:
@@ -7968,7 +7998,7 @@ class JSONObject:
         _refuse_keyless_request(type(self), "refresh")
         # An object without a URL cannot reload, so refuse before discarding
         # its state.
-        _ = self.url
+        _object_url(self)
         # The key stays, so the object still has its key without its JSON.
         # Discard unsaved local changes
         self._pending_updates.clear()
@@ -8056,6 +8086,9 @@ class JSONObject:
                 resource, such as the collection.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has nothing to build the URL from.
+
+        A subclass that overrides this property must return a ``str``. A
+        request that reads it raises ``TypeError`` for any other result.
         """
         if getattr(type(self), "_pk", None) is None:
             raise ValueError(
@@ -8092,8 +8125,10 @@ class JSONObject:
             ValueError: As for ``url``.
             UsageError: If the model has a key field and declares no
                 ``class_url``, or no API is registered for it.
+            TypeError: If a subclass overrides ``url`` and it returns no
+                ``str``.
         """
-        return self.api.resolve_url(self.url)
+        return self.api.resolve_url(_object_url(self))
 
     @property
     def json(self) -> Any:
@@ -8195,7 +8230,7 @@ class JSONObject:
         """
         # Reloading drops cached values, so queue their in-place changes first.
         self._queue_changes(self._changes_in_place())
-        resp = self._request_api().get(self.url)
+        resp = self._request_api().get(_object_url(self))
         json = self._object_from_response(self.api.json(resp), resp)
 
         # Some APIs leave the primary key out of a detail response, because the
@@ -9858,9 +9893,10 @@ class JSONObject:
         Raises:
             ResponseShapeError: If ``object_json()`` raises ``DoesNotExist`` or
                 ``MultipleObjectsReturned`` for a payload that is a list, or
-                does not return a mapping. The error holds the response. Any
-                other error of ``object_json()``, those two for another payload
-                included, reaches the caller unchanged.
+                does not return a mapping, or if the payload is no object and
+                ``object_json()`` is the default hook. The error holds the
+                response. Any other error of ``object_json()``, those two for
+                another payload included, reaches the caller unchanged.
         """
         cls = type(self)
         try:
@@ -9882,6 +9918,22 @@ class JSONObject:
             raise ResponseShapeError(
                 f"The response to the {where}: {err}", response=resp
             ) from err
+        if not cls._overrides_hook("object_json") and not isinstance(
+            json, Mapping
+        ):
+            # The default hook returns any payload that is no list, so the
+            # server's answer is what is wrong, and the program wrote no hook
+            # to blame.
+            raise ResponseShapeError(
+                "The response to the "
+                + (
+                    f"creation of a {cls.__name__}"
+                    if self._wire_key is _BEFORE_CREATION
+                    else f"write or load of a {cls.__name__}"
+                )
+                + f" is not a JSON object, but a {type(json).__name__}",
+                response=resp,
+            )
         json = _hook_result(
             cls, "object_json", json, Mapping, "a JSON object", resp=resp
         )

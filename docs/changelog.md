@@ -634,6 +634,15 @@ describe them further.
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
   a default swallow.
+- A class whose `url` returns anything but a `str` raises `TypeError` naming
+  the class and `url`, from a field read that loads, `refresh()`, `delete()`,
+  `save()`, an eager assignment, and `absolute_url`. `v1.0.0a5` failed with an
+  `AttributeError` from the library's own code, so `hasattr()` was `False` and
+  `getattr()` with a default gave the default for a field.
+- A load, a write, or a creation that the server answers with a JSON scalar or
+  `null`, for a class that does not override `object_json()`, raises
+  `ResponseShapeError` that blames the response. It named a method that the
+  program never wrote.
 - `API.redirect_origins` must be a tuple, a list, or a frozenset of strings.
   Any other value raises `TypeError` naming the attribute and the type that it
   found, before the request, from `get()`, `post()`, `patch()`, `put()`, and
