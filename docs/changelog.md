@@ -1196,6 +1196,7 @@ that can break code written for 0.9.0, followed by what to do about it.
   limits before any response hook runs, so an authentication handler cannot
   read the body of a challenge past `max_response_bytes` or `total_timeout`.
 - `APIError` messages do not quote the error body, which can quote submitted
-  values.
+  values, and show at most 40 characters of the response's reason phrase, which
+  the server chooses, as they show of each name of the body's members.
 - Releases are built and published from a tag by a workflow that uses trusted
   publishing, with the workflow's actions pinned by commit.

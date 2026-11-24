@@ -2255,8 +2255,9 @@ exception type that it replaced, so code written for that type keeps working:
   field cannot convert.
 - `APIError`, a `requests.HTTPError`, for a response whose status reports a
   failure, and its subclass `NotFound` for a 404. `data` holds the parsed JSON
-  body, and the message names the body's members other than `detail`, but not
-  their text.
+  body. The message holds the status and its reason phrase, cut to 40
+  characters, the request, and the names of the body's members other than
+  `detail`, each cut to 40 characters, but not their text.
 - `DoesNotExist` and `MultipleObjectsReturned`, for a lookup that expects one
   object. `NotFound` is also a `DoesNotExist`.
 - `PrefetchNotSupported`, for a prefetch of a model without

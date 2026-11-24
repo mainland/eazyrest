@@ -447,6 +447,11 @@ def _printable(text: object) -> str:
     )
 
 
+_SHOWN_LENGTH = 40
+"""The most characters of a reason phrase or a body's name that a message
+shows, for text that a server chose."""
+
+
 def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
     """Return the exception for a response whose status reports a failure.
 
@@ -457,7 +462,8 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
 
     Returns:
         ``NotFound`` for a 404 and ``APIError`` otherwise, with the body's
-        JSON, if any, as ``data``.
+        JSON, if any, as ``data``. The message holds the status, the reason
+        phrase cut to 40 characters, and the request.
     """
     data: object = None
     if resp.content:
@@ -467,8 +473,13 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
             data = None
 
     kind = "Client" if 400 <= resp.status_code < 500 else "Server"
+    # The reason phrase is chosen by the server, as the body's names are, and a
+    # status line can be 65,536 bytes long, so it is bounded too.
+    reason = str(resp.reason)
+    if len(reason) > _SHOWN_LENGTH:
+        reason = reason[:_SHOWN_LENGTH] + "..."
     message = (
-        f"{resp.status_code} {kind} Error: {_printable(resp.reason)} for "
+        f"{resp.status_code} {kind} Error: {_printable(reason)} for "
         f"{_response_name(resp)}"
     )
     if isinstance(data, dict):
@@ -476,7 +487,11 @@ def _api_error(resp: Response, max_depth: int | None = None) -> APIError:
         # a newline or an escape sequence reaches a log as text.
         names = sorted(str(name) for name in data if name != "detail")
         shown = [
-            repr(name if len(name) <= 40 else name[:40] + "...")
+            repr(
+                name
+                if len(name) <= _SHOWN_LENGTH
+                else name[:_SHOWN_LENGTH] + "..."
+            )
             for name in names[:10]
         ]
         if len(names) > 10:
