@@ -35,7 +35,7 @@ from eazyrest import (
     follow_next_links,
     json_object,
 )
-from eazyrest._errors import _redact_url, _response_name
+from eazyrest._errors import _response_name
 from eazyrest._urls import _prepare_redirect
 from eazyrest.api import _check_final_response
 
@@ -469,71 +469,6 @@ def test_unfollowed_redirect_that_requests_cannot_prepare_pickles(
     copy = pickle.loads(pickle.dumps(raised.value))
     assert type(copy) is RedirectError
     assert "cannot prepare" in str(copy)
-
-
-@pytest.mark.parametrize(
-    ("url", "expected"),
-    [
-        ("http://user:dummy@host/x?a=b", "http://host/x?a=b"),
-        ("//user:dummy@host/x", "//host/x"),
-        ("//user@host:99999/x", "//host:99999/x"),
-        ("//host/x@y", "//host/x@y"),
-        ("/x@y", "/x@y"),
-        ("http://host/x", "http://host/x"),
-        (
-            "http://user:dummy-pass@host.test\\@evil.test/x",
-            "http://host.test\\@evil.test/x",
-        ),
-        (
-            "https://user:dummy-pass@host.test\\@evil.test/x",
-            "https://host.test\\@evil.test/x",
-        ),
-        (
-            "HTTPS://user:dummy-pass@host.test\\@evil.test/x",
-            "HTTPS://host.test\\@evil.test/x",
-        ),
-        (
-            "http://host.test\\user@evil.test/x",
-            "http://host.test\\user@evil.test/x",
-        ),
-        (
-            "//user:dummy-pass@host.test\\@evil.test/x",
-            "//host.test\\@evil.test/x",
-        ),
-        (
-            "ftp://user:dummy-pass@host.test\\@evil.test/x",
-            "ftp://evil.test/x",
-        ),
-        ("\x0chttp://user:dummy@host/x", "http://host/x"),
-        (" \x01//user:dummy@host/x", "//host/x"),
-        ("ht\ttp://user:dummy@host/x", "http://host/x"),
-        ("http:/\t/user:dummy@host/x", "http://host/x"),
-        ("http://user:dummy@host/\nx", "http://host/x"),
-        ("\xa0http://user:dummy@host/x", "http://host/x"),
-        ("\u3000http://user:dummy@host/x", "http://host/x"),
-        ("\x85http://user:dummy@host/x", "http://host/x"),
-        ("\u2028//user:dummy@host/x", "//host/x"),
-        (" \xa0\x01\u3000http://user:dummy@host/x", "http://host/x"),
-        ("\xa0http://host/x", "\xa0http://host/x"),
-        ("\x0chttp://host/x\t", "\x0chttp://host/x\t"),
-        (b"http://user:dummy@host/x?a=b", "http://host/x?a=b"),
-        (b"http://host/x", "http://host/x"),
-        ("http://user:dummy@h\u00f6st/x".encode(), "http://h\u00f6st/x"),
-        ("http://user:dummy@host/\rx", "http://host/x"),
-        ("http://user:dummy@\rhost/x", "http://host/x"),
-        (b"http://user:dummy@host/\xffx", "http://host/\ufffdx"),
-    ],
-)
-def test_redacted_url_leaves_out_a_user_and_password(
-    url: str | bytes, expected: str
-) -> None:
-    """A URL without a scheme, as a ``Location`` may be, is redacted too.
-
-    Args:
-        url: URL to quote, as requests accepts it, also as ``bytes``.
-        expected: The URL without its user and password, as text.
-    """
-    assert _redact_url(url) == expected
 
 
 def test_error_body_names_are_bounded_and_quoted(requests_mock: Any) -> None:

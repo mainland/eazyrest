@@ -6,7 +6,6 @@ import codecs
 import contextvars
 import json
 import math
-import re
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from email.message import Message
@@ -356,51 +355,6 @@ def _is_failure(status_code: int) -> bool:
     return 400 <= status_code < 600
 
 
-_USERINFO = re.compile(
-    r"^(?:((?:https?:)?//)[^/?#\\]*@"
-    r"|(?!https?:)([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@)",
-    re.IGNORECASE,
-)
-_URL_NOISE = str.maketrans("", "", "\t\r\n")
-_URL_LEADING = re.compile(r"^[\s\x00-\x20]+")
-
-
-def _redact_url(url: object) -> str:
-    """Return a URL, without any user and password, to quote in a message.
-
-    An error message quotes the URL that the caller gave for a request, with
-    its query, and a URL such as ``http://user:pass@host/`` would put the
-    credentials into a log.
-
-    Args:
-        url: URL that requests prepares, as a string or as ``bytes``, which are
-            decoded as UTF-8 as requests decodes them, or ``None``. It may lack
-            a scheme, as a ``Location`` header that begins with ``//`` does.
-
-    Returns:
-        The URL as it is, but for the user and password before the host, which
-        are left out, so ``http://user:pass@host/x?q=1`` becomes
-        ``http://host/x?q=1`` and ``//user:pass@host/x`` becomes ``//host/x``.
-        For ``http``, ``https``, and a URL without a scheme, which requests
-        joins onto the scheme of its base, the user and password end at a
-        backslash, as urllib3 ends the authority there, so that the host named
-        is the one that requests connects to once it has prepared the URL. A
-        raw ``Location`` that it has not prepared may name another host. For
-        other schemes they end at the last ``@`` before a ``/``, ``?``, or
-        ``#``. The match reads the URL as requests and ``urlsplit()`` do, which
-        ignore leading control characters, spaces, and Unicode whitespace such
-        as a no-break space, and remove tabs, carriage returns, and line feeds.
-        A URL that has a user and password is quoted in that form, so
-        ``http://user:pass@host/x`` with a form feed before it becomes
-        ``http://host/x``.
-    """
-    text, normal = _normalized_url(url)
-    match = _USERINFO.match(normal)
-    if match is None:
-        return text
-    return (match.group(1) or match.group(2)) + normal[match.end() :]
-
-
 _request_budget: contextvars.ContextVar[_Budget | None] = (
     contextvars.ContextVar("_request_budget", default=None)
 )
@@ -468,24 +422,6 @@ def _response_name(resp: Response) -> str:
     if budget is not None and budget.request is not None:
         return budget.request
     return _request_name(method, _asked_text(resp.url, None, Source.SERVER))
-
-
-def _normalized_url(url: object) -> tuple[str, str]:
-    """Return a URL as text, and as requests and ``urlsplit()`` read it.
-
-    Args:
-        url: URL, as for ``_redact_url()``.
-
-    Returns:
-        The URL as text, and that text without leading control characters,
-        spaces, and Unicode whitespace, and without tabs, carriage returns, and
-        line feeds.
-    """
-    if isinstance(url, bytes):
-        text = url.decode("utf-8", "replace")
-    else:
-        text = str(url)
-    return text, _URL_LEADING.sub("", text.translate(_URL_NOISE))
 
 
 def _printable(text: object) -> str:

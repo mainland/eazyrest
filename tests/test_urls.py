@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ast
+import pathlib
 from typing import Any
 
 import pytest
 import requests
 
+import eazyrest
 from eazyrest._urls import (
     UNREADABLE,
     Source,
@@ -248,3 +251,130 @@ def test_query_names_are_read_from_the_prepared_url() -> None:
     """Names with an empty value count, and an unpreparable URL has none."""
     assert _query_names("https://h.test/x?a=1&b=&a=2") == {"a", "b"}
     assert _query_names("https://h.test:99999/x?a=1") == set()
+
+
+DECEIVING_URLS = [
+    "http://user:dummy@host/x?a=b",
+    "//user:dummy@host/x",
+    "//user@host:99999/x",
+    "//host/x@y",
+    "/x@y",
+    "http://host/x",
+    "http://user:dummy-pass@host.test\\@evil.test/x",
+    "https://user:dummy-pass@host.test\\@evil.test/x",
+    "HTTPS://user:dummy-pass@host.test\\@evil.test/x",
+    "http://host.test\\user@evil.test/x",
+    "//user:dummy-pass@host.test\\@evil.test/x",
+    "ftp://user:dummy-pass@host.test\\@evil.test/x",
+    "\x0chttp://user:dummy@host/x",
+    " \x01//user:dummy@host/x",
+    "ht\ttp://user:dummy@host/x",
+    "http:/\t/user:dummy@host/x",
+    "http://user:dummy@host/\nx",
+    "\xa0http://user:dummy@host/x",
+    "\u3000http://user:dummy@host/x",
+    "\x85http://user:dummy@host/x",
+    "\u2028//user:dummy@host/x",
+    " \xa0\x01\u3000http://user:dummy@host/x",
+    "\xa0http://host/x",
+    "\x0chttp://host/x\t",
+    b"http://user:dummy@host/x?a=b",
+    b"http://host/x",
+    b"http://user:dummy@h\xc3\xb6st/x",
+    "http://user:dummy@host/\rx",
+    "http://user:dummy@\rhost/x",
+    b"http://user:dummy@host/\xffx",
+]
+
+
+@pytest.mark.parametrize("source", list(Source))
+@pytest.mark.parametrize("url", DECEIVING_URLS)
+def test_url_that_hides_its_user_and_password_shows_neither(
+    url: str | bytes, source: Source
+) -> None:
+    """No spelling of a URL puts its user or password into what is shown.
+
+    The URLs begin with control characters or Unicode whitespace, hold a tab or
+    a line feed, end the authority at a backslash, or have no scheme, as
+    parsers disagree about each.
+
+    Args:
+        url: URL, as requests accepts it, also as ``bytes``.
+        source: Where the URL came from.
+    """
+    shown = _shown(_read_url(url, requests.Session()), source)
+
+    assert "dummy" not in shown
+    assert "user:" not in shown
+
+
+# Names that parse a URL, or ask a session how it would send one.
+PARSERS = frozenset(
+    {
+        "get_adapter",
+        "parse_qsl",
+        "prepare_url",
+        "requote_uri",
+        "urldefrag",
+        "urljoin",
+        "urlparse",
+        "urlsplit",
+    }
+)
+SOURCE_DIRECTORY = pathlib.Path(eazyrest.__file__).parent
+EXEMPT = frozenset({"_urls.py"})
+
+
+def _parsing_modules(
+    exempt: frozenset[str] = EXEMPT,
+) -> list[str]:
+    """Return where a module of the package calls or imports a URL parser.
+
+    Args:
+        exempt: Names of the modules that may parse a URL.
+
+    Returns:
+        One entry for each call or import, as ``module:line: name``.
+    """
+    found = []
+    for path in sorted(SOURCE_DIRECTORY.glob("*.py")):
+        if path.name in exempt:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Call):
+                function = node.func
+                if isinstance(function, ast.Name):
+                    names.append(function.id)
+                elif isinstance(function, ast.Attribute):
+                    names.append(function.attr)
+            elif isinstance(node, ast.ImportFrom):
+                names += [alias.name for alias in node.names]
+            line = getattr(node, "lineno", 0)
+            found += [
+                f"{path.name}:{line}: {name}"
+                for name in names
+                if name in PARSERS
+            ]
+    return found
+
+
+def test_only_the_urls_module_parses_a_url() -> None:
+    """No other module calls or imports a function that parses a URL.
+
+    A site that parses a URL on its own reads it as one parser does, not as
+    requests prepares it, and decides on its own what to show of it.
+    """
+    assert _parsing_modules() == []
+
+
+def test_the_check_for_a_parse_outside_the_urls_module_finds_one() -> None:
+    """With the module that parses exempted from nothing, the check fires."""
+    assert any("_urls.py" in entry for entry in _parsing_modules(frozenset()))
+
+
+def test_only_the_urls_module_is_exempt_from_the_check() -> None:
+    """No other module may be added to those that can parse a URL."""
+    assert sorted(EXEMPT) == ["_urls.py"]
+    assert all((SOURCE_DIRECTORY / name).is_file() for name in EXEMPT)
