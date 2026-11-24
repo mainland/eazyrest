@@ -2735,6 +2735,57 @@ def _check_options_mapping(options: Mapping[str, Any]) -> None:
         )
 
 
+# Request options that are merged by name or by event, so that a value of
+# another type cannot be merged over the options of an open block.
+_MERGED_OPTION_NAMES = ("headers", "hooks")
+
+
+def _check_merged_options(options: Mapping[str, Any]) -> None:
+    """Refuse a ``headers`` or ``hooks`` option that cannot be merged.
+
+    ``None`` stays allowed, as ``requests`` takes it. Other values of the
+    options that ``requests`` refuses itself, such as a header value of the
+    wrong type or an unknown hook event, are left to it.
+
+    Args:
+        options: Request options given as ``request_options`` or to a
+            ``write_options()`` block.
+
+    Raises:
+        TypeError: If ``headers`` or ``hooks`` is set to something other than a
+            mapping or ``None``, a header's name is neither ``str`` nor
+            ``bytes``, or an entry of ``hooks`` is neither ``None``, a
+            callable, nor an iterable.
+    """
+    for name in _MERGED_OPTION_NAMES:
+        value = options.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                f"The {name} request option must be a mapping, got "
+                f"{type(value).__name__}"
+            )
+        if name == "headers":
+            for header in value:
+                if not isinstance(header, str | bytes):
+                    raise TypeError(
+                        "The headers request option must be a mapping from "
+                        "names that are str or bytes, got a name of type "
+                        f"{type(header).__name__}"
+                    )
+        else:
+            for event, entry in value.items():
+                if entry is None or callable(entry):
+                    continue
+                if not isinstance(entry, Iterable):
+                    raise TypeError(
+                        "The hooks request option must map each event to a "
+                        f"callable or an iterable of callables, got "
+                        f"{type(entry).__name__} for {event!r}"
+                    )
+
+
 def _query_request_options(
     options: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
@@ -2749,12 +2800,14 @@ def _query_request_options(
 
     Raises:
         TypeError: If ``options`` is not a mapping, sets a body or the query
-            parameters, enables streaming, or names an argument that is not
-            a request option.
+            parameters, enables streaming, names an argument that is not a
+            request option, or sets headers or hooks to a value that is not a
+            mapping.
     """
     if options is None:
         return {}
     _check_options_mapping(options)
+    _check_merged_options(options)
     body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
     if body:
         raise TypeError(
@@ -2797,11 +2850,13 @@ def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     Raises:
         TypeError: If ``options`` is not a mapping, sets the request body,
             which the write builds itself, enables streaming of the response,
-            or names an argument that is not a request option.
+            names an argument that is not a request option, or sets headers or
+            hooks to a value that is not a mapping.
     """
     if options is None:
         return {}
     _check_options_mapping(options)
+    _check_merged_options(options)
     if options.get("stream"):
         raise TypeError(
             "Model writes cannot stream their responses. Use an API method "
@@ -6702,7 +6757,8 @@ class JSONObject:
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
             TypeError: If ``request_options`` is not a mapping, sets the body,
-                or streams the response.
+                or streams the response, or its ``headers`` or ``hooks`` are
+                not mappings of names to values that can be merged.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
@@ -6763,9 +6819,10 @@ class JSONObject:
             This object.
 
         Raises:
-            TypeError: If ``options`` set the body, enable streaming, or name
-                an argument that is not a request option. Nothing has changed
-                then.
+            TypeError: If ``options`` set the body, enable streaming, name an
+                argument that is not a request option, set ``headers`` or
+                ``hooks`` to a value that is not a mapping, or cannot be merged
+                over the options of the open blocks. Nothing has changed then.
             UsageError: When a block ends while a block of the same object that
                 began later is still open, as two generators that each hold a
                 block open can end in the order they began. The ended block's
@@ -6777,12 +6834,14 @@ class JSONObject:
         # the open blocks' in the order that they began. A block that ends out
         # of order then takes only its own options with it. An object that has
         # no options of its own reads the class's, so the last block must leave
-        # it without any, as it found it.
-        blocks: list[Mapping[str, Any]] = vars(self).setdefault(
-            "_write_blocks", []
-        )
+        # it without any, as it found it. The merge comes before the block is
+        # registered, so that options that cannot be merged leave the object as
+        # it was.
+        blocks: list[Mapping[str, Any]] = vars(self).get("_write_blocks", [])
+        merged = self._merged_write_blocks([*blocks, checked])
+        blocks = vars(self).setdefault("_write_blocks", blocks)
         blocks.append(checked)
-        self._write_options = self._merged_write_blocks(blocks)
+        self._write_options = merged
         try:
             yield self
         finally:
@@ -7299,8 +7358,9 @@ class JSONObject:
                 objects, or names another primary key than the object has. The
                 server may have applied the updates, but they remain pending.
             TypeError: If ``request_options`` is not a mapping, sets the body,
-                or streams the response, or a field cannot be sent as a form
-                field.
+                or streams the response, its ``headers`` or ``hooks`` are not
+                mappings of names to values that can be merged, or a field
+                cannot be sent as a form field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
@@ -8791,11 +8851,12 @@ class JSONObject:
             TypeError: If the model's key type is refused, which is checked
                 before any request. Also raised if a field is given both as a
                 keyword argument and in ``fields``, if ``request_options`` is
-                not a mapping or sets the body, or if a field's value cannot be
-                sent as a form field with ``files``. Also raised for response
-                streaming or conflicting wire names, and for a value under a
-                name that is no field that is not made of JSON types, as a
-                tuple, or a mapping with a key that is not a string.
+                not a mapping, sets the body, or has ``headers`` or ``hooks``
+                that cannot be merged, or if a field's value cannot be sent as
+                a form field with ``files``. Also raised for response streaming
+                or conflicting wire names, and for a value under a name that is
+                no field that is not made of JSON types, as a tuple, or a
+                mapping with a key that is not a string.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
@@ -9703,7 +9764,8 @@ class JSONObject:
                 the key, and otherwise as the first item is built, so an empty
                 collection raises nothing. Also raised if a parameter is given
                 both as a keyword argument and in ``params``,
-                ``request_options`` is not valid for a query, or
+                ``request_options`` is not valid for a query, including
+                ``headers`` or ``hooks`` that cannot be merged, or
                 ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
                 ``prefetch`` is given.
             UsageError: If the model has a key field and declares no
@@ -9803,8 +9865,8 @@ class JSONObject:
                 object, or holds no key, or a key that is not of the key's
                 type. The message names the item's position, and the error is
                 raised when iteration reaches the item.
-            TypeError: If ``request_options`` is not valid for a query, or the
-                model's key type is refused, as for ``filter()``.
+            TypeError: If ``request_options`` is not valid for a query, as for
+                ``filter()``, or the model's key type is refused.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has no collection to read, or no API is
                 registered for it and no ``api=`` is given, or a ``prefetch``
@@ -9877,7 +9939,8 @@ class JSONObject:
                 message names the item's position.
             TypeError: If ``url`` is given with query parameters, a parameter
                 is given both as a keyword argument and in ``params``,
-                ``request_options`` is not valid for a query, or
+                ``request_options`` is not valid for a query, including
+                ``headers`` or ``hooks`` that cannot be merged, or
                 ``collection_page()`` does not return a ``Page``. Also if the
                 model's key type is refused, as for ``filter()``, or
                 ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
@@ -9982,10 +10045,11 @@ class JSONObject:
                 object, or holds no key, or a key that is not of the key's
                 type. The message names the item's position.
             TypeError: If a parameter is given both as a keyword argument and
-                in ``params``, or ``request_options`` is not valid for a query.
-                Also if the model's key type is refused, as for ``filter()``,
-                or ``prefetch_batch_size`` is neither an ``int`` nor ``None``
-                and ``prefetch`` is given.
+                in ``params``, or ``request_options`` is not valid for a query,
+                including ``headers`` or ``hooks`` that cannot be merged. Also
+                if the model's key type is refused, as for ``filter()``, or
+                ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
+                ``prefetch`` is given.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has no collection to read, or no API is
                 registered for it and no ``api=`` is given, or a ``prefetch``
@@ -10118,8 +10182,9 @@ class JSONObject:
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, ``params`` or ``defaults`` is not a mapping or
                 has a name that is not a string, ``request_options`` is not
-                valid for a query and a creation, or a creation payload value
-                is not made of JSON types, as a model under a name that is no
+                valid for a query and a creation, including ``headers`` or
+                ``hooks`` that cannot be merged, or a creation payload value is
+                not made of JSON types, as a model under a name that is no
                 field.
             Exception: Whatever resolving a name in the key's type raises, such
                 as a ``NameError`` for a class that is not defined, before the

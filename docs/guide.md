@@ -1845,11 +1845,13 @@ names are those of the HTTP library that the client sends requests with,
 requests for `API`, so a client for another library, which a later release may
 add, can take other names. They cannot set the body, which the write builds, or
 enable `stream=True`, because model writes consume their responses. Options
-that are not a mapping raise `TypeError`, as they do for a query. A 3xx
-response raises `RedirectError`, whatever `allow_redirects` says, and pending
-updates remain pending. A server that supports optimistic concurrency, for
-example, refuses a write whose `If-Match` header no longer names the object's
-current version:
+that are not a mapping raise `TypeError`, as they do for a query, and so do
+`headers` and `hooks` that are not mappings, a header whose name is neither
+`str` nor `bytes`, and a hook event whose entry is neither a callable nor an
+iterable. A 3xx response raises `RedirectError`, whatever `allow_redirects`
+says, and pending updates remain pending. A server that supports optimistic
+concurrency, for example, refuses a write whose `If-Match` header no longer
+names the object's current version:
 
 ```python
 todo.title = "new"
@@ -1874,6 +1876,11 @@ nested `with` statements do. A block that ends while a block that began later
 is still open, as two generators that each hold a block open can, raises
 `UsageError`. The ended block's options are gone by then, and the other block's
 stay until it ends.
+
+A `write_options()` block that raises `TypeError` when it opens, because an
+option is refused or cannot be merged over the options of the open blocks,
+leaves the object as it was: the blocks that are open stay open with their own
+options, and none of the refused block's options remain.
 
 The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
 `request_options=` too, for every request that the query sends: the collection

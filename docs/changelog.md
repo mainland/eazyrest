@@ -596,6 +596,12 @@ describe them further.
 - A `write_options()` block that ends while a block of the same object that
   began later is still open raises `UsageError`, where `v1.0.0a5` left the
   first block's options on the object for every later write.
+- A `headers` or `hooks` option that is not a mapping, a header whose name is
+  neither `str` nor `bytes`, and a hook event whose entry is neither a callable
+  nor an iterable raise `TypeError` naming the option, from `write_options()`
+  and from `request_options=`, before anything is registered or sent. A
+  `write_options()` block that raises when it opens leaves the object's options
+  and open blocks as they were.
 - A keyed model that declares no `class_url` raises `UsageError` naming the
   class and `class_url`, before any request, from `url`, a read that loads the
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
