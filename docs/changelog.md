@@ -644,6 +644,13 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A conversion's schema with `$schema`, or with a `$defs` at its root that is
+  no mapping, raises `TypeError` when the conversion is made, or when
+  `json_schema()` calls the function that returns it, as one with `$id` does.
+  `v1.0.0a5` accepted both, and `json_schema()` then raised the bare error of
+  `dict()`, in words that differ between Python versions, or embedded the
+  `$schema` below the root of the model's schema, which JSON Schema 2020-12
+  forbids.
 - `parse_duration()` reads the letters of a unit only as ASCII letters, with
   the micro sign and the Greek small mu, in either case. `v1.0.0a5` matched the
   unit without regard to case, so U+212A, the Kelvin sign, read as `k`, and

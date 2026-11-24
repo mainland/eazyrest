@@ -1020,23 +1020,23 @@ declared type and the mode, `"read"` or `"write"`, that returns it. Without
 one, the type's schema allows any value. `json_schema()` moves the schema's
 `$defs` into the model's, so its references may name only its own definitions,
 as `#/$defs/Name` or a pointer into one. A schema that refers to itself as `#`,
-or has `$id`, an anchor, or `$defs` below its root, raises `TypeError`. Put the
-recursive part in `$defs` and refer to it there. Both receive the declared
-type, so one conversion can serve a family of types, as the default one for
-enums does. The conversion applies wherever its type appears, so `Host.allowed`
-converts each item. `null` reads as `None` and `None` writes as `null` without
-a conversion, and `encode` is called only for instances of the type that the
-entry is keyed by: any other value, such as a string assigned to
-`Host.address`, is written as it is. `decode` and `encode` report a value that
-they cannot convert by raising `TypeError` or `ValueError`, which reaches the
-caller as a `FieldConversionError` that names the field, with the error as its
-cause. Their messages should not quote the value, which may be a secret. Any
-other exception is a bug in the conversion and propagates unchanged, and so
-does an error of eazyrest, such as a `ResponseShapeError` or a
-`PaginationError` that the code raises, though each is a `ValueError`. A value
-written, or returned by `encode`, must be JSON: one that is not, such as an
-`IPv4Address` assigned to a field annotated `Any`, raises
-`FieldConversionError` when it is assigned.
+or has `$id`, `$schema`, an anchor, `$defs` below its root, or `$defs` at its
+root that is no mapping, raises `TypeError`. Put the recursive part in `$defs`
+and refer to it there. Both receive the declared type, so one conversion can
+serve a family of types, as the default one for enums does. The conversion
+applies wherever its type appears, so `Host.allowed` converts each item. `null`
+reads as `None` and `None` writes as `null` without a conversion, and `encode`
+is called only for instances of the type that the entry is keyed by: any other
+value, such as a string assigned to `Host.address`, is written as it is.
+`decode` and `encode` report a value that they cannot convert by raising
+`TypeError` or `ValueError`, which reaches the caller as a
+`FieldConversionError` that names the field, with the error as its cause. Their
+messages should not quote the value, which may be a secret. Any other exception
+is a bug in the conversion and propagates unchanged, and so does an error of
+eazyrest, such as a `ResponseShapeError` or a `PaginationError` that the code
+raises, though each is a `ValueError`. A value written, or returned by
+`encode`, must be JSON: one that is not, such as an `IPv4Address` assigned to a
+field annotated `Any`, raises `FieldConversionError` when it is assigned.
 
 A class's `conversions` are merged over those of its bases, and theirs over the
 default table, so a subclass can add conversions or replace its bases'. A field

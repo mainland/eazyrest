@@ -96,10 +96,11 @@ class Conversion:
     into the model's, so its references may name only its own definitions, as
     ``#/$defs/Name`` or a pointer into one. A schema with another reference,
     such as ``#`` for a schema that refers to itself, or one to a definition
-    that its ``$defs`` lacks, or with ``$id``, an anchor, or ``$defs`` below
-    its root, raises ``TypeError``, when the conversion is made or, for a
-    function, when ``json_schema()`` calls it. So does a schema that is no
-    mapping, as ``True`` or ``"string"`` are. Put such a schema in ``$defs``
+    that its ``$defs`` lacks, or with ``$id``, ``$schema``, an anchor, or
+    ``$defs`` below its root, or ``$defs`` at its root that is no mapping,
+    raises ``TypeError``, when the conversion is made or, for a function, when
+    ``json_schema()`` calls it. So does a schema that is no mapping, as
+    ``True`` or ``"string"`` are. Put such a schema in ``$defs``
     and refer to it there."""
 
     def __post_init__(self) -> None:
@@ -120,6 +121,7 @@ _SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
 _UNEMBEDDABLE = frozenset(
     {
         "$id",
+        "$schema",
         "$anchor",
         "$dynamicAnchor",
         "$dynamicRef",
@@ -199,11 +201,21 @@ def _check_embeddable(
             is not the root.
 
     Raises:
-        TypeError: If the schema has ``$id``, an anchor, ``$defs`` below its
-            root, or a reference other than to a definition that it has.
+        TypeError: If the schema has ``$id``, ``$schema``, an anchor, ``$defs``
+            below its root or at it that is no mapping, or a reference other
+            than to a definition that it has.
     """
     if root:
         own = schema.get("$defs") if isinstance(schema, Mapping) else None
+        if (
+            isinstance(schema, Mapping)
+            and "$defs" in schema
+            and not isinstance(own, Mapping)
+        ):
+            raise TypeError(
+                "A conversion's schema may have $defs only as a mapping of "
+                f"definitions, not {type(own).__name__}"
+            )
         defs = own if isinstance(own, Mapping) else ()
     if isinstance(schema, (list, tuple)):
         for item in schema:
