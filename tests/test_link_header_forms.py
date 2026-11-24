@@ -89,6 +89,28 @@ FORMS: dict[str, tuple[str, str]] = {
         '<{u}?page=9>; rel="last", <{u}?page=2>; rel="next"',
         "?page=2",
     ),
+    "blanks_around_the_equals_sign": ('<{u}?page=2>; rel = "next"', "?page=2"),
+    "a_blank_after_the_equals_sign": ('<{u}?page=2>; rel= "next"', "?page=2"),
+    "a_blank_before_the_equals_sign": ('<{u}?page=2>; rel ="next"', "?page=2"),
+    "a_blank_before_the_semicolon": ('<{u}?page=2> ; rel="next"', "?page=2"),
+    "tabs_around_the_semicolon": ("<{u}?page=2>\t;\trel=next", "?page=2"),
+    "a_token_then_a_comma": (
+        "<{u}?page=2>; rel=next, <{u}?page=9>; rel=prev",
+        "?page=2",
+    ),
+    "a_token_then_a_blank_and_a_comma": (
+        "<{u}?page=2>; rel=next , <{u}?page=9>; rel=prev",
+        "?page=2",
+    ),
+    "a_token_then_a_tab_and_a_comma": (
+        "<{u}?page=2>; rel=next\t, <{u}?page=9>; rel=prev",
+        "?page=2",
+    ),
+    "an_escaped_quote_in_a_quoted_string": (
+        '<{u}?page=2>; title="x \\" ; rel=prev"; rel="next"',
+        "?page=2",
+    ),
+    "blanks_inside_the_brackets": ('< {u}?page=2 >; rel="next"', "?page=2"),
 }
 
 
@@ -181,3 +203,18 @@ def test_a_page_of_get_page_keeps_the_origins_its_hook_allows() -> None:
         following = page.next_page()
     assert following is not None
     assert [item.id for item in following] == [2]
+
+
+@pytest.mark.parametrize("rel", ["previous", "prev", "Previous", "PREV"])
+def test_the_previous_page_is_read_from_either_relation_type(rel: str) -> None:
+    """``previous`` and ``prev`` both name the page before."""
+    url = f"{BASE}/paged/"
+    with requests_mock.Mocker() as mocker:
+        mocker.get(
+            url,
+            json=[{"id": 1}],
+            headers={"Link": f'<{url}?page=1>; rel="{rel}"'},
+        )
+        page = link_headers_page(api, api.get("/paged/"))
+    assert page.previous_url == f"{url}?page=1"
+    assert page.next_url is None
