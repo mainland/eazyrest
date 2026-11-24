@@ -120,3 +120,28 @@ def test_an_enum_with_a_conversion_of_its_own_is_not_checked(
             )
         },
     )
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        Status,
+        Literal[Status.UNKNOWN],
+        Literal[Status.UNKNOWN, Status.OPEN] | None,
+        list[Literal[Status.UNKNOWN]],
+    ],
+    ids=["enum", "literal", "optional-literal", "list-of-literals"],
+)
+def test_an_entry_of_its_own_that_writes_none_is_not_checked(
+    annotation: Any,
+) -> None:
+    """The entry decides, as for the enum, so a ``Literal`` is admitted too."""
+    declare(
+        annotation,
+        conversions={
+            Status: Conversion(
+                decode=lambda value, cls: cls.OPEN,
+                encode=lambda value, cls: None,
+            )
+        },
+    )
