@@ -633,7 +633,8 @@ describe them further.
   class and `class_url`, before any request, from `url`, a read that loads the
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
-  a default swallow.
+  a default swallow. `get_page(url=...)` raises it too, where it sent its
+  request.
 - A class whose `url` returns anything but a `str` raises `TypeError` naming
   the class and `url`, from a field read that loads, `refresh()`, `delete()`,
   `save()`, an eager assignment, and `absolute_url`. `v1.0.0a5` failed with an

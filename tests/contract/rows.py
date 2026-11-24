@@ -2852,6 +2852,19 @@ def a_keyed_model_without_class_url_is_a_usage_error(world: World) -> None:
 
 
 @row(CREATE)
+def a_page_by_url_of_a_model_without_class_url_is_a_usage_error(
+    world: World,
+) -> None:
+    raises(
+        world,
+        UsageError,
+        lambda: Bare.get_page(url="https://rows.example/bares/?page=2"),
+        "Bare",
+        "class_url",
+    )
+
+
+@row(CREATE)
 def a_model_without_a_key_cannot_be_created(world: World) -> None:
     raises(world, UsageError, lambda: Entry.create(name="x"))
 

@@ -10515,11 +10515,13 @@ class JSONObject:
         source = _ModelPageSource(
             cls, _Query(api, client, options), prefetch_fields
         )
+        # The collection's URL is read whether or not a page's own URL is
+        # given, so that a class that cannot name its collection sends nothing.
+        collection = _class_url_of(cls)
         if url is None:
             resp = _check_final_response(
                 client.get(
-                    _class_url_of(cls),
-                    params=cls._encode_query(query, client),
+                    collection, params=cls._encode_query(query, client)
                 ),
                 "the query has no collection to read",
             )
