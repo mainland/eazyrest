@@ -269,13 +269,23 @@ describe them further.
   `Any` field or a value of `dict[str, Any]`, a tuple, which reads back as a
   list, and a mapping whose keys are not strings are such values. Assign a list
   instead of a tuple.
-- A value that nests more than 128 levels deep, the default of
-  `API.max_json_depth`, or that holds itself, raises `FieldConversionError`
-  when it is assigned or given to `create()`, and `ValueError` from
-  `encode_json()`, before anything is sent. `v1.0.0a5` accepted such a value up
-  to Python's recursion limit, and a value between about 500 and 990 levels
-  raised a bare `RecursionError`, from `create()` after its `POST`. What is
-  written can be read back from a server that answers within the default limit.
+- A value that nests more than 127 levels deep, or that holds itself, raises
+  `FieldConversionError` when it is assigned or given to `create()` or
+  `get_or_create()` as a field, and `ValueError` naming the value as `[key]`
+  when it is an extra. `encode_json()` raises `ValueError`. A body that holds
+  such a value nests one level more, and 128 levels is the default of
+  `API.max_json_depth`, so what is written can be read back from a server that
+  echoes the body. Nothing is sent. `v1.0.0a5` accepted such a value up to
+  about 500 levels, and raised a bare `RecursionError` for a deeper one, from
+  an assignment too and from `create()` after its `POST`. A read is bounded
+  only by `API.max_json_depth`: a field that nests more than 127 levels reads
+  and copies, from a response whose limit was raised or removed, from `json=`,
+  and from `update_from_json()`, as do `copy.copy()` and `copy.deepcopy()` of
+  its object.
+- A conversion's own `RecursionError`, and one from a dataclass's
+  `__post_init__`, propagates unchanged, as any other error of a conversion
+  that is no `TypeError` or `ValueError` does. Only the walk of a value reports
+  one as a value that holds itself or nests too deeply.
 - A set or frozenset field writes its items in a fixed order, sorted as JSON
   values, rather than in the set's order, and assigning a set equal to the
   server's sends no update, whatever order the server lists the items in. That

@@ -61,10 +61,12 @@ class Conversion:
 
     ``decode`` and ``encode`` report a value that they cannot convert by
     raising ``TypeError`` or ``ValueError``, which reaches the caller as a
-    ``FieldConversionError`` that names the field, with the error as its
-    cause. Their messages should not quote the value, which may be a secret,
-    as the default conversions' messages do not. Any other exception is a
-    bug in the conversion, and propagates unchanged.
+    ``FieldConversionError`` that names the field, with the error as its cause.
+    Their messages should not quote the value, which may be a secret, as the
+    default conversions' messages do not. Any other exception is a bug in the
+    conversion, and propagates unchanged, and so does an error of eazyrest that
+    the conversion raises, such as a ``ResponseShapeError`` or a
+    ``PaginationError``, though each is a ``ValueError``.
     """
 
     decode: Callable[[Any, type[Any]], Any]
