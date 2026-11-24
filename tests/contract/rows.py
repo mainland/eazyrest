@@ -3034,11 +3034,14 @@ def a_response_with_a_bare_key_replaces_an_embedded_owner(
 
 
 LISTS: list[list[dict[str, Any]]] = [[], [{"id": 7}, {"id": 8}]]
+SCALARS: list[Any] = [7, "text"]
+NOT_ONE_OBJECT: list[Any] = [*LISTS, *SCALARS]
+"""Answers that are no one object: an empty list, two objects, a scalar."""
 
 
 @row(FULL)
 def a_write_answered_with_a_list_is_a_shape_error(world: World) -> None:
-    for body in LISTS:
+    for body in NOT_ONE_OBJECT:
         for method, mock in (("PATCH", world.mocker.patch), ("PUT", None)):
             if mock is None:
                 mock = world.mocker.put
@@ -3097,7 +3100,7 @@ def a_load_answered_with_a_list_is_a_shape_error(world: World) -> None:
         obj.refresh()
         return obj
 
-    for body in LISTS:
+    for body in NOT_ONE_OBJECT:
         world.mocker.get(requests_mock.ANY, json=body)
         for read in (
             lambda: User(id=7).name,

@@ -67,12 +67,11 @@ def test_an_item_of_a_set_is_refused_without_a_position(
     value: Any = {*items, bad_items()[bad]}
     if field == "tagfs":
         value = frozenset(value)
-    with pytest.raises((TypeError, ValueError)) as caught:
+    with pytest.raises(FieldConversionError) as caught:
         setattr(obj, field, value)
     assert POSITION.search(str(caught.value)) is None
-    assert field in str(caught.value) or isinstance(
-        caught.value, FieldConversionError
-    )
+    assert caught.value.field == field
+    assert caught.value.model is Post
     assert obj._pending_updates == {}
 
 
