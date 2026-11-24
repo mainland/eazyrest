@@ -1727,6 +1727,26 @@ def a_full_save_refuses_a_collection_without_keys(world: World) -> None:
         )
 
 
+@row(COLL)
+def a_key_assigned_over_a_float_key_is_sent(world: World) -> None:
+    for stored in ([7.0], [{"id": 7.0}]):
+        for value in ([User(id=7)], [7]):
+            obj = post(readers=stored)
+            obj.readers = value  # type: ignore[assignment]
+            assert world.body(obj.save, "PATCH") == {"readers": [7]}
+
+
+@row(OWNER)
+def a_key_assigned_over_a_float_key_is_sent_for_a_single_relation(
+    world: World,
+) -> None:
+    for stored in (7.0, {"id": 7.0}):
+        for value in (User(id=7), 7):
+            obj = post(owner=stored)
+            obj.owner = value  # type: ignore[assignment]
+            assert world.body(obj.save, "PATCH") == {"owner": 7}
+
+
 SET = "a-set-of-relations"
 
 

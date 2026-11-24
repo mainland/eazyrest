@@ -644,6 +644,11 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A related object's key that the JSON holds in a form that the key's type
+  cannot build, such as `7.0` for an `int` key, equals no key that a program
+  writes, so assigning the key or an object of that key over it sends the
+  write, for a relation, a sequence of relations, and a set of them. It
+  compared equal to `7`, and nothing was sent, so the field kept raising.
 - A response body is decoded as UTF-8, or as the charset that the response
   declares, and one that does not decode raises `ResponseShapeError`, as a body
   that is not JSON does. `v1.0.0a5` replaced each bad byte with U+FFFD and read

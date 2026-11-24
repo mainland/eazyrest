@@ -3715,6 +3715,56 @@ def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
         _each_item(check, value)
 
 
+@dataclass(frozen=True, eq=False)
+class _Unbuildable:
+    """A related object's stored key that the key's type cannot build.
+
+    It equals another such value that holds equal JSON, and nothing else, so a
+    comparison with the encoding of a key never finds it equal, though JSON
+    compares ``7.0`` and ``7`` equal.
+    """
+
+    raw: Any
+
+    def __eq__(self, other: object) -> bool:
+        """Return whether ``other`` holds the same JSON.
+
+        Args:
+            other: Value to compare.
+
+        Returns:
+            Whether ``other`` is an unbuildable key of equal JSON.
+        """
+        return isinstance(other, _Unbuildable) and _json_equal(
+            self.raw, other.raw
+        )
+
+    def __hash__(self) -> int:
+        """Return a hash of the kind of value, which equal values share."""
+        return hash(type(self.raw))
+
+
+def _holds_float(value: Any) -> bool:
+    """Return whether a JSON value is or holds a float.
+
+    Args:
+        value: JSON value.
+
+    Returns:
+        Whether a float is the value or is nested in it, at any depth.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, float):
+            return True
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return False
+
+
 def _stored_related_key(
     stored: Any, model: type[JSONObject], *, embedded: bool = False
 ) -> Any:
@@ -3749,7 +3799,9 @@ def _stored_related_key(
     try:
         built = _build_key(model, stored)
     except (TypeError, ValueError):
-        return stored
+        # No encoding that the program writes is such a value, so it is equal
+        # to none, though JSON compares ``7.0`` equal to ``7``.
+        return _Unbuildable(stored)
     return stored if built is None else built
 
 
@@ -5430,6 +5482,8 @@ def _json_order(value: Any) -> tuple[int, Any]:
         return (2, value)
     if isinstance(value, str):
         return (3, value)
+    if isinstance(value, _Unbuildable):
+        return (5, _json_order(value.raw))
     return (
         4,
         json.dumps(
@@ -7667,7 +7721,12 @@ class JSONObject:
             prop = getattr(type(self), field)
             old = before.get(prop.json_field, _MISSING)
             new = after.get(prop.json_field, _MISSING)
-            if _json_equal(old, new):
+            # JSON compares ``7`` and ``7.0`` equal, but a key that is spelled
+            # as a float cannot be built, so only values without a float are
+            # the same by that comparison alone.
+            if _json_equal(old, new) and not (
+                _holds_float(old) or _holds_float(new)
+            ):
                 continue
             try:
                 # Another spelling of one key is no change.
