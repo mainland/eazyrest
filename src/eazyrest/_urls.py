@@ -286,3 +286,39 @@ def _shown(
     if not text.isascii() or not text.isprintable() or " " in text:
         return UNREADABLE
     return repr(text) if quoted else text
+
+
+def _request_name(
+    method: str | None, asked: str, page: str | None = None
+) -> str:
+    """Return the name of a request for a message.
+
+    Args:
+        method: The request's method, as ``"GET"``, or ``None`` if unknown.
+        asked: The URL as ``_shown()`` returns it unquoted.
+        page: Which page of a collection the request is for, as ``"page 3"``,
+            if it is for one that a link named, or ``None``.
+
+    Returns:
+        The method and the URL, as ``GET https://example.com/items``, or the
+        method and the page, as ``GET page 3 of https://example.com``.
+    """
+    if page is None:
+        return f"{method} {asked}"
+    return f"{method} {page} of {asked}"
+
+
+def _asked_text(
+    url: str | bytes, session: requests.Session | None, source: Source
+) -> str:
+    """Return what a name shows of a URL, as ``_shown()`` returns it unquoted.
+
+    Args:
+        url: The URL.
+        session: Session that would send a request to it, or ``None``.
+        source: Where the URL came from.
+
+    Returns:
+        The text that follows a method in the name of a request.
+    """
+    return _shown(_read_url(url, session), source, quoted=False)

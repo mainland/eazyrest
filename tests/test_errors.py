@@ -721,24 +721,24 @@ def test_error_messages_leave_out_the_user_and_password_of_a_url(
             assert "dummy-pass" not in text, text
             assert "u2:" not in text, text
             assert "u3:" not in text, text
-    assert plain + f"fail{query}" in str(errors[0])
-    assert plain + f"html{query}" in str(errors[1])
+    assert plain + "fail?..." in str(errors[0])
+    assert plain + "html?..." in str(errors[1])
     assert isinstance(errors[0], APIError)
     assert "dummy-pass" in errors[0].response.url
     assert "dummy-pass" in str(errors[0].request.url)
 
 
-def test_error_messages_of_a_url_without_credentials_are_unchanged(
+def test_error_messages_of_a_url_without_credentials_show_its_path(
     requests_mock: Any,
 ) -> None:
-    """A URL that has no user and password is quoted as it is."""
+    """A URL that has no user and password shows its path and a marker."""
     api = API("https://example.com/v1/")
     requests_mock.get("https://example.com/v1/x?a=b", status_code=500)
 
     with pytest.raises(APIError) as raised:
         api.get("/x?a=b")
 
-    assert "for GET https://example.com/v1/x?a=b" in str(raised.value)
+    assert "for GET https://example.com/v1/x?..." in str(raised.value)
 
 
 # Locations that requests cannot prepare, with the parts of each after its
@@ -1488,12 +1488,12 @@ def test_unquotable_redirect_after_a_redirect_names_the_url_asked_for(
     _assert_unsigned(raised.value)
 
 
-def test_a_url_that_the_caller_gave_keeps_its_query_in_each_message(
+def test_caller_url_shows_a_marker_for_its_query_in_each_message(
     requests_mock: Any,
 ) -> None:
-    """A request that no redirect reached quotes its URL as the caller gave it.
+    """A request that no redirect reached shows its origin and path.
 
-    Only the user and password are left out.
+    A query shows as ``?...``.
     """
     api = API("https://api.test/")
     requests_mock.get("https://api.test/a", status_code=403)
@@ -1508,12 +1508,12 @@ def test_a_url_that_the_caller_gave_keeps_its_query_in_each_message(
     with pytest.raises(LimitExceeded) as large:
         api.get("c?key=GIVEN")
 
-    assert str(failed.value).endswith("for GET https://api.test/a?key=GIVEN")
+    assert str(failed.value).endswith("for GET https://api.test/a?...")
     assert str(shaped.value).startswith(
-        "The response to GET https://api.test/b?key=GIVEN, with status 200"
+        "The response to GET https://api.test/b?..., with status 200"
     )
     assert str(large.value).startswith(
-        "The response to GET https://api.test/c?key=GIVEN is larger"
+        "The response to GET https://api.test/c?... is larger"
     )
 
 
@@ -1536,8 +1536,8 @@ def test_page_redirect_to_another_origin_names_no_origin(
         )
 
     assert str(raised.value) == (
-        "Page request 'https://api.test/p' was redirected to a different "
-        "origin from the API's base URL 'https://api.test/'. Pass "
+        "The request for page 2 of 'https://api.test' was redirected to a "
+        "different origin from the API's base URL 'https://api.test/'. Pass "
         "allow_other_origins=True to follow it."
     )
     for text in _printed(raised.value):
@@ -1644,7 +1644,7 @@ def test_error_after_an_authentication_hook_names_the_url_asked_for(
         api.get("a?CALLERQ=1")
 
     assert str(raised.value) == (
-        f"403 Client Error: Forbidden for GET {base}a?CALLERQ=1"
+        f"403 Client Error: Forbidden for GET {base}a?..."
     )
     _assert_no_signature(raised.value)
 
@@ -1700,10 +1700,10 @@ def test_total_timeout_of_a_redirected_response_names_the_url_asked_for(
     _assert_unsigned(raised.value)
 
 
-def test_size_limit_of_the_url_that_the_caller_gave_keeps_its_query(
+def test_size_limit_of_a_caller_url_shows_a_marker_for_its_query(
     redirecting_server: Callable[[Callable[[Any], None]], str],
 ) -> None:
-    """The adapter quotes the URL that the caller gave with its query."""
+    """The adapter names the caller's URL, with ?... for a query."""
 
     def large(handler: Any) -> None:
         handler.send_response(200)
@@ -1719,7 +1719,7 @@ def test_size_limit_of_the_url_that_the_caller_gave_keeps_its_query(
         api.get("o?CALLERQ=1")
 
     assert str(raised.value).startswith(
-        f"The response to GET {base}o?CALLERQ=1 is larger than 10 bytes"
+        f"The response to GET {base}o?... is larger than 10 bytes"
     )
 
 
@@ -1772,10 +1772,10 @@ def test_redirect_refused_after_a_hook_resend_names_the_url_asked_for(
     _assert_unsigned(raised.value)
 
 
-def test_redirect_refused_after_a_hook_resent_the_given_url_keeps_its_query(
+def test_redirect_refused_after_a_hook_resent_the_given_url_shows_its_marker(
     requests_mock: Any,
 ) -> None:
-    """The URL that the caller gave is named with its query after a resend."""
+    """The URL that the caller gave is named with ?... after a resend."""
     api = API("https://api.test/")
     api.session.hooks["response"] = [_resend_with_a_new_token]
     requests_mock.get(
@@ -1793,15 +1793,15 @@ def test_redirect_refused_after_a_hook_resent_the_given_url_keeps_its_query(
         api.get("x?CALLERQ=1")
 
     assert str(raised.value).startswith(
-        "GET https://api.test/x?CALLERQ=1 was redirected with status 302 to "
+        "GET https://api.test/x?... was redirected with status 302 to "
         "another origin, so it was not followed."
     )
 
 
-def test_page_link_refused_after_a_hook_resent_it_keeps_its_query(
+def test_page_link_refused_after_a_hook_resent_it_is_named_by_position(
     requests_mock: Any,
 ) -> None:
-    """A page link is named with its query after a resend, as it was sent."""
+    """A page link is named by its position after a resend."""
     api = API("https://api.test/")
     api.session.hooks["response"] = [_resend_with_a_new_token]
     requests_mock.get(
@@ -1823,7 +1823,7 @@ def test_page_link_refused_after_a_hook_resent_it_keeps_its_query(
         )
 
     assert str(raised.value).startswith(
-        "Page request 'https://api.test/p?cursor=KEPT' was redirected to "
+        "The request for page 2 of 'https://api.test' was redirected to "
         "a different origin"
     )
 
@@ -1873,7 +1873,7 @@ def test_error_of_a_response_that_a_hook_substituted_names_the_url_asked_for(
         api.get("h?CALLERQ=1")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://api.test/h?CALLERQ=1"
+        "403 Client Error: None for GET https://api.test/h?..."
     )
     _assert_no_signature(raised.value)
 
@@ -1892,7 +1892,7 @@ def test_messages_of_one_request_agree_on_a_url_that_a_hook_chose(
         api.get("h?CALLERQ=1")
 
     assert str(raised.value).startswith(
-        "The response to GET https://api.test/h?CALLERQ=1 is larger"
+        "The response to GET https://api.test/h?... is larger"
     )
     _assert_no_signature(raised.value)
 
@@ -1914,7 +1914,7 @@ def test_error_of_a_response_whose_url_a_hook_rewrote_names_the_url_asked_for(
         api.get("rw?CALLERQ=1")
 
     assert str(raised.value) == (
-        "403 Client Error: None for GET https://api.test/rw?CALLERQ=1"
+        "403 Client Error: None for GET https://api.test/rw?..."
     )
     _assert_no_signature(raised.value)
 
@@ -1952,21 +1952,18 @@ def test_hook_error_after_a_redirect_names_the_url_asked_for(
 @pytest.mark.parametrize(
     ("url", "named"),
     [
-        (
-            "https://alice:hunter2@api.test/a?key=GIVEN",
-            "https://api.test/a?key=GIVEN",
-        ),
-        ("https://api.test/b", "https://api.test/b"),
+        ("https://alice:hunter2@api.test/a?key=GIVEN", "https://api.test"),
+        ("https://api.test/b", "https://api.test"),
     ],
 )
 def test_response_that_no_api_request_returned_is_named_by_its_own_url(
     url: str, named: str
 ) -> None:
-    """A response with no recorded request is named by its URL, redacted.
+    """A response with no recorded request is named by its URL's origin.
 
     Args:
         url: URL of the response.
-        named: The URL that the name quotes.
+        named: What the name shows of the URL.
     """
     resp = requests.Response()
     resp.status_code = 500

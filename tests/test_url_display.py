@@ -423,7 +423,9 @@ CALLER_CASES = {
     "caller-server-error": Case(
         _caller_status(500), shows=("CALLERPATH", "?..."), hides=(HOST,)
     ),
-    "caller-not-found": Case(_caller_status(404), shows=("CALLERPATH",)),
+    "caller-not-found": Case(
+        _caller_status(404), shows=("CALLERPATH", "?...")
+    ),
     "caller-body-is-no-json": Case(_caller_not_json, shows=("CALLERPATH",)),
     "caller-json-too-deep": Case(_caller_too_deep, shows=("CALLERPATH",)),
     "caller-body-too-large": Case(
@@ -748,10 +750,12 @@ SERVER_CASES = {
     ),
     "server-link-to-page-read": Case(
         _server_page_read_twice,
+        shows=("page 3", "'https://h.test'"),
         hides=("SERVERPATH",),
     ),
     "server-link-answers-no-json": Case(
         _server_page_is_no_json,
+        shows=("GET page 2 of https://h.test",),
         hides=("SERVERPATH",),
     ),
     "server-link-with-scheme-without-adapter": Case(
@@ -781,6 +785,7 @@ SERVER_CASES = {
     ),
     "server-next-page-fails": Case(
         _server_next_page_fails,
+        shows=("GET the next page of https://h.test",),
         hides=("SERVERPATH",),
     ),
     "server-next-page-at-other-origin": Case(
@@ -790,11 +795,17 @@ SERVER_CASES = {
     ),
     "server-next-page-read-twice": Case(
         _server_next_page_read_twice,
+        shows=("the next page of 'https://h.test'",),
         hides=("SERVERPATH",),
     ),
-    "server-page-repr": Case(_server_page_repr, hides=("SERVERPATH",)),
+    "server-page-repr": Case(
+        _server_page_repr,
+        shows=("url='https://h.test'",),
+        hides=("SERVERPATH",),
+    ),
     "server-link-header-fails": Case(
         _server_link_header_fails,
+        shows=("GET page 2 of https://h.test",),
         hides=("SERVERPATH",),
     ),
     "server-link-header-host-that-normalizes": Case(
@@ -940,40 +951,15 @@ CASES: dict[str, tuple[str, Case]] = {
     **{name: ("config", case) for name, case in CONFIG_CASES.items()},
 }
 
-# Cases that show more than the rule for their source allows on dev, with the
-# behavior that each one gets wrong. Each is a strict expected failure until
-# the code that shows a URL decides by the URL's source.
-_QUERY_SHOWN = "a caller's URL is named with its query, not as ?..."
-_LINK_SHOWN = "a request for a server's link is named by the link"
-_PAGE_REDIRECT = "the refusal of a redirect names the page link and its query"
+# Cases that show more than the rule for their source allows, with the behavior
+# that each one gets wrong. Each is a strict expected failure until the code
+# that parses a URL does so as requests prepares it.
 _RAW_ERROR = "an error of requests for a URL that it cannot send quotes it"
-_BASE_SHOWN = "a base URL is quoted with its query and control characters"
 KNOWN_FAILURES: dict[str, str] = {
-    "caller-server-error": _QUERY_SHOWN,
-    "caller-not-found": _QUERY_SHOWN,
-    "caller-body-is-no-json": _QUERY_SHOWN,
-    "caller-json-too-deep": _QUERY_SHOWN,
-    "caller-body-too-large": _QUERY_SHOWN,
-    "caller-out-of-time": _QUERY_SHOWN,
-    "caller-redirected-away": _QUERY_SHOWN,
-    "caller-redirect-unparsable": _QUERY_SHOWN,
-    "caller-write-redirected": _QUERY_SHOWN,
-    "caller-final-redirect": _QUERY_SHOWN,
-    "caller-failure-after-redirect": _QUERY_SHOWN,
-    "caller-page-repr": _QUERY_SHOWN,
     "caller-scheme-without-adapter": _RAW_ERROR,
     "caller-port-out-of-range": _RAW_ERROR,
     "caller-url-without-scheme": _RAW_ERROR,
     "caller-host-that-normalizes": _RAW_ERROR,
-    "server-link-fails": _LINK_SHOWN,
-    "server-link-redirects-away": _PAGE_REDIRECT,
-    "server-link-answers-no-json": _LINK_SHOWN,
-    "server-next-page-fails": _LINK_SHOWN,
-    "server-page-repr": _LINK_SHOWN,
-    "server-link-header-fails": _LINK_SHOWN,
-    "config-page-refused": _BASE_SHOWN,
-    "config-page-redirected": _BASE_SHOWN,
-    "config-failure": _BASE_SHOWN,
     "config-base-without-scheme": _RAW_ERROR,
     "config-base-port-out-of-range": _RAW_ERROR,
     "config-base-host-that-normalizes": _RAW_ERROR,

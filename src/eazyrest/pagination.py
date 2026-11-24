@@ -14,10 +14,10 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _asked_url,
-    _redact_url,
 )
 from ._protocols import Client, Response
 from ._results import Results
+from ._urls import Source, _asked_text
 from .api import (
     _UNPARSABLE_PAGE_URL,
     _as_api,
@@ -249,7 +249,10 @@ def _page_results(page: Any, results_key: str) -> list[Any] | None:
 
 
 def _check_page_origin(
-    api: Client, url: str, from_server: bool = False
+    api: Client,
+    url: str,
+    from_server: bool = False,
+    page: str | None = None,
 ) -> None:
     """Reject a page URL whose origin is not the API's base URL's.
 
@@ -260,19 +263,19 @@ def _check_page_origin(
         api: Client that would request the page.
         url: Absolute URL of the page.
         from_server: Whether a response supplied ``url``, as a next-page link.
+        page: Which page the link names, as ``"page 3"``, or ``None``.
 
     Raises:
         PaginationError: If ``url`` has another origin, or requests cannot
             prepare it. The message of the second quotes none of it, and
             attaches no error, as for ``_resolve()``. The message of the first
-            quotes the URL's origin alone if ``from_server``, and otherwise the
-            link as requests prepares it, without its user and password. It
-            says only that the URL is not an HTTP or HTTPS URL if it is not.
-            The page's link is on ``Page.next_url``.
+            names the request by the page's position and the link's origin if
+            ``from_server``, and otherwise quotes the URL as a caller's. The
+            page's link is on ``Page.next_url``.
     """
     sender, _ = _as_sender(api)
     sender._check_page_destination(
-        url, {_origin(sender.base_url)}, from_server
+        url, {_origin(sender.base_url)}, from_server, page
     )
 
 
@@ -281,6 +284,7 @@ def _request_page(
     url: str,
     allow_other_origins: bool,
     from_server: bool = False,
+    page: str | None = None,
 ) -> requests.Response:
     """Request the page at ``url``, checking its origin and redirects.
 
@@ -297,6 +301,7 @@ def _request_page(
             to an origin that the API allows.
         from_server: Whether a response supplied ``url``, as a next-page link,
             so that a message quotes its origin alone.
+        page: Which page the link names, as ``"page 3"``, or ``None``.
 
     Returns:
         Response for the page.
@@ -313,7 +318,12 @@ def _request_page(
     sender, options = _as_sender(api)
     own = None if allow_other_origins else {_origin(sender.base_url)}
     resp = sender._send_page(
-        url, options, from_server=from_server, initial=own, redirects=own
+        url,
+        options,
+        from_server=from_server,
+        initial=own,
+        redirects=own,
+        page=page,
     )
     return _check_final_response(resp, "the page has no response to read")
 
@@ -377,18 +387,20 @@ class _PageReader:
             LimitExceeded: If the page would be one more than the API's
                 ``max_pages``.
         """
+        page = f"page {self.pages + 1}"
         if url in self.read_urls:
             subject = _page_url_subject(
                 _as_api(self.api)._read_server_url(url),
                 "Next-page URL",
-                from_server=True,
+                Source.SERVER,
+                page,
             )
             raise PaginationError(
                 f"{subject} names a page that was already read, so "
                 "following it would never end"
             )
         if not self.allow_other_origins:
-            _check_page_origin(self.api, url, from_server=True)
+            _check_page_origin(self.api, url, from_server=True, page=page)
         limit = self.api.max_pages
         if limit is not None and self.pages >= limit:
             raise LimitExceeded(
@@ -396,7 +408,11 @@ class _PageReader:
             )
         self.pages += 1
         resp = _request_page(
-            self.api, url, self.allow_other_origins, from_server=True
+            self.api,
+            url,
+            self.allow_other_origins,
+            from_server=True,
+            page=page,
         )
         # After a redirect, a page's links are relative to its final URL.
         self.read_urls.update((url, resp.url))
@@ -677,12 +693,16 @@ class _PageSource(Generic[T]):
         """Client that requests the pages, which never changes."""
         raise NotImplementedError
 
-    def read(self, url: str, allow_other_origins: bool) -> Page[T]:
+    def read(
+        self, url: str, allow_other_origins: bool, page: str | None = None
+    ) -> Page[T]:
         """Request and read the page at ``url``.
 
         Args:
             url: Absolute URL of the page.
             allow_other_origins: Whether the page may have another origin.
+            page: Which page the link names, as ``"the next page"``, for a
+                message, or ``None``.
 
         Returns:
             The page.
@@ -797,17 +817,22 @@ class Page(Generic[T]):
     def __repr__(self) -> str:
         """Return the page's URL and size.
 
-        The URL leaves out any user and password, as an error message does,
-        since a representation reaches logs in the same way. A page that was
-        read shows the URL that eazyrest was asked to send, which is the page
-        link or the URL that the caller gave, and not the URL that a redirect
-        chose. A page that was built by hand shows its ``url``.
+        The URL is shown as an error message shows it, since a representation
+        reaches logs in the same way. A page that was read shows what a message
+        shows of the URL that eazyrest was asked to send, which is the origin
+        of a page link, or the origin and path of the URL that the caller gave,
+        and not the URL that a redirect chose. A page that was built by hand
+        shows the origin of its ``url``.
 
         Returns:
             Representation of the page.
         """
         asked = self._asked_url
-        url = _redact_url(self.url) if asked is None else asked
+        url = (
+            _asked_text(self.url, None, Source.SERVER)
+            if asked is None
+            else asked
+        )
         return f"<Page url={url!r} items={len(self.items)}>"
 
     def next_page(self) -> Page[T] | None:
@@ -865,11 +890,13 @@ class Page(Generic[T]):
                 "next_links_page() or link_headers_page()."
             )
         trail = self._forward if forward else self._backward
+        page = "the next page" if forward else "the previous page"
         if url in trail.urls:
             subject = _page_url_subject(
                 _as_api(self._source.api)._read_server_url(url),
                 "Page URL",
-                from_server=True,
+                Source.SERVER,
+                page,
             )
             raise PaginationError(
                 f"{subject} names a page that was already read, so "
@@ -878,19 +905,21 @@ class Page(Generic[T]):
         # A link that cannot be requested is refused before it counts as a
         # page, as when the pages are read in one pass.
         if not self._allow_other_origins:
-            _check_page_origin(self._source.api, url, from_server=True)
+            _check_page_origin(
+                self._source.api, url, from_server=True, page=page
+            )
         limit = self._source.api.max_pages
         if limit is not None and trail.pages >= limit:
             raise LimitExceeded(
                 "max_pages", f"The collection has more than {limit} pages"
             )
-        page = self._source.read(url, self._allow_other_origins)
-        extended = _Trail(trail.urls | {url, page.url}, trail.pages + 1)
+        read = self._source.read(url, self._allow_other_origins, page)
+        extended = _Trail(trail.urls | {url, read.url}, trail.pages + 1)
         if forward:
-            page._forward = extended
+            read._forward = extended
         else:
-            page._backward = extended
-        return page
+            read._backward = extended
+        return read
 
 
 def _check_page_size(api: Client, items: list[Any]) -> None:
@@ -935,18 +964,28 @@ class _JSONPageSource(_PageSource[Any]):
         """Client that requests the pages."""
         return self._api
 
-    def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
+    def read(
+        self, url: str, allow_other_origins: bool, page: str | None = None
+    ) -> Page[Any]:
         """Request and read the page at ``url``.
 
         Args:
             url: Absolute URL of the page.
             allow_other_origins: Whether the page may have another origin.
+            page: Which page the link names, as ``"the next page"``, for a
+                message, or ``None``.
 
         Returns:
             The page.
         """
         return self.page(
-            _request_page(self.api, url, allow_other_origins, from_server=True)
+            _request_page(
+                self.api,
+                url,
+                allow_other_origins,
+                from_server=True,
+                page=page,
+            )
         )
 
     def page(self, resp: Response) -> Page[Any]:

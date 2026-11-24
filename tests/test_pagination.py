@@ -341,7 +341,7 @@ def test_next_link_without_a_host_is_refused_without_quoting_it(
         list(follow_next_links(api, first_page, url="http://api.test/p"))
 
     assert str(raised.value) == (
-        "Page URL, which is not an HTTP or HTTPS URL, has a different origin "
+        "The request for page 2 of <unreadable URL> has a different origin "
         "from the API's base URL 'http://api.test/'. Pass "
         "allow_other_origins=True to follow it."
     )
@@ -362,7 +362,9 @@ def test_next_link_with_a_host_is_quoted_by_its_origin_alone(
     with pytest.raises(PaginationError) as raised:
         list(follow_next_links(api, first_page, url="http://api.test/p"))
 
-    assert str(raised.value).startswith("Page URL 'https://h.test:8443' has a")
+    assert str(raised.value).startswith(
+        "The request for page 2 of 'https://h.test:8443' has a"
+    )
     assert "hunter2" not in repr(raised.value)
     assert "x%5B1%5D" not in repr(raised.value)
 
@@ -413,6 +415,20 @@ READ_LINKS = [
     "link header page",
     "link header previous page",
 ]
+
+
+def _request_for(how: str) -> str:
+    """Return how a message names the page that a way of reading requests.
+
+    Args:
+        how: How the link is read, as an item of ``READ_LINKS``.
+
+    Returns:
+        The page by its position, or as the next or previous page.
+    """
+    if how in {"next links", "link headers"}:
+        return "page 2"
+    return "the previous page" if "previous" in how else "the next page"
 
 
 def _read_link(
@@ -528,8 +544,8 @@ def test_link_that_is_not_http_is_refused_without_quoting_it(
 
     _assert_error_quotes_no_link(
         raised.value,
-        "Page URL, which is not an HTTP or HTTPS URL, has a different "
-        "origin from the API's base URL 'http://api.test/'. Pass "
+        f"The request for {_request_for(how)} of <unreadable URL> has a "
+        "different origin from the API's base URL 'http://api.test/'. Pass "
         "allow_other_origins=True to follow it.",
     )
 
@@ -596,19 +612,19 @@ def test_server_link_to_another_origin_is_quoted_by_its_origin_alone(
         _read_link(requests_mock, how, SIGNED_LINK, False)
 
     assert str(raised.value) == (
-        "Page URL 'https://other.test' has a different origin from the API's "
-        "base URL 'http://api.test/'. Pass allow_other_origins=True to "
-        "follow it."
+        f"The request for {_request_for(how)} of 'https://other.test' has a "
+        "different origin from the API's base URL 'http://api.test/'. Pass "
+        "allow_other_origins=True to follow it."
     )
     for text in _printed_by(raised.value):
         for secret in SIGNED_SECRETS:
             assert secret not in text
 
 
-def test_caller_link_to_another_origin_is_quoted_with_its_query(
+def test_caller_link_to_another_origin_is_quoted_with_a_marker_for_its_query(
     requests_mock: Any,
 ) -> None:
-    """A page URL that the caller gave is quoted with its query and no user."""
+    """A caller's page URL shows its path, and ?... for its query."""
     link = "https://alice:hunter2@other.example/p?cursor=KEPT"
 
     with pytest.raises(PaginationError) as raised:
@@ -616,7 +632,7 @@ def test_caller_link_to_another_origin_is_quoted_with_its_query(
 
     message = str(raised.value)
     assert message.startswith(
-        "Page URL 'https://other.example/p?cursor=KEPT' has a different "
+        "Page URL 'https://other.example/p?...' has a different "
         "origin from the API's base URL "
     )
     for text in _printed_by(raised.value):
@@ -650,7 +666,9 @@ def test_server_link_to_another_origin_is_quoted_as_requests_reads_it(
     with pytest.raises(PaginationError) as raised:
         _read_link(requests_mock, "next links", link, False)
 
-    assert str(raised.value).startswith(f"Page URL {quoted!r} has a")
+    assert str(raised.value).startswith(
+        f"The request for page 2 of {quoted!r} has a"
+    )
     for text in _printed_by(raised.value):
         assert "hunter2" not in text
         assert "alice" not in text
@@ -668,7 +686,7 @@ def test_next_link_to_a_page_already_read_is_quoted_by_its_origin_alone(
         list(follow_next_links(api, first_page, url=link))
 
     assert str(raised.value) == (
-        "Next-page URL 'http://api.test' names a page that was "
+        "The request for page 2 of 'http://api.test' names a page that was "
         "already read, so following it would never end"
     )
     for text in _printed_by(raised.value):
@@ -688,8 +706,8 @@ def test_next_link_to_an_unpreparable_page_already_read_is_not_quoted(
         list(follow_next_links(api, first_page, url=link))
 
     assert str(raised.value) == (
-        "Next-page URL names a page that was already read, so following it "
-        "would never end"
+        "The request for page 2 of <unreadable URL> names a page that was "
+        "already read, so following it would never end"
     )
     for text in _printed_by(raised.value):
         for secret in ("alice", "hunter2", "SECRET"):
@@ -709,8 +727,8 @@ def test_page_link_to_a_page_already_read_is_quoted_by_its_origin_alone(
         page.next_page()
 
     assert str(raised.value) == (
-        "Page URL 'http://api.test' names a page that was already read, so "
-        "following it would never end"
+        "The request for the next page of 'http://api.test' names a page "
+        "that was already read, so following it would never end"
     )
     for text in _printed_by(raised.value):
         assert "SECRETCURSOR" not in text
@@ -734,8 +752,8 @@ def test_page_redirected_to_a_signed_url_names_no_part_of_it(
         list(follow_next_links(api, first_page))
 
     assert str(raised.value) == (
-        "Page request 'https://api.test/p' was redirected to a different "
-        "origin from the API's base URL 'https://api.test/'. Pass "
+        "The request for page 2 of 'https://api.test' was redirected to a "
+        "different origin from the API's base URL 'https://api.test/'. Pass "
         "allow_other_origins=True to follow it."
     )
     for text in _printed_by(raised.value):
@@ -2980,13 +2998,13 @@ def test_a_model_without_a_key_is_read_from_the_items_of_an_endpoint(
         _ = entries[0].url
 
 
-def test_page_request_redirected_twice_is_named_by_its_link(
+def test_page_request_redirected_twice_is_named_by_its_position(
     requests_mock: Any,
 ) -> None:
-    """A redirect from a redirect is named by the page link.
+    """A redirect from a redirect is named by the page's position.
 
-    The link is quoted with its query, since it holds the state that a caller
-    needs, but the URL that a redirect chose is not.
+    The link's origin is quoted, but not its path or query, which a server
+    chose, and not the URL that a redirect chose.
     """
     api = API("https://api.test/")
     requests_mock.get(
@@ -3005,16 +3023,16 @@ def test_page_request_redirected_twice_is_named_by_its_link(
         list(follow_next_links(api, first_page))
 
     assert str(raised.value) == (
-        "Page request 'https://api.test/p?cursor=KEPT' was redirected to a "
+        "The request for page 2 of 'https://api.test' was redirected to a "
         "different origin from the API's base URL 'https://api.test/'. Pass "
         "allow_other_origins=True to follow it."
     )
 
 
-def test_page_link_that_is_redirected_away_is_named_with_its_query(
+def test_page_link_that_is_redirected_away_is_named_by_its_position(
     requests_mock: Any,
 ) -> None:
-    """A page link that no redirect reached is quoted with its query."""
+    """A page link that no redirect reached is named by its position."""
     api = API("https://api.test/")
     requests_mock.get(
         "https://api.test/p",
@@ -3027,14 +3045,16 @@ def test_page_link_that_is_redirected_away_is_named_with_its_query(
         list(follow_next_links(api, first_page))
 
     assert str(raised.value).startswith(
-        "Page request 'https://api.test/p?cursor=KEPT' was redirected to a "
+        "The request for page 2 of 'https://api.test' was redirected to a "
         "different origin "
     )
     assert "SECRETSIG" not in str(raised.value)
 
 
-def test_page_link_that_fails_keeps_its_query(requests_mock: Any) -> None:
-    """The error for a page link that no redirect reached names its query."""
+def test_page_link_that_fails_is_named_by_its_position(
+    requests_mock: Any,
+) -> None:
+    """The error for a page link that no redirect reached names its page."""
     api = API("https://api.test/")
     requests_mock.get("https://api.test/p", status_code=500)
     first_page = {"next": "https://api.test/p?cursor=KEPT", "results": []}
@@ -3043,7 +3063,7 @@ def test_page_link_that_fails_keeps_its_query(requests_mock: Any) -> None:
         list(follow_next_links(api, first_page))
 
     assert str(raised.value) == (
-        "500 Server Error: None for GET https://api.test/p?cursor=KEPT"
+        "500 Server Error: None for GET page 2 of https://api.test"
     )
 
 
@@ -3064,7 +3084,7 @@ def test_page_link_that_a_redirect_reached_and_failed_is_named_by_the_link(
         list(follow_next_links(api, first_page))
 
     assert str(raised.value) == (
-        "500 Server Error: None for GET https://api.test/p?cursor=KEPT"
+        "500 Server Error: None for GET page 2 of https://api.test"
     )
 
 
@@ -3090,10 +3110,10 @@ def test_page_repr_after_a_redirect_shows_the_url_that_was_asked_for(
     assert repr(page) == "<Page url='https://api.test/items/' items=1>"
 
 
-def test_page_repr_keeps_the_query_of_a_url_that_was_not_redirected(
+def test_page_repr_shows_only_the_origin_of_a_link(
     requests_mock: Any,
 ) -> None:
-    """A page that was read from a link, or built by hand, shows its query."""
+    """A page that was read from a link, or built by hand, shows its origin."""
     api = API("https://api.test/")
     requests_mock.get(
         "https://api.test/items/",
@@ -3107,11 +3127,9 @@ def test_page_repr_keeps_the_query_of_a_url_that_was_not_redirected(
     second = first.next_page()
 
     assert second is not None
-    assert (
-        repr(second) == "<Page url='https://api.test/items/?page=2' items=1>"
-    )
+    assert repr(second) == "<Page url='https://api.test' items=1>"
     assert repr(Page([1], url="https://api.test/a?k=1")) == (
-        "<Page url='https://api.test/a?k=1' items=1>"
+        "<Page url='https://api.test' items=1>"
     )
 
 
@@ -3151,7 +3169,7 @@ def test_model_page_repr_after_a_redirect_shows_the_url_that_was_asked_for(
 
     assert repr(first) == "<Page url='https://api.test/users/' items=1>"
     assert second is not None
-    assert repr(second) == "<Page url='https://api.test/u2/?page=2' items=1>"
+    assert repr(second) == "<Page url='https://api.test' items=1>"
 
 
 def test_model_page_built_by_a_hook_after_a_redirect_shows_the_url_asked_for(
@@ -3187,10 +3205,10 @@ def test_model_page_built_by_a_hook_after_a_redirect_shows_the_url_asked_for(
     assert repr(page) == "<Page url='https://api.test/built/' items=1>"
 
 
-def test_model_page_repr_keeps_the_url_that_the_caller_gave(
+def test_model_page_repr_shows_a_marker_for_the_query_the_caller_gave(
     requests_mock: Any,
 ) -> None:
-    """A model's page that no redirect reached shows its query."""
+    """A model's page that no redirect reached shows ?... for its query."""
     api = API("https://api.test/")
     requests_mock.get("https://api.test/users/", json=[{"id": 1}])
 
@@ -3208,7 +3226,7 @@ def test_model_page_repr_keeps_the_url_that_the_caller_gave(
 
     page = User.get_page(api=api, url="/users/?q=KEPT")
 
-    assert repr(page) == "<Page url='https://api.test/users/?q=KEPT' items=1>"
+    assert repr(page) == "<Page url='https://api.test/users/?...' items=1>"
 
 
 class _ForwardingAPI(API):

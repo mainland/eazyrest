@@ -37,13 +37,21 @@ from ._errors import (
     _api_error,
     _is_failure,
     _PageLimit,
-    _redact_url,
     _request_budget,
     _response_json,
     _response_name,
 )
 from ._protocols import Client, Response
-from ._urls import _DEFAULT_PORTS, _port_of, _read_url, _ServerURL
+from ._urls import (
+    _DEFAULT_PORTS,
+    Source,
+    _asked_text,
+    _port_of,
+    _read_url,
+    _request_name,
+    _ServerURL,
+    _shown,
+)
 from .write_mode import WriteMode, validate_write_mode
 
 __all__ = ["API"]
@@ -235,33 +243,33 @@ _UNPARSABLE_PAGE_URL = "A page URL cannot be parsed, so nothing was sent."
 
 
 def _page_url_subject(
-    prepared: _ServerURL | None, label: str, from_server: bool
+    prepared: _ServerURL | None,
+    label: str,
+    source: Source,
+    page: str | None = None,
 ) -> str:
-    """Name a page URL in a message.
+    """Name a page request in a message.
 
     Args:
         prepared: The URL as requests prepares it, or ``None`` if requests
             cannot.
-        label: What the message calls the URL, such as ``"Page URL"``.
-        from_server: Whether a response supplied the link, as a next-page link,
-            and eazyrest refuses to send it or stops on it. A link that the
-            caller gave is the URL that eazyrest was asked to send.
+        label: What the message calls a page URL that the caller gave, such as
+            ``"Page URL"``.
+        source: Where the URL came from. A link that a response supplied is
+            ``Source.SERVER``, and the caller's URL for the first page is
+            ``Source.CALLER``.
+        page: Which page a link names, as ``"page 3"``, or ``None`` if the
+            position is not known.
 
     Returns:
-        ``label`` with the URL's origin if ``from_server``, built from the
-        parts of its reading so that it holds no user, password, or query.
-        Otherwise ``label`` with the URL as requests prepares it, without its
-        user and password. For a URL that is not HTTP or HTTPS, whose text can
-        read as a user and password, ``label`` says only that. For a URL that
-        requests cannot prepare, ``label`` alone.
+        For a server's link, the request for the page by its position, with the
+        link's origin, as ``The request for page 3 of 'https://example.com'``.
+        Otherwise ``label`` with what ``_shown()`` shows of the URL.
     """
-    if prepared is None:
-        return label
-    if not prepared.is_http:
-        return f"{label}, which is not an HTTP or HTTPS URL,"
-    if from_server:
-        return f"{label} {prepared.origin_text!r}"
-    return f"{label} {_redact_url(prepared.url)!r}"
+    shown = _shown(prepared, source)
+    if source is Source.SERVER:
+        return f"The request for {page or 'a page'} of {shown}"
+    return f"{label} {shown}"
 
 
 def _drop_response_hooks(resp: Any, request: Any = None) -> None:
@@ -368,7 +376,9 @@ def _check_final_response(
     return resp
 
 
-def _record_asked_url(resp: requests.Response, asked: str) -> None:
+def _record_asked_url(
+    resp: requests.Response, asked: str, page: str | None = None
+) -> None:
     """Record the URL that was asked for on a response and its history.
 
     Messages about the response then name the request by this URL, wherever
@@ -376,11 +386,14 @@ def _record_asked_url(resp: requests.Response, asked: str) -> None:
 
     Args:
         resp: The response that a request returned.
-        asked: The URL that the caller gave, resolved against the base URL and
-            without its user and password.
+        asked: What a message shows of the URL that the request was asked to
+            send, as ``_shown()`` returns it unquoted.
+        page: Which page of a collection a link named, as ``"page 3"``, or
+            ``None``.
     """
     for hop in (*resp.history, resp):
         hop._asked_url = asked  # type: ignore[attr-defined]
+        hop._asked_page = page  # type: ignore[attr-defined]
 
 
 # The methods whose requests follow redirects. A redirect answers any other
@@ -515,11 +528,11 @@ class _Budget:
                 redirects and reading bodies, or ``None`` for no limit.
             streamed: Whether the caller reads the body of a successful final
                 response, so that the adapter leaves it unread.
-            request: Method and URL of the request, as ``"GET http://host/"``,
-                with the URL as the caller gave it, resolved against the base
-                URL, and without its user and password. An error names the
-                request by it, and never by a URL that a response supplied.
-                ``None`` if unknown.
+            request: Name of the request, as ``"GET http://host/path?..."``,
+                for the URL as the caller gave it, resolved against the base
+                URL, and shown as ``_shown()`` shows a caller's URL. An error
+                names the request by it, and never by a URL that a response
+                supplied. ``None`` if unknown.
         """
         self.max_bytes = max_bytes
         self.request = request
@@ -581,12 +594,13 @@ class _Budget:
 
         Returns:
             The request's method and URL, as for ``request``, or, for a budget
-            without one, those of ``resp``, without the URL's user and
-            password.
+            without one, those of ``resp``, shown as a server's URL.
         """
         if self.request is not None:
             return self.request
-        return f"{resp.request.method} {_redact_url(resp.url)}"
+        return _request_name(
+            resp.request.method, _asked_text(resp.url, None, Source.SERVER)
+        )
 
     def check_time(self, resp: requests.Response | None = None) -> None:
         """Raise if the request has run out of time.
@@ -1396,6 +1410,7 @@ class API:
         from_server: bool,
         initial: Collection[tuple[str, str | None, int | None]] | None,
         redirects: Collection[tuple[str, str | None, int | None]] | None,
+        page: str | None = None,
     ) -> requests.Response:
         """Send a page request with this client's defaults and policy.
 
@@ -1412,12 +1427,15 @@ class API:
             options: Request options to send, as ``requests.Session.get()``
                 takes them, which a query's scoped view holds.
             from_server: Whether a response supplied ``url``, as a next-page
-                link, so that a message quotes its origin alone.
+                link, so that a message quotes its origin alone and names the
+                request by its position.
             initial: The origins that the page's URL may have, or ``None`` if
                 it may have any.
             redirects: The origins that a redirect of the request may reach, or
                 ``None`` to apply the rule of any other request: the request's
                 own origin and ``redirect_origins``.
+            page: Which page the link names, as ``"page 3"``, or ``None`` if
+                the position is not known.
 
         Returns:
             The page's response.
@@ -1439,24 +1457,26 @@ class API:
         # an error that requests raises for the link, which can quote it, is
         # not the request's. An error from the request itself, or from a
         # session hook, keeps its own type.
-        prepared = self._check_page_destination(url, initial, from_server)
+        prepared = self._check_page_destination(
+            url, initial, from_server, page
+        )
         if prepared is None or not prepared.sendable:
             raise PaginationError(
                 "A page URL cannot be requested, so nothing was sent."
             )
-        # The page link as requests sends it, which is what the message names.
-        asked = _redact_url(prepared.url)
+        source = Source.SERVER if from_server else Source.CALLER
+        subject = _page_url_subject(prepared, "Page request", source, page)
 
         def refusal() -> Exception:
             """Return the error for a redirect to another origin.
 
             Returns:
-                An error whose message names the request by its link and quotes
-                no part of the redirect's target.
+                An error whose message names the page request and quotes no
+                part of the redirect's target.
             """
             return PaginationError(
-                f"Page request {asked!r} was redirected to a different origin "
-                f"from the API's base URL {_redact_url(self.base_url)!r}. "
+                f"{subject} was redirected to a different origin "
+                f"from the API's base URL {self._config_url(self.base_url)}. "
                 "Pass allow_other_origins=True to follow it."
             )
 
@@ -1464,13 +1484,34 @@ class API:
         kwargs = _merge_request_options(
             options, {"params": self._repeated_params(url)}
         )
-        return self._transmit("GET", self.session.get, url, (), kwargs, limit)
+        return self._transmit(
+            "GET",
+            self.session.get,
+            url,
+            (),
+            kwargs,
+            limit,
+            source=source,
+            page=page,
+        )
+
+    def _config_url(self, url: str) -> str:
+        """Return what a message quotes of a configured URL.
+
+        Args:
+            url: A URL that the configuration holds, such as ``base_url``.
+
+        Returns:
+            The URL's origin and path, quoted, as ``_shown()`` returns it.
+        """
+        return _shown(_read_url(url, self.session), Source.CONFIG)
 
     def _check_page_destination(
         self,
         url: str,
         initial: Collection[tuple[str, str | None, int | None]] | None,
         from_server: bool,
+        page: str | None = None,
     ) -> _ServerURL | None:
         """Check the origin of a page's URL as a redirect's is checked.
 
@@ -1483,6 +1524,7 @@ class API:
                 have any.
             from_server: Whether a response supplied ``url``, as a next-page
                 link.
+            page: Which page the link names, as ``"page 3"``, or ``None``.
 
         Returns:
             The reading of ``url``, or ``None`` if requests cannot prepare it
@@ -1492,11 +1534,9 @@ class API:
             PaginationError: If ``initial`` is not ``None`` and requests cannot
                 prepare ``url``, or its origin is not in ``initial``. The
                 message of the first quotes none of the link and attaches no
-                error, as for ``_resolve()``. The message of the second quotes
-                the URL's origin alone if ``from_server``, and otherwise the
-                link as requests prepares it, without its user and password. It
-                says only that the URL is not an HTTP or HTTPS URL if it is
-                not.
+                error, as for ``_resolve()``. The message of the second names
+                the page by its position and the link's origin if
+                ``from_server``, and otherwise quotes the URL as a caller's.
         """
         prepared = self._read_server_url(url)
         if initial is None:
@@ -1504,10 +1544,11 @@ class API:
         if prepared is None:
             raise PaginationError(_UNPARSABLE_PAGE_URL)
         if _leaves_allowed_origins((prepared,), initial):
-            subject = _page_url_subject(prepared, "Page URL", from_server)
+            source = Source.SERVER if from_server else Source.CALLER
+            subject = _page_url_subject(prepared, "Page URL", source, page)
             raise PaginationError(
                 f"{subject} has a different origin from the API's base URL "
-                f"{_redact_url(self.base_url)!r}. "
+                f"{self._config_url(self.base_url)}. "
                 "Pass allow_other_origins=True to follow it."
             )
         return prepared
@@ -1520,6 +1561,9 @@ class API:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
         limit: _PageLimit | None,
+        *,
+        source: Source = Source.CALLER,
+        page: str | None = None,
     ) -> requests.Response:
         """Send a request, checking its redirects, and check the response.
 
@@ -1531,6 +1575,10 @@ class API:
             kwargs: Keyword arguments forwarded to ``send``.
             limit: The limit of a page request on the origins of its redirects,
                 or ``None`` for the rule of any other request.
+            source: Where the URL came from. A request for a link that a server
+                supplied is ``Source.SERVER``.
+            page: Which page of a collection a link names, as ``"page 3"``, or
+                ``None``.
 
         Returns:
             Validated HTTP response.
@@ -1552,7 +1600,8 @@ class API:
         # reads, so those are bounded too.
         streamed = bool(kwargs.get("stream"))
         url = self.resolve_url(uri)
-        name = f"{method} {_redact_url(url)}"
+        asked = _asked_text(url, self.session, source)
+        name = _request_name(method, asked, page)
         budget = _Budget(
             self.max_response_bytes, self.total_timeout, streamed, name
         )
@@ -1585,6 +1634,8 @@ class API:
             budget,
             follow=bool(kwargs.get("allow_redirects", True)),
             limit=limit,
+            source=source,
+            page=page,
         )
         token = _request_budget.set(budget)
         rejected: requests.Response | None = None
@@ -1612,7 +1663,7 @@ class API:
                     raise _redirected_write(rejected, name, what) from None
                 raise _unpreparable_redirect(rejected, name) from None
             _drop_response_hooks(resp)
-            _record_asked_url(resp, _redact_url(url))
+            _record_asked_url(resp, asked, page)
             if no_follow and 300 <= resp.status_code < 400:
                 raise _redirected_write(resp, name, what)
             budget.check_time(resp)
@@ -1629,6 +1680,8 @@ class API:
         budget: _Budget | None = None,
         follow: bool = True,
         limit: _PageLimit | None = None,
+        source: Source = Source.CALLER,
+        page: str | None = None,
     ) -> dict[str, Any]:
         """Return request hooks that refuse unsafe redirects.
 
@@ -1649,6 +1702,9 @@ class API:
                 ``Response.next`` for the redirect from any other.
             limit: The limit of a page request, which replaces the allowed
                 origins and supplies the error for a redirect outside them.
+            source: Where ``url`` came from.
+            page: Which page of a collection a link names, as ``"page 3"``, or
+                ``None``.
 
         Returns:
             ``hooks``, or the session's hooks if ``hooks`` has no response
@@ -1661,6 +1717,8 @@ class API:
         permitted = _permitted_origins(url, self.redirect_origins)
         allowed = permitted if limit is None else set(limit.origins)
 
+        asked = _asked_text(url, self.session, source)
+
         def name(resp: requests.Response) -> str:
             """Return the request that a message names.
 
@@ -1668,10 +1726,10 @@ class API:
                 resp: Response, whose request has the method.
 
             Returns:
-                The method of ``resp``'s request and the URL that was asked
-                for, without its user and password.
+                The method of ``resp``'s request and what a message shows of
+                the URL that was asked for.
             """
-            return f"{resp.request.method} {_redact_url(url)}"
+            return _request_name(resp.request.method, asked, page)
 
         def check_redirect(resp: requests.Response, **kwargs: Any) -> None:
             """Refuse a redirect that is not safe to follow.
