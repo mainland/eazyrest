@@ -341,23 +341,24 @@ describe them further.
   set, with its connect and read values cut to the time that remains. It raised
   `TypeError`.
 - The messages of `APIError`, `NotFound`, `RedirectError`, `PaginationError`,
-  `ResponseShapeError`, and `LimitExceeded` leave out a user and password in
-  the URL that they quote, so code that compared a message with a base URL such
-  as `http://user:pass@host/` must compare it without them. The `repr()` of a
-  `Page` leaves them out too. A message names a request by the URL that
-  eazyrest was asked to send, such as the one that you passed to `get()` or a
-  next-page link that was sent, and quotes no part of a URL that a response
-  supplied. The one exception is a next-page link that eazyrest refuses to send
-  or stops on, because it has another origin or names a page that was already
-  read: the message quotes its origin alone, without its query, which can hold
-  a signature or a token, and the whole link is on `Page.next_url`. After a
-  followed redirect it names the URL that was asked for, and not the one that
-  the redirect reached, and a refused redirect no longer names the origin that
-  it was refused for, so code that looked in a message for either must read the
-  error's `response`, whose `url` and `Location` header hold them. The `repr()`
-  of a `Page` shows the URL that it was asked for. An exception that requests
-  itself raises, such as `requests.ConnectionError`, quotes the URL of that
-  host with its path and query.
+  `ResponseShapeError`, and `LimitExceeded` show a URL by where it came from,
+  and never its user, password, or fragment, so code that compared a message
+  with a base URL such as `http://user:pass@host/` must compare it without
+  them. A URL that the caller gave shows its origin and path, with `?...` in
+  place of its query, which can hold a secret, so a request for `items?key=k`
+  is named `GET https://api.example.com/items?...`. A URL that a response
+  supplied, such as a next-page link, a `Location`, or the URL that a followed
+  redirect reached, shows its origin alone where a message must name it, and a
+  request for a next-page link is named by its position, as
+  `GET page 3 of https://api.example.com`. After a followed redirect a message
+  names the URL that was asked for, and not the one that the redirect reached,
+  and a refused redirect no longer names the origin that it was refused for, so
+  code that looked in a message for either must read the error's `response`,
+  whose `url` and `Location` header hold them, or `Page.next_url`. The `repr()`
+  of a `Page` shows the URL that it was asked for by the same rules. An
+  exception that requests itself raises while it sends, such as
+  `requests.ConnectionError`, quotes the URL of that host with its path and
+  query.
 - A 401 challenge whose body is larger than `max_response_bytes`, or that
   arrives past `total_timeout`, raises `LimitExceeded` when the session uses an
   authentication handler that reads the body, such as
@@ -1031,12 +1032,12 @@ that can break code written for 0.9.0, followed by what to do about it.
   the lookup parameters, but not their values.
 - A failed request raises `APIError`, or `NotFound` for a 404, instead of a
   plain `requests.HTTPError`. Both are `requests.HTTPError`, so existing
-  handlers still catch them, but the message differs: it names the method, URL,
-  status, and the members of a JSON body other than `detail`, and the parsed
-  body is in `data`. `NotFound` is also a `DoesNotExist`, so a 404 on a lazy
-  load is caught by `except DoesNotExist`. An override of
-  `API.raise_for_response()` should raise subclasses of `APIError` and
-  `NotFound` to keep both.
+  handlers still catch them, but the message differs: it names the method, the
+  URL's origin and path, with `?...` in place of a query, the status, and the
+  members of a JSON body other than `detail`, and the parsed body is in `data`.
+  `NotFound` is also a `DoesNotExist`, so a 404 on a lazy load is caught by
+  `except DoesNotExist`. An override of `API.raise_for_response()` should raise
+  subclasses of `APIError` and `NotFound` to keep both.
 
 #### Fields and conversion
 
@@ -1175,6 +1176,13 @@ that can break code written for 0.9.0, followed by what to do about it.
   takes precedence over `REQUESTS_CA_BUNDLE`. `verify=False` no longer
   suppresses urllib3's `InsecureRequestWarning` for the whole process. Filter
   the warning yourself if you accept unverified connections.
+- A request to a URL that requests cannot prepare, a base URL or a redirect
+  origin that it cannot prepare, and a request URI whose host Unicode
+  normalization changes raise `requests.exceptions.MissingSchema`,
+  `InvalidURL`, or `InvalidSchema` before anything is sent. 0.9.0 let requests
+  raise them while it sent, with a message that quoted the URL's user and
+  password. The message now quotes none of the URL, and the error has no
+  `__cause__` or `__context__`.
 - A redirect of a `GET` is followed only to the origin of the request it
   answers, or to an origin in `API.redirect_origins`, so that session headers
   such as API keys are not sent elsewhere. A `Location` that cannot be parsed,
@@ -1300,10 +1308,9 @@ that can break code written for 0.9.0, followed by what to do about it.
 - An error that quotes a URL, `APIError`, `NotFound`, `RedirectError`,
   `PaginationError`, `ResponseShapeError`, and `LimitExceeded`, leaves out the
   user and password of the URL in its message, `args`, and `repr()`, as
-  `http://host/` for `http://user:pass@host/`. The URL's query is still quoted,
-  as the URL that eazyrest was asked to send, which is the one that the caller
-  gave or a page links to. The error's `request` and `response` keep the real
-  URL.
+  `http://host/` for `http://user:pass@host/`. The query of a URL that the
+  caller gave shows as `?...`, and a next-page link shows its origin alone. The
+  error's `request` and `response` keep the real URL.
 - No error quotes a part of a URL that a response supplied, such as the
   signature of a download URL. An `APIError` for a failed download, a
   `LimitExceeded`, a `ResponseShapeError`, and a `RedirectError` name the
@@ -1317,18 +1324,19 @@ that can break code written for 0.9.0, followed by what to do about it.
   of the target, not its origin, user, password, path, query, or fragment. The
   error's `response` holds the header.
 - A `PaginationError` that refuses a redirect from a next-page request to
-  another origin names the request by its link, with its query, and quotes no
-  part of the target. A target that requests cannot prepare raises the API's
-  `RedirectError`, which quotes none of it, and not a `PaginationError` that
-  quoted it.
+  another origin names the request by the page's position and the link's
+  origin, and quotes no part of the target. A target that requests cannot
+  prepare raises the API's `RedirectError`, which quotes none of it, and not a
+  `PaginationError` that quoted it.
 - A `PaginationError` for a next-page link or a `Link` header link that
   requests cannot prepare or send quotes none of the link, and has no
   `__cause__` or `__context__`, since the error that rejected the link, such as
   one for a port that is not a number, can quote it. This holds also with
   `allow_other_origins=True`. A link to another origin, or to a page already
-  read, is quoted by its origin alone. `Page.next_url` and `Page.previous_url`
-  hold the whole link. A link that is not an HTTP or HTTPS URL is not quoted,
-  since its text can read as a user and password.
+  read, is named by the page's position and the link's origin alone.
+  `Page.next_url` and `Page.previous_url` hold the whole link. A link that is
+  not an HTTP or HTTPS URL is not quoted, since its text can read as a user and
+  password.
 - Response limits also cover intermediate retry bodies and retry delays with
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and

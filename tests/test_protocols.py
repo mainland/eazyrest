@@ -84,7 +84,10 @@ class _Response:
 
 
 def test_raise_for_response_reads_only_the_protocol() -> None:
-    """The default error hook builds its error from the protocol's members."""
+    """The default error hook builds its error from the protocol's members.
+
+    A response that no request of the API returned is named by its origin.
+    """
     api = API("https://example.com/v1/")
     resp = _Response(
         {"detail": "gone", "name": ["bad"]},
@@ -98,7 +101,7 @@ def test_raise_for_response_reads_only_the_protocol() -> None:
 
     assert str(caught.value) == (
         "404 Client Error: Not Found for GET "
-        "https://example.com/v1/items/1/ (body names 'name')"
+        "https://example.com (body names 'name')"
     )
     # The error holds the protocol response it was given.
     assert cast(object, caught.value.response) is resp

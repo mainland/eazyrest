@@ -1226,7 +1226,7 @@ def test_retried_response_past_the_deadline_names_the_request(
     with pytest.raises(LimitExceeded, match="total_timeout") as raised:
         api.get("/retry?q=1")
 
-    assert f"GET {base}retry?q=1 took at least 5.0 seconds" in str(
+    assert f"GET {base}retry?... took at least 5.0 seconds" in str(
         raised.value
     )
 
@@ -1251,7 +1251,7 @@ def test_retried_response_body_past_the_deadline_names_the_request(
     with pytest.raises(LimitExceeded, match="total_timeout") as raised:
         api.get("/retry?q=1")
 
-    assert f"GET {base}retry?q=1 took at least 5.0 seconds" in str(
+    assert f"GET {base}retry?... took at least 5.0 seconds" in str(
         raised.value
     )
 
@@ -1266,7 +1266,7 @@ def test_retried_response_over_the_size_limit_names_the_request(
     with pytest.raises(LimitExceeded, match="max_response_bytes") as raised:
         api.get("/retry?q=1")
 
-    assert f"The response to GET {base}retry?q=1 is larger" in str(
+    assert f"The response to GET {base}retry?... is larger" in str(
         raised.value
     )
 
@@ -1282,7 +1282,7 @@ def test_bytes_uri_past_the_deadline_names_the_decoded_url() -> None:
 
     message = str(raised.value)
     plain = url.replace("user:dummy-pass@", "")
-    assert f"GET {plain}refused?q=1 took at least 0.0 seconds" in message
+    assert f"GET {plain}refused?... took at least 0.0 seconds" in message
     assert "dummy-pass" not in message
     assert "b'" not in message
 

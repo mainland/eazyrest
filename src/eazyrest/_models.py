@@ -88,13 +88,13 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
+from ._urls import _origin
 from .api import (
     API,
     _AnyAPI,
     _as_client,
     _check_final_response,
     _merge_request_options,
-    _origin,
     _registered_api,
     _takes_kwargs,
 )
@@ -431,18 +431,28 @@ class _ModelPageSource(_PageSource[Any]):
         """The query's client, which requests the pages."""
         return self._client
 
-    def read(self, url: str, allow_other_origins: bool) -> Page[Any]:
+    def read(
+        self, url: str, allow_other_origins: bool, page: str | None = None
+    ) -> Page[Any]:
         """Request and read the page at ``url``.
 
         Args:
             url: Absolute URL of the page.
             allow_other_origins: Whether the page may have another origin.
+            page: Which page the link names, as ``"the next page"``, for a
+                message, or ``None``.
 
         Returns:
             The page of objects.
         """
         return self.page(
-            _request_page(self.api, url, allow_other_origins, from_server=True)
+            _request_page(
+                self.api,
+                url,
+                allow_other_origins,
+                from_server=True,
+                page=page,
+            )
         )
 
     def page(self, resp: Response) -> Page[Any]:

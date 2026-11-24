@@ -23,11 +23,8 @@ from requests_mock import ANY as requests_mock_ANY
 from requests_mock import Mocker, create_response
 
 from eazyrest import API, JSONObject, LimitExceeded, RedirectError, Response
-from eazyrest.api import (
-    _prepare_server_url,
-    _redirect_destination,
-    _ScopedAPI,
-)
+from eazyrest._urls import _read_url, _redirect_destination
+from eazyrest.api import _ScopedAPI
 
 
 def test_api_preserves_base_path_prefix_in_relative_requests(
@@ -1613,7 +1610,7 @@ def test_server_url_is_read_as_requests_prepares_it(
         prepared: The URL after requests prepares it.
         origin: Scheme, host, and port of the prepared URL.
     """
-    result = _prepare_server_url(requests.Session(), url)
+    result = _read_url(url, requests.Session())
 
     assert result is not None
     assert result.url == prepared
@@ -1639,7 +1636,7 @@ def test_server_url_with_another_scheme_has_no_host(url: str) -> None:
     Args:
         url: URL that the server supplied.
     """
-    result = _prepare_server_url(requests.Session(), url)
+    result = _read_url(url, requests.Session())
 
     assert result is not None
     assert result.scheme == urlsplit(url).scheme.lower()
@@ -1653,7 +1650,7 @@ def test_server_url_is_sendable_when_the_session_has_an_adapter() -> None:
     session = requests.Session()
     session.mount("ftp://", requests.adapters.HTTPAdapter())
 
-    result = _prepare_server_url(session, "ftp://h.test/x")
+    result = _read_url("ftp://h.test/x", session)
 
     assert result is not None
     assert not result.is_http
@@ -1684,7 +1681,7 @@ def test_server_url_that_requests_cannot_prepare_is_refused(url: str) -> None:
     Args:
         url: URL that the server supplied.
     """
-    assert _prepare_server_url(requests.Session(), url) is None
+    assert _read_url(url, requests.Session()) is None
 
 
 def test_server_url_needs_an_adapter_for_an_http_url() -> None:
@@ -1692,4 +1689,33 @@ def test_server_url_needs_an_adapter_for_an_http_url() -> None:
     session = requests.Session()
     session.adapters.clear()
 
-    assert _prepare_server_url(session, "https://h.test/") is None
+    assert _read_url("https://h.test/", session) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:SECRET@h.test:99999/x",
+        "ftp://user:SECRET@h.test/x",
+        "user:SECRET@h.test/x",
+    ],
+)
+def test_request_to_a_url_that_requests_cannot_send_is_refused_before_it_goes(
+    requests_mock: Any, url: str
+) -> None:
+    """The error keeps requests' class, and quotes none of the URL."""
+    api = API("https://h.test/")
+
+    with pytest.raises(
+        (
+            requests.exceptions.InvalidURL,
+            requests.exceptions.InvalidSchema,
+            requests.exceptions.MissingSchema,
+        )
+    ) as raised:
+        api.get(url)
+
+    assert "SECRET" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert requests_mock.call_count == 0
