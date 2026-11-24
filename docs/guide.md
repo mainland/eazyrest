@@ -641,17 +641,18 @@ The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
 the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
 `NotFound`), `RedirectError`, `PaginationError`, `ResponseShapeError`, and
-`LimitExceeded` for a size or time limit name the request involved by its
-method and the URL that eazyrest was asked to send. That is the URL that you
-pass to `get()`, an object's URL, or a next-page link, resolved against
+`LimitExceeded` for a size, time, or depth limit name the request involved by
+its method and the URL that eazyrest was asked to send. That is the URL that
+you pass to `get()`, an object's URL, or a next-page link, resolved against
 `base_url`. It appears with its query string, so a query parameter's value can
-appear. Send a secret in a header or the body, not in the query. A message
-leaves out a user and password in such a URL, so `http://user:pass@host/x?a=b`
-appears as `http://host/x?a=b` in the message, `args`, and `repr()`, but the
-error's `request` and `response` keep the real URL. No message quotes any part
-of a URL that a response supplied, such as a `Location`, the URL that a
-followed redirect reached, like a signed download URL, or a URL that a response
-hook chose, but for one case: a next-page link that eazyrest refuses to send or
+appear. Send a secret in a header or the body, not in the query.
+`LimitExceeded` for the page and item limits names no request. A message leaves
+out a user and password in such a URL, so `http://user:pass@host/x?a=b` appears
+as `http://host/x?a=b` in the message, `args`, and `repr()`, but the error's
+`request` and `response` keep the real URL. No message quotes any part of a URL
+that a response supplied, such as a `Location`, the URL that a followed
+redirect reached, like a signed download URL, or a URL that a response hook
+chose, but for one case: a next-page link that eazyrest refuses to send or
 stops on is quoted by its origin alone. A message about a redirect says what
 happened, as that a request "was redirected to another origin", and the URL
 stays on the error's `response`. The `repr()` of a `Page` shows the URL that it
@@ -992,7 +993,9 @@ entry is keyed by: any other value, such as a string assigned to
 they cannot convert by raising `TypeError` or `ValueError`, which reaches the
 caller as a `FieldConversionError` that names the field, with the error as its
 cause. Their messages should not quote the value, which may be a secret. Any
-other exception is a bug in the conversion, and propagates unchanged. A value
+other exception is a bug in the conversion and propagates unchanged, and so
+does an error of eazyrest, such as a `ResponseShapeError` or a
+`PaginationError` that the code raises, though each is a `ValueError`. A value
 written, or returned by `encode`, must be JSON: one that is not, such as an
 `IPv4Address` assigned to a field annotated `Any`, raises
 `FieldConversionError` when it is assigned.
