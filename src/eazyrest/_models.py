@@ -158,8 +158,8 @@ def _passes_through(err: Exception) -> bool:
 
     A refusal of a model's declaration is no conversion of a value. An
     ``EazyrestError`` other than ``FieldConversionError``, such as the
-    ``ResponseShapeError`` of loading a related object to learn its key,
-    reports something other than a value that a field cannot convert.
+    ``ResponseShapeError`` or ``PaginationError`` that a conversion's own code
+    raises, reports something other than a value that a field cannot convert.
 
     Args:
         err: Error that a conversion raised.
@@ -2382,6 +2382,7 @@ class _BeforeCreation:
 
 
 _BEFORE_CREATION = _BeforeCreation()
+"""The one key of every object that reads a creation's response."""
 
 
 def _hook_result(
@@ -2425,9 +2426,6 @@ def _hook_result(
     if resp is not None:
         raise ResponseShapeError(message, response=resp)
     raise TypeError(message)
-
-
-"""The one key of every object that reads a creation's response."""
 
 
 class _OwnedJSON(dict[str, Any]):

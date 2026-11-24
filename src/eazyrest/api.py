@@ -417,7 +417,7 @@ def _record_asked_url(resp: requests.Response, asked: str) -> None:
 # The methods whose requests follow redirects. A redirect answers any other
 # method without the effect that the request asked for, or with an effect that
 # the server performed elsewhere, so a write never follows one.
-_FOLLOWING_METHODS = frozenset({"GET", "HEAD"})
+_FOLLOWING_METHODS = frozenset({"GET"})
 
 
 def _carries_body(kwargs: dict[str, Any]) -> bool:
@@ -648,8 +648,7 @@ class _Budget:
         body of each redirect in ``resp.history``, so the bodies of one request
         count against one size limit. The length that a response declares is
         not checked for a response that has no body, a 1xx, 204, or 304
-        response or the response to a ``HEAD`` request, which may declare the
-        length of the entity that it describes.
+        response, which may declare the length of the entity that it describes.
 
         Args:
             resp: Response sent with ``stream=True``, whose body is unread.
@@ -676,9 +675,7 @@ class _Budget:
         # urllib3 reads no body for it, whatever it declares.
         declared = (
             ""
-            if resp.status_code < 200
-            or resp.status_code in (204, 304)
-            or resp.request.method == "HEAD"
+            if resp.status_code < 200 or resp.status_code in (204, 304)
             else resp.headers.get("Content-Length", "")
         )
         # A length longer than the limit's has more digits than int() reads

@@ -865,7 +865,7 @@ def _send_through_chain(
 
 
 @settings(max_examples=100, deadline=None)
-@given(method=st.sampled_from(["GET", "HEAD"]), chain=_REDIRECT_CHAINS)
+@given(method=st.just("GET"), chain=_REDIRECT_CHAINS)
 def test_redirect_chains_of_a_read_stop_before_another_origin(
     method: str, chain: list[Any]
 ) -> None:

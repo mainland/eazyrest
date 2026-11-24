@@ -733,13 +733,11 @@ def test_discarded_retry_bodies_do_not_count_against_the_size_limit(
     assert len(attempts) == 3
 
 
-@pytest.mark.parametrize(
-    ("method", "status"), [("GET", 204), ("GET", 304), ("HEAD", 200)]
-)
+@pytest.mark.parametrize(("method", "status"), [("GET", 204), ("GET", 304)])
 def test_response_without_a_body_may_declare_a_length_over_the_limit(
     local_server: Callable[[Any], str], method: str, status: int
 ) -> None:
-    """A 204, a 304, or a ``HEAD`` response has no body, so its length is free.
+    """A 204 or a 304 response has no body, so its length is free.
 
     Such a response may carry the ``Content-Length`` of the entity that it
     describes.
@@ -758,8 +756,7 @@ def test_response_without_a_body_may_declare_a_length_over_the_limit(
     api = API(base_url)
     api.max_response_bytes = 100
 
-    send = api.session.head if method == "HEAD" else api.session.get
-    resp = api._send(method, send, "/x")
+    resp = api._send(method, api.session.get, "/x")
 
     assert resp.status_code == status
     assert resp.content == b""
