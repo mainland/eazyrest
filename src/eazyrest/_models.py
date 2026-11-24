@@ -3879,6 +3879,37 @@ a set to a sequence has no order to match.
 """
 
 
+def _refuse_unassignable_name(obj: JSONObject, name: str) -> None:
+    """Refuse the assignment of a public name that is no field.
+
+    A misspelled field is caught this way. ``pk`` and a name that begins with
+    an underscore may be set, and so may a field of the object's class, which
+    may be a decorated subclass with more fields than the class that installed
+    the check.
+
+    Args:
+        obj: The object that the name is assigned on.
+        name: The name.
+
+    Raises:
+        AttributeError: If the name is no field of the object's class and is
+            not ``pk`` or a private name. The message says so, since a property
+            with a setter, a class attribute, or an attribute that a method
+            sets is no field either.
+    """
+    cls = type(obj)
+    if (
+        name != "pk"
+        and not name.startswith("_")
+        and name not in getattr(cls, "_json_fields", ())
+    ):
+        raise AttributeError(
+            f"'{cls.__name__}' object has no attribute '{name}'. {name} is no "
+            f"field of {cls.__name__}, and only a field, pk, or a name that "
+            "begins with an underscore can be assigned"
+        )
+
+
 @dataclass(frozen=True, eq=False)
 class _Unbuildable:
     """A related object's stored key that the key's type cannot build.
@@ -5061,18 +5092,9 @@ def json_object(
                 value: Attribute value being assigned.
 
             Raises:
-                AttributeError: If assignment targets an undeclared field.
+                AttributeError: If assignment targets a name that is no field.
             """
-            # Check the fields of the instance's class, which may be a
-            # decorated subclass with more fields than cls.
-            if (
-                name != "pk"
-                and not name.startswith("_")
-                and name not in type(self)._json_fields
-            ):
-                raise AttributeError(
-                    f"'{type(self).__name__}' object has no attribute '{name}'"
-                )
+            _refuse_unassignable_name(self, name)
 
             super(cls, self).__setattr__(name, value)
 
@@ -6271,6 +6293,40 @@ class JSONProperty:
                 # from JSON.
                 obj._field_snapshots[self.field] = _copy_json(new_value)
 
+    def _check_assignment(self, obj: JSONObject, value: Any) -> None:
+        """Refuse the value that assigning to this field would refuse.
+
+        This is what ``__set__()`` checks before it reads anything from the
+        server, without its changes, so that a caller can check a group of
+        assignments before it makes the first.
+
+        Args:
+            obj: ``JSONObject`` instance that the value would be assigned to.
+            value: Python value to assign.
+
+        Raises:
+            UsageError: If the model has no primary-key field.
+            AttributeError: If the field is read-only, or is the key and the
+                value names another key.
+            FieldConversionError: If the value cannot be converted to the
+                field's JSON value, or a key is not of the key's type.
+        """
+        _refuse_keyless_assignment(type(obj))
+        if self.write_only:
+            with _converting(type(obj), self.field):
+                obj._to_written_json(value, self.analyzed_type)
+            return
+        if self._is_key_of(obj):
+            self._set_key(obj, value)
+            return
+        if self.read_only:
+            raise AttributeError(
+                f"{type(obj).__name__}.{self.field} is read-only"
+            )
+        with _converting(type(obj), self.field):
+            obj._to_written_json(value, self.analyzed_type)
+            self._assigned_related(value)
+
     def _set_key(self, obj: JSONObject, value: Any) -> None:
         """Check that an assignment to an object's key keeps its key.
 
@@ -6601,6 +6657,18 @@ class JSONObject:
         pk_property = _pk_property_of(type(self))
         if pk_property is not None:
             self._wire_key = self._initial_key(pk_property, kwargs)
+        # Check every name and convert every value before the first request,
+        # as an assignment converts a value before it loads the object, so that
+        # a keyword that is refused leaves no request behind it.
+        for name, value in kwargs.items():
+            _refuse_unassignable_name(self, name)
+            descriptor = (
+                pk_property
+                if name == "pk"
+                else getattr(type(self), name, None)
+            )
+            if isinstance(descriptor, JSONProperty):
+                descriptor._check_assignment(self, value)
         for name, value in kwargs.items():
             setattr(self, name, value)
 

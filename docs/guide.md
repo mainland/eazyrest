@@ -434,7 +434,18 @@ primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
 a change to its name, and in eager mode it also sends a `PATCH`. Use `create()`
 to create a new object. An object needs its key from construction, so `User()`
 and `User(name="Ada")` raise `TypeError`, as
-[Equality by key](#equality-by-key) says.
+[Equality by key](#equality-by-key) says. The constructor checks every name and
+converts every value before its first request, as an assignment converts a
+value before it loads, so a keyword that is refused, such as a misspelled
+field, a read-only field, or a value that cannot convert, leaves no `GET` or
+`PATCH` behind it.
+
+An object refuses the assignment of a public name that is no field. A field,
+`pk`, and a name that begins with an underscore can be assigned. A property
+with a setter, a public attribute that a method sets, and a class attribute are
+no fields, so assigning them raises `AttributeError` whose message says that
+the name is no field. Keep such state under a name that begins with an
+underscore.
 
 Because loading is lazy, reading a field can send a request and can raise the
 same exceptions as one, such as `requests.HTTPError` or

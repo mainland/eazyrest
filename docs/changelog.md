@@ -644,6 +644,15 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- The constructor checks every name and converts every value of its keywords
+  before its first request, so a keyword that is refused after another, as a
+  name that is no field, a read-only field, a second key, or a value that
+  cannot convert, leaves no `GET` or `PATCH` behind. `v1.0.0a5` assigned the
+  keywords in order, so the caller had no object after requests that had
+  changed the server.
+- An assignment to a public name that is no field raises `AttributeError` whose
+  message says that the name is no field, where it said that the object has no
+  such attribute, which is false of a property with a setter.
 - A set, a frozenset, or another set-like value given to a sequence of related
   objects, as `post.tags = {tag_a, tag_b}` for `tags: list[Tag]`, or to
   `create()` or `get_or_create()`, raises `FieldConversionError` naming the
