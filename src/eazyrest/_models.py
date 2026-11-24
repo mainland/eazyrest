@@ -228,7 +228,9 @@ def _require_decorated(cls: type) -> None:
     Raises:
         TypeError: If ``cls`` is not decorated, has a decorated ancestor, and
             sets ``conversions`` itself or inherits them from a class that is
-            not an ancestor of that decorated class, such as a mixin.
+            not an ancestor of that decorated class, such as a mixin. Also if a
+            class attribute of ``cls`` hides a field that the ancestor
+            declares.
     """
     if cls in _USABLE_CLASSES:
         return
@@ -240,6 +242,9 @@ def _require_decorated(cls: type) -> None:
         # table, and a decorated class checked its own.
         _USABLE_CLASSES.add(cls)
         return
+    _refuse_hidden_fields(
+        cls, getattr(decorated, "_json_fields", ()), frozenset()
+    )
     # Every class that contributes to the table but not to the decorated
     # ancestor's, whether it comes before the ancestor in the MRO or after it.
     undecorated = [
@@ -258,6 +263,49 @@ def _require_decorated(cls: type) -> None:
             setattr(error, _RAISED_AS_IS, True)
             raise error
     _USABLE_CLASSES.add(cls)
+
+
+def _refuse_hidden_fields(
+    cls: type, fields: Collection[str], redeclared: AbstractSet[str]
+) -> None:
+    """Refuse a class attribute that hides an inherited field.
+
+    A subclass can define a property, a method, or a plain value under the name
+    of an inherited field. The attribute then hides the field's descriptor,
+    which the library reads, so every use of the model would fail with an
+    ``AttributeError`` that names neither the class nor the field.
+
+    Args:
+        cls: The class that inherits the fields.
+        fields: The names of the fields that it inherits.
+        redeclared: The names that ``cls`` declares again as fields, which
+            replace the inherited descriptors.
+
+    Raises:
+        TypeError: If a class attribute of ``cls`` hides an inherited field.
+    """
+    for field in sorted(set(fields) - set(redeclared)):
+        if not isinstance(
+            inspect.getattr_static(cls, field, None), JSONProperty
+        ):
+            hider = next(
+                (
+                    base
+                    for base in cls.__mro__
+                    if field in vars(base)
+                    and not isinstance(vars(base)[field], JSONProperty)
+                ),
+                cls,
+            )
+            error = TypeError(
+                f"{cls.__name__}.{field} is a class attribute of "
+                f"{hider.__name__} that hides the inherited field of that "
+                "name, which eazyrest reads through its descriptor. Rename "
+                f"the attribute, or declare {field} again in "
+                f"{cls.__name__} with an annotation"
+            )
+            setattr(error, _RAISED_AS_IS, True)
+            raise error
 
 
 @contextlib.contextmanager
@@ -4801,6 +4849,7 @@ def json_object(
         """
         reserved = set(dir(JSONObject)).union(_annotations(JSONObject))
         fields: MutableSet[str] = set(getattr(cls, "_json_fields", ()))
+        _refuse_hidden_fields(cls, fields, set(_declared_fields(cls, exclude)))
         read_keys = dict(field_map)
         write_keys = dict(write_map)
         hidden = set(write_only or ())

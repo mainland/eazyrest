@@ -644,6 +644,12 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A class attribute of a subclass that has the name of an inherited field, such
+  as a property, a method, a plain value, or `None`, raises `TypeError` naming
+  the class and the field when the subclass is decorated, and for a subclass
+  that is not decorated, when it is first used, before any request. `v1.0.0a5`
+  raised a bare `AttributeError` when it decorated the class, and from a read,
+  a query, or a write of the undecorated one, after its `GET`.
 - `files=` of `create()` and `save()`, and `json=` of an object's constructor
   and of `update_from_json()`, raise `TypeError` naming the argument, before
   anything else, for a value that is no mapping of string names, as the other

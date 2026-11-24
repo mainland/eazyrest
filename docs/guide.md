@@ -123,6 +123,14 @@ use it. The error cannot come when the class is defined, because the decorator
 runs after the class exists. A base class that sets `conversions` and has no
 decorated ancestor, as a model's own base class usually does, is not refused.
 
+A class attribute of a subclass that has the name of an inherited field, such
+as a property, a method, a plain value, or `None`, hides the field's
+descriptor, which the library reads. A decorated subclass raises `TypeError`
+naming the class and the field when it is defined. An undecorated one raises it
+the first time it is used, in the same places, before any request. Declare the
+field again in the subclass with an annotation to replace it, or rename the
+attribute.
+
 Use `read_only=` for returned values that ordinary writes must omit, such as
 computed values and file URLs. These fields remain readable and usable in
 queries, but assigning them or passing their ordinary values to `create()`
