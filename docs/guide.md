@@ -457,11 +457,17 @@ treat such a pickle as a secret.
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
 eazyrest does not convert, a float that is not finite, or a value that holds
-itself or nests more than 128 levels deep, the default `max_json_depth`, raises
-`FieldConversionError` at the assignment, which leaves the field unchanged and
-queues nothing. A write that the server refuses is different. In lazy mode its
-updates stay pending, so a later `save()` sends them again. In eager mode the
-refused assignment is not pending, and the field keeps its old value.
+itself or nests more than 127 levels deep, raises `FieldConversionError` at the
+assignment, which leaves the field unchanged and queues nothing. A body that
+holds the value nests one level more, and 128 levels is the default
+`max_json_depth`, so what is written can be read back from a server that echoes
+it. Only a write counts the depth. Reading a field, copying an object, and
+comparing JSON take any depth that `max_json_depth` let through, or that
+`json=` and `update_from_json()` were given, and `save()` sends a field that
+was read and not changed in place as it was. A write that the server refuses is
+different. In lazy mode its updates stay pending, so a later `save()` sends
+them again. In eager mode the refused assignment is not pending, and the field
+keeps its old value.
 
 `repr()` shows an object's class and primary key, as in `<User id=1>`, without
 loading it. The key is shown as it is sent, so a `UUID` key shows its lowercase
@@ -1359,17 +1365,17 @@ before any request, as do two names of one field, such as
 value that is not made of JSON types, which raises `TypeError` before any
 request: a tuple, which would read back as a list, a mapping with a key that is
 not a string, and a generator. A float that is not finite, and a value that
-holds itself or nests more than 128 levels deep, raise `ValueError` before any
-request, and the message names the value as `[key]`. The lookup of
-`get_or_create()` builds the key under its JSON or write key too, so a `UUID`
-given in uppercase is sent in the query and in the `POST` in one spelling,
-where `filter()` sends such a name as it was given. A JSON key or write key
-that holds `__`, as `doc__id` for a field `id` or `the__title` for a field
-`title`, is no lookup of `get_or_create()`, which would read it as a field and
-a suffix, so the call raises `ValueError` naming the parameter before any
-request. Look the field up by its name, as `title`, and the key as `id` or
-`pk`. A key whose field name holds `__`, as `doc__id` for `pk="doc__id"`, is
-looked up and created by that name.
+holds itself or nests more than 127 levels deep, so that the body nests more
+than 128, raise `ValueError` before any request, and the message names the
+value as `[key]`. The lookup of `get_or_create()` builds the key under its JSON
+or write key too, so a `UUID` given in uppercase is sent in the query and in
+the `POST` in one spelling, where `filter()` sends such a name as it was given.
+A JSON key or write key that holds `__`, as `doc__id` for a field `id` or
+`the__title` for a field `title`, is no lookup of `get_or_create()`, which
+would read it as a field and a suffix, so the call raises `ValueError` naming
+the parameter before any request. Look the field up by its name, as `title`,
+and the key as `id` or `pk`. A key whose field name holds `__`, as `doc__id`
+for `pk="doc__id"`, is looked up and created by that name.
 
 A new object's key cannot be `None`. `create(id=None)`, `create(pk=None)`, the
 key under its JSON or write key, in `fields=`, or in the `defaults` of

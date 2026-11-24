@@ -2346,6 +2346,10 @@ def _bare_wire_key(value: Any, model_type: type[Any]) -> Any:
 def _json_equal(left: Any, right: Any) -> bool:
     """Compare JSON values without equating booleans with numbers.
 
+    The comparison is iterative, so that it takes any depth that a read let
+    through. A pair of containers that it has met again is equal, so a value
+    that holds itself ends it.
+
     Args:
         left: First JSON value.
         right: Second JSON value.
@@ -2354,20 +2358,28 @@ def _json_equal(left: Any, right: Any) -> bool:
         Whether the values are equal. A boolean equals only the same boolean,
         and dicts, lists, and tuples are compared item by item.
     """
-    if isinstance(left, bool) or isinstance(right, bool):
-        return left is right
-
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(
-            _json_equal(value, right[key]) for key, value in left.items()
-        )
-
-    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
-        return len(left) == len(right) and all(
-            _json_equal(a, b) for a, b in zip(left, right, strict=True)
-        )
-
-    return bool(left == right)
+    pairs = [(left, right)]
+    met: set[tuple[int, int]] = set()
+    while pairs:
+        a, b = pairs.pop()
+        if isinstance(a, bool) or isinstance(b, bool):
+            if a is not b:
+                return False
+        elif isinstance(a, dict) and isinstance(b, dict):
+            if a.keys() != b.keys():
+                return False
+            if (id(a), id(b)) not in met:
+                met.add((id(a), id(b)))
+                pairs.extend((item, b[key]) for key, item in a.items())
+        elif isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+            if len(a) != len(b):
+                return False
+            if (id(a), id(b)) not in met:
+                met.add((id(a), id(b)))
+                pairs.extend(zip(a, b, strict=True))
+        elif not bool(a == b):
+            return False
+    return True
 
 
 class _BeforeCreation:
@@ -2912,19 +2924,99 @@ def _form_value(name: str, value: Any) -> Any:
     )
 
 
-def _copy_json(value: Any) -> Any:
+_ATOMIC_JSON = (str, int, float, bool, type(None))
+"""The types of the JSON scalars that a copy shares."""
+
+_JSON_STATE = frozenset(
+    {"_json", "_pending_updates", "_field_snapshots", "_field_cache"}
+)
+"""The attributes of an object that hold JSON or the values read from it.
+
+A copy of an object makes them with ``_copy_json()``, which takes the depth
+that a read let through, where ``copy.deepcopy()`` raises ``RecursionError``.
+"""
+
+
+def _copied_by_attributes(item: Any) -> bool:
+    """Tell whether ``copy.deepcopy()`` copies an object by its attributes.
+
+    Args:
+        item: Any value.
+
+    Returns:
+        Whether ``item`` is an instance of a dataclass that keeps its fields in
+        its ``__dict__`` and has no copying or pickling of its own, so that
+        ``copy.deepcopy()`` makes a new object and copies its ``__dict__``.
+    """
+    cls = type(item)
+    return (
+        dataclasses.is_dataclass(cls)
+        and hasattr(item, "__dict__")
+        and all("__slots__" not in vars(base) for base in cls.__mro__)
+        and getattr(cls, "__deepcopy__", None) is None
+        and getattr(cls, "__setstate__", None) is None
+        and cls.__reduce_ex__ is object.__reduce_ex__
+        and cls.__reduce__ is object.__reduce__
+        and cls.__getstate__ is object.__getstate__
+    )
+
+
+def _copy_json(value: Any, memo: dict[int, Any] | None = None) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
+
+    The copy is iterative, so that it takes any depth that a read let through,
+    where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts, lists,
+    and the attributes of plain dataclass instances, which a field's value can
+    hold. A container that the value holds more than once, or that holds
+    itself, is copied once, as ``copy.deepcopy()`` does. Anything else than
+    these and a JSON scalar is copied by ``copy.deepcopy()``.
 
     Args:
         value: JSON value to copy.
+        memo: The copies made so far, keyed by the identity of the original, as
+            ``copy.deepcopy()`` takes it, or ``None`` for a new copy.
 
     Returns:
         A deep copy of a dict or list, and ``value`` itself otherwise.
     """
-    if isinstance(value, (dict, list)):
-        return copy.deepcopy(value)
+    if not isinstance(value, (dict, list)):
+        return value
 
-    return value
+    if memo is None:
+        memo = {}
+    unfilled: list[tuple[Any, Any]] = []
+
+    def shell(item: Any) -> Any:
+        """Return the copy of an item, queueing a container to be filled."""
+        if type(item) in _ATOMIC_JSON:
+            return item
+        if id(item) in memo:
+            return memo[id(item)]
+        if type(item) is dict:
+            made: Any = {}
+        elif type(item) is list:
+            made = []
+        elif _copied_by_attributes(item):
+            made = object.__new__(type(item))
+        else:
+            return copy.deepcopy(item, memo)
+        memo[id(item)] = made
+        unfilled.append((item, made))
+        return made
+
+    result = shell(value)
+    while unfilled:
+        source, made = unfilled.pop()
+        if type(source) is dict:
+            for key, item in source.items():
+                made[shell(key)] = shell(item)
+        elif type(source) is list:
+            made.extend([shell(item) for item in source])
+        else:
+            made.__dict__.update(
+                {name: shell(item) for name, item in vars(source).items()}
+            )
+    return result
 
 
 def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
@@ -3968,8 +4060,10 @@ def encode_json(
             model under a key annotated ``int``. The message names the
             declared key, field, or position where the value is, shows a
             mapping's own keys as ``[key]``, and does not quote the value.
-        ValueError: If a value cannot be encoded, as for a field, or is a
-            float that is not finite, which JSON cannot write.
+        ValueError: If a value cannot be encoded, as for a field, or is a float
+            that is not finite, which JSON cannot write, or holds itself, or
+            nests more than 127 levels deep, so that a body that holds it nests
+            no more than 128.
     """
     if model is None:
         model = JSONObject
@@ -3980,22 +4074,29 @@ def encode_json(
     analyzed = analyze_type(annotation)
     _check_relation_collection("The annotation", analyzed)
     _check_admitted(analyzed, _table_of(model), late=True)
-    encoded = model._to_json(value, analyzed)
+    encoded = model._to_written_json(value, analyzed)
     _check_json(encoded, "")
     return encoded
 
 
-_MAX_WRITE_DEPTH = 128
-"""The greatest nesting depth of a value that a field or a request writes.
+_MAX_WRITE_DEPTH = 127
+"""The greatest nesting depth of a value that a caller gives to be written.
 
-It is ``API.max_json_depth``'s default, so what is written can be read back
-from a server that answers with it. Arrays and objects count, so a scalar has
-depth 0 and a flat array depth 1.
+A field's value or an extra of a request nests at most this many levels, so
+that a body that holds it nests at most 128, the default of
+``API.max_json_depth``. What is written can then be read back from a server
+that answers with the body, or with the object that holds it, within the
+default limit. The depth is that of the value's encoding. Arrays and objects
+count, so a scalar has depth 0 and a flat array depth 1.
+
+``_check_write_depth()`` counts it once, where a value enters an object or a
+request. Nothing that reads, copies, or compares a value counts it, which
+``API.max_json_depth`` limits.
 """
 
 
 class _DepthExceeded(Exception):
-    """A value nests more deeply than ``_MAX_WRITE_DEPTH``.
+    """A value holds itself.
 
     The walk of a value raises it, and ``_check_json()`` reports it as the
     ``ValueError`` that names where the value starts.
@@ -4031,26 +4132,29 @@ def _check_json(value: Any, path: str) -> None:
         TypeError: If ``value`` holds a value of another type, or a mapping
             key that is not a string.
         ValueError: If ``value`` holds a float that is not finite, which JSON
-            cannot write, or holds itself, or nests more deeply than
-            ``_MAX_WRITE_DEPTH``.
+            cannot write, or holds itself. It does not count depth, which
+            ``_check_write_depth()`` does for a value that is written.
     """
     try:
-        _walk_json(value, path, 0)
-    except (_DepthExceeded, RecursionError):
-        # Name where the value starts, not the level that was too deep, so that
+        _walk_json(value, path)
+    except _DepthExceeded:
+        # Name where the value starts, not the container that repeats, so that
         # the message stays short.
         raise _too_deep(path) from None
 
 
-def _check_write_depth(value: Any) -> None:
+def _check_write_depth(value: Any, path: str) -> None:
     """Check that an encoded value is no deeper than a write may be.
 
-    The walk is iterative and stops at the first level that is too deep, so the
-    value needs no more stack than its depth allows, and a value that holds
-    itself ends the walk.
+    This is the one place that counts the depth of a written value. The walk is
+    iterative and stops at the first level that is too deep, so the value needs
+    no more stack than its depth allows, and a value that holds itself ends the
+    walk.
 
     Args:
         value: The JSON value that an encoding gave.
+        path: Where ``value`` is, as ``_check_json()`` takes it. It is empty
+            for a field's value and ``[key]`` for an extra.
 
     Raises:
         ValueError: If ``value`` nests more deeply than ``_MAX_WRITE_DEPTH``.
@@ -4065,27 +4169,22 @@ def _check_write_depth(value: Any) -> None:
             else:
                 continue
             if len(stack) - 1 > _MAX_WRITE_DEPTH:
-                raise _too_deep("")
+                raise _too_deep(path)
             break
         else:
             stack.pop()
 
 
-def _walk_json(value: Any, path: str, depth: int) -> None:
-    """Check each part of a value, which may recurse without bound.
+def _check_json_leaf(value: Any, path: str) -> None:
+    """Check that a value that holds no other value is a JSON scalar.
 
     Args:
         value: Value to check.
         path: Where ``value`` is, as ``_check_json()`` takes it.
-        depth: The number of arrays and objects that hold ``value``.
 
     Raises:
-        TypeError: If ``value`` holds a value of another type, or a mapping key
-            that is not a string.
-        ValueError: If ``value`` holds a float that is not finite.
-        _DepthExceeded: If ``value`` nests more deeply than
-            ``_MAX_WRITE_DEPTH``.
-        RecursionError: If the stack gives out first.
+        TypeError: If ``value`` is of another type.
+        ValueError: If ``value`` is a float that is not finite.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -4096,26 +4195,76 @@ def _walk_json(value: Any, path: str, depth: int) -> None:
         return
     if value is None or isinstance(value, (str, int)):
         return
-    if isinstance(value, (list, dict)):
-        if depth >= _MAX_WRITE_DEPTH:
-            raise _DepthExceeded
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                _walk_json(item, f"{path}[{index}]", depth + 1)
-            return
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(
-                    f"The value{_at(path)} has a key that is not a string, "
-                    "which JSON objects cannot have"
-                )
-            _walk_json(item, f"{path}[key]", depth + 1)
-        return
     raise TypeError(
         f"The value{_at(path)} has the type {type(value).__name__}, which "
         "does not encode to JSON. Annotate it with a type that eazyrest "
         "converts."
     )
+
+
+def _walk_json_members(container: Any, path: str) -> Iterator[tuple[str, Any]]:
+    """Yield the members of an array or an object, with where each is.
+
+    Args:
+        container: A list or a dict.
+        path: Where ``container`` is, as ``_check_json()`` takes it.
+
+    Yields:
+        Each member's place within the container, as ``[0]`` or ``[key]``, and
+        the member.
+
+    Raises:
+        TypeError: If ``container`` is a dict with a key that is not a string.
+    """
+    if isinstance(container, list):
+        for index, item in enumerate(container):
+            yield f"[{index}]", item
+        return
+    for key, item in container.items():
+        if not isinstance(key, str):
+            raise TypeError(
+                f"The value{_at(path)} has a key that is not a string, "
+                "which JSON objects cannot have"
+            )
+        yield "[key]", item
+
+
+def _walk_json(value: Any, path: str) -> None:
+    """Check each part of a value, which may hold itself.
+
+    The walk is iterative, so that it takes any depth.
+
+    Args:
+        value: Value to check.
+        path: Where ``value`` is, as ``_check_json()`` takes it.
+
+    Raises:
+        TypeError: If ``value`` holds a value of another type, or a mapping key
+            that is not a string.
+        ValueError: If ``value`` holds a float that is not finite.
+        _DepthExceeded: If ``value`` holds itself.
+    """
+    if not isinstance(value, (list, dict)):
+        _check_json_leaf(value, path)
+        return
+    open_containers = {id(value)}
+    stack = [(_walk_json_members(value, path), path, id(value))]
+    while stack:
+        members, here, identity = stack[-1]
+        for place, item in members:
+            there = here + place
+            if isinstance(item, (list, dict)):
+                if id(item) in open_containers:
+                    raise _DepthExceeded
+                open_containers.add(id(item))
+                stack.append(
+                    (_walk_json_members(item, there), there, id(item))
+                )
+                break
+            _check_json_leaf(item, there)
+        else:
+            stack.pop()
+            open_containers.discard(identity)
 
 
 def _literal_json(member: Any, table: Mapping[Any, Conversion]) -> Any:
@@ -4173,6 +4322,25 @@ def _checked_json(value: Any) -> Any:
     """
     _check_json(value, "")
     return value
+
+
+def _checked_body(wire: Mapping[str, Any]) -> None:
+    """Check that each member of a request's JSON body can be written.
+
+    Args:
+        wire: The body, under the names that it is sent by.
+
+    Raises:
+        TypeError: If a member holds a value of another type, as an extra can,
+            or a mapping key that is not a string.
+        ValueError: If a member holds a float that is not finite, holds itself,
+            or nests more deeply than ``_MAX_WRITE_DEPTH``, which makes the
+            body nest more than 128 levels. The message names the member as
+            ``[key]``, since its name can be a secret.
+    """
+    for value in wire.values():
+        _check_json(value, "[key]")
+        _check_write_depth(value, "[key]")
 
 
 def _at(path: str) -> str:
@@ -5558,7 +5726,7 @@ class JSONProperty:
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
             with _converting(type(obj), self.field):
-                encoded = obj._to_json(value, self.analyzed_type)
+                encoded = obj._to_written_json(value, self.analyzed_type)
             obj._update_json_field(self.json_field, _copy_json(encoded))
             return
 
@@ -5573,7 +5741,7 @@ class JSONProperty:
         # Convert the value before anything is read from the server, so that a
         # value that is refused sends no request, not even the load's.
         with _converting(type(obj), self.field):
-            new_value = obj._to_json(value, self.analyzed_type)
+            new_value = obj._to_written_json(value, self.analyzed_type)
             # Build the collection that the field keeps before anything is sent
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
@@ -5931,7 +6099,7 @@ class JSONObject:
             self._json = dict(json)
         elif json is not None:
             # The caller may change its mapping or the values nested in it.
-            self._json = copy.deepcopy(dict(json))
+            self._json = _copy_json(dict(json))
         else:
             self._json = None
         if self._json is not None:
@@ -6041,11 +6209,12 @@ class JSONObject:
         memo[id(self)] = copied
         state = vars(copied)
         for name, value in self.__getstate__().items():
-            state[name] = (
-                value
-                if name == "_api_override"
-                else copy.deepcopy(value, memo)
-            )
+            if name == "_api_override":
+                state[name] = value
+            elif name in _JSON_STATE:
+                state[name] = _copy_json(value, memo)
+            else:
+                state[name] = copy.deepcopy(value, memo)
         return copied
 
     def __getstate__(self) -> dict[str, Any]:
@@ -6548,9 +6717,9 @@ class JSONObject:
         JSON writes as ``null``, whatever the type, as ``_from_json()`` reads
         ``null``.
 
-        A value is written no deeper than ``_MAX_WRITE_DEPTH``, so that every
-        later step of a write, such as a copy of the encoding, can take it, and
-        what is written can be read back.
+        The conversion does not count depth, so that a read, which converts a
+        value of any depth that the response let through, takes it.
+        ``_to_written_json()`` counts it for a value that is written.
 
         Args:
             value: Python value to serialize.
@@ -6564,14 +6733,37 @@ class JSONObject:
                 not a collection. A string, bytes, or a mapping is not a
                 collection of items. Also raised if ``conversion`` is
                 ``datetime.date`` and ``value`` is a ``datetime.datetime``.
-            ValueError: If ``value`` holds itself, or its encoding nests more
-                deeply than ``_MAX_WRITE_DEPTH``.
+            ValueError: If ``value`` holds itself, or so deeply that the
+                conversion of its parts runs out of stack.
         """
         try:
-            encoded = cls._encode_value(value, conversion)
+            return cls._encode_value(value, conversion)
         except RecursionError:
             raise _too_deep("") from None
-        _check_write_depth(encoded)
+
+    @classmethod
+    def _to_written_json(
+        cls,
+        value: Any,
+        conversion: AnalyzedType,
+    ) -> Any:
+        """Convert a value that a caller gives to be written.
+
+        Args:
+            value: Python value to serialize.
+            conversion: Analyzed type metadata that guides conversion.
+
+        Returns:
+            JSON-serializable representation of ``value``, which nests no more
+            deeply than ``_MAX_WRITE_DEPTH``.
+
+        Raises:
+            TypeError: As for ``_to_json()``.
+            ValueError: As for ``_to_json()``, and if the encoding nests more
+                deeply than ``_MAX_WRITE_DEPTH``.
+        """
+        encoded = cls._to_json(value, conversion)
+        _check_write_depth(encoded, "")
         return encoded
 
     @classmethod
@@ -6587,8 +6779,7 @@ class JSONObject:
             conversion: Analyzed type metadata that guides conversion.
 
         Returns:
-            JSON-serializable representation of ``value``, whose depth the
-            caller checks.
+            JSON-serializable representation of ``value``.
 
         Raises:
             TypeError: As for ``_to_json()``.
@@ -7048,8 +7239,11 @@ class JSONObject:
             with _converting(type(self), field):
                 _refuse_bare_items(current, descriptor.analyzed_type)
                 encoded = self._to_json(current, descriptor.analyzed_type)
-            if _json_equal(encoded, snapshot):
-                continue
+                # A value that was read and not changed is not written, however
+                # deep it is, so only a change is counted.
+                if _json_equal(encoded, snapshot):
+                    continue
+                _check_write_depth(encoded, "")
             changed.append((field, descriptor, encoded))
         return changed
 
@@ -7468,7 +7662,7 @@ class JSONObject:
                 "fields to merge a payload into. Decorate it with "
                 "@json_object"
             )
-        payload = copy.deepcopy(dict(json))
+        payload = _copy_json(dict(json))
         if _pk_property_of(type(self)) is None:
             # An object without a key has no key to compare.
             self._merge_json(payload)
@@ -7934,7 +8128,7 @@ class JSONObject:
                         payload[key] = _build_key(cls, value)
                     else:
                         conversion = descriptor.analyzed_type
-                        payload[key] = cls._to_json(value, conversion)
+                        payload[key] = cls._to_written_json(value, conversion)
             else:
                 payload[key] = value
 
@@ -8975,7 +9169,7 @@ class JSONObject:
             # The body is JSON, as _write_body() decides. An extra has no
             # annotation, so eazyrest cannot say how a tuple, or a mapping with
             # a key that is not a string, reads back as JSON.
-            _checked_json(cls._to_wire(payload))
+            _checked_body(cls._to_wire(payload))
         # A class's api can be assigned after the class is defined, and the
         # request must not be sent with it.
         _check_api_attribute(cls, UsageError)
@@ -10387,7 +10581,7 @@ class JSONObject:
         client = cls.api if api is None else _as_client(api)
         cls._encode_query(kwargs, client)
         payload = cls._encode_fields(create_kwargs)
-        _checked_json(cls._to_wire(payload))
+        _checked_body(cls._to_wire(payload))
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
         # such a name as given, because it is an ordinary query parameter.
