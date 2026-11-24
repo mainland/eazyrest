@@ -65,6 +65,11 @@ REFUSED = {
     "uppercase_urn_prefix": "URN:UUID:" + CANONICAL,
     "urn_without_hyphens": "urn:uuid:" + HEX,
     "empty": "",
+    "hyphenated_then_hyphen": CANONICAL + "-",
+    "hyphenated_then_brace": CANONICAL + "}",
+    "compact_then_hyphen": HEX + "-",
+    "braced_then_brace": "{" + CANONICAL + "}}",
+    "urn_then_hyphen": "urn:uuid:" + CANONICAL + "-",
 }
 
 

@@ -134,3 +134,14 @@ def test_a_stored_key_that_is_none_still_compares_as_none() -> None:
         obj.owner = None  # type: ignore[assignment]
         obj.save()
         assert mocker.call_count == 0
+
+
+@pytest.mark.parametrize("stored", [7.0, {"id": 7.0, "name": "a"}])
+def test_none_assigned_over_a_stored_float_is_sent(stored: Any) -> None:
+    """A key that cannot be built is not ``None``, so ``None`` is a change."""
+    obj = post("owner", stored, "lazy")
+    with requests_mock.Mocker() as mocker:
+        mocker.patch(BASE + "posts/1/", json={})
+        obj.owner = None  # type: ignore[assignment]
+        obj.save()
+        assert [r.json() for r in mocker.request_history] == [{"owner": None}]
