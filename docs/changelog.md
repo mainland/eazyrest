@@ -644,6 +644,13 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- `files=` of `create()` and `save()`, and `json=` of an object's constructor
+  and of `update_from_json()`, raise `TypeError` naming the argument, before
+  anything else, for a value that is no mapping of string names, as the other
+  mapping arguments do. `v1.0.0a5` raised an `AttributeError` for `files=` that
+  was a list of pairs, a string, or an integer, and from the library that sends
+  it for a name that is no string, and the `ValueError` of `dict()` for a
+  `json=` that was a list. A list of pairs is no longer taken as `json=`.
 - A related object's key that the JSON holds in a form that the key's type
   cannot build, such as `7.0` for an `int` key, equals no key that a program
   writes, so assigning the key or an object of that key over it sends the

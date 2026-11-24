@@ -2764,6 +2764,21 @@ def _check_names_mapping(values: Any, argument: str) -> None:
             )
 
 
+def _check_files(files: Any) -> None:
+    """Refuse ``files=`` that is given and is no mapping of string names.
+
+    Args:
+        files: What the caller gave for ``files=``.
+
+    Raises:
+        TypeError: If ``files`` is neither ``None`` nor a mapping whose names
+            are all strings, as a list of pairs, a string, and a mapping with
+            an integer name are not.
+    """
+    if files is not None:
+        _check_names_mapping(files, "files")
+
+
 def _query_params(
     params: Mapping[str, Any] | None,
     kwargs: Mapping[str, Any],
@@ -6359,8 +6374,9 @@ class JSONObject:
                 ``PATCH``. A model without a primary-key field takes none.
 
         Raises:
-            TypeError: If the model has a key field, ``json`` is omitted, and
-                no key is given, or ``None`` is. The message names the key
+            TypeError: If ``json`` is given and is not a mapping of string
+                names. Also if the model has a key field, ``json`` is omitted,
+                and no key is given, or ``None`` is. The message names the key
                 field and points to ``create()``, which makes a new resource.
             FieldConversionError: If the key that is given, or the key in
                 ``json``, is not of the key's type, or ``json`` lacks the key
@@ -6369,6 +6385,8 @@ class JSONObject:
                 primary-key field. Its objects are read-only values, built with
                 ``json=``.
         """
+        if json is not None and not isinstance(json, _OwnedJSON):
+            _check_names_mapping(json, "json")
         # A class's api can be assigned after the class is defined.
         _require_decorated(type(self))
         _check_api_attribute(type(self), UsageError)
@@ -7868,15 +7886,17 @@ class JSONObject:
                 object, as when it is an empty list or a list of several
                 objects, or names another primary key than the object has. The
                 server may have applied the updates, but they remain pending.
-            TypeError: If ``request_options`` is not a mapping, sets the body,
-                or streams the response, its ``headers`` or ``hooks`` are not
-                mappings of names to values that can be merged, or a field
-                cannot be sent as a form field.
+            TypeError: If ``files`` is not a mapping of string names, or
+                ``request_options`` is not a mapping, sets the body, or streams
+                the response, its ``headers`` or ``hooks`` are not mappings of
+                names to values that can be merged, or a field cannot be sent
+                as a form field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted.
         """
+        _check_files(files)
         _refuse_keyless_request(type(self), "save")
         options = _merge_request_options(
             self._write_options, _request_options(request_options)
@@ -7966,9 +7986,11 @@ class JSONObject:
                 another key than the object's, or ``null``, or a key that is
                 not of the key's type, so that the payload does not name this
                 object. It is a ``ValueError``, and nothing is merged.
-            TypeError: If this object's class is not decorated with
-                ``@json_object``, so that it has no fields to merge.
+            TypeError: If ``json`` is not a mapping of string names, or this
+                object's class is not decorated with ``@json_object``, so that
+                it has no fields to merge.
         """
+        _check_names_mapping(json, "json")
         if not hasattr(type(self), "_json_fields"):
             raise TypeError(
                 f"{type(self).__name__} is not decorated, so it has no "
@@ -9455,14 +9477,15 @@ class JSONObject:
                 to be JSON. The error names the extra as ``[key]``, and nothing
                 is sent.
             TypeError: If the model's key type is refused, which is checked
-                before any request. Also raised if a field is given both as a
-                keyword argument and in ``fields``, if ``request_options`` is
-                not a mapping, sets the body, or has ``headers`` or ``hooks``
-                that cannot be merged, or if a field's value cannot be sent as
-                a form field with ``files``. Also raised for response streaming
-                or conflicting wire names, and for a value under a name that is
-                no field that is not made of JSON types, as a tuple, or a
-                mapping with a key that is not a string.
+                before any request. Also raised if ``files`` is not a mapping
+                of string names, if a field is given both as a keyword argument
+                and in ``fields``, if ``request_options`` is not a mapping,
+                sets the body, or has ``headers`` or ``hooks`` that cannot be
+                merged, or if a field's value cannot be sent as a form field
+                with ``files``. Also raised for response streaming or
+                conflicting wire names, and for a value under a name that is no
+                field that is not made of JSON types, as a tuple, or a mapping
+                with a key that is not a string.
             AttributeError: If an ordinary value names a read-only field.
             APIError: If the server returns an HTTP error status.
             RedirectError: If the server answers the write with a redirect.
@@ -9471,6 +9494,7 @@ class JSONObject:
                 the key is ``None``. Leave the key out to let the server assign
                 it.
         """
+        _check_files(files)
         _require_decorated(cls)
         _refuse_keyless_request(cls, "create")
         # The response is read for a key of this type, so a type that cannot be
