@@ -66,8 +66,12 @@ describe them further.
   `datetime`, or an instance of a class that `conversions` registers, and for
   each such item of a lookup that takes several values. `v1.0.0a5` sent the
   value's `str()`, as `True` for a boolean, or its items. Pass it by the
-  field's name, which converts it. A model object given for a relation is still
-  sent as its key, but one given for a field whose type is not defined yet is
+  field's name, which converts it. The value's type must be exactly `str`,
+  `int`, `float`, or `None`, so a member of an enum that mixes in one of them
+  is refused too, also for a field that is declared as the enum. A model object
+  given for a relation is still sent as its key, but one of another class
+  raises `FieldConversionError` naming the field and both classes, as the
+  field's name does, and one given for a field whose type is not defined yet is
   refused.
 - An item of a collection of relations has a key. An item that the server
   embeds without one, such as `{"name": "x"}` for a `list[User]`, raises
