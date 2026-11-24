@@ -644,6 +644,14 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A set, a frozenset, or another set-like value given to a sequence of related
+  objects, as `post.tags = {tag_a, tag_b}` for `tags: list[Tag]`, or to
+  `create()` or `get_or_create()`, raises `FieldConversionError` naming the
+  field and saying that a set has no order to write, before any request.
+  `v1.0.0a5` wrote the keys in the set's iteration order, which differs from
+  one run to the next for a model's hash. A set field still takes a set, and a
+  query still sends a set sorted, but `get_or_create()` with such a set raises
+  before its lookup, since its creation could not write it.
 - A set whose items have no hash raises `TypeError` when the class is
   decorated, also for items that are a `NewType` of `list` or `dict`, or a
   `NamedTuple` or a frozen dataclass with a member that has no hash, as a list

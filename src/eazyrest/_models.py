@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import datetime
@@ -3868,6 +3869,16 @@ def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
         _each_item(check, value)
 
 
+_WRITING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "eazyrest_writing", default=False
+)
+"""Whether a value that a caller gave to be written is being encoded.
+
+A query encodes values too, and sends a set in sorted order, which a write of
+a set to a sequence has no order to match.
+"""
+
+
 @dataclass(frozen=True, eq=False)
 class _Unbuildable:
     """A related object's stored key that the key's type cannot build.
@@ -7249,7 +7260,11 @@ class JSONObject:
             ValueError: As for ``_to_json()``, and if the encoding nests more
                 deeply than ``_MAX_WRITE_DEPTH``.
         """
-        encoded = cls._to_json(value, conversion)
+        token = _WRITING.set(True)
+        try:
+            encoded = cls._to_json(value, conversion)
+        finally:
+            _WRITING.reset(token)
         _check_write_depth(encoded, "")
         return encoded
 
@@ -7329,13 +7344,27 @@ class JSONObject:
                 relates = isinstance(
                     _unwrap_optional_type(item_type), RelatedType
                 )
+                is_set = _READ_AS[collection_type] in (set, frozenset)
+                if (
+                    relates
+                    and not is_set
+                    and _WRITING.get()
+                    and isinstance(value, AbstractSet)
+                ):
+                    # A set's iteration order depends on how it was built, and
+                    # an object's hash on its address, so a sequence written
+                    # from one would differ from one run to the next.
+                    raise TypeError(
+                        "A set has no order to write as a sequence of "
+                        "related objects. Give a list or a tuple, or declare "
+                        "the field as a set"
+                    )
 
                 def write_item(item: Any) -> Any:
                     if relates and item is None:
                         raise ValueError(_NULL_ITEM)
                     return cls._encode_value(item, item_type)
 
-                is_set = _READ_AS[collection_type] in (set, frozenset)
                 items = _each_item(write_item, value, positioned=not is_set)
                 if is_set:
                     # A set's iteration order depends on how it was built, and

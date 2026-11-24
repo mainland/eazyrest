@@ -784,18 +784,21 @@ say whether the order of the items counts. A sequence, a `list`, a `tuple`, a
 `deque`, `Sequence`, or `MutableSequence`, compares its keys in order. A set,
 `set`, `frozenset`, `Set`, or `MutableSet`, compares them without order and is
 sent as its distinct keys, sorted. A set field may hold two objects of one key,
-such as `User(id=7)` and `Admin(id=7)`, and sends the key once. Replacing an
-item with an object of the same key, such as one of a subclass, is not a
-change. `Collection[User]` and `Iterable[User]`, also optional or in a
-`NewType`, raise `TypeError` when the class is decorated, naming the field,
-because neither says. Declare `list[User]` or `set[User]` instead. `Iterable`
-is left for a related collection that a query loads. Every item has a key, so
-no item is `None` and no item is a collection of related objects:
-`list[User | None]` and `list[list[User]]`, also optional, in a `NewType`, or
-under another collection type, raise `TypeError` when the class is decorated,
-naming the field. An item that the server embeds without one raises
-`FieldConversionError` naming the field and the item's position when the field
-is read, as an embedded single relation without a key does, and so does a
+such as `User(id=7)` and `Admin(id=7)`, and sends the key once. A sequence
+cannot take a set, which has no order to write, so assigning a `set` or a
+`frozenset` to `members` raises `FieldConversionError` before any request, as
+does giving one to `create()` or `get_or_create()`. A query still sends a set
+for such a field sorted. Replacing an item with an object of the same key, such
+as one of a subclass, is not a change. `Collection[User]` and `Iterable[User]`,
+also optional or in a `NewType`, raise `TypeError` when the class is decorated,
+naming the field, because neither says. Declare `list[User]` or `set[User]`
+instead. `Iterable` is left for a related collection that a query loads. Every
+item has a key, so no item is `None` and no item is a collection of related
+objects: `list[User | None]` and `list[list[User]]`, also optional, in a
+`NewType`, or under another collection type, raise `TypeError` when the class
+is decorated, naming the field. An item that the server embeds without one
+raises `FieldConversionError` naming the field and the item's position when the
+field is read, as an embedded single relation without a key does, and so does a
 `null` item. A `None` item in a list, tuple, deque, or set that you assign, add
 in place and save, or pass to `create()` raises `FieldConversionError` naming
 the field, and for a sequence the item's position, before any request. An item

@@ -1736,6 +1736,32 @@ def a_key_assigned_over_a_float_key_is_sent(world: World) -> None:
             assert world.body(obj.save, "PATCH") == {"readers": [7]}
 
 
+@row(COLL)
+def a_set_given_to_a_sequence_of_relations_is_refused(world: World) -> None:
+    tags = {Tag(slug="a"), Tag(slug="b")}
+    readers = {User(id=1), User(id=2)}
+    for field, value in (
+        ("tags", tags),
+        ("tags", frozenset(tags)),
+        ("tagt", tags),
+        ("tagt", frozenset(tags)),
+        ("tagq", tags),
+        ("tagq", frozenset(tags)),
+        ("readers", readers),
+        ("readers", {User(id=1): 1}.keys()),
+    ):
+        obj = post()
+        refuses_assignment(world, obj, field, value, f"Post.{field}", "order")
+        given: dict[str, Any] = {field: value}
+        raises(
+            world,
+            FieldConversionError,
+            lambda: Post.create(**given),
+            f"Post.{field}",
+            "order",
+        )
+
+
 @row(OWNER)
 def a_key_assigned_over_a_float_key_is_sent_for_a_single_relation(
     world: World,
@@ -2217,16 +2243,22 @@ def a_set_field_is_queried_by_its_distinct_keys_sorted(world: World) -> None:
 
 @row(REL)
 def a_set_for_a_sequence_relation_is_sent_sorted(world: World) -> None:
-    sends_query(
+    # The creation of get_or_create() could not write a set to a sequence, so
+    # it refuses before any request, as create() does.
+    sends_query_but_refuses_creation(
         world,
         Post,
         "tags=a&tags=b",
+        FieldConversionError,
+        "Post.tags",
         tags={Tag(slug="b"), Tag(slug="a")},
     )
-    sends_query(
+    sends_query_but_refuses_creation(
         world,
         Post,
         "readers=3&readers=7",
+        FieldConversionError,
+        "Post.readers",
         readers=frozenset({User(id=7), User(id=3)}),
     )
 
