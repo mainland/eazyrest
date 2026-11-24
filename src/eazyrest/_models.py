@@ -2481,6 +2481,38 @@ def _hook_result(
     raise TypeError(message)
 
 
+def _replace_api(root: JSONObject, old: _AnyAPI, new: _AnyAPI | None) -> None:
+    """Give a client to the related objects that an object has read.
+
+    Walks the relation caches of ``root`` and of the objects that it holds, to
+    any depth, and replaces ``old`` with ``new`` where an object keeps it.
+
+    Args:
+        root: The object whose relation caches are walked, and which is changed
+            too.
+        old: The client to replace, which compares by identity.
+        new: The client that replaces it, or ``None`` for the API registered
+            for each object's class.
+    """
+    seen: set[int] = set()
+    stack: list[Any] = [root]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, JSONObject):
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            if value._api_override is old:
+                value._api_override = new
+            stack.extend(value._field_cache.values())
+        elif isinstance(value, Mapping):
+            stack.extend(value.values())
+        elif isinstance(
+            value, (list, tuple, set, frozenset, collections.deque)
+        ):
+            stack.extend(value)
+
+
 def _object_url(obj: JSONObject) -> str:
     """Return the URL that a request of an object goes to.
 
@@ -10094,16 +10126,23 @@ class JSONObject:
             # key. A key that cannot be read yet matches none, so raise before
             # the request rather than keep an empty prefetch.
             _resolve_key(model_type)
+            scoped = query.related_client(model_type)
             related_objects = _hook_result(
                 model_type,
                 "bulk_get_by_pks",
                 model_type.bulk_get_by_pks(
                     _prefetch_keys(cls, field, model_type, raw_keys.values()),
-                    api=query.related_client(model_type),
+                    api=scoped,
                 ),
                 Mapping,
                 "the related objects by key, as a mapping",
             )
+            # A hook that reads a relation of an object that it built gives the
+            # related object the client that built its parent, which carries
+            # the query's request options, and the object keeps it.
+            for related in related_objects.values():
+                if isinstance(related, JSONObject):
+                    _replace_api(related, scoped, query.api)
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
             for obj in related_objects.values():
