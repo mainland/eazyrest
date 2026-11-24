@@ -1034,6 +1034,10 @@ class API:
                 e.g., ``pool_connections`` and ``pool_maxsize``, and retries,
                 with ``max_retries``. To change the request timeout, set the
                 ``timeout`` attribute instead.
+
+        Raises:
+            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
+                rejects ``url``. The message quotes none of it.
         """
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
@@ -1098,6 +1102,10 @@ class API:
                 ``requests.adapters.HTTPAdapter`` and mounted on the session.
                 This allows for configuring connection pooling parameters,
                 e.g., ``pool_connections`` and ``pool_maxsize``.
+
+        Raises:
+            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
+                rejects ``base_url``. The message quotes none of it.
         """
         session = requests.Session()
 
@@ -1224,6 +1232,11 @@ class API:
 
         Returns:
             Fully resolved request URL.
+
+        Raises:
+            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
+                rejects the URI, as for a host that Unicode normalization
+                changes. The message quotes none of the URI.
         """
         if _is_absolute(uri):
             return uri
@@ -1309,6 +1322,11 @@ class API:
                 response.
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
+            requests.RequestException: A ``MissingSchema``, ``InvalidSchema``,
+                or ``InvalidURL`` if requests cannot prepare the URL or has no
+                adapter for it, so that nothing was sent. Its message quotes
+                none of the URL, and it has no ``__cause__`` or
+                ``__context__``.
             TypeError: If ``redirect_origins`` is not a tuple, a list, or a
                 frozenset of strings. The request is not sent.
         """

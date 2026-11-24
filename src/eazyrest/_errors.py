@@ -88,11 +88,11 @@ class APIError(EazyrestError, requests.HTTPError):
     place of requests' ``HTTPError``, which it also is. The ``response``
     attribute holds the response.
 
-    The message names the method, URL, and status, and the members of a JSON
-    object body other than ``detail``, such as the fields that a Django REST
-    Framework validation error names. It does not quote the body, whose
-    messages can quote the values that were sent. The parsed body is in
-    ``data``.
+    The message names the method, the URL's origin and path with ``?...`` in
+    place of a query, and the status, and the members of a JSON object body
+    other than ``detail``, such as the fields that a Django REST Framework
+    validation error names. It does not quote the body, whose messages can
+    quote the values that were sent. The parsed body is in ``data``.
     """
 
     response: requests.Response

@@ -687,31 +687,48 @@ either one keeps working.
 
 The messages of eazyrest's errors name models, fields, and query parameters,
 but they do not quote values, which can be secrets that the server sent or that
-the code assigned. The exceptions are URLs: an HTTP error (`APIError` and
+the code assigned. The exceptions are URLs. An HTTP error (`APIError` and
 `NotFound`), `RedirectError`, `PaginationError`, `ResponseShapeError`, and
 `LimitExceeded` for a size, time, or depth limit name the request involved by
-its method and the URL that eazyrest was asked to send. That is the URL that
-you pass to `get()`, an object's URL, or a next-page link, resolved against
-`base_url`. It appears with its query string, so a query parameter's value can
-appear. Send a secret in a header or the body, not in the query.
-`LimitExceeded` for the page and item limits names no request. A message leaves
-out a user and password in such a URL, so `http://user:pass@host/x?a=b` appears
-as `http://host/x?a=b` in the message, `args`, and `repr()`, but the error's
-`request` and `response` keep the real URL. No message quotes any part of a URL
-that a response supplied, such as a `Location`, the URL that a followed
-redirect reached, like a signed download URL, or a URL that a response hook
-chose, but for one case: a next-page link that eazyrest refuses to send or
-stops on is quoted by its origin alone. A message about a redirect says what
-happened, as that a request "was redirected to another origin", and the URL
-stays on the error's `response`. The `repr()` of a `Page` shows the URL that it
-was asked for, and not the one that a redirect chose. An exception that
-requests itself raises, such as `requests.ConnectionError`, quotes the URL as
-requests does, with its path and query, also for the host that a redirect
-reached. A conversion error says which field and which key or position of it is
-invalid, and why, without the input. A mapping key that the input chose appears
-as `[key]`. The error that eazyrest replaced remains the `__cause__`, and it
-can quote the value, so a logged traceback can still expose it. A message that
-your own conversion code or validator writes appears as written.
+its method and a URL. `LimitExceeded` for the page and item limits names no
+request. What a message, an exception's `args`, and a `repr()` show of a URL
+depends on where the URL came from, and is never its user, password, or
+fragment. The error's `request` and `response` keep the real URL.
+
+- A URL that you gave, such as the one that you pass to `get()` or an object's
+  URL resolved against `base_url`, shows its origin and path, and `?...` in
+  place of its query, which can hold a secret. A 500 for `api.get("items?k=v")`
+  reads `500 Server Error: None for GET https://api.example.com/items?...`.
+  Send a secret in a header or the body, not in the query.
+- A configured URL, `base_url`, shows its origin and path, as in
+  `'https://api.example.com/v1/'`.
+- A URL that a response supplied, such as a `Location`, the URL that a followed
+  redirect reached, a URL that a response hook chose, or a next-page link,
+  shows its origin alone, and only where a message must name it. A message
+  about a redirect says what happened, as that a request "was redirected to
+  another origin", and the URL stays on the error's `response`. A request for a
+  next-page link is named by its position, as in
+  `GET page 3 of https://api.example.com`, and a refusal names it as
+  `The request for page 3 of 'https://api.example.com'`. The whole link is on
+  `Page.next_url` and the error's `request`.
+- A URL that requests cannot prepare, or that is not an HTTP or HTTPS URL,
+  shows as `<unreadable URL>`, whatever its text. A request that you send to
+  one raises the class that requests raises,
+  `requests.exceptions.MissingSchema`, `InvalidURL`, or `InvalidSchema`, before
+  anything is sent, with a message that quotes none of the URL and no
+  `__cause__` or `__context__`. Code that catches them, or `ValueError`, keeps
+  working.
+
+The `repr()` of a `Page` shows the URL that it was asked for by the same rules,
+and not the one that a redirect chose. An exception that requests raises while
+it sends, such as `requests.ConnectionError`, passes unchanged, and quotes the
+URL as requests does, with its path and query, also for the host that a
+redirect reached. A conversion error says which field and which key or position
+of it is invalid, and why, without the input. A mapping key that the input
+chose appears as `[key]`. The error that eazyrest replaced remains the
+`__cause__`, and it can quote the value, so a logged traceback can still expose
+it. A message that your own conversion code or validator writes appears as
+written.
 
 A JSON value that an enum lacks, such as a status that the server added after
 the client was written, raises `FieldConversionError`. Python calls an enum's
@@ -1754,26 +1771,21 @@ API that serves pages from another host.
 
 A link from a `Link` header is checked the same way. Each link is read once, as
 requests prepares it, and the check and the message use that reading. A link
-that requests cannot prepare or send raises `PaginationError`, whose message
-quotes none of the link, since the server chose it, and which has no
+that requests cannot prepare or send raises `PaginationError`, which has no
 `__cause__` or `__context__`, since the error that rejected the link can quote
 it. This holds also with `allow_other_origins=True`, and for the link to a
-previous page. The error for a link to another origin, and the error for a link
-to a page already read, quote the link's origin alone, such as
-`'https://other.example.net'`, because the server chose the link and eazyrest
-refuses to send it or stops on it, and its query can hold a signature or a
-token. The whole link is on `Page.next_url` or `Page.previous_url`. A link that
-is not an HTTP or HTTPS URL, such as `mailto:user:pass@host`, is not quoted at
-all, since its text can read as a user and password. The URL that you give for
-the first page is not a link of the server, so a message about it quotes the
-URL as requests prepares it, with its query and without its user and password.
+previous page. A message names the request for a link by its position and shows
+the link's origin alone, as the section on error messages says, and the whole
+link is on `Page.next_url` or `Page.previous_url`. The URL that you give for
+the first page is yours, so a message shows it as it shows any URL that you
+gave.
 
 The same origin check applies to every redirect from a next-page request,
 before the redirect is followed, and reads the target as the check of any other
-redirect does. The error names the request by its URL as the link gave it, with
-its query, and says only that the redirect leads to a different origin. A
-target that requests cannot prepare raises `RedirectError`, which quotes none
-of it. Existing session response hooks still run. With
+redirect does. The error names the request for the page, as the section on
+error messages says, and says only that the redirect leads to a different
+origin. A target that requests cannot prepare raises `RedirectError`, which
+quotes none of it. Existing session response hooks still run. With
 `allow_other_origins=True`, a redirect is checked as for every other request:
 it must lead to the origin of the page request or to one of the API's
 `redirect_origins`. A query's client that does not follow redirects, because of
@@ -2123,11 +2135,10 @@ no-proxy list applies, from `NO_PROXY` or from a `no_proxy` entry in `proxies`,
 and the redirect names a host that is not an IPv4 address. It consults neither
 `NO_PROXY` nor a `no_proxy` entry in `proxies` when `session.trust_env` is
 false. When it does not read the port, the response is returned. The message of
-the `RedirectError` quotes no part of a `Location` that requests cannot
-prepare, since no rule says which of its text is a host and which a password.
-The error's `response` holds the header. A model write, a query, and a
-next-page request expect a final response, so they raise `RedirectError` for
-any unfollowed 3xx.
+the `RedirectError` quotes no part of a `Location`, as the section on error
+messages says. The error's `response` holds the header. A model write, a query,
+and a next-page request expect a final response, so they raise `RedirectError`
+for any unfollowed 3xx.
 
 `API` has `get()`, `post()`, `patch()`, `put()`, and `delete()`, and sends no
 `HEAD` request. A `HEAD` sent with `api.session.head()` skips these checks,
