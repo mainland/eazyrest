@@ -9,7 +9,6 @@ eazyrest's conversions for ``datetime``, ``date``, ``time``, ``timedelta``,
 from __future__ import annotations
 
 import collections
-import copy
 import datetime
 import decimal
 import enum
@@ -86,7 +85,10 @@ class Conversion:
     ) = field(default_factory=lambda: MappingProxyType({}))
     """The JSON schema of the JSON form, for ``json_schema()``, or a function
     of the declared type and the mode, ``"read"`` or ``"write"``, that
-    returns it. The default, an empty schema, allows any value.
+    returns it. The schema is a mapping, such as the schema of a default
+    conversion, which may hold other mappings and tuples, and ``json_schema()``
+    copies it into dictionaries and lists. The default, an empty schema, allows
+    any value.
 
     ``json_schema()`` embeds the schema in a model's, and moves its ``$defs``
     into the model's, so its references may name only its own definitions, as
@@ -94,17 +96,19 @@ class Conversion:
     such as ``#`` for a schema that refers to itself, or one to a definition
     that its ``$defs`` lacks, or with ``$id``, an anchor, or ``$defs`` below
     its root, raises ``TypeError``, when the conversion is made or, for a
-    function, when ``json_schema()`` calls it. Put such a schema in ``$defs``
+    function, when ``json_schema()`` calls it. So does a schema that is no
+    mapping, as ``True`` or ``"string"`` are. Put such a schema in ``$defs``
     and refer to it there."""
 
     def __post_init__(self) -> None:
         """Check a schema given as a mapping.
 
         Raises:
-            TypeError: If the schema could not be embedded in a model's.
+            TypeError: If the schema is no mapping, or could not be embedded in
+                a model's.
         """
         if not callable(self.schema):
-            _check_embeddable(self.schema)
+            _check_embeddable(_plain_schema(self.schema))
 
 
 # Keywords whose values are JSON data rather than schemas, and keywords that
@@ -121,6 +125,50 @@ _UNEMBEDDABLE = frozenset(
         "$recursiveRef",
     }
 )
+
+
+def _plain_schema(schema: Any) -> dict[str, Any]:
+    """Copy a schema into plain dictionaries and lists.
+
+    A schema may be any mapping, and may hold other mappings, such as the
+    read-only mapping of a default conversion's schema, and tuples. The copy
+    has dictionaries and lists only, which is the form that every later step
+    reads, so that the check, the copy a model's schema embeds, and the
+    renaming of definitions all see one form. It shares no container with the
+    schema.
+
+    Args:
+        schema: A conversion's schema, or what its function returned.
+
+    Returns:
+        The copy.
+
+    Raises:
+        TypeError: If ``schema`` is no mapping.
+    """
+    if not isinstance(schema, Mapping):
+        raise TypeError(
+            "A conversion's schema must be a mapping, such as "
+            f'{{"type": "string"}}, not {type(schema).__name__}'
+        )
+    return cast("dict[str, Any]", _plain(schema))
+
+
+def _plain(value: Any) -> Any:
+    """Copy a part of a schema into plain dictionaries and lists.
+
+    Args:
+        value: The part.
+
+    Returns:
+        A dictionary for a mapping, a list for a list or a tuple, and any other
+        value as it is.
+    """
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
 
 
 def _definition_name(token: str) -> str:
@@ -643,14 +691,20 @@ def _schema_of_entry(entry: Conversion, ty: Any, mode: str) -> dict[str, Any]:
         mode: ``"read"`` or ``"write"``.
 
     Returns:
-        A copy of the schema, which the caller may change.
+        A copy of the schema in plain dictionaries and lists, which the caller
+        may change.
+
+    Raises:
+        TypeError: If a function that makes the schema returns no mapping, or a
+            schema that could not be embedded in a model's.
     """
     if callable(entry.schema):
-        schema = entry.schema(ty, cast(Literal["read", "write"], mode))
+        schema = _plain_schema(
+            entry.schema(ty, cast(Literal["read", "write"], mode))
+        )
         _check_embeddable(schema)
-    else:
-        schema = entry.schema
-    return copy.deepcopy(dict(schema))
+        return schema
+    return _plain_schema(entry.schema)
 
 
 DEFAULT_CONVERSIONS: Mapping[type[Any], Conversion] = MappingProxyType(
