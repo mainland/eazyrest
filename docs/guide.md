@@ -520,11 +520,13 @@ print(user.absolute_url)
 
 If `class_url` is already absolute, `absolute_url` leaves it absolute.
 
-A keyed model that declares no `class_url` has no URL. `url`, a read that loads
-the object, `refresh()`, `delete()`, `save()` when it has something to send,
-`save(full=True)`, an eager assignment, `create()`, and the query methods raise
-`UsageError` naming the class and `class_url`, before any request. Unlike an
-`AttributeError`, it is not swallowed by `hasattr()`.
+A keyed model that declares no `class_url`, or a `class_url` that is not a
+string, as `None` is in a base class that leaves it to its subclasses, has no
+URL. `url`, a read that loads the object, `refresh()`, `delete()`, `save()`
+when it has something to send, `save(full=True)`, an eager assignment,
+`create()`, and the query methods raise `UsageError` naming the class and
+`class_url`, before any request. Unlike an `AttributeError`, it is not
+swallowed by `hasattr()`.
 
 `url` ends with a slash, as Django REST Framework's routers expect. For an API
 whose object URLs have no trailing slash, set the API's `trailing_slash`

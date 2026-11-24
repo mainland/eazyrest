@@ -3245,17 +3245,26 @@ def _class_url_of(cls: type[JSONObject]) -> str:
         The class's ``class_url``.
 
     Raises:
-        UsageError: If the class declares no ``class_url``, so it has no
-            collection to request. Unlike an ``AttributeError``, it is not
-            swallowed by ``hasattr()`` or by ``getattr()`` with a default.
+        UsageError: If the class declares no ``class_url``, or its
+            ``class_url`` is not a ``str``, as ``None`` is in a base class that
+            leaves it to its subclasses, so it has no collection to request.
+            Unlike an ``AttributeError``, it is not swallowed by ``hasattr()``
+            or by ``getattr()`` with a default.
     """
     try:
-        return cls.class_url
+        url = cls.class_url
     except AttributeError:
         raise UsageError(
             f"{cls.__name__} declares no class_url, so it has no URL to "
             'request. Declare it, as class_url = "/things/"'
         ) from None
+    if not isinstance(url, str):
+        raise UsageError(
+            f"{cls.__name__}.class_url is a {type(url).__name__}, not a str, "
+            "so it has no URL to request. Declare it, as "
+            'class_url = "/things/"'
+        )
+    return url
 
 
 _KEY_TYPES: Mapping[Any, str] = MappingProxyType(
