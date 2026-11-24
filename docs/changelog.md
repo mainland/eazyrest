@@ -601,10 +601,6 @@ describe them further.
   object, `refresh()`, `delete()`, `create()`, and the query methods, where
   `v1.0.0a5` raised an `AttributeError`, which `hasattr()` and `getattr()` with
   a default swallow.
-- `encode_json()` raises `TypeError` for the annotations that a field refuses,
-  `Collection[User]`, `Iterable[User]`, `list[User | None]`, and
-  `list[list[User]]`, also optional or in a `NewType`, where `v1.0.0a5` encoded
-  them as lists.
 - A string or bytes given as `API.redirect_origins` raises `TypeError` before
   the request, saying to give a collection of origins, where `v1.0.0a5` read it
   as a collection of its characters, so that every request raised the
@@ -1100,7 +1096,10 @@ that can break code written for 0.9.0, followed by what to do about it.
 - `encode_json(value, annotation, *, model=None)`, which encodes a request body
   or a query parameter as a field annotated `annotation` writes it, by the
   default conversion table or by `model`'s, for `API.post(json=...)` and the
-  other request methods, which send `json=` as it is given.
+  other request methods, which send `json=` as it is given. It refuses the
+  annotations that a field refuses, such as `Collection[User]`,
+  `Iterable[User]`, `list[User | None]`, and `list[list[User]]`, also optional
+  or in a `NewType`, with `TypeError`.
 - Eager and lazy write modes, `save()`, `refresh()`, `update_from_json()`,
   detection of in-place changes to field values, and `merge_response()`.
 - For Django REST Framework APIs: `write_map=` for a relation read nested and
