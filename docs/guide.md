@@ -1799,10 +1799,11 @@ origins as `follow_next_links()` does.
 `filter()` iterates every page of a collection. To show one page at a time
 instead, as a paginated view does, call `get_page()`, which takes the same
 arguments as `filter()`, and `url=`, and returns a `Page` of objects. Its
-`count` is the size of the whole collection, if the page reports it, and
-`next_url` and `previous_url` are the URLs of the pages around it.
-`next_page()` and `previous_page()` request those pages with the same API,
-request options, and prefetch, and return `None` at either end:
+`count` is the size of the whole collection, if the page reports it as an
+integer that is not negative, and `next_url` and `previous_url` are the URLs of
+the pages around it. `next_page()` and `previous_page()` request those pages
+with the same API, request options, and prefetch, and return `None` at either
+end:
 
 ```python
 page = Todo.get_page(completed=False)

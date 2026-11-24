@@ -644,6 +644,9 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A `count` below zero in a page is read as no count, as a `count` of another
+  type is, so `Page.count` and the `count` of a query's results are `None`.
+  `v1.0.0a5` passed the negative number on.
 - A `uuid.UUID` field that is no key reads only the four spellings that a key
   reads: the hyphenated, compact, braced, and URN forms, in ASCII hex. Any
   other text raises `FieldConversionError`, as a date, a time, a decimal, a
