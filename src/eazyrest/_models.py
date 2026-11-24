@@ -4586,7 +4586,7 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         """
         new = renamed[name]
         if new in defs:
-            return bool(defs[new] == rewrite(own[name]))
+            return _json_equal(defs[new], rewrite(own[name]))
         return all(renamed[other] != new for other in own if other != name)
 
     # Renaming a definition changes the definitions that refer to it, which

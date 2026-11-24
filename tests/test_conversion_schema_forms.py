@@ -135,3 +135,48 @@ def test_a_function_that_returns_no_mapping_is_refused(schema: Any) -> None:
     with pytest.raises(FieldConversionError) as caught:
         Holder.json_schema()
     assert isinstance(caught.value.__cause__, TypeError)
+
+
+class Bit:
+    """A value whose definition of ``Flag`` is the numbers 0 and 1."""
+
+
+class Truth:
+    """A value whose definition of ``Flag`` is the booleans."""
+
+
+@pytest.mark.parametrize("mode", ["read", "write"])
+def test_definitions_that_differ_as_true_and_one_are_kept_apart(
+    mode: Literal["read", "write"],
+) -> None:
+    """Python's ``True == 1`` does not make two definitions one."""
+
+    @json_object
+    class Switch(JSONObject):
+        """A model whose conversions define ``Flag`` differently."""
+
+        conversions: ClassVar[Mapping[Any, Conversion]] = {
+            Bit: conversion(
+                {
+                    "$ref": "#/$defs/Flag",
+                    "$defs": {"Flag": {"enum": [0, 1]}},
+                }
+            ),
+            Truth: conversion(
+                {
+                    "$ref": "#/$defs/Flag",
+                    "$defs": {"Flag": {"enum": [False, True]}},
+                }
+            ),
+        }
+        class_url = "/switches/"
+        id: int
+        bit: Bit
+        truth: Truth
+
+    schema = Switch.json_schema(mode)
+    assert schema["$defs"]["Flag"]["enum"] == [0, 1]
+    assert schema["$defs"]["Flag"]["enum"][0] is not False
+    assert schema["$defs"]["Flag_2"]["enum"] == [False, True]
+    assert schema["properties"]["bit"] == {"$ref": "#/$defs/Flag"}
+    assert schema["properties"]["truth"] == {"$ref": "#/$defs/Flag_2"}
