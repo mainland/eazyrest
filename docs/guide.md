@@ -2312,10 +2312,12 @@ exception type that it replaced, so code written for that type keeps working:
   another origin, or to a page already read.
 - `ResponseShapeError`, a `TypeError` and a `ValueError`, for a response that
   is not JSON, holds non-finite or unrepresentable numbers, or does not have
-  the expected shape. Its message does not quote the body. Its `response` is
-  the response that is refused, and it may be `None`, as for an error that is
-  raised from decoded JSON in a hook such as `object_json()`, so test it before
-  use.
+  the expected shape. A body is decoded as UTF-8, or as the charset that the
+  response declares, and a body that does not decode, as Latin-1 text served as
+  `application/json`, is not JSON. Its message does not quote the body. Its
+  `response` is the response that is refused, and it may be `None`, as for an
+  error that is raised from decoded JSON in a hook such as `object_json()`, so
+  test it before use.
 - `UsageError`, a `RuntimeError`, for a model without a registered API, and for
   other uses that eazyrest does not support, such as a model that declares no
   `class_url`, or a `write_options()` block that ends out of order.

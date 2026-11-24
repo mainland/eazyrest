@@ -644,6 +644,12 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- A response body is decoded as UTF-8, or as the charset that the response
+  declares, and one that does not decode raises `ResponseShapeError`, as a body
+  that is not JSON does. `v1.0.0a5` replaced each bad byte with U+FFFD and read
+  the result, so that `save(full=True)` wrote the replacement character back,
+  and it guessed the charset of a body that declared none. A body in UTF-16
+  that declares no charset no longer reads.
 - A redirect or a page link to port 0 of the request's host is refused as a
   redirect or a link to another origin, where `v1.0.0a5` took it for the
   scheme's default port, and the request then failed with a `ConnectionError`

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import codecs
 import contextvars
+import json
 import math
 import re
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
+from email.message import Message
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import requests
@@ -218,8 +221,9 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
         The decoded JSON value.
 
     Raises:
-        ResponseShapeError: If the body is not JSON. The message does not
-            quote the body.
+        ResponseShapeError: If the body is not JSON, or is not text in the
+            charset that the response declares, or in UTF-8 if it declares
+            none. The message does not quote the body.
         LimitExceeded: If the JSON nests more deeply than ``max_depth``, or
             too deeply for Python's decoder.
     """
@@ -228,8 +232,10 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
         f"{resp.status_code},"
     )
     try:
-        value = resp.json(
-            parse_constant=_invalid_json_constant, parse_float=_finite_float
+        value = json.loads(
+            _body_text(resp),
+            parse_constant=_invalid_json_constant,
+            parse_float=_finite_float,
         )
     except ValueError as err:
         raise ResponseShapeError(
@@ -246,6 +252,41 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             f"{where} holds JSON nested more than {max_depth} levels deep",
         )
     return value
+
+
+def _body_text(resp: Response) -> str:
+    """Decode a response's body strictly, as the response declares.
+
+    JSON that systems exchange is UTF-8, by RFC 8259, section 8.1, and a body
+    that is not valid in its charset must not read as other text, which
+    ``requests`` would do by replacing each bad byte with U+FFFD, or by
+    guessing the charset of a body that declares none.
+
+    Args:
+        resp: Response whose body is decoded.
+
+    Returns:
+        The body as text. An initial byte order mark is dropped from a body
+        that is UTF-8.
+
+    Raises:
+        ValueError: If the body does not decode in the charset that the
+            response declares, UTF-8 if it declares none, or the charset is
+            unknown.
+    """
+    header = Message()
+    header["Content-Type"] = resp.headers.get("Content-Type", "")
+    charset = header.get_content_charset() or "utf-8"
+    try:
+        codec = codecs.lookup(charset)
+    except LookupError as err:
+        raise ValueError("The response declares an unknown charset") from err
+    if codec.name == "utf-8":
+        charset = "utf-8-sig"
+    try:
+        return resp.content.decode(charset)
+    except UnicodeDecodeError as err:
+        raise ValueError("The body is not valid text") from err
 
 
 def _invalid_json_constant(value: str) -> NoReturn:

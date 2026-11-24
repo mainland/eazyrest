@@ -1328,7 +1328,8 @@ class API:
 
         Raises:
             ResponseShapeError: If the body is not valid JSON with finite,
-                representable numbers.
+                representable numbers, or does not decode as UTF-8 or as the
+                charset that the response declares.
             LimitExceeded: If JSON nesting exceeds ``max_json_depth``.
         """
         return _response_json(resp, self.max_json_depth)
