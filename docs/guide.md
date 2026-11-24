@@ -1254,18 +1254,22 @@ relation `user`, and a path through a relation by the relation's JSON key, as
 `userId__id`. A name is read as the longest key of a field that it starts with,
 so a key that holds `__`, as `doc__id` for a key `id` or `the__title` for a
 field `title`, refuses a collection too. A field that is a collection takes a
-collection by its JSON key alone, as by its name. A JSON key and a write key
-send no conversion, so one given a value other than a string, a number, or
-`None`, such as a boolean, an enum member, a `datetime`, a `Decimal`, or an
-instance of a class that `conversions` registers, raises `ValueError` naming
-the parameter and advising the field's name with the same suffix, as
-`span=Span(1, 2)`. So does each item of a lookup that takes several values. The
-name `flag` sends `true` for `True`, which its JSON key would send as `True`. A
-model object is the exception for a relation, which both names send as its key,
-but one given for a field whose type is not defined yet is refused. A string,
-an integer, or a float is sent as given. An empty text in a parameter that
-takes one value is sent, as in `Todo.filter(title="")`, which sends `title=`,
-and django-filter reads it as no filter, so the query matches every object.
+collection by its JSON key alone, as by its name. A name is resolved once, to
+the field, the kind of key, and the suffix after it, and what the parameter
+takes follows from that. A JSON key that ends in `__in` or `__range`, as
+`opt__in` for a field `opt`, takes one value, and `opt__in__in` takes several.
+A JSON key and a write key send no conversion, so one given a value other than
+a string, a number, or `None`, such as a boolean, an enum member, a `datetime`,
+a `Decimal`, or an instance of a class that `conversions` registers, raises
+`ValueError` naming the parameter and advising the field's name with the same
+suffix, as `span=Span(1, 2)`. So does each item of a lookup that takes several
+values. The name `flag` sends `true` for `True`, which its JSON key would send
+as `True`. A model object is the exception for a relation, which both names
+send as its key, but one given for a field whose type is not defined yet is
+refused. A string, an integer, or a float is sent as given. An empty text in a
+parameter that takes one value is sent, as in `Todo.filter(title="")`, which
+sends `title=`, and django-filter reads it as no filter, so the query matches
+every object.
 
 A lookup on a field, such as `due__gte` or `status__in`, is a parameter of the
 field's Python name, then `__`, then a suffix. The suffixes `exact`, `in`,
@@ -1346,12 +1350,13 @@ it is sent under its write key and kept under its JSON key for the response
 merge. A Python name of a field comes first, and a name that is the key's JSON
 or write key and also another field's raises `TypeError`, naming the fields,
 before any request, as do two names of one field, such as
-`create(id=7, postId=8)`. Any other name that is no field is sent as it is,
-except a value that is not made of JSON types, which raises `TypeError` before
-any request: a tuple, which would read back as a list, a mapping with a key
-that is not a string, and a generator. A float that is not finite, and a value
-that holds itself or nests more than 128 levels deep, raise `ValueError` before
-any request, and the message names the value as `[key]`. The lookup of
+`create(id=7, postId=8)`. Any other name that is no field is sent as it is, and
+`_pk`, another name of the key's property, is such a name. The exception is a
+value that is not made of JSON types, which raises `TypeError` before any
+request: a tuple, which would read back as a list, a mapping with a key that is
+not a string, and a generator. A float that is not finite, and a value that
+holds itself or nests more than 128 levels deep, raise `ValueError` before any
+request, and the message names the value as `[key]`. The lookup of
 `get_or_create()` builds the key under its JSON or write key too, so a `UUID`
 given in uppercase is sent in the query and in the `POST` in one spelling,
 where `filter()` sends such a name as it was given. A JSON key or write key

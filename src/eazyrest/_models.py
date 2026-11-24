@@ -2547,16 +2547,13 @@ class _Parameter:
     several: bool
     """Whether it is a lookup that takes several values."""
 
-    own: bool
-    """Whether it is a field's own parameter, which a creation sends."""
+    ranged: bool = False
+    """Whether it is a ``__range``, which takes two values."""
 
     key: RelatedType | None = None
-    """The relation by which an operand that is no model is built, for the
-    model's own key field, so that the key constructor builds it."""
-
-    model: RelatedType | None = None
-    """The relation by which an object of the model itself is built, for the
-    model's own key field, which gives its own key."""
+    """The relation by which an operand is built, for the model's own key
+    field, so that the key constructor builds an operand that is no model and
+    gives an object of the model its own key."""
 
     one_value: bool = False
     """Whether it is a path through a relation that compares one value, so
@@ -3218,6 +3215,9 @@ def _pk_property_of(cls: type[JSONObject]) -> JSONProperty | None:
 def _field_named(cls: type[Any], name: str) -> JSONProperty | None:
     """Return the JSON-backed field that a class has under a name.
 
+    Only a name in ``_json_fields`` is a field. The key's property is also the
+    class attribute ``_pk``, which is another name of it and no field.
+
     The class attribute is read without running its descriptor, since any name
     may be given, and ``api`` is a descriptor that raises for a class with no
     registered API.
@@ -3229,6 +3229,8 @@ def _field_named(cls: type[Any], name: str) -> JSONProperty | None:
     Returns:
         The field, or ``None`` if the name is no field of the class.
     """
+    if name not in getattr(cls, "_json_fields", ()):
+        return None
     try:
         found = inspect.getattr_static(cls, name)
     except AttributeError:
@@ -7934,6 +7936,27 @@ class JSONObject:
         return payload
 
     @classmethod
+    def _creation_names_field(
+        cls, name: str, key_property: JSONProperty | None
+    ) -> bool:
+        """Return whether a name given to ``create()`` sets a field.
+
+        Args:
+            name: The name, as a keyword argument or a key of ``fields``.
+            key_property: The model's key field, if it has one.
+
+        Returns:
+            Whether the name is a field's Python name, or ``pk`` or the JSON or
+            write key of the key field. Any other name is an extra, which the
+            creation sends as it is.
+        """
+        return _field_named(cls, name) is not None or (
+            key_property is not None
+            and name
+            in ("pk", key_property.json_field, key_property.write_field)
+        )
+
+    @classmethod
     def _created_field(
         cls, name: str, key_property: JSONProperty | None
     ) -> str:
@@ -7956,12 +7979,13 @@ class JSONObject:
                 JSON or write key of another field, so that it names no one
                 field.
         """
-        if key_property is None or _field_named(cls, name) is not None:
+        if _field_named(
+            cls, name
+        ) is not None or not cls._creation_names_field(name, key_property):
             return name
+        assert key_property is not None
         if name == "pk":
             return key_property.field
-        if name not in (key_property.json_field, key_property.write_field):
-            return name
         others = sorted(
             field
             for field in getattr(cls, "_json_fields", ())
@@ -8203,12 +8227,31 @@ class JSONObject:
         return None if found is None else found[1]
 
     @classmethod
+    def _key_text(cls, named: _Name) -> str:
+        """Return the text of the key that a resolved name starts with.
+
+        Args:
+            named: The result of ``_resolve_name()``.
+
+        Returns:
+            The field's Python name, ``pk``, or the field's JSON key or write
+            key, by the kind of key that the name starts with.
+        """
+        descriptor: JSONProperty = getattr(cls, named.field)
+        keys: dict[str, str] = {
+            "python": named.field,
+            "pk": "pk",
+            "json": descriptor.json_field,
+            "write": descriptor.write_field,
+        }
+        return keys[named.by]
+
+    @classmethod
     def _field_parameter(
         cls,
         field: str,
         wire: str,
         *,
-        several: bool,
         own: bool,
         suffix: str = "",
     ) -> _Parameter:
@@ -8217,10 +8260,10 @@ class JSONObject:
         Args:
             field: Python name of the field.
             wire: The name that the parameter is sent under.
-            several: Whether it is a lookup that takes several values.
             own: Whether it is the field's own parameter.
             suffix: The lookup suffix after the field's name, empty for the
-                field's own parameter.
+                field's own parameter. A lookup of several values is a suffix
+                of ``in`` or ``range``.
 
         Returns:
             The parameter. The model's key field builds each operand that is no
@@ -8240,22 +8283,19 @@ class JSONObject:
                 else collection.item_type
             )
             key = None
-            model = None
             key_suffix = None
             if descriptor is _pk_property_of(cls):
                 key_suffix = "" if suffix == "exact" else suffix
-                model = RelatedType(cls)
-                key = model
+                key = RelatedType(cls)
         return _Parameter(
             wire,
             field,
             analyzed,
             collection if own else None,
             structured,
-            several,
-            own,
+            suffix in ("in", "range"),
+            suffix == "range",
             key=key,
-            model=model,
             key_suffix=key_suffix,
         )
 
@@ -8282,12 +8322,25 @@ class JSONObject:
             FieldConversionError: If the type of the field that the parameter
                 compares cannot be resolved.
         """
-        several = name.endswith(("__in", "__range"))
         named = cls._resolve_name(name)
         if named is None:
-            return _Parameter(name, None, None, None, False, several, False)
+            # Only a name of no field is read as text.
+            return _Parameter(
+                name,
+                None,
+                None,
+                None,
+                False,
+                name.endswith(("__in", "__range")),
+                name.endswith("__range"),
+            )
         descriptor = getattr(cls, named.field)
         suffix = named.suffix
+        # A path through a relation ends with its own lookup, as in
+        # ``owner__id__in``.
+        last = None if suffix is None else suffix.rpartition("__")[2]
+        several = last in ("in", "range")
+        ranged = last == "range"
         compares = suffix is None or suffix in _VALUE_LOOKUPS
         if named.by == "python":
             wire = (
@@ -8297,12 +8350,12 @@ class JSONObject:
             )
             if compares:
                 return dataclasses.replace(
-                    cls._compared_parameter(named, wire, several), named=named
+                    cls._compared_parameter(named, wire), named=named
                 )
         elif named.by == "pk":
             if compares:
                 return dataclasses.replace(
-                    cls._compared_parameter(named, name, several), named=named
+                    cls._compared_parameter(named, name), named=named
                 )
             wire = name
         else:
@@ -8327,7 +8380,7 @@ class JSONObject:
             None,
             False,
             several,
-            False,
+            ranged,
             one_value=one,
             key_suffix=key_suffix,
             named=named,
@@ -8366,9 +8419,7 @@ class JSONObject:
         ):
             return False
         try:
-            equivalent = cls._compared_parameter(
-                named, name, parameter.several
-            )
+            equivalent = cls._compared_parameter(named, name)
         except (FieldConversionError, NameError):
             return False
         if equivalent.conversion is None or equivalent.structured:
@@ -8422,15 +8473,12 @@ class JSONObject:
         return isinstance(analyzed, RelatedType)
 
     @classmethod
-    def _compared_parameter(
-        cls, named: _Name, wire: str, several: bool
-    ) -> _Parameter:
+    def _compared_parameter(cls, named: _Name, wire: str) -> _Parameter:
         """Return the parameter that compares a field's values by a name.
 
         Args:
             named: The field and the suffix, which is a value suffix or none.
             wire: The name that the parameter is sent under.
-            several: Whether the name is a lookup that takes several values.
 
         Returns:
             The parameter that the field's Python name, or ``pk`` for its key,
@@ -8443,7 +8491,6 @@ class JSONObject:
         return cls._field_parameter(
             named.field,
             wire,
-            several=several and named.suffix is not None,
             own=own,
             suffix=named.suffix or "",
         )
@@ -8581,8 +8628,20 @@ class JSONObject:
                 f"{parameter.field}__in"
             )
         if parameter.one_value and _is_collection_value(value) and not whole:
-            head, _, tail = name.rpartition("__")
-            several_name = head if tail in _ONE_VALUE_LOOKUPS else name
+            named = parameter.named
+            assert named is not None
+            last = (
+                ""
+                if named.suffix is None
+                else named.suffix.rpartition("__")[2]
+            )
+            # A lookup of one value gives way to ``in``, and any other name
+            # takes ``__in`` after it.
+            several_name = (
+                name.removesuffix(f"__{last}")
+                if last in _ONE_VALUE_LOOKUPS
+                else name
+            )
             raise ValueError(
                 f"Query parameter {name} for {cls.__name__} cannot be sent, "
                 "because it compares one value and its value is a "
@@ -8627,25 +8686,20 @@ class JSONObject:
         def convert(item: Any) -> Any:
             conversion = parameter.conversion
             if conversion is not None:
-                if parameter.key is not None and isinstance(item, JSONObject):
-                    _check_own_key_object(item, cls)
-                if (
-                    parameter.model is not None
-                    and isinstance(item, JSONObject)
-                    and (parameter.key is not None or isinstance(item, cls))
-                ):
-                    # An object gives the key that its class builds, or is
-                    # refused as another model.
-                    conversion = parameter.model
-                elif (
-                    parameter.key is not None
-                    and item is not None
-                    and not isinstance(item, (JSONObject, Mapping))
-                    and not _is_collection_value(item)
-                ):
-                    # A value that no key could be is left to the checks of
-                    # what a query can send.
-                    conversion = parameter.key
+                if parameter.key is not None:
+                    if isinstance(item, JSONObject):
+                        # An object gives the key that its class builds, or is
+                        # refused as another model.
+                        _check_own_key_object(item, cls)
+                        conversion = parameter.key
+                    elif (
+                        item is not None
+                        and not isinstance(item, Mapping)
+                        and not _is_collection_value(item)
+                    ):
+                        # A value that no key could be is left to the checks of
+                        # what a query can send.
+                        conversion = parameter.key
                 return _query_value(cls._to_json(item, conversion))
             if unconverted and not _is_sent_as_given(item):
                 if isinstance(item, JSONObject):
@@ -8699,7 +8753,7 @@ class JSONObject:
             for operand in operands
         ):
             problem = "contains a collection, and requests flattens it"
-        elif several and name.endswith("__range") and len(operands) != 2:
+        elif parameter.ranged and len(operands) != 2:
             problem = (
                 f"holds {len(operands)} items, and a range takes two, "
                 "its start and its end"
@@ -10206,54 +10260,28 @@ class JSONObject:
         _query_request_options(request_options)
         _request_options(request_options)
 
-        # The lookup and the creation each iterate a collection value, so read
-        # a single-pass iterable, such as a generator, only once. A value that
-        # the field's conversion takes whole is no collection of values, and
-        # the query reads it itself.
-        def read_once(
-            values: Mapping[str, Any], *, creates: bool = False
-        ) -> dict[str, Any]:
-            """Return ``values`` with each single-pass iterable read.
-
-            A single-pass iterable under a name that is no field, and that the
-            creation sends, is left as it is, so that the creation refuses it
-            as ``create()`` does. A name that only the lookup reads is not
-            sent, so the lookup's reading of it is the only one.
-            """
-            return {
-                name: list(value)
-                if isinstance(value, Iterable)
-                and not isinstance(value, (Collection, str, bytes, Mapping))
-                and not cls._takes_whole_value(name, value)
-                and not (
-                    cls._resolve_name(name) is None
-                    and (creates or "__" not in name)
-                )
-                else value
-                for name, value in values.items()
-            }
-
         if defaults is not None:
             _check_names_mapping(defaults, "defaults")
-        kwargs = read_once(_query_params(params, kwargs))
+        query = _query_params(params, kwargs)
         key_property = _pk_property_of(cls)
-        names = {name: cls._resolve_name(name) for name in kwargs}
+        # Each name is resolved once, as the lookup reads it.
+        names = {name: cls._resolve_name(name) for name in query}
         for name, named in names.items():
             if (
                 named is not None
                 and named.by in ("json", "write")
                 and named.suffix is None
-                and "__" in name
+                and "__" in cls._key_text(named)
             ):
                 # The lookup would read the name as a field and a suffix, and
                 # the creation would not send it as the field.
                 if key_property is not None and (
                     named.field == key_property.field
                 ):
-                    advice = f"the key as {key_property.field} or pk"
+                    advice = f"the key up as {key_property.field} or pk"
                     subject = "the key's"
                 else:
-                    advice = f"{named.field} as {named.field}"
+                    advice = f"{named.field} up as {named.field}"
                     subject = f"{named.field}'s"
                 raise ValueError(
                     f"Query parameter {name} for {cls.__name__} is "
@@ -10270,6 +10298,39 @@ class JSONObject:
             """
             named = names[name]
             return "__" not in name if named is None else named.suffix is None
+
+        # The lookup and the creation each iterate a collection value, so read
+        # a single-pass iterable, such as a generator, only once. A value that
+        # the field's conversion takes whole is no collection of values, and
+        # the query reads it itself.
+        def read_once(
+            values: Mapping[str, Any], *, creates: bool = False
+        ) -> dict[str, Any]:
+            """Return ``values`` with each single-pass iterable read.
+
+            A single-pass iterable under a name that the creation sends as an
+            extra, a name that is no field's Python name and does not set the
+            key, is left as it is, so that the creation refuses it as
+            ``create()`` does. A name that only the lookup reads is not sent,
+            so the lookup's reading of it is the only one.
+            """
+
+            def sent_as_an_extra(name: str) -> bool:
+                if not creates and not sets_field(name):
+                    return False
+                return not cls._creation_names_field(name, key_property)
+
+            return {
+                name: list(value)
+                if isinstance(value, Iterable)
+                and not isinstance(value, (Collection, str, bytes, Mapping))
+                and not cls._takes_whole_value(name, value)
+                and not sent_as_an_extra(name)
+                else value
+                for name, value in values.items()
+            }
+
+        kwargs = read_once(query)
 
         create_kwargs = {
             name: value for name, value in kwargs.items() if sets_field(name)
