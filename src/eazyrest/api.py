@@ -661,7 +661,9 @@ class _Budget:
         body of each redirect in ``resp.history``, so the bodies of one request
         count against one size limit. The length that a response declares is
         not checked for a response that has no body, a 1xx, 204, or 304
-        response, which may declare the length of the entity that it describes.
+        response or the response to a ``HEAD`` request, which may declare the
+        length of the entity that it describes. A session hook can send a
+        ``HEAD`` request while a request of the API is in flight.
 
         Args:
             resp: Response sent with ``stream=True``, whose body is unread.
@@ -688,7 +690,9 @@ class _Budget:
         # urllib3 reads no body for it, whatever it declares.
         declared = (
             ""
-            if resp.status_code < 200 or resp.status_code in (204, 304)
+            if resp.status_code < 200
+            or resp.status_code in (204, 304)
+            or resp.request.method == "HEAD"
             else resp.headers.get("Content-Length", "")
         )
         # A length longer than the limit's has more digits than int() reads

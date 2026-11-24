@@ -733,11 +733,13 @@ def test_discarded_retry_bodies_do_not_count_against_the_size_limit(
     assert len(attempts) == 3
 
 
-@pytest.mark.parametrize(("method", "status"), [("GET", 204), ("GET", 304)])
+@pytest.mark.parametrize(
+    ("method", "status"), [("GET", 204), ("GET", 304), ("HEAD", 200)]
+)
 def test_response_without_a_body_may_declare_a_length_over_the_limit(
     local_server: Callable[[Any], str], method: str, status: int
 ) -> None:
-    """A 204 or a 304 response has no body, so its length is free.
+    """A 204, a 304, or a ``HEAD`` response has no body, so its length is free.
 
     Such a response may carry the ``Content-Length`` of the entity that it
     describes.
@@ -756,10 +758,53 @@ def test_response_without_a_body_may_declare_a_length_over_the_limit(
     api = API(base_url)
     api.max_response_bytes = 100
 
-    resp = api._send(method, api.session.get, "/x")
+    send = api.session.head if method == "HEAD" else api.session.get
+    resp = api._send(method, send, "/x")
 
     assert resp.status_code == status
     assert resp.content == b""
+
+
+def test_a_head_that_a_session_hook_sends_may_declare_a_length_over_the_limit(
+    local_server: Callable[[Any], str],
+) -> None:
+    """A hook that learns the size of a download is not refused for it.
+
+    The adapter bounds every response that it reads while a request of the API
+    is in flight, and the response to a ``HEAD`` request declares the length of
+    the entity that it describes, which has no body here.
+    """
+
+    def handle(handler: Any) -> None:
+        if handler.command == "HEAD":
+            handler.send_response(200)
+            handler.send_header("Content-Length", "1000")
+            handler.end_headers()
+            return
+        body = b"{}"
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    base_url = local_server(handle)
+    api = API(base_url)
+    api.max_response_bytes = 100
+    sizes: list[str] = []
+
+    def learn_size(resp: Any, **kwargs: Any) -> Any:
+        """Ask for the size of a download from a response hook."""
+        if resp.request.method == "GET":
+            sizes.append(
+                api.session.head(base_url + "big").headers["Content-Length"]
+            )
+        return resp
+
+    api.session.hooks["response"].append(learn_size)
+
+    assert api.get("/item").status_code == 200
+    assert sizes == ["1000"]
 
 
 def test_exhausted_retry_can_return_its_error_body(
