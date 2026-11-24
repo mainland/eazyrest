@@ -315,3 +315,76 @@ def test_parse_duration_keeps_whitespace_inside_a_duration(text: str) -> None:
         text: Duration written with whitespace between its parts.
     """
     assert isinstance(parse_duration(text), datetime.timedelta)
+
+
+MICRO = chr(0x00B5)
+GREEK_MU = chr(0x03BC)
+KELVIN = chr(0x212A)
+LONG_S = chr(0x017F)
+CAPITAL_MU = chr(0x039C)
+FULLWIDTH_H = chr(0xFF48)
+DOTLESS_I = chr(0x0131)
+DOTTED_CAPITAL_I = chr(0x0130)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"1w{KELVIN}",
+        "1 " + "weeks".replace("k", KELVIN),
+        f"1{KELVIN}",
+        f"1m{LONG_S}",
+        f"1{LONG_S}",
+        f"1{CAPITAL_MU}s",
+        f"1{FULLWIDTH_H}",
+        f"1{DOTLESS_I}",
+        f"1{DOTTED_CAPITAL_I}",
+    ],
+    ids=[
+        "kelvin sign for k in wk",
+        "kelvin sign in weeks",
+        "kelvin sign alone",
+        "long s after m",
+        "long s alone",
+        "capital Greek mu",
+        "fullwidth h",
+        "dotless i",
+        "dotted capital i",
+    ],
+)
+def test_parse_duration_reads_no_non_ascii_letter_as_a_unit_letter(
+    text: str,
+) -> None:
+    """A letter that case folding turns into an ASCII letter is no unit.
+
+    Args:
+        text: Duration whose unit holds such a letter.
+    """
+    with pytest.raises(ValueError, match="Duration"):
+        parse_duration(text)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1wk", datetime.timedelta(weeks=1)),
+        ("1WK", datetime.timedelta(weeks=1)),
+        ("1Wk", datetime.timedelta(weeks=1)),
+        ("1 Hours", datetime.timedelta(hours=1)),
+        ("2 SECONDS", datetime.timedelta(seconds=2)),
+        (f"1{MICRO}s", datetime.timedelta(microseconds=1)),
+        (f"1{GREEK_MU}s", datetime.timedelta(microseconds=1)),
+        (f"1{MICRO}S", datetime.timedelta(microseconds=1)),
+        ("1 mS", datetime.timedelta(milliseconds=1)),
+    ],
+)
+def test_parse_duration_reads_both_cases_of_the_ascii_unit_letters(
+    text: str, expected: datetime.timedelta
+) -> None:
+    """Units are spelled in either case, and the micro signs stay.
+
+    Args:
+        text: Duration with a unit.
+        expected: The duration it names.
+    """
+    assert parse_duration(text) == expected

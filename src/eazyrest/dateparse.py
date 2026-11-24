@@ -25,10 +25,12 @@ _CLOCK_RE = re.compile(
 
 # An optional sign followed by terms such as "1h", "30 m", or "1.5 hours,".
 _SIGN_RE = re.compile(r"(?P<sign>[+-]?)\s*")
+# Both cases of the ASCII letters are spelled out, since a case-insensitive
+# match also takes U+212A, the Kelvin sign, for "k", and U+017F, the long s,
+# for "s". The micro sign and the Greek small mu are in the class on purpose.
 _TERM_RE = re.compile(
     r"(?P<number>[0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*"
-    r"(?P<unit>[a-z\u00b5\u03bc]+)\s*,?\s*",
-    re.IGNORECASE,
+    r"(?P<unit>[a-zA-Z\u00b5\u03bc]+)\s*,?\s*"
 )
 
 # Units of duration terms, keyed by lowercase name, mapped to the timedelta

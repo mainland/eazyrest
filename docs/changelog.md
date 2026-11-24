@@ -644,6 +644,11 @@ describe them further.
   `null`, for a class that does not override `object_json()`, raises
   `ResponseShapeError` that blames the response. It named a method that the
   program never wrote.
+- `parse_duration()` reads the letters of a unit only as ASCII letters, with
+  the micro sign and the Greek small mu, in either case. `v1.0.0a5` matched the
+  unit without regard to case, so U+212A, the Kelvin sign, read as `k`, and
+  `"1w"` followed by it was one week. A spelling that read through such a
+  letter is refused, as is the Greek capital mu, which read as the small one.
 - A default in the class body of a decorated model, as in
   `name: str = "anonymous"`, raises `TypeError` naming the class and the field
   when the class is decorated. `v1.0.0a5` decorated it and dropped the default,
