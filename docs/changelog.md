@@ -662,14 +662,22 @@ describe them further.
 - An assignment to a public name that is no field raises `AttributeError` whose
   message says that the name is no field, where it said that the object has no
   such attribute, which is false of a property with a setter.
-- A set, a frozenset, or another set-like value given to a sequence of related
-  objects, as `post.tags = {tag_a, tag_b}` for `tags: list[Tag]`, or to
-  `create()` or `get_or_create()`, raises `FieldConversionError` naming the
-  field and saying that a set has no order to write, before any request.
-  `v1.0.0a5` wrote the keys in the set's iteration order, which differs from
-  one run to the next for a model's hash. A set field still takes a set, and a
-  query still sends a set sorted, but `get_or_create()` with such a set raises
-  before its lookup, since its creation could not write it.
+- A set, a frozenset, or another set-like value given to a sequence field,
+  whatever its items, as `post.tags = {tag_a, tag_b}` for `tags: list[Tag]` or
+  `post.labels = {"a", "b"}` for `labels: list[str]`, also for a `tuple`, a
+  `deque`, or an inner list of a nested list, or to `create()` or
+  `get_or_create()`, raises `FieldConversionError` naming the field and saying
+  that a set has no order to write, before any request. A set put into a nested
+  sequence in place is refused when `save()` would send it. `v1.0.0a5` wrote
+  the items in the set's iteration order, which differs from one run to the
+  next for a model's hash and for a string's, so equal sets could send
+  different bodies and a save could send a change for an equal set. A set field
+  still takes a set, and a query still sends a set sorted, but
+  `get_or_create()` with such a set raises before its lookup, since its
+  creation could not write it. `encode_json()` refuses such a set for a
+  sequence annotation with a `TypeError`, where `v1.0.0a5` returned its items
+  in iteration order. Give `sorted()` or `list()` of the set, or annotate the
+  field as a set.
 - A set whose items have no hash raises `TypeError` when the class is
   decorated, also for items that are a `NewType` of `list` or `dict`, or a
   `NamedTuple` or a frozen dataclass with a member that has no hash, as a list

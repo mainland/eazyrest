@@ -755,10 +755,17 @@ text. Equal sets therefore write equal JSON, and replacing a set with an equal
 one is not a change that `save()` sends, even when the server lists the items
 in another order. That holds for a field annotated as a set or frozenset, an
 optional one, or a `NewType` of either. A set nested in a list, tuple, or
-mapping field is compared in the server's order. A set whose items have no
-hash, as `set[dict[str, int]]`, `frozenset[list[int]]`, or a set of a dataclass
-that is not frozen, raises `TypeError` when the class is decorated, naming the
-field and the item type, since a set could hold none of its items. Any other
+mapping field is compared in the server's order. A set has no order to give a
+sequence, so a `set`, a `frozenset`, or a view of a dict's keys assigned to a
+field annotated as a list, a tuple, or a deque, or to an inner list of one,
+raises `FieldConversionError` before any request. The same holds for a set
+given to `create()` or `get_or_create()`, as a lookup or in `defaults=`, and
+for one put into a nested sequence in place and then saved. Give `sorted()` or
+`list()` of the set, or annotate the field as a set. A query still sends a set
+for such a field sorted. A set whose items have no hash, as
+`set[dict[str, int]]`, `frozenset[list[int]]`, or a set of a dataclass that is
+not frozen, raises `TypeError` when the class is decorated, naming the field
+and the item type, since a set could hold none of its items. Any other
 parameterized type, such as `Counter[str]`, raises `TypeError` when the class
 is decorated, because its items would otherwise pass through unconverted.
 Annotate a tuple of any length as `tuple[T, ...]`. As Python's types say,
@@ -799,30 +806,28 @@ say whether the order of the items counts. A sequence, a `list`, a `tuple`, a
 `deque`, `Sequence`, or `MutableSequence`, compares its keys in order. A set,
 `set`, `frozenset`, `Set`, or `MutableSet`, compares them without order and is
 sent as its distinct keys, sorted. A set field may hold two objects of one key,
-such as `User(id=7)` and `Admin(id=7)`, and sends the key once. A sequence
-cannot take a set, which has no order to write, so assigning a `set` or a
-`frozenset` to `members` raises `FieldConversionError` before any request, as
-does giving one to `create()` or `get_or_create()`. A query still sends a set
-for such a field sorted. Replacing an item with an object of the same key, such
-as one of a subclass, is not a change. `Collection[User]` and `Iterable[User]`,
-also optional or in a `NewType`, raise `TypeError` when the class is decorated,
-naming the field, because neither says. Declare `list[User]` or `set[User]`
-instead. `Iterable` is left for a related collection that a query loads. Every
-item has a key, so no item is `None` and no item is a collection of related
-objects: `list[User | None]` and `list[list[User]]`, also optional, in a
-`NewType`, or under another collection type, raise `TypeError` when the class
-is decorated, naming the field. An item that the server embeds without one
-raises `FieldConversionError` naming the field and the item's position when the
-field is read, as an embedded single relation without a key does, and so does a
-`null` item. A `None` item in a list, tuple, deque, or set that you assign, add
-in place and save, or pass to `create()` raises `FieldConversionError` naming
-the field, and for a sequence the item's position, before any request. An item
-that you add in place is a related object, as in `team.members.append(user)`. A
-bare key added so, as in `team.members.append(7)`, raises the same error when
-you save, where an assignment such as `team.members = [7]` takes the keys. A
-save of another field does not read or send a collection that you did not read.
-Declare items that have no key as a `TypedDict` or a dataclass, which need
-none.
+such as `User(id=7)` and `Admin(id=7)`, and sends the key once. A sequence of
+relations takes no set, as any sequence field takes none, which the paragraph
+on collection annotations above describes. Replacing an item with an object of
+the same key, such as one of a subclass, is not a change. `Collection[User]`
+and `Iterable[User]`, also optional or in a `NewType`, raise `TypeError` when
+the class is decorated, naming the field, because neither says. Declare
+`list[User]` or `set[User]` instead. `Iterable` is left for a related
+collection that a query loads. Every item has a key, so no item is `None` and
+no item is a collection of related objects: `list[User | None]` and
+`list[list[User]]`, also optional, in a `NewType`, or under another collection
+type, raise `TypeError` when the class is decorated, naming the field. An item
+that the server embeds without one raises `FieldConversionError` naming the
+field and the item's position when the field is read, as an embedded single
+relation without a key does, and so does a `null` item. A `None` item in a
+list, tuple, deque, or set that you assign, add in place and save, or pass to
+`create()` raises `FieldConversionError` naming the field, and for a sequence
+the item's position, before any request. An item that you add in place is a
+related object, as in `team.members.append(user)`. A bare key added so, as in
+`team.members.append(7)`, raises the same error when you save, where an
+assignment such as `team.members = [7]` takes the keys. A save of another field
+does not read or send a collection that you did not read. Declare items that
+have no key as a `TypedDict` or a dataclass, which need none.
 
 A related object that a field returns keeps your unsaved changes for as long as
 the field's JSON is unchanged. Loading the missing fields of an object, and
@@ -2223,7 +2228,10 @@ for a list. It converts by the default conversion table. Pass `model=` to
 convert by a model's table instead, as that model's fields would, such as
 `encode_json(body, Extension, model=Reservation)` for an API whose models
 declare their own `conversions`. A value that does not encode to JSON, such as
-a model under a key annotated `int`, raises `TypeError` naming its key.
+a model under a key annotated `int`, raises `TypeError` naming its key. A set,
+a frozenset, or a view of a dict's keys given for a sequence annotation such as
+`list[str]` raises `TypeError` saying that a set has no order to write, as an
+assignment does. Under `set[str]` it returns the items sorted.
 
 ### Limits
 

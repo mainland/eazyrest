@@ -135,13 +135,6 @@ def test_a_list_or_a_tuple_for_a_sequence_of_relations_keeps_its_order(
         assert post.json[field] == ["b", "a"]
 
 
-def test_a_set_for_a_sequence_of_plain_values_is_taken() -> None:
-    """Items that are not relations keep the behavior of a plain sequence."""
-    post = loaded()
-    post.scores = {3, 1, 2}  # type: ignore[assignment]
-    assert sorted(post.json["scores"]) == [1, 2, 3]
-
-
 def test_a_query_still_sends_a_set_for_a_sequence_sorted() -> None:
     """The refusal is for a write. A lookup compares sets by their keys."""
     with requests_mock.Mocker() as mocker:

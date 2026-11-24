@@ -7400,18 +7400,17 @@ class JSONObject:
                 )
                 is_set = _READ_AS[collection_type] in (set, frozenset)
                 if (
-                    relates
-                    and not is_set
+                    not is_set
                     and _WRITING.get()
                     and isinstance(value, AbstractSet)
                 ):
-                    # A set's iteration order depends on how it was built, and
-                    # an object's hash on its address, so a sequence written
-                    # from one would differ from one run to the next.
+                    # A set's iteration order depends on how it was built, a
+                    # string's hash on the process, and an object's hash on its
+                    # address, so a sequence written from one would differ from
+                    # one run to the next.
                     raise TypeError(
-                        "A set has no order to write as a sequence of "
-                        "related objects. Give a list or a tuple, or declare "
-                        "the field as a set"
+                        "A set has no order to write as a sequence. Give a "
+                        "list or a tuple, or declare the field as a set"
                     )
 
                 def write_item(item: Any) -> Any:
@@ -7809,7 +7808,13 @@ class JSONObject:
             current = self._field_cache[field]
             with _converting(type(self), field):
                 _refuse_bare_items(current, descriptor.analyzed_type)
-                encoded = self._to_json(current, descriptor.analyzed_type)
+                # A set put into a nested sequence in place is a value that a
+                # caller gave to be written, as an assigned one is.
+                token = _WRITING.set(True)
+                try:
+                    encoded = self._to_json(current, descriptor.analyzed_type)
+                finally:
+                    _WRITING.reset(token)
                 # A value that was read and not changed is not written, however
                 # deep it is, so only a change is counted.
                 if _json_equal(encoded, snapshot):

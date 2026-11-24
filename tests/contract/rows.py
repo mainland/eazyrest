@@ -286,6 +286,36 @@ class Shelf(Base):
     docset: set[Doc]
 
 
+@json_object
+class Labeled(Base):
+    """Sequences of plain values, a fixed-length tuple, and a set."""
+
+    class_url = "/labeled/"
+    id: int
+    labels: list[str]
+    codes: tuple[int, ...]
+    queue: deque[str]
+    pair: tuple[int, int]
+    grid: list[list[str]]
+    labelset: set[str]
+
+
+LABELED: dict[str, Any] = {
+    "id": 1,
+    "labels": ["x"],
+    "codes": [1],
+    "queue": ["x"],
+    "pair": [1, 2],
+    "grid": [["x"]],
+    "labelset": ["x"],
+}
+
+
+def labeled(**over: Any) -> Labeled:
+    """Return a labeled object read with every field present."""
+    return Labeled(json={**LABELED, **over})
+
+
 BODY: dict[str, Any] = {
     "postId": 1,
     "title": "t",
@@ -1296,6 +1326,63 @@ def assigned_owner_update(value: Any, world: World) -> Any:
 
 def created_owner_body(value: Any, world: World) -> Any:
     return world.body(lambda: Post.create(owner=value), "POST")
+
+
+SETSEQ = "a-set-given-to-a-plain-sequence-field"
+
+
+@row(SETSEQ)
+def a_set_given_to_a_plain_sequence_is_refused(world: World) -> None:
+    words = {"a", "b"}
+    numbers = {1, 2}
+    for field, value in (
+        ("labels", words),
+        ("labels", frozenset(words)),
+        ("labels", {"b": 1, "a": 2}.keys()),
+        ("codes", numbers),
+        ("codes", frozenset(numbers)),
+        ("codes", {2: 1, 1: 2}.keys()),
+        ("queue", words),
+        ("queue", frozenset(words)),
+        ("queue", {"b": 1, "a": 2}.keys()),
+        ("grid", [words]),
+    ):
+        refuses_assignment(
+            world, labeled(), field, value, f"Labeled.{field}", "order"
+        )
+        given: dict[str, Any] = {field: value}
+        calls = [
+            lambda: Labeled.create(**given),
+            lambda: Labeled.get_or_create(defaults=given),
+        ]
+        if field != "grid":
+            # A nested collection is no query value, so a lookup of it fails as
+            # a query does.
+            calls.append(lambda: Labeled.get_or_create(**given))
+        for call in calls:
+            raises(
+                world,
+                FieldConversionError,
+                call,
+                f"Labeled.{field}",
+                "order",
+            )
+
+
+@row(SETSEQ)
+def a_set_given_to_a_fixed_length_tuple_is_refused(world: World) -> None:
+    refuses_assignment(
+        world, labeled(), "pair", {1, 2}, "Labeled.pair", "Fixed-length"
+    )
+
+
+@row(SETSEQ)
+def a_set_field_and_a_query_send_sets_sorted(world: World) -> None:
+    obj = labeled()
+    obj.labelset = {"b", "a"}
+    assert world.body(obj.save, "PATCH") == {"labelset": ["a", "b"]}
+    query = world.query(lambda: list(Labeled.filter(labels={"b", "a"})))
+    assert query == "labels=a&labels=b"
 
 
 @row(OWNER)
