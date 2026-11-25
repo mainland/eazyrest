@@ -1390,6 +1390,10 @@ that can break code written for 0.9.0, followed by what to do about it.
   the adapters that `API` creates. Model writes reject response streaming and
   unfollowed final 3xx statuses. A full save loads partial state first, and
   multipart writes reject empty lists rather than silently omitting them.
+- A query and a write check `request_options` by the same rules in the same
+  order, so options that break two rules at once are refused for the same one.
+  A write that sets both `json` and `stream` now raises `TypeError` for the
+  body, as a query does, where it named `stream`.
 - Invalid JSON numbers raise `ResponseShapeError`, malformed error bodies give
   `APIError.data=None`, and JSON depth violations raise `LimitExceeded` for
   success and error responses alike. Bounded body reads preserve Requests'

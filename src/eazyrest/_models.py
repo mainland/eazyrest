@@ -3170,23 +3170,51 @@ def _check_merged_options(options: Mapping[str, Any]) -> None:
                     )
 
 
-def _query_request_options(
-    options: Mapping[str, Any] | None,
+# Request arguments that eazyrest sets itself for a write.
+_WRITE_BODY_ARGUMENTS = frozenset({"json", "data", "files"})
+
+_BODY_REFUSALS = {
+    "query": "because a query sends no body",
+    "write": "because the write builds the request body itself",
+}
+
+_STREAM_REFUSALS = {
+    "query": (
+        "Queries read their responses, so request_options cannot enable stream"
+    ),
+    "write": (
+        "Model writes cannot stream their responses. Use an API method "
+        "directly to read a streamed response."
+    ),
+}
+
+
+def _checked_request_options(
+    options: Mapping[str, Any] | None, kind: Literal["query", "write"]
 ) -> dict[str, Any]:
-    """Return the request options of a query, checked.
+    """Return the request options of a query or a write, checked.
+
+    This is the one rule for which request options a caller may set. A caller
+    may set the options that ``requests`` takes, but not a body or streaming,
+    and not the query parameters of a query, which it builds itself. A write
+    takes ``params``. The checks run in one order, so options that break two
+    rules are refused for the first.
 
     Args:
-        options: Keyword arguments for the query's requests, such as
-            ``headers``, as ``requests.Session.request()`` takes them.
+        options: Keyword arguments for the requests, such as ``headers``, as
+            ``requests.Session.request()`` takes them.
+        kind: ``"query"`` for the requests of a query, and ``"write"`` for
+            those of a model write.
 
     Returns:
-        A copy of ``options`` without ``stream=False``, or an empty dict.
+        A copy of ``options``, or an empty dict. A query's copy leaves out
+        ``stream=False``, which asks for what a query does anyway.
 
     Raises:
-        TypeError: If ``options`` is not a mapping, sets a body or the query
-            parameters, enables streaming, names an argument that is not a
-            request option, or sets headers or hooks to a value that is not a
-            mapping.
+        TypeError: If ``options`` is not a mapping, sets a body or, for a
+            query, the query parameters, enables streaming, names an argument
+            that is not a request option, or sets headers or hooks to a value
+            that is not a mapping.
     """
     if options is None:
         return {}
@@ -3195,69 +3223,29 @@ def _query_request_options(
     body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
     if body:
         raise TypeError(
-            f"request_options cannot set {', '.join(body)}, because a query "
-            "sends no body"
+            f"request_options cannot set {', '.join(body)}, "
+            f"{_BODY_REFUSALS[kind]}"
         )
-    if "params" in options:
+    if kind == "query" and "params" in options:
         raise TypeError(
             "request_options cannot set params. Pass query parameters as "
             "keyword arguments or in params."
         )
     if options.get("stream"):
-        raise TypeError(
-            "Queries read their responses, so request_options cannot enable "
-            "stream"
-        )
-    unknown = sorted(set(options) - _QUERY_OPTION_NAMES - {"stream"})
+        raise TypeError(_STREAM_REFUSALS[kind])
+    known = _QUERY_OPTION_NAMES | {"stream"}
+    if kind == "write":
+        known |= {"params"}
+    unknown = sorted(set(options) - known)
     if unknown:
         raise TypeError(
             f"request_options cannot set {', '.join(unknown)}, which are not "
             "request options"
         )
-    return {name: value for name, value in options.items() if name != "stream"}
-
-
-# Request arguments that eazyrest sets itself for a write.
-_WRITE_BODY_ARGUMENTS = frozenset({"json", "data", "files"})
-
-
-def _request_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return the request options of a write, checked.
-
-    Args:
-        options: Keyword arguments for the request, such as ``headers`` or
-            ``params``, as ``requests.Session.request()`` takes them.
-
-    Returns:
-        A copy of ``options``, or an empty dict.
-
-    Raises:
-        TypeError: If ``options`` is not a mapping, sets the request body,
-            which the write builds itself, enables streaming of the response,
-            names an argument that is not a request option, or sets headers or
-            hooks to a value that is not a mapping.
-    """
-    if options is None:
-        return {}
-    _check_options_mapping(options)
-    _check_merged_options(options)
-    if options.get("stream"):
-        raise TypeError(
-            "Model writes cannot stream their responses. Use an API method "
-            "directly to read a streamed response."
-        )
-    body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
-    if body:
-        raise TypeError(
-            f"request_options cannot set {', '.join(body)}, because the write "
-            "builds the request body itself"
-        )
-    unknown = sorted(set(options) - _QUERY_OPTION_NAMES - {"params", "stream"})
-    if unknown:
-        raise TypeError(
-            f"request_options cannot set {', '.join(unknown)}, which are not "
-            "request options"
-        )
+    if kind == "query":
+        return {
+            name: value for name, value in options.items() if name != "stream"
+        }
     return dict(options)
 
 
@@ -7632,7 +7620,8 @@ class JSONObject:
         """
         _refuse_keyless_request(type(self), "delete")
         options = _merge_request_options(
-            self._write_options, _request_options(request_options)
+            self._write_options,
+            _checked_request_options(request_options, "write"),
         )
         self._request_api().delete(_object_url(self), **options)
 
@@ -7696,7 +7685,7 @@ class JSONObject:
                 options are gone from the object by then, and the other block's
                 own keep applying until it ends, and then no options remain.
         """
-        checked = _request_options(options)
+        checked = _checked_request_options(options, "write")
         # Each block keeps its own options, and the object's are the merge of
         # the open blocks' in the order that they began. A block that ends out
         # of order then takes only its own options with it. An object that has
@@ -8251,7 +8240,8 @@ class JSONObject:
         _check_files(files)
         _refuse_keyless_request(type(self), "save")
         options = _merge_request_options(
-            self._write_options, _request_options(request_options)
+            self._write_options,
+            _checked_request_options(request_options, "write"),
         )
         self._queue_in_place_changes()
         if full:
@@ -9832,7 +9822,7 @@ class JSONObject:
         # The response is read for a key of this type, so a type that cannot be
         # resolved or is refused must raise before the request.
         _resolve_key(cls)
-        options = _request_options(request_options)
+        options = _checked_request_options(request_options, "write")
         api = None if api is None else _as_client(api)
         payload = cls._encode_fields(
             _query_params(
@@ -10764,7 +10754,7 @@ class JSONObject:
         """
         _require_decorated(cls)
         _resolve_items_key(cls)
-        options = _query_request_options(request_options)
+        options = _checked_request_options(request_options, "query")
         query = _query_params(params, kwargs)
         prefetch_fields = _normalize_prefetch(prefetch)
         # Check the fields before the request, so a misspelled field or a model
@@ -10940,7 +10930,7 @@ class JSONObject:
         """
         _require_decorated(cls)
         _resolve_items_key(cls)
-        options = _query_request_options(request_options)
+        options = _checked_request_options(request_options, "query")
         query = _query_params(params, kwargs)
         if url is not None and query:
             raise TypeError(
@@ -11184,8 +11174,8 @@ class JSONObject:
         # before the lookup if the type cannot be resolved or is refused.
         _resolve_key(cls)
         # Check the options for both requests before sending either.
-        _query_request_options(request_options)
-        _request_options(request_options)
+        _checked_request_options(request_options, "query")
+        _checked_request_options(request_options, "write")
 
         if defaults is not None:
             _check_names_mapping(defaults, "defaults")
