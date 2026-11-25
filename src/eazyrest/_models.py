@@ -409,6 +409,40 @@ class _Query:
     options: Mapping[str, Any]
     """Request options that the query's requests send."""
 
+    @classmethod
+    def choose(
+        cls,
+        model: type[JSONObject],
+        api: Client | None,
+        options: Mapping[str, Any],
+    ) -> _Query:
+        """Choose the client of a query.
+
+        The client is the ``api=`` that the query was given, or else the API
+        registered for ``model``, with the query's request options.
+
+        Args:
+            model: The class that the query reads or creates.
+            api: The ``api=`` that the query was given, if any.
+            options: Request options that the query's own requests send.
+
+        Returns:
+            The query, whose client is the chosen API with ``options``.
+
+        Raises:
+            TypeError: If ``api`` is neither an ``API`` nor a scoped view of
+                one.
+            UsageError: If a class in the MRO of ``model`` had ``api``
+                assigned, or no ``api=`` is given and no API is registered for
+                ``model``.
+        """
+        # A class's api can be assigned after the class is defined, and the
+        # request must not be sent with it.
+        _check_api_attribute(model, UsageError)
+        given = None if api is None else _as_client(api)
+        base = model.api if given is None else given
+        return cls(given, base._scoped(options) if options else base, options)
+
     def related_client(self, model: type[JSONObject]) -> _AnyAPI:
         """Return the client for a bulk lookup of related objects.
 
@@ -9853,10 +9887,7 @@ class JSONObject:
             # annotation, so eazyrest cannot say how a tuple, or a mapping with
             # a key that is not a string, reads back as JSON.
             payload = _checked_payload(cls, payload)
-        # A class's api can be assigned after the class is defined, and the
-        # request must not be sent with it.
-        _check_api_attribute(cls, UsageError)
-        client = cls.api if api is None else api
+        query = _Query.choose(cls, api, {})
         # The object keeps neither a write-only field nor an extra key.
         json_keys = cls._json_keys() - cls._write_only_keys()
         # The payload can hold the caller's own containers, such as a dict
@@ -9869,7 +9900,7 @@ class JSONObject:
             for key, value in payload.items()
             if key in json_keys
         }
-        resp = client.post(
+        resp = query.client.post(
             _class_url_of(cls), **cls._write_body(payload, files), **options
         )
 
@@ -10392,6 +10423,72 @@ class JSONObject:
         return dict(json)
 
     @classmethod
+    def _open_query(
+        cls,
+        prefetch: PrefetchFields,
+        api: Client | None,
+        request_options: Mapping[str, Any] | None,
+        params: Mapping[str, Any] | None,
+        kwargs: Mapping[str, Any],
+        url: str | None = None,
+    ) -> tuple[_Query, Sequence[str], Response]:
+        """Check a query for a collection and send its first request.
+
+        Args:
+            prefetch: The query's ``prefetch=``.
+            api: The query's ``api=``.
+            request_options: The query's ``request_options=``.
+            params: The query's ``params=``.
+            kwargs: The query's keyword arguments, which are parameters.
+            url: The URL of a page to read, or ``None`` to read the collection.
+
+        Returns:
+            The query, its prefetch fields, and the response of its first
+            request.
+
+        Raises:
+            TypeError: If ``url`` is given with parameters, or an argument is
+                refused as ``filter()`` refuses it.
+            ValueError: As for ``filter()``.
+            UsageError: As for ``filter()``.
+            PrefetchNotSupported: As for ``filter()``.
+            RedirectError: If the response is a redirect that was not followed.
+            PaginationError: If ``url`` has another origin.
+        """
+        _require_decorated(cls)
+        _resolve_items_key(cls)
+        options = _checked_request_options(request_options, "query")
+        query = _query_params(params, kwargs)
+        if url is not None and query:
+            raise TypeError(
+                "get_page() takes url= or query parameters, not both, because "
+                "a page's URL holds its query"
+            )
+        prefetch_fields = _normalize_prefetch(prefetch)
+        # Check the fields before the request, so a misspelled field or a model
+        # without bulk lookup fails even when the query matches nothing.
+        for field in prefetch_fields:
+            cls._prefetch_info(field, api)
+        if prefetch_fields:
+            cls._check_prefetch_batch_size()
+
+        context = _Query.choose(cls, api, options)
+        client = context.client
+        # The collection's URL is read whether or not a page's own URL is
+        # given, so that a class that cannot name its collection sends nothing.
+        collection = _class_url_of(cls)
+        if url is None:
+            resp = _check_final_response(
+                client.get(
+                    collection, params=cls._encode_query(query, client)
+                ),
+                "the query has no collection to read",
+            )
+        else:
+            resp = _request_page(client, url, allow_other_origins=False)
+        return context, prefetch_fields, resp
+
+    @classmethod
     def _prefetch_info(
         cls,
         field: str,
@@ -10771,31 +10868,10 @@ class JSONObject:
             PaginationError: If a next-page link leads to another origin, or to
                 a page that was already read.
         """
-        _require_decorated(cls)
-        _resolve_items_key(cls)
-        options = _checked_request_options(request_options, "query")
-        query = _query_params(params, kwargs)
-        prefetch_fields = _normalize_prefetch(prefetch)
-        # Check the fields before the request, so a misspelled field or a model
-        # without bulk lookup fails even when the query matches nothing.
-        for field in prefetch_fields:
-            cls._prefetch_info(field, api)
-        if prefetch_fields:
-            cls._check_prefetch_batch_size()
-
-        # A class's api can be assigned after the class is defined, and the
-        # request must not be sent with it.
-        _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_client(api)
-        base = cls.api if api is None else api
-        client = base._scoped(options) if options else base
-        context = _Query(api, client, options)
-        resp = _check_final_response(
-            client.get(
-                _class_url_of(cls), params=cls._encode_query(query, client)
-            ),
-            "the query has no collection to read",
+        context, prefetch_fields, resp = cls._open_query(
+            prefetch, api, request_options, params, kwargs
         )
+        client = context.client
         items = _hook_result(
             cls,
             "collection_items_from_response",
@@ -10810,7 +10886,7 @@ class JSONObject:
         if len(prefetch_fields) == 0:
             return Results(
                 (
-                    cls._from_item(item, index, api)
+                    cls._from_item(item, index, context.api)
                     for index, item in enumerate(items)
                 ),
                 count,
@@ -10947,42 +11023,10 @@ class JSONObject:
                 ``NotFound`` for a 404.
             LimitExceeded: If a request exceeds a limit of the API.
         """
-        _require_decorated(cls)
-        _resolve_items_key(cls)
-        options = _checked_request_options(request_options, "query")
-        query = _query_params(params, kwargs)
-        if url is not None and query:
-            raise TypeError(
-                "get_page() takes url= or query parameters, not both, because "
-                "a page's URL holds its query"
-            )
-        prefetch_fields = _normalize_prefetch(prefetch)
-        for field in prefetch_fields:
-            cls._prefetch_info(field, api)
-        if prefetch_fields:
-            cls._check_prefetch_batch_size()
-
-        # A class's api can be assigned after the class is defined, and the
-        # request must not be sent with it.
-        _check_api_attribute(cls, UsageError)
-        api = None if api is None else _as_client(api)
-        base = cls.api if api is None else api
-        client = base._scoped(options) if options else base
-        source = _ModelPageSource(
-            cls, _Query(api, client, options), prefetch_fields
+        context, prefetch_fields, resp = cls._open_query(
+            prefetch, api, request_options, params, kwargs, url
         )
-        # The collection's URL is read whether or not a page's own URL is
-        # given, so that a class that cannot name its collection sends nothing.
-        collection = _class_url_of(cls)
-        if url is None:
-            resp = _check_final_response(
-                client.get(
-                    collection, params=cls._encode_query(query, client)
-                ),
-                "the query has no collection to read",
-            )
-        else:
-            resp = _request_page(client, url, allow_other_origins=False)
+        source = _ModelPageSource(cls, context, prefetch_fields)
         return cast("Page[Self]", source.page(resp))
 
     @classmethod
@@ -11281,9 +11325,8 @@ class JSONObject:
         # payload's, so the outcome does not depend on what the server holds.
         # filter() sends its request when it is called, so its checks are made
         # here, ahead of the payload's.
-        _check_api_attribute(cls, UsageError)
-        client = cls.api if api is None else _as_client(api)
-        cls._encode_query(kwargs, client)
+        chosen = _Query.choose(cls, api, {})
+        cls._encode_query(kwargs, chosen.client)
         _checked_payload(cls, cls._encode_fields(create_kwargs))
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
