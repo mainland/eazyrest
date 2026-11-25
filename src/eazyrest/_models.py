@@ -94,7 +94,7 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
-from ._urls import _origin
+from ._urls import _base_origins, _origin, _origin_matches
 from .api import (
     API,
     _AnyAPI,
@@ -424,8 +424,8 @@ class _Query:
             The API for the lookup, request-scoped when the options apply.
         """
         base = model.api if self.api is None else self.api
-        if self.options and _origin(base.base_url) == _origin(
-            self.client.base_url
+        if self.options and _origin_matches(
+            _origin(base.base_url), _base_origins(self.client.base_url)
         ):
             return base._scoped(self.options)
         return base

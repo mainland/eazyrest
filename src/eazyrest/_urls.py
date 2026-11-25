@@ -9,6 +9,7 @@ what is shown of one.
 from __future__ import annotations
 
 import enum
+from collections.abc import Collection
 from typing import NamedTuple
 from urllib.parse import SplitResult, parse_qsl, urljoin, urlparse, urlsplit
 
@@ -16,6 +17,9 @@ import requests
 from requests.utils import requote_uri
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+_Origin = tuple[str, str, int]
+"""The scheme, host, and port of an HTTP or HTTPS URL."""
 
 
 def _port_of(prepared: SplitResult, sent: str) -> int | None:
@@ -92,8 +96,15 @@ class _ServerURL(NamedTuple):
         return self.host is not None
 
     @property
-    def origin(self) -> tuple[str, str | None, int | None]:
-        """The scheme, host, and port that requests reads from the URL."""
+    def origin(self) -> _Origin | None:
+        """The scheme, host, and port that requests reads from the URL.
+
+        Only an HTTP or HTTPS URL that names a host has an origin. No origin
+        matches anything, so ``_origin_matches()`` is the one place that
+        compares one.
+        """
+        if self.host is None or self.port is None:
+            return None
         return self.scheme, self.host, self.port
 
     @property
@@ -327,16 +338,16 @@ def _asked_text(
     return _shown(_read_url(url, session), source, quoted=False)
 
 
-def _origin(text: str) -> tuple[str, str | None, int | None]:
-    """Return the scheme, host, and port of an absolute URL.
+def _origin(text: str) -> _Origin | None:
+    """Return the origin of an absolute URL, as requests would send it.
 
     Args:
         text: Absolute URL.
 
     Returns:
-        Lowercased scheme, host, and port of ``text`` as requests would send
-        it. If ``text`` names no port, the port is the scheme's default port,
-        or ``None`` if the scheme has no known default.
+        Lowercased scheme, host, and port of ``text``, with the scheme's
+        default port if it names none, or ``None`` if its scheme is not
+        ``http`` or ``https``.
 
     Raises:
         requests.RequestException: If requests cannot prepare the URL, as
@@ -347,14 +358,45 @@ def _origin(text: str) -> tuple[str, str | None, int | None]:
     reading = _read_url(text)
     if reading is None:
         raise _unreadable_error(text)
-    parts = urlsplit(reading.url)
-    scheme = parts.scheme.lower()
-    port = _port_of(parts, text)
-    return (
-        scheme,
-        parts.hostname,
-        _DEFAULT_PORTS.get(scheme) if port is None else port,
-    )
+    return reading.origin
+
+
+def _base_origins(base_url: str) -> set[_Origin]:
+    """Return the origins that a request to a base URL may reach by itself.
+
+    Args:
+        base_url: Absolute URL of a request, or an API's base URL.
+
+    Returns:
+        A set of the URL's origin, or an empty set if its scheme is not
+        ``http`` or ``https``, since such a URL has no origin to allow.
+
+    Raises:
+        requests.RequestException: If requests cannot prepare the URL, as for
+            ``_origin()``.
+    """
+    origin = _origin(base_url)
+    return set() if origin is None else {origin}
+
+
+def _origin_matches(
+    origin: _Origin | None, allowed: Collection[_Origin]
+) -> bool:
+    """Return whether an origin is one of those allowed.
+
+    This is the one comparison of origins. A URL with no origin matches
+    nothing, not even another URL with none, so that a base URL of another
+    scheme never allows a link or a redirect to another host.
+
+    Args:
+        origin: A reading's origin, which is ``None`` for a URL of a scheme
+            other than ``http`` and ``https``.
+        allowed: The origins that are allowed.
+
+    Returns:
+        Whether ``origin`` is in ``allowed``.
+    """
+    return origin is not None and origin in allowed
 
 
 def _is_absolute(uri: str | bytes) -> bool:
@@ -377,28 +419,6 @@ def _is_absolute(uri: str | bytes) -> bool:
     if parts is None:
         raise _unreadable_error(uri)
     return bool(parts.scheme or parts.netloc)
-
-
-def _scheme_of(text: str) -> str:
-    """Return the scheme that ``urlparse()`` reads from a configured URL.
-
-    Args:
-        text: URL, such as an API's base URL.
-
-    Returns:
-        The scheme, which is empty if there is none.
-
-    Raises:
-        requests.RequestException: If ``urlparse()`` rejects the URL, which is
-            ``InvalidURL`` with a message that quotes none of it.
-    """
-    try:
-        scheme = urlparse(text).scheme
-    except ValueError:
-        scheme = None
-    if scheme is None:
-        raise _unreadable_error(text)
-    return scheme
 
 
 def _join(base: str, link: str) -> str:
@@ -532,9 +552,7 @@ def _refusal(entry: str) -> str | None:
     return "requests cannot parse it"
 
 
-def _redirect_origin(
-    position: int | None, entry: str
-) -> tuple[str, str | None, int | None]:
+def _redirect_origin(position: int | None, entry: str) -> _Origin:
     """Return the origin of an entry of ``API.redirect_origins``.
 
     Args:
@@ -567,4 +585,6 @@ def _redirect_origin(
         )
     reading = _read_url(entry)
     assert reading is not None
-    return reading.origin
+    origin = reading.origin
+    assert origin is not None
+    return origin

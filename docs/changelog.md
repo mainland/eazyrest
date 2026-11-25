@@ -1338,6 +1338,20 @@ that can break code written for 0.9.0, followed by what to do about it.
 - A redirect is checked against the URL exactly as requests will send it, so a
   `Location` such as `https://api.example.com\@evil.example/` cannot hide
   another host from the origin check.
+- A URL whose scheme is not `http` or `https` has no origin, and no origin
+  matches anything, not even another URL with none. With an adapter mounted for
+  the scheme on `api.session`, a base URL without a host, as in `mock:/`,
+  followed every next-page link and redirect of its scheme, whatever host it
+  named. A caller's request URL without a host did the same for a redirect.
+  Both now refuse them. A base URL of another scheme that names a host, as in
+  `mock://api.test/`, refused every next-page link and redirect, its own host's
+  included, and still does. `allow_other_origins=True` still lets a next-page
+  link of another scheme go, but a redirect of that request is refused.
+- `API()` reads the scheme of the base URL as requests does, so a base URL that
+  begins with white space that requests strips keeps its adapter arguments,
+  such as `max_retries=`. A base URL that requests cannot prepare raises
+  `requests.exceptions.MissingSchema` or `InvalidURL` when the `API` is made or
+  its session is reset.
 - A conversion error leaves out input values and mapping keys that the input
   chose.
 - An error that quotes a URL, `APIError`, `NotFound`, `RedirectError`,

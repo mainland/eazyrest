@@ -39,14 +39,15 @@ from ._protocols import Client, Response
 from ._urls import (
     Source,
     _asked_text,
+    _base_origins,
     _is_absolute,
-    _origin,
+    _Origin,
+    _origin_matches,
     _prepare_redirect,
     _query_names,
     _read_url,
     _redirect_origin,
     _request_name,
-    _scheme_of,
     _ServerURL,
     _shown,
     _unreadable_error,
@@ -98,7 +99,7 @@ def _takes_kwargs(method: Any) -> bool:
 
 def _leaves_allowed_origins(
     prepared: tuple[_ServerURL, ...],
-    allowed: Collection[tuple[str, str | None, int | None]],
+    allowed: Collection[_Origin],
 ) -> bool:
     """Return whether any reading of a destination names an origin not allowed.
 
@@ -111,15 +112,19 @@ def _leaves_allowed_origins(
         allowed: The origins that the destination may have.
 
     Returns:
-        Whether any reading's origin is not in ``allowed``.
+        Whether any reading's origin is not in ``allowed``. A reading with no
+        origin, as for a scheme other than ``http`` and ``https``, leaves the
+        allowed origins.
     """
-    return any(reading.origin not in allowed for reading in prepared)
+    return not all(
+        _origin_matches(reading.origin, allowed) for reading in prepared
+    )
 
 
 def _permitted_origins(
     base_url: str,
     redirect_origins: tuple[str, ...] | list[str] | frozenset[str],
-) -> set[tuple[str, str | None, int | None]]:
+) -> set[_Origin]:
     """Return the origins that a request starting at ``base_url`` may reach.
 
     Every request reads ``API.redirect_origins`` here and nowhere else.
@@ -129,7 +134,8 @@ def _permitted_origins(
         redirect_origins: Further origins that the API allows, as URLs.
 
     Returns:
-        The origin of ``base_url`` and the origins of ``redirect_origins``.
+        The origin of ``base_url``, if its scheme is ``http`` or ``https``, and
+        the origins of ``redirect_origins``.
 
     Raises:
         TypeError: If ``redirect_origins`` is not a tuple, a list, or a
@@ -154,7 +160,7 @@ def _permitted_origins(
                 f"{type(origin).__name__}"
             )
     return {
-        _origin(base_url),
+        *_base_origins(base_url),
         *(
             _redirect_origin(
                 None if isinstance(redirect_origins, frozenset) else index,
@@ -1121,8 +1127,9 @@ class API:
                 e.g., ``pool_connections`` and ``pool_maxsize``.
 
         Raises:
-            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
-                rejects ``base_url``. The message quotes none of it.
+            requests.RequestException: If requests cannot prepare
+                ``base_url``, as ``MissingSchema`` or ``InvalidURL``. The
+                message quotes none of it.
         """
         session = requests.Session()
 
@@ -1139,7 +1146,10 @@ class API:
         if verify is not None:
             session.verify = verify
 
-        scheme = _scheme_of(self.base_url) + "://"
+        reading = _read_url(self.base_url)
+        if reading is None:
+            raise _unreadable_error(self.base_url)
+        scheme = reading.scheme + "://"
         for prefix in ("http://", "https://"):
             session.adapters[prefix].close()
             session.mount(
@@ -1357,8 +1367,8 @@ class API:
         options: Mapping[str, Any],
         *,
         from_server: bool,
-        initial: Collection[tuple[str, str | None, int | None]] | None,
-        redirects: Collection[tuple[str, str | None, int | None]] | None,
+        initial: Collection[_Origin] | None,
+        redirects: Collection[_Origin] | None,
         page: str | None = None,
     ) -> requests.Response:
         """Send a page request with this client's defaults and policy.
@@ -1460,7 +1470,7 @@ class API:
     def _check_page_destination(
         self,
         url: str,
-        initial: Collection[tuple[str, str | None, int | None]] | None,
+        initial: Collection[_Origin] | None,
         from_server: bool,
         page: str | None = None,
     ) -> _ServerURL | None:

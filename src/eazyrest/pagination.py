@@ -16,7 +16,7 @@ from ._errors import (
 )
 from ._protocols import Client, Response
 from ._results import Results
-from ._urls import Source, _asked_text, _join, _origin
+from ._urls import Source, _asked_text, _base_origins, _join
 from .api import (
     _UNPARSABLE_PAGE_URL,
     _as_api,
@@ -273,7 +273,7 @@ def _check_page_origin(
     """
     sender, _ = _as_sender(api)
     sender._check_page_destination(
-        url, {_origin(sender.base_url)}, from_server, page
+        url, _base_origins(sender.base_url), from_server, page
     )
 
 
@@ -314,7 +314,7 @@ def _request_page(
         requests.RequestException: If the request fails, as for any request.
     """
     sender, options = _as_sender(api)
-    own = None if allow_other_origins else {_origin(sender.base_url)}
+    own = None if allow_other_origins else _base_origins(sender.base_url)
     resp = sender._send_page(
         url,
         options,

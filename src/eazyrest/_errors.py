@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import requests
 
 from ._protocols import Response
-from ._urls import Source, _asked_text, _request_name
+from ._urls import Source, _asked_text, _Origin, _request_name
 
 if TYPE_CHECKING:
     from .api import _Budget
@@ -379,7 +379,7 @@ _request_budget: contextvars.ContextVar[_Budget | None] = (
 class _PageLimit:
     """The origins that the redirects of one page request may reach."""
 
-    origins: Collection[tuple[str, str | None, int | None]]
+    origins: Collection[_Origin]
     """The origins that a redirect of that request may reach."""
     refusal: Callable[[], Exception]
     """Return the error to raise for a redirect outside ``origins``."""

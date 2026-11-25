@@ -17,7 +17,6 @@ from eazyrest._urls import (
     _origin,
     _query_names,
     _read_url,
-    _scheme_of,
     _shown,
     _unreadable_error,
 )
@@ -230,7 +229,7 @@ def test_uri_that_urlparse_rejects_raises_an_error_without_a_chain() -> None:
     with pytest.raises(requests.exceptions.InvalidURL) as raised:
         _is_absolute(uri)
     with pytest.raises(requests.exceptions.InvalidURL) as configured:
-        _scheme_of(uri)
+        eazyrest.API(uri)
 
     for error in (raised.value, configured.value):
         assert "SECRET" not in str(error)

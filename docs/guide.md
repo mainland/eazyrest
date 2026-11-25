@@ -713,11 +713,17 @@ fragment. The error's `request` and `response` keep the real URL.
   `Page.next_url` and the error's `request`.
 - A URL that requests cannot prepare, or that is not an HTTP or HTTPS URL,
   shows as `<unreadable URL>`, whatever its text. A request that you send to
-  one raises the class that requests raises,
+  one that requests cannot prepare, or to a URL that the session has no adapter
+  for, raises the class that requests raises,
   `requests.exceptions.MissingSchema`, `InvalidURL`, or `InvalidSchema`, before
   anything is sent, with a message that quotes none of the URL and no
   `__cause__` or `__context__`. Code that catches them, or `ValueError`, keeps
-  working.
+  working. A URL of another scheme, such as `mock:/a`, is sent if you mounted
+  an adapter for its scheme on `api.session`. It has no origin, so under a base
+  URL of that scheme, and for a redirect of a request to such a URL, a
+  next-page link or a redirect is refused, one to the URL's own host included.
+  `allow_other_origins=True` lets a next-page link go, and the redirects of
+  that request are still refused.
 
 The `repr()` of a `Page` shows the URL that it was asked for by the same rules,
 and not the one that a redirect chose. An exception that requests raises while

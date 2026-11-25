@@ -1640,7 +1640,7 @@ def test_server_url_with_another_scheme_has_no_host(url: str) -> None:
 
     assert result is not None
     assert result.scheme == urlsplit(url).scheme.lower()
-    assert result.origin == (result.scheme, None, None)
+    assert result.origin is None
     assert not result.is_http
     assert not result.sendable
 
