@@ -19,6 +19,9 @@ from eazyrest import API, JSONObject, json_object
 BASE = "https://prefetch-argument.example/"
 api = API(BASE)
 
+# The keys that each call of the bulk lookup was given.
+ASKED: list[list[int]] = []
+
 
 @json_object
 class Member(JSONObject):
@@ -32,6 +35,7 @@ class Member(JSONObject):
         cls, pks, *, api, **kwargs
     ):
         """Give each key an object."""
+        ASKED.append(list(pks))
         return {pk: cls(json={"id": pk}, api=api) for pk in pks}
 
 
@@ -102,7 +106,12 @@ def test_a_name_or_a_sequence_of_names_is_read(
     query: Callable[[Any], object], value: Any
 ) -> None:
     """The query sends its request and prefetches the named field."""
+    ASKED.clear()
     with requests_mock.Mocker() as mocker:
         mocker.get(BASE + "teams/", json=[{"id": 1, "lead": 7}])
         query(value)
         assert mocker.call_count == 1
+    # A name, or a sequence that holds one, asks the lookup for the lead's key.
+    # None and an empty sequence name no field, so it is not asked.
+    expected = [[7]] if value else []
+    assert expected == ASKED
