@@ -745,6 +745,11 @@ describe them further.
   the result, so that `save(full=True)` wrote the replacement character back,
   and it guessed the charset of a body that declared none. A body in UTF-16
   that declares no charset no longer reads.
+- A charset that names a codec that is no text encoding, such as `zip`,
+  `base64`, or `rot13`, makes a body one that holds no JSON, so a read raises
+  `ResponseShapeError` and a failed status raises `APIError`. A bare
+  `LookupError` escaped from `api.json()`, a load, `filter()`, and
+  `get_page()`.
 - A redirect or a page link to port 0 of the request's host is refused as a
   redirect or a link to another origin, where `v1.0.0a5` took it for the
   scheme's default port, and the request then failed with a `ConnectionError`

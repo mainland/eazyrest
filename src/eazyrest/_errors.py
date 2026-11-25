@@ -286,7 +286,7 @@ def _body_text(resp: Response) -> str:
     Raises:
         ValueError: If the body does not decode in the charset that the
             response declares, UTF-8 if it declares none, or the charset is
-            unknown.
+            unknown or names no text encoding.
     """
     header = Message()
     header["Content-Type"] = resp.headers.get("Content-Type", "")
@@ -299,7 +299,11 @@ def _body_text(resp: Response) -> str:
         charset = "utf-8-sig"
     try:
         return resp.content.decode(charset)
-    except UnicodeDecodeError as err:
+    except LookupError as err:
+        # A codec that is registered but is no text encoding, such as zip or
+        # rot13, passes the lookup and is refused only when it decodes.
+        raise ValueError("The response declares an unknown charset") from err
+    except UnicodeError as err:
         raise ValueError("The body is not valid text") from err
 
 
