@@ -4493,9 +4493,10 @@ def _check_relation_collection(subject: str, analyzed: AnalyzedType) -> None:
     analyzed = _inside_wrappers(analyzed)
     if not isinstance(analyzed, CollectionType):
         return
-    item = _inside_wrappers(analyzed.item_type)
-    if isinstance(item, CollectionType):
-        if _holds_model(item):
+    relation = _relation_of(analyzed)
+    if relation is None:
+        item = _inside_wrappers(analyzed.item_type)
+        if isinstance(item, CollectionType) and _holds_model(item):
             raise _declaration_error(
                 f"{subject} is a collection of collections of "
                 "relations. A collection of relations holds relations and "
@@ -4503,9 +4504,7 @@ def _check_relation_collection(subject: str, analyzed: AnalyzedType) -> None:
                 "the related model."
             )
         return
-    if not isinstance(item, RelatedType):
-        return
-    model = item.model_type.__name__
+    model = relation.related.model_type.__name__
     if isinstance(analyzed.item_type, OptionalType):
         raise _declaration_error(
             f"{subject} is a collection of optional {model}, "
@@ -7653,8 +7652,9 @@ class JSONObject:
                 return _copy_json(value)
 
             case CollectionType(collection_type, item_type):
+                relation = _relation_of(conversion)
                 if not _is_collection_value(value):
-                    if isinstance(_inside_wrappers(item_type), RelatedType):
+                    if relation is not None:
                         kind = "Related collection"
                     else:
                         kind = "Collection"
@@ -7664,11 +7664,9 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                related = _inside_wrappers(item_type)
-
                 def read_item(item: Any) -> Any:
-                    if isinstance(related, RelatedType):
-                        _require_item_key(item, related.model_type)
+                    if relation is not None:
+                        _require_item_key(item, relation.related.model_type)
                     return self._from_json(item, item_type, field=field)
 
                 converted_items = _each_item(read_item, value)
@@ -7861,9 +7859,9 @@ class JSONObject:
                 # rather than in json.dumps() when it is sent.
                 return _checked_json(value)
             case CollectionType(collection_type, item_type):
+                relation = _relation_of(conversion)
                 if not _is_collection_value(value) or (
-                    isinstance(value, JSONObject)
-                    and isinstance(item_type, RelatedType)
+                    isinstance(value, JSONObject) and relation is not None
                 ):
                     # A model that defines __iter__ is iterable, but its
                     # members are not the items of a collection of models.
@@ -7872,7 +7870,7 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                relates = isinstance(_inside_wrappers(item_type), RelatedType)
+                relates = relation is not None
                 is_set = _READ_AS[collection_type] in (set, frozenset)
                 if (
                     not is_set
