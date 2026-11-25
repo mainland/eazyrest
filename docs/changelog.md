@@ -481,6 +481,10 @@ describe them further.
   `Model(json=obj.json, api=api)`, which holds the pending changes of the first
   as loaded values, or read the object from the server again. Errors, `API`
   objects, and the views of a query still pickle.
+- A model object inside the mapping that `json=` or `update_from_json()` is
+  given raises `TypeError` with a message that says the object is no JSON
+  value, where it raised the message of a refused copy. A model object inside a
+  tuple, a set, or a frozenset in that mapping does too.
 - An item that `collection_items()`, `collection_items_from_response()`, or
   `collection_page()` gives, with a name that is no string, raises
   `ResponseShapeError` when the item is read, where `v1.0.0a5` built the object

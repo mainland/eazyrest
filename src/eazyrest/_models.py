@@ -3470,6 +3470,53 @@ _ATOMIC_JSON = (str, int, float, bool, type(None))
 """The types of the JSON scalars that a copy shares."""
 
 
+def _no_json_value(obj: JSONObject) -> TypeError:
+    """Return the error for a model object that is part of caller JSON.
+
+    Args:
+        obj: The model object.
+
+    Returns:
+        A ``TypeError`` that says that the object is no JSON value.
+    """
+    return TypeError(
+        f"A {type(obj).__name__} object is no JSON value, so it cannot be "
+        "part of JSON that an object is given. Give its key, or its JSON "
+        "from obj.json."
+    )
+
+
+def _refuse_models_in(value: Any) -> None:
+    """Refuse a model object anywhere inside a container, to any depth.
+
+    ``copy.deepcopy()`` copies a tuple, a set, or a frozenset, and the copy of
+    a model object inside it would be refused with the message of a refused
+    copy. This looks for one first, so that it is refused as no JSON value.
+
+    Args:
+        value: A tuple, set, or frozenset.
+
+    Raises:
+        TypeError: If a model object is inside ``value``, in a tuple, a set, a
+            frozenset, a list, or the keys or values of a dict.
+    """
+    seen: set[int] = set()
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, JSONObject):
+            raise _no_json_value(item)
+        if id(item) in seen:
+            continue
+        if isinstance(item, (tuple, set, frozenset, list)):
+            seen.add(id(item))
+            stack.extend(item)
+        elif isinstance(item, dict):
+            seen.add(id(item))
+            stack.extend(item.keys())
+            stack.extend(item.values())
+
+
 def _copy_json(value: Any) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
 
@@ -3484,6 +3531,10 @@ def _copy_json(value: Any) -> Any:
 
     Returns:
         A deep copy of a dict or list, and ``value`` itself otherwise.
+
+    Raises:
+        TypeError: If a dict, list, tuple, set, or frozenset in ``value`` holds
+            a model object, which is no JSON value.
     """
     if not isinstance(value, (dict, list)):
         return value
@@ -3502,7 +3553,11 @@ def _copy_json(value: Any) -> Any:
             made: Any = {}
         elif type(item) is list:
             made = []
+        elif isinstance(item, JSONObject):
+            raise _no_json_value(item)
         else:
+            if isinstance(item, (tuple, set, frozenset)):
+                _refuse_models_in(item)
             return copy.deepcopy(item, memo)
         memo[id(item)] = made
         unfilled.append((item, made))
