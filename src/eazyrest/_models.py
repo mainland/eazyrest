@@ -7530,17 +7530,10 @@ class JSONObject:
                 if is_set:
                     # A set's iteration order depends on how it was built, and
                     # a string's hash on the process, so a set writes its items
-                    # sorted by their JSON. Equal sets then write equal JSON,
-                    # and replacing one with another is not a change. Two
-                    # members can write one JSON value, as objects of two
-                    # classes that have one key do, so each value is once.
-                    items.sort(key=_json_order)
-                    items = [
-                        item
-                        for index, item in enumerate(items)
-                        if index == 0
-                        or not _json_equal(items[index - 1], item)
-                    ]
+                    # sorted by their JSON, each value once. Equal sets then
+                    # write equal JSON, and replacing one with another is not a
+                    # change.
+                    items = _distinct_sorted(items)
                 return items
             case FixedTupleType(item_types):
                 items = _fixed_items(value, len(item_types), "write")
