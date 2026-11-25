@@ -631,6 +631,34 @@ def follow_next_links(
     return Results(items(), count)
 
 
+def _link_header_page(
+    api: Client, resp: Response
+) -> tuple[list[Any], str | None]:
+    """Read the items of a page whose pages link in ``Link`` headers.
+
+    This is the one place that reads such a page, for ``follow_link_headers()``
+    and ``link_headers_page()``.
+
+    Args:
+        api: Client that decodes the response.
+        resp: Response for the page.
+
+    Returns:
+        The page's JSON items, and its ``next`` link as the header gives it,
+        which is ``None`` if the header has none.
+
+    Raises:
+        ResponseShapeError: If the page's body is not a JSON list.
+    """
+    payload = api.json(resp)
+    if not isinstance(payload, list):
+        raise ResponseShapeError(
+            "Pages linked by Link headers must be JSON lists, "
+            f"got {type(payload).__name__}"
+        )
+    return payload, _link(resp, frozenset({"next"}))
+
+
 def follow_link_headers(
     api: Client,
     resp: Response,
@@ -688,16 +716,10 @@ def follow_link_headers(
         reader = _PageReader(api, frozenset({page.url}))
 
         while True:
-            payload = api.json(page)
-            if not isinstance(payload, list):
-                raise ResponseShapeError(
-                    "Pages linked by Link headers must be JSON lists, "
-                    f"got {type(payload).__name__}"
-                )
+            payload, next_url = _link_header_page(api, page)
 
             yield from reader.bound.admit(payload)
 
-            next_url = _link(page, frozenset({"next"}))
             if not next_url:
                 return
 
@@ -1143,13 +1165,7 @@ def link_headers_page(
         Returns:
             The page.
         """
-        payload = api.json(resp)
-        if not isinstance(payload, list):
-            raise ResponseShapeError(
-                "Pages linked by Link headers must be JSON lists, "
-                f"got {type(payload).__name__}"
-            )
-        link = _link(resp, frozenset({"next"}))
+        payload, link = _link_header_page(api, resp)
         page = Page(
             payload,
             url=resp.url,
