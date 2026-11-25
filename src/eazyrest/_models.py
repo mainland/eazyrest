@@ -6589,7 +6589,23 @@ class JSONProperty:
         checked = self._check_assignment(obj, value)
         if checked is None:
             return
-        new_value, kept = checked
+        self._apply_assignment(obj, *checked)
+
+    def _apply_assignment(
+        self, obj: JSONObject, new_value: Any, kept: Any
+    ) -> None:
+        """Assign a value that ``_check_assignment()`` returned.
+
+        This is the one place that writes an assignment. ``__set__()`` and the
+        constructor both call it, so that a value is converted once and a
+        keyword writes what an assignment of the same value writes.
+
+        Args:
+            obj: ``JSONObject`` instance that the value is assigned to.
+            new_value: The JSON value to store.
+            kept: The collection of related objects that the field keeps, or
+                ``_MISSING`` if the field reads its value from its JSON.
+        """
         if self.write_only:
             obj._update_json_field(self.json_field, _copy_json(new_value))
             return
@@ -7024,7 +7040,10 @@ class JSONObject:
             self._wire_key = self._initial_key(pk_property, kwargs)
         # Check every name and convert every value before the first request,
         # as an assignment converts a value before it loads the object, so that
-        # a keyword that is refused leaves no request behind it.
+        # a keyword that is refused leaves no request behind it. Each value is
+        # converted once, since a one-shot iterable is used up by its
+        # conversion, and the assignments then apply what the checks returned.
+        assignments: list[tuple[str, Any, JSONProperty | None, Any]] = []
         for name, value in kwargs.items():
             _refuse_unassignable_name(self, name)
             descriptor = (
@@ -7033,9 +7052,21 @@ class JSONObject:
                 else getattr(type(self), name, None)
             )
             if isinstance(descriptor, JSONProperty):
-                descriptor._check_assignment(self, value)
-        for name, value in kwargs.items():
-            setattr(self, name, value)
+                assignments.append(
+                    (
+                        name,
+                        value,
+                        descriptor,
+                        descriptor._check_assignment(self, value),
+                    )
+                )
+            else:
+                assignments.append((name, value, None, None))
+        for name, value, descriptor, checked in assignments:
+            if descriptor is None:
+                setattr(self, name, value)
+            elif checked is not None:
+                descriptor._apply_assignment(self, *checked)
 
     def _initial_key(
         self, prop: JSONProperty, kwargs: Mapping[str, Any]

@@ -138,11 +138,14 @@ def test_keywords_that_are_all_taken_are_assigned_in_order() -> None:
         mocker.get(BASE + "todos/1/", json=BODY)
         mocker.patch(BASE + "todos/1/", json={})
         todo = Todo(id=1, done=True, title="x", secret="s", write_mode="eager")
-        assert [r.method for r in mocker.request_history] == [
-            "GET",
-            "PATCH",
-            "PATCH",
-            "PATCH",
+        assert [
+            (r.method, r.json() if r.body else None)
+            for r in mocker.request_history
+        ] == [
+            ("GET", None),
+            ("PATCH", {"done": True}),
+            ("PATCH", {"title": "x"}),
+            ("PATCH", {"secret": "s"}),
         ]
     assert todo.title == "x"
 
