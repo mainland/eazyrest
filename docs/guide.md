@@ -462,16 +462,15 @@ nothing or the wrong fields. Assign fields to change an object, and copy the
 payload with `copy.deepcopy()` before changing a value in it for another
 purpose.
 
-`copy.copy()` of an object gives the same copy as `copy.deepcopy()`, which
-shares nothing with the original but its API, whether the class registers it or
-the object was given it as `api=`. The related objects, the values that you
-read before the copy, and the pending updates are the copy's own, so a change
-made to one object, by assignment or in place, is neither read from nor sent by
-the other. An object that is unpickled is such a copy too, so a pickle round
-trip copies the API that was given as `api=`, which a pickle cannot share. That
-copy holds the API's session, with the credentials that it holds, such as an
-`Authorization` header or `auth`, as a pickle of a `requests.Session` does, so
-treat such a pickle as a secret.
+An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
+`pickle.dumps()` of an object, or of a container that holds one, raise
+`TypeError`, whose message names the model and the replacement. Build another
+object from the JSON of the first, given the same `api=` if it had one, as
+`User(json=user.json, api=api)`. The new object owns its payload and its
+related objects, and holds the pending changes of the first as loaded values,
+so its `save()` sends nothing for them. Read the object from the server again
+instead to start from the server's state. An error, an `API`, and the view that
+a query's hooks receive still pickle.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
@@ -481,13 +480,13 @@ or a value that holds itself or nests more than 127 levels deep, raises
 `FieldConversionError` at the assignment, which leaves the field unchanged and
 queues nothing. A body that holds the value nests one level more, and 128
 levels is the default `max_json_depth`, so what is written can be read back
-from a server that echoes it. Only a write counts the depth. Reading a field,
-copying an object, and comparing JSON take any depth that `max_json_depth` let
-through, or that `json=` and `update_from_json()` were given, and `save()`
-sends a field that was read and not changed in place as it was. A write that
-the server refuses is different. In lazy mode its updates stay pending, so a
-later `save()` sends them again. In eager mode the refused assignment is not
-pending, and the field keeps its old value.
+from a server that echoes it. Only a write counts the depth. Reading a field
+and comparing JSON take any depth that `max_json_depth` let through, or that
+`json=` and `update_from_json()` were given, and `save()` sends a field that
+was read and not changed in place as it was. A write that the server refuses is
+different. In lazy mode its updates stay pending, so a later `save()` sends
+them again. In eager mode the refused assignment is not pending, and the field
+keeps its old value.
 
 A field of a plain type writes a subclass's plain value. A member of an enum
 that mixes in `str`, `int`, or `float`, and any other subclass of those types

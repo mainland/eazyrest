@@ -2778,15 +2778,6 @@ class _BeforeCreation:
     The response has not been read yet, so the object has no key.
     """
 
-    def __reduce__(self) -> str:
-        """Name the one instance, so a copy or a pickle is that instance.
-
-        Returns:
-            The module-level name of ``_BEFORE_CREATION``, which ``copy`` and
-            ``pickle`` resolve to the same object.
-        """
-        return "_BEFORE_CREATION"
-
 
 _BEFORE_CREATION = _BeforeCreation()
 """The one key of every object that reads a creation's response."""
@@ -3016,25 +3007,6 @@ items can, as a dataclass can, so neither is listed.
 
 _MISSING = object()
 """Stands for a key that a JSON object lacks."""
-
-
-def _rebuild_object(cls: type[T], wire_key: Any) -> T:
-    """Return an object of a class that has its key and no other state.
-
-    A pickle rebuilds an object with this and then restores its state, so the
-    object has its key, and hashes, before any other object that holds it is
-    rebuilt.
-
-    Args:
-        cls: The model.
-        wire_key: The wire scalar of the object's key.
-
-    Returns:
-        A new object that has only its key.
-    """
-    obj = object.__new__(cls)
-    obj.__dict__["_wire_key"] = wire_key
-    return obj
 
 
 # The lookups whose operands are values of the field, as Django's lookups of
@@ -3518,54 +3490,18 @@ def _form_value(name: str, value: Any) -> Any:
 _ATOMIC_JSON = (str, int, float, bool, type(None))
 """The types of the JSON scalars that a copy shares."""
 
-_JSON_STATE = frozenset(
-    {"_json", "_pending_updates", "_field_snapshots", "_field_cache"}
-)
-"""The attributes of an object that hold JSON or the values read from it.
 
-A copy of an object makes them with ``_copy_json()``, which takes the depth
-that a read let through, where ``copy.deepcopy()`` raises ``RecursionError``.
-"""
-
-
-def _copied_by_attributes(item: Any) -> bool:
-    """Tell whether ``copy.deepcopy()`` copies an object by its attributes.
-
-    Args:
-        item: Any value.
-
-    Returns:
-        Whether ``item`` is an instance of a dataclass that keeps its fields in
-        its ``__dict__`` and has no copying or pickling of its own, so that
-        ``copy.deepcopy()`` makes a new object and copies its ``__dict__``.
-    """
-    cls = type(item)
-    return (
-        dataclasses.is_dataclass(cls)
-        and hasattr(item, "__dict__")
-        and all("__slots__" not in vars(base) for base in cls.__mro__)
-        and getattr(cls, "__deepcopy__", None) is None
-        and getattr(cls, "__setstate__", None) is None
-        and cls.__reduce_ex__ is object.__reduce_ex__
-        and cls.__reduce__ is object.__reduce__
-        and cls.__getstate__ is object.__getstate__
-    )
-
-
-def _copy_json(value: Any, memo: dict[int, Any] | None = None) -> Any:
+def _copy_json(value: Any) -> Any:
     """Return a copy of a JSON value that shares no mutable containers.
 
     The copy is iterative, so that it takes any depth that a read let through,
-    where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts, lists,
-    and the attributes of plain dataclass instances, which a field's value can
-    hold. A container that the value holds more than once, or that holds
+    where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts and
+    lists. A container that the value holds more than once, or that holds
     itself, is copied once, as ``copy.deepcopy()`` does. Anything else than
     these and a JSON scalar is copied by ``copy.deepcopy()``.
 
     Args:
         value: JSON value to copy.
-        memo: The copies made so far, keyed by the identity of the original, as
-            ``copy.deepcopy()`` takes it, or ``None`` for a new copy.
 
     Returns:
         A deep copy of a dict or list, and ``value`` itself otherwise.
@@ -3573,8 +3509,8 @@ def _copy_json(value: Any, memo: dict[int, Any] | None = None) -> Any:
     if not isinstance(value, (dict, list)):
         return value
 
-    if memo is None:
-        memo = {}
+    # The copies made so far, keyed by the identity of the original.
+    memo: dict[int, Any] = {}
     unfilled: list[tuple[Any, Any]] = []
 
     def shell(item: Any) -> Any:
@@ -3587,8 +3523,6 @@ def _copy_json(value: Any, memo: dict[int, Any] | None = None) -> Any:
             made: Any = {}
         elif type(item) is list:
             made = []
-        elif _copied_by_attributes(item):
-            made = object.__new__(type(item))
         else:
             return copy.deepcopy(item, memo)
         memo[id(item)] = made
@@ -3601,12 +3535,8 @@ def _copy_json(value: Any, memo: dict[int, Any] | None = None) -> Any:
         if type(source) is dict:
             for key, item in source.items():
                 made[shell(key)] = shell(item)
-        elif type(source) is list:
-            made.extend([shell(item) for item in source])
         else:
-            made.__dict__.update(
-                {name: shell(item) for name, item in vars(source).items()}
-            )
+            made.extend([shell(item) for item in source])
     return result
 
 
@@ -7183,100 +7113,52 @@ class JSONObject:
         assert key is not None
         return key
 
-    def __copy__(self) -> Self:
-        """Return a copy that shares only the API with this object.
+    def _refuse_copy(self) -> NoReturn:
+        """Refuse a copy or a pickle of this object.
 
-        A copy is made as ``copy.deepcopy()`` makes one, so the related
-        objects, the values read before the copy, the pending updates, and the
-        JSON are the copy's own. An assignment or a change made in place to one
-        object is neither read from nor sent by the other.
-
-        Returns:
-            A new object of the same class.
+        Raises:
+            TypeError: Always, naming the replacement.
         """
-        return copy.deepcopy(self)
+        name = type(self).__name__
+        raise TypeError(
+            f"A {name} object cannot be copied or pickled. Build another "
+            f"with {name}(json=obj.json), given the same api=, or read it "
+            "from the server again."
+        )
 
-    def __deepcopy__(self, memo: dict[int, Any]) -> Self:
-        """Return a deep copy that shares only the API with this object.
+    def __copy__(self) -> NoReturn:
+        """Refuse a shallow copy.
 
-        The API that the object was given as ``api=`` is shared, as the API
-        that the class registers is, because a client holds a session, which a
-        copy of the object has no reason to own. A related object that holds
-        the same API shares it too.
+        Raises:
+            TypeError: Always. ``copy.copy()`` of an object is refused, since
+                what it should share with the original is not settled.
+                ``Model(json=obj.json)`` builds another object from the JSON.
+        """
+        self._refuse_copy()
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> NoReturn:
+        """Refuse a deep copy.
 
         Args:
             memo: The copies that ``copy.deepcopy()`` has made so far.
 
-        Returns:
-            A new object of the same class.
+        Raises:
+            TypeError: Always. A container that holds an object cannot be
+                deep-copied either. Copy ``obj.json``, which is plain JSON.
         """
-        copied = object.__new__(type(self))
-        memo[id(self)] = copied
-        state = vars(copied)
-        for name, value in self.__getstate__().items():
-            if name in ("_api_override", "_graph_api"):
-                state[name] = value
-            elif name in _JSON_STATE:
-                state[name] = _copy_json(value, memo)
-            else:
-                state[name] = copy.deepcopy(value, memo)
-        return copied
+        self._refuse_copy()
 
-    def __getstate__(self) -> dict[str, Any]:
-        """Return the state that a copy or a pickle keeps.
-
-        The options of a ``write_options()`` block belong to the block, so a
-        copy or a pickle made inside one does not hold them.
-
-        Returns:
-            The object's attributes, without the write options.
-        """
-        return {
-            name: value
-            for name, value in vars(self).items()
-            if name not in ("_write_options", "_write_blocks")
-        }
-
-    def __reduce_ex__(self, protocol: SupportsIndex) -> tuple[Any, ...]:
-        """Return what a pickle holds, with the key before the state.
-
-        An object is rebuilt with its key first, so that it hashes as soon as
-        it exists. A set of objects that hold each other hashes one of them
-        before its state is restored.
+    def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
+        """Refuse a pickle, and the copy that falls back to it.
 
         Args:
             protocol: The pickle protocol.
 
-        Returns:
-            The reconstructor with the class and the key, and the state.
-        """
-        return (
-            _rebuild_object,
-            (type(self), self._wire_key),
-            self.__getstate__(),
-        )
-
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore the state of a pickled or copied object.
-
-        Args:
-            state: The attributes that the object had when it was pickled.
-
         Raises:
-            UsageError: If the model has a key field and the state holds no
-                key, as the state of a pickle written before the object kept
-                its key does not.
+            TypeError: Always. ``pickle.dumps()`` of an object, or of a
+                container that holds one, is refused.
         """
-        if _pk_property_of(type(self)) is not None and (
-            "_wire_key" not in state
-        ):
-            raise UsageError(
-                f"The state of this {type(self).__name__} object holds no "
-                "key, so it cannot be restored. Pickle the object again, or "
-                "read it from the server."
-            )
-        self.__dict__.update(state)
-        self.__dict__.setdefault("_wire_key", None)
+        self._refuse_copy()
 
     def __eq__(self, other: object) -> bool:
         """Return whether another object is this object's resource.

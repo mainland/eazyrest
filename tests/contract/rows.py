@@ -444,7 +444,12 @@ def refuses_assignment(
     """
     json_before = copy.deepcopy(obj.json)
     value_before = getattr(obj, name)
-    snapshot = copy.deepcopy(value_before)
+    # A related object cannot be copied, so a collection is copied one level.
+    snapshot = (
+        copy.copy(value_before)
+        if isinstance(value_before, (list, set))
+        else value_before
+    )
     error = raises(world, exc, lambda: setattr(obj, name, value), *named)
     assert getattr(obj, name) is value_before
     assert value_before == snapshot
@@ -1152,113 +1157,99 @@ def a_model_with_no_key_is_equal_only_to_itself(world: World) -> None:
     assert hash(entry) == object.__hash__(entry)
 
 
-def assert_copy_as_deepcopy(original: Post, duplicate: Post) -> None:
-    assert duplicate is not original
-    assert duplicate.owner is not original.owner
-    assert duplicate.owner == original.owner
+def assert_copy_refused(
+    attempt: Callable[[], Any], model: str = "Post"
+) -> None:
+    """Assert that a copy or a pickle raises ``TypeError``, naming the fix."""
+    with pytest.raises(TypeError) as caught:
+        attempt()
+    message = str(caught.value)
+    assert f"A {model} object cannot be copied or pickled" in message
+    assert f"{model}(json=obj.json)" in message
+    assert "api=" in message
+
+
+@row(EQ)
+def a_shallow_copy_is_refused(world: World) -> None:
+    original = post()
+    assert_copy_refused(lambda: copy.copy(original))
+    assert original.owner is not None
+    assert_copy_refused(lambda: copy.copy(original.owner), "User")
+
+
+@row(EQ)
+def a_deep_copy_is_refused(world: World) -> None:
+    original = post()
+    assert_copy_refused(lambda: copy.deepcopy(original))
+
+
+@row(EQ)
+def a_pickle_is_refused_at_every_protocol(world: World) -> None:
+    original = post()
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        assert_copy_refused(lambda: pickle.dumps(original, protocol=protocol))
+
+
+@row(EQ)
+def a_container_that_holds_an_object_refuses_a_deep_copy(
+    world: World,
+) -> None:
+    original = post()
+    assert original.owner is not None
+    for container in (
+        [original],
+        (original,),
+        {"post": original},
+        {original},
+        {"related": [original.owner]},
+    ):
+        with pytest.raises(TypeError, match=r"Build another with"):
+            copy.deepcopy(container)
+        with pytest.raises(TypeError, match=r"Build another with"):
+            pickle.dumps(container)
+
+
+@row(EQ)
+def a_refused_copy_leaves_the_object_as_it_was(world: World) -> None:
+    original = post()
+    original.title = "changed"
+    json_before = original.json
+    for attempt in (
+        lambda: copy.copy(original),
+        lambda: copy.deepcopy(original),
+        lambda: pickle.dumps(original),
+    ):
+        with pytest.raises(TypeError):
+            attempt()
+    assert original.json == json_before
+    assert original.title == "changed"
+
+
+@row(EQ)
+def an_object_built_from_the_json_is_equal_and_separate(
+    world: World,
+) -> None:
+    original = post()
+    rebuilt = Post(json=original.json)
+    assert rebuilt == original
+    assert rebuilt is not original
+    assert rebuilt.owner is not original.owner
+    assert rebuilt.owner == original.owner
     original.tags.append(Tag(slug="z"))
-    assert [t.pk for t in duplicate.tags] == ["a"]
+    assert [t.pk for t in rebuilt.tags] == ["a"]
     original.tags.pop()
-    assert duplicate.api is original.api
-    assert duplicate == original
 
 
 @row(EQ)
-def a_shallow_copy_is_a_deep_copy(world: World) -> None:
-    original = post()
-    assert original.owner is not None
-    assert_copy_as_deepcopy(original, copy.copy(original))
-
-
-@row(EQ)
-def a_deep_copy_shares_only_the_api(world: World) -> None:
-    original = post()
-    assert original.owner is not None
-    assert_copy_as_deepcopy(original, copy.deepcopy(original))
-
-
-@row(EQ)
-def a_copy_shares_the_api_given_as_api(world: World) -> None:
+def an_object_rebuilt_from_the_json_keeps_the_api_given(
+    world: World,
+) -> None:
     api = API("https://given.example/")
     original = Post(json=BODY, api=api)
-    assert original.owner is not None
-    assert original.owner.api is api
-    for duplicate in (copy.copy(original), copy.deepcopy(original)):
-        assert_copy_as_deepcopy(original, duplicate)
-        assert duplicate.api is api
-        assert duplicate.owner is not None
-        assert duplicate.owner.api is api
-
-
-@row(EQ)
-def a_pickle_round_trip_is_a_deep_copy(world: World) -> None:
-    original = post()
-    assert original.owner is not None
-    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
-        duplicate = pickle.loads(pickle.dumps(original, protocol=protocol))
-        assert_copy_as_deepcopy(original, duplicate)
-
-
-def copies_of(original: Post) -> list[Post]:
-    """Return a shallow copy, a deep copy, and a pickle round trip."""
-    return [
-        copy.copy(original),
-        copy.deepcopy(original),
-        *(
-            pickle.loads(pickle.dumps(original, protocol=protocol))
-            for protocol in range(pickle.HIGHEST_PROTOCOL + 1)
-        ),
-    ]
-
-
-@row(EQ)
-def a_copy_after_a_write_options_block_is_a_deep_copy(world: World) -> None:
-    original = post()
-    assert original.owner is not None
-    with original.write_options(headers={"If-Match": "x"}):
-        pass
-    with original.owner.write_options(headers={"If-Match": "y"}):
-        pass
-    for duplicate in copies_of(original):
-        assert_copy_as_deepcopy(original, duplicate)
-
-
-@row(EQ)
-def a_copy_made_in_a_write_options_block_sends_none_of_its_options(
-    world: World,
-) -> None:
-    original = post()
-    with original.write_options(headers={"If-Match": "x"}):
-        duplicates = copies_of(original)
-    for duplicate in duplicates:
-        duplicate.title = "new"
-        world.body(duplicate.save, "PATCH")
-        assert "If-Match" not in world.requests[-1].headers
-
-
-@row(EQ)
-def objects_that_hold_each_other_in_sets_survive_a_pickle(
-    world: World,
-) -> None:
-    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
-        m = Member(json={"id": 1, "friends": [2]})
-        n = Member(json={"id": 2, "friends": [1]})
-        m.friends = {n}
-        n.friends = {m}
-        duplicate = pickle.loads(pickle.dumps(m, protocol=protocol))
-        expected = copy.deepcopy(m)
-        assert duplicate == expected
-        assert duplicate.friends == expected.friends
-        (friend,) = duplicate.friends
-        assert friend.pk == 2
-        assert friend.friends == {duplicate}
-        assert friend.friends.pop() is duplicate
-        # A deep copy of a cycle keeps the cycle, so the copy's friend holds
-        # the copy itself, not a third object.
-        (copied_friend,) = expected.friends
-        (back,) = copied_friend.friends
-        assert back is expected
-        assert copied_friend is not n
+    rebuilt = Post(json=original.json, api=api)
+    assert rebuilt.api is api
+    assert rebuilt.owner is not None
+    assert rebuilt.owner.api is api
 
 
 REFUSED_ASSIGNMENTS: list[tuple[str, Callable[[], Any], tuple[str, ...]]] = [

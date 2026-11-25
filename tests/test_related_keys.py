@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-import pickle
 import uuid
 from collections.abc import Callable, Collection, Iterable, Sequence
 from typing import Any
@@ -632,48 +630,6 @@ def test_prefetch_hands_the_hook_each_key_once(requests_mock: Any) -> None:
     assert [writer.pk for writer in articles[0].editors] == [2, 1]
 
 
-def _post_with_readers() -> Post:
-    """Return a lazy post that holds two readers."""
-    post = Post(
-        json={"id": 1, "owner": 2, "readers": [4, 3]}, write_mode="lazy"
-    )
-    assert len(post.readers) == 2
-    return post
-
-
-@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
-def test_an_owner_of_readers_pickles_at_every_protocol(
-    protocol: int, requests_mock: Any
-) -> None:
-    """An unpickled owner saves nothing unchanged, and sends a change."""
-    patch = requests_mock.patch("https://related.example/posts/1/", json={})
-    post = _post_with_readers()
-
-    loaded = pickle.loads(pickle.dumps(post, protocol=protocol))
-    loaded.save()
-    assert requests_mock.call_count == 0
-    loaded.readers.reverse()
-    loaded.save()
-
-    assert patch.last_request.json() == {"readers": [3, 4]}
-
-
-def test_a_copy_of_an_owner_saves_apart_from_its_original(
-    requests_mock: Any,
-) -> None:
-    """A copy holds the readers that its snapshot holds."""
-    patch = requests_mock.patch("https://related.example/posts/1/", json={})
-    post = _post_with_readers()
-    copied = copy.deepcopy(post)
-
-    copied.readers.pop()
-    copied.save()
-    post.save()
-
-    assert patch.call_count == 1
-    assert patch.last_request.json() == {"readers": [4]}
-
-
 @pytest.mark.parametrize("lookup", ["owner__in", "owner__exact"])
 def test_a_lookup_on_a_relation_refuses_an_object_of_another_model(
     lookup: str, requests_mock: Any
@@ -1057,21 +1013,6 @@ def test_a_name_that_is_no_value_lookup_of_a_key_is_sent_as_given(
     list(Post.filter(params={name: value}))
 
     assert requests_mock.last_request.qs == {name: [value]}
-
-
-def test_a_copy_that_reads_changes_and_saves_leaves_the_original_alone(
-    requests_mock: Any,
-) -> None:
-    """The copy's reads, saves, and first key are the copy's own."""
-    roster = _roster(requests_mock)
-    copied = copy.copy(roster)
-
-    copied.staff.append(User(id=9))
-    copied.save()
-    roster.save()
-
-    assert _sent_bodies(requests_mock) == [{"staff": [1, 2, 9]}]
-    assert [user.pk for user in roster.staff] == [1, 2]
 
 
 @pytest.mark.parametrize(

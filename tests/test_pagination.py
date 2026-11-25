@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import ast
-import copy
 import pathlib
-import pickle
 import re
 import socket
 import threading
@@ -2102,28 +2100,6 @@ class Scoped(PagedBase):
     class_url = "/scoped/"
 
     id: int
-
-
-@pytest.mark.parametrize(
-    "duplicate",
-    [copy.deepcopy, lambda obj: pickle.loads(pickle.dumps(obj))],
-    ids=["deepcopy", "pickle"],
-)
-def test_object_built_with_a_scoped_view_can_be_copied_and_pickled(
-    duplicate: Any,
-) -> None:
-    """An object that keeps a view survives a deep copy and a pickle.
-
-    Args:
-        duplicate: Deep-copies the object, or round-trips it through pickle.
-    """
-    view = API("https://example.com/v1/")._scoped({"timeout": 3})
-    built = Scoped(json={"id": 1}, api=view)
-
-    again = duplicate(built)
-
-    assert again.id == 1
-    assert dict(again.api._request_options) == {"timeout": 3}
 
 
 @pytest.mark.parametrize("link", [5, ["/v1/items/?page=2"], {"href": "x"}])

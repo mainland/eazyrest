@@ -16,8 +16,6 @@ received each request.
 
 from __future__ import annotations
 
-import copy
-import pickle
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -222,7 +220,7 @@ def use(world: World, thing: Thing) -> None:
     thing.name = "z"
     thing.save()
     thing.save(full=True)
-    copy.deepcopy(thing).refresh()
+    Thing(json=thing.json, api=thing._api_override).refresh()
     thing.set_write_mode("eager")
     thing.name = "y"
     thing.delete()
@@ -917,33 +915,6 @@ def test_a_hook_that_builds_an_object_with_a_view_of_the_query_api_is_taken(
     assert task.member.org._api_override is own
     assert task.member.api is served
     assert task.member.org.api is served
-
-
-@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_objects_keep_the_graphs_api_through_copies_and_pickles(
-    world: World, monkeypatch: pytest.MonkeyPatch, given: bool
-) -> None:
-    """A copy, a deep copy, and a pickle send through the object's API.
-
-    Args:
-        given: Whether the object is built with ``api=``.
-    """
-    plain = API("https://plain.test/")
-    register(monkeypatch, plain, plain, plain)
-    own = API("https://given.test/") if given else None
-    thing = Thing(json=dict(THING), api=own)
-    owner = thing.owner
-
-    for duplicate in (
-        copy.copy(thing),
-        copy.deepcopy(thing),
-        pickle.loads(pickle.dumps(thing)),
-    ):
-        assert duplicate.api.base_url == (own or plain).base_url
-        assert duplicate.owner.api.base_url == duplicate.api.base_url
-    assert copy.copy(thing).api is thing.api
-    assert copy.copy(owner).api is owner.api
-    assert owner.api is thing.api
 
 
 QUERIES: dict[str, Callable[..., Any]] = {

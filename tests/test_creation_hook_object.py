@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import copy
-import pickle
 from collections.abc import Callable
 from typing import Any
 
@@ -24,7 +22,7 @@ KEPT: list[Any] = []
 
 @json_object
 class Hooked(JSONObject):
-    """A model whose hook keeps the object that it is given and copies."""
+    """A model whose hook keeps the object that it is given."""
 
     class_url = "/hooked/"
     id: int
@@ -33,13 +31,8 @@ class Hooked(JSONObject):
     def merge_response(  # type: ignore[no-untyped-def]
         self, resp, current, sent, **kwargs
     ):
-        """Keep the hook object and a copy, a deep copy, and a pickle."""
-        KEPT[:] = [
-            self,
-            copy.copy(self),
-            copy.deepcopy(self),
-            pickle.loads(pickle.dumps(self)),
-        ]
+        """Keep the hook object."""
+        KEPT[:] = [self]
         return super().merge_response(resp, current, sent, **kwargs)
 
 
@@ -56,27 +49,25 @@ USES: dict[str, Callable[[Hooked], Any]] = {
 
 
 @pytest.fixture
-def hooks() -> list[Hooked]:
-    """Return the hook object and its copies, from one creation."""
+def hook_object() -> Hooked:
+    """Return the object that a creation gave its hook."""
     with requests_mock.Mocker() as mocker:
         mocker.post(
             "https://hook.example/hooked/", json={"id": 1, "name": "a"}
         )
         Hooked.create(name="a")
-    return list(KEPT)
+    hook_object: Hooked = KEPT[0]
+    return hook_object
 
 
 @pytest.mark.parametrize("use", USES.values(), ids=USES.keys())
-@pytest.mark.parametrize(
-    "which", [1, 2, 3], ids=["copy", "deepcopy", "pickle"]
-)
-def test_a_copy_of_the_hook_object_has_no_key_either(
-    hooks: list[Hooked], which: int, use: Callable[[Hooked], Any]
+def test_the_hook_object_has_no_key(
+    hook_object: Hooked, use: Callable[[Hooked], Any]
 ) -> None:
     """Refuse every use of the key, and send no request."""
     with requests_mock.Mocker() as mocker:
         with pytest.raises(UsageError, match="no key yet"):
-            use(hooks[which])
+            use(hook_object)
         assert mocker.call_count == 0
 
 

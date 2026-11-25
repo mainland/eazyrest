@@ -10,9 +10,7 @@ here.
 """
 
 import collections
-import copy
 import dataclasses
-import pickle
 import types
 from collections.abc import Callable, Collection
 from typing import Any, NamedTuple
@@ -767,36 +765,6 @@ def test_json_schema_raises_the_error_of_the_field(
     if scenario.kind.fixable:
         scenario.define()
         assert "bad" in scenario.model.json_schema(mode)["properties"]
-
-
-def _copy(obj: Any) -> Any:
-    return copy.copy(obj)
-
-
-def _deepcopy(obj: Any) -> Any:
-    return copy.deepcopy(obj)
-
-
-def _pickled(obj: Any) -> Any:
-    return pickle.loads(pickle.dumps(obj))
-
-
-@pytest.mark.parametrize("duplicate", [_copy, _deepcopy, _pickled])
-def test_a_copy_reads_the_other_fields_and_raises_for_the_field(
-    scenario: Scenario, duplicate: Callable[[Any], Any]
-) -> None:
-    """A copy made after reads and failed reads is as usable as the object."""
-    obj = scenario.loaded()
-    assert obj.first == "a"
-    with scenario.refused():
-        _ = obj.bad
-
-    twin = duplicate(obj)
-
-    scenario.check_intact(twin, define=False)
-    scenario.check_intact(obj)
-    if scenario.kind.fixable:
-        assert twin.bad == scenario.decode(scenario.bad_json)
 
 
 Point = collections.namedtuple("Point", "x y")

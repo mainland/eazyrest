@@ -298,9 +298,8 @@ describe them further.
   about 500 levels, and raised a bare `RecursionError` for a deeper one, from
   an assignment too and from `create()` after its `POST`. A read is bounded
   only by `API.max_json_depth`: a field that nests more than 127 levels reads
-  and copies, from a response whose limit was raised or removed, from `json=`,
-  and from `update_from_json()`, as do `copy.copy()` and `copy.deepcopy()` of
-  its object.
+  from a response whose limit was raised or removed, from `json=`, and from
+  `update_from_json()`.
 - A conversion's own `RecursionError`, and one from a dataclass's
   `__post_init__`, propagates unchanged, as any other error of a conversion
   that is no `TypeError` or `ValueError` does. Only the walk of a value reports
@@ -462,9 +461,13 @@ describe them further.
   something on `self`, such as an `ETag`, or read `self.pk`, no longer works
   for `create()`. Keep what is needed in the JSON that the hook returns, and
   read the key from the response.
-- A pickle of an object of a keyed model that `v1.0.0a5` wrote does not load.
-  It raises `UsageError`, because its state holds no key. Read the object from
-  the server again. Pickles that this version writes load.
+- An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
+  `pickle.dumps()` of an object, or of a container that holds one, raise
+  `TypeError` naming the model, where `v1.0.0a5` copied and pickled it, and its
+  pickles no longer load. Build another object with
+  `Model(json=obj.json, api=api)`, which holds the pending changes of the first
+  as loaded values, or read the object from the server again. Errors, `API`
+  objects, and the views of a query still pickle.
 - A `UUID` key reads a string only in the hyphenated, compact, braced, or
   `urn:uuid:` form, in ASCII hex of either case, from the program, from JSON,
   in a query, and in a relation. Any other string raises `FieldConversionError`
@@ -836,11 +839,13 @@ describe them further.
   text is empty, and an item whose text holds a comma do. A set is sent in
   sorted order. Join no values yourself: the guide advised that for
   django-filter's lookups, and it is no longer needed.
-- `copy.copy()` of a model object gives the same copy as `copy.deepcopy()`,
-  which owns its related objects, pending updates, cached values, and JSON,
-  where `v1.0.0a5` shared them with the original, so an assignment to the copy
-  was sent by the original's `save()`. Code that relied on a copy sharing the
-  related objects of the original must keep the original.
+- An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
+  `pickle.dumps()` of an object, or of a container that holds one, such as
+  `dataclasses.asdict()` of a dataclass that holds an object, raise `TypeError`
+  naming the model. 0.9.0 copied and pickled objects as Python does. Build
+  another object with `Model(json=obj.json, api=api)`, or read it from the
+  server again. A process pool or a cache that pickles its arguments needs the
+  JSON, or the key, in place of the object.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`

@@ -1,4 +1,4 @@
-"""A read, a copy, and a comparison take any depth that decoded.
+"""A read and a comparison take any depth that decoded.
 
 ``API.max_json_depth`` limits what a response may nest. With no limit, or one
 that is raised, or for JSON that a caller gives, a field nests as deeply as its
@@ -8,7 +8,6 @@ stack.
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import sys
 from typing import Any
@@ -143,16 +142,6 @@ def created(depth: int) -> Wide:
         return Wide.create(anything=1)
 
 
-def shallow_copied(depth: int) -> Wide:
-    """Copy an object that has read its fields."""
-    return copy.copy(read_fields(from_json(depth)))
-
-
-def deep_copied(depth: int) -> Wide:
-    """Deep-copy an object that has read its fields."""
-    return copy.deepcopy(read_fields(from_json(depth)))
-
-
 def saved_in_full(depth: int) -> Wide:
     """Save an object whose fields were read, with every field sent."""
     obj = read_fields(from_json(depth))
@@ -172,8 +161,6 @@ READS: dict[str, Any] = {
     "a load": loaded,
     "refresh()": refreshed,
     "a creation's response": created,
-    "copy.copy()": shallow_copied,
-    "copy.deepcopy()": deep_copied,
     "save(full=True)": saved_in_full,
 }
 
@@ -203,8 +190,8 @@ def test_a_save_after_reading_a_deep_field_sends_what_changed(
         assert mocker.last_request.json() == {"anything": [1]}
 
 
-def test_a_value_that_holds_itself_copies_once() -> None:
-    """A copy of deep JSON that holds itself ends, as ``deepcopy()`` does."""
+def test_json_that_holds_itself_is_copied_once() -> None:
+    """An object's JSON ends where its deep value holds itself."""
     outer: list[Any] = []
     value = outer
     for _ in range(600):
@@ -212,12 +199,12 @@ def test_a_value_that_holds_itself_copies_once() -> None:
         value = value[0]
     value.append(outer)
     obj = Wide(json={**START, "anything": outer})
-    copied = copy.deepcopy(obj)
-    assert copied.json["anything"] is not outer
-    loop = copied.json["anything"]
+    copied = obj.json
+    assert copied["anything"] is not outer
+    loop = copied["anything"]
     for _ in range(601):
         loop = loop[0]
-    assert loop is copied.json["anything"]
+    assert loop is copied["anything"]
 
 
 @pytest.mark.parametrize("depth", [3, 300])
@@ -237,11 +224,10 @@ def test_a_query_refuses_a_structured_value_at_any_depth_alike(
     assert not isinstance(caught.value, FieldConversionError)
 
 
-def test_a_copy_with_a_pending_update_needs_little_stack() -> None:
-    """A copy does not recurse once for each level of the update."""
+def test_an_assignment_of_a_deep_value_needs_little_stack() -> None:
+    """Queuing an update does not recurse once for each level of the value."""
     obj = Wide(json=dict(START))
-    obj.anything = nested(127)
-    assert obj._pending_updates
+    value = nested(127)
 
     def depth() -> int:
         frame: Any = sys._getframe()
@@ -251,12 +237,13 @@ def test_a_copy_with_a_pending_update_needs_little_stack() -> None:
             frame = frame.f_back
         return count
 
-    def copied(frames: int) -> Wide:
-        return copied(frames - 1) if frames else copy.deepcopy(obj)
+    def assign(frames: int) -> None:
+        if frames:
+            assign(frames - 1)
+        else:
+            obj.anything = value
 
-    twin = copied(sys.getrecursionlimit() - depth() - 120)
-    assert twin._pending_updates == obj._pending_updates
-    assert (
-        twin._pending_updates["anything"]
-        is not (obj._pending_updates["anything"])
-    )
+    assign(sys.getrecursionlimit() - depth() - 120)
+    pending = obj._pending_updates["anything"]
+    assert pending == value
+    assert pending is not value

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import copy
 import itertools
-import pickle
 from collections.abc import Callable
 from types import MappingProxyType
 from typing import Any
@@ -40,13 +38,6 @@ class Item(JSONObject):
 Person.register_api(api)
 Item.register_api(api)
 
-COPIES: dict[str, Callable[[Any], Any]] = {
-    "copy": copy.copy,
-    "deepcopy": copy.deepcopy,
-    "pickle": lambda obj: pickle.loads(pickle.dumps(obj)),
-    "pickle0": lambda obj: pickle.loads(pickle.dumps(obj, protocol=0)),
-}
-
 
 def item() -> Item:
     """Return an item with its owner embedded."""
@@ -69,40 +60,6 @@ def test_a_block_that_raises_leaves_no_write_options_on_the_object() -> None:
     with pytest.raises(RuntimeError), obj.write_options(headers=HEADERS):
         raise RuntimeError
     assert "_write_options" not in vars(obj)
-
-
-@pytest.mark.parametrize("make", COPIES.values(), ids=COPIES.keys())
-def test_an_object_that_used_a_block_can_be_copied_and_pickled(
-    make: Callable[[Any], Any],
-) -> None:
-    """The object and an owner that caches it copy as one that never did."""
-    obj = item()
-    with obj.write_options(headers=HEADERS):
-        pass
-    with obj.owner.write_options(headers=HEADERS):
-        pass
-    duplicate = make(obj)
-    assert duplicate == obj
-    assert duplicate.owner == obj.owner
-    assert duplicate.owner is not obj.owner
-    assert "_write_options" not in vars(duplicate)
-    assert "_write_options" not in vars(duplicate.owner)
-    assert make(obj.owner) == obj.owner
-
-
-@pytest.mark.parametrize("make", COPIES.values(), ids=COPIES.keys())
-def test_a_copy_made_in_a_block_sends_none_of_its_options(
-    make: Callable[[Any], Any],
-) -> None:
-    """The options belong to the block, not to a copy of the object."""
-    obj = item()
-    with obj.write_options(headers=HEADERS):
-        duplicate = make(obj)
-    duplicate.title = "new"
-    with requests_mock.Mocker() as mocker:
-        mocker.patch("https://options.example/items/1/", json={})
-        duplicate.save()
-    assert "If-Match" not in mocker.request_history[0].headers
 
 
 def test_blocks_that_end_in_the_order_they_began_are_refused() -> None:
@@ -198,20 +155,6 @@ def test_the_object_takes_the_merge_of_the_blocks_still_open() -> None:
     assert headers["X-Third"] == "3"
     blocks[2].close()
     assert "_write_options" not in vars(obj)
-
-
-@pytest.mark.parametrize("make", COPIES.values(), ids=COPIES.keys())
-def test_a_copy_made_in_a_block_sends_only_the_options_of_its_own_block(
-    make: Callable[[Any], Any],
-) -> None:
-    """A copy takes none of the original's options, then its own block's."""
-    obj = item()
-    with obj.write_options(headers=HEADERS):
-        duplicate = make(obj)
-    with duplicate.write_options(headers={"X-Copy": "1"}):
-        headers = sent_headers(duplicate)
-    assert headers["X-Copy"] == "1"
-    assert "If-Match" not in headers
 
 
 def hook(response: Any, **kwargs: Any) -> None:

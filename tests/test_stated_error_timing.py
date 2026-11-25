@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pickle
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -52,17 +51,6 @@ def test_assigning_a_field_that_the_json_lacks_raises_attribute_error() -> (
         with pytest.raises(AttributeError, match="note"):
             lazy.note = "x"
         assert mocker.call_count == 1
-
-
-def test_a_pickle_of_an_object_given_an_api_holds_its_credentials() -> None:
-    """The session's headers go into the pickle, so it is a secret."""
-    private = API("https://private.example/")
-    private.session.headers["Authorization"] = "Bearer secret-token"
-    machine = Machine(json={"id": 1, "name": "a", "note": "n"}, api=private)
-    assert b"secret-token" in pickle.dumps(machine)
-    assert b"secret-token" not in pickle.dumps(
-        Machine(json={"id": 1, "name": "a", "note": "n"})
-    )
 
 
 def test_the_api_sends_no_head_request() -> None:
