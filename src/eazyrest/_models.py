@@ -4778,7 +4778,7 @@ def encode_json(
     analyzed = analyze_type(annotation)
     _check_relation_collection("The annotation", analyzed)
     _check_admitted(analyzed, _table_of(model), late=True)
-    return _checked_json(model._to_written_json(value, analyzed))
+    return model._to_written_json(value, analyzed)
 
 
 _MAX_WRITE_DEPTH = _DEFAULT_MAX_JSON_DEPTH - 1
@@ -4916,7 +4916,9 @@ def _check_json_leaf(value: Any, path: str) -> bool:
             )
         return type(value) is not float
     if isinstance(value, int) and not isinstance(value, bool):
-        if not _is_writable_int(value):
+        # A subclass can define its own str() and bit_length(), which the check
+        # must not ask. It tests the integer that is written.
+        if not _is_writable_int(_plain_scalar(value)):
             raise ValueError(
                 f"The value{_at(path)} is an integer of more than "
                 f"{sys.get_int_max_str_digits()} digits, which Python cannot "
@@ -7734,6 +7736,37 @@ class JSONObject:
                 deeply than ``_MAX_WRITE_DEPTH``, and if ``value`` holds a
                 related object whose API is not the parent's.
         """
+        encoded = cls._to_reduced_json(value, conversion, parent)
+        _check_write_depth(encoded, "")
+        return encoded
+
+    @classmethod
+    def _to_reduced_json(
+        cls,
+        value: Any,
+        conversion: AnalyzedType,
+        parent: _Parent | None = None,
+    ) -> Any:
+        """Encode a value that a caller gives to be written, as plain JSON.
+
+        This is the one place that reduces what is written to plain types, so
+        that every check after it, and the JSON that an object stores, see
+        ``str``, ``int``, ``float``, ``bool``, and ``None`` only, in values and
+        in mapping keys.
+
+        Args:
+            value: Python value to serialize.
+            conversion: Analyzed type metadata that guides conversion.
+            parent: As for ``_to_written_json()``.
+
+        Returns:
+            The encoding, with each scalar and key reduced to its plain type.
+            It may nest more deeply than ``_MAX_WRITE_DEPTH``.
+
+        Raises:
+            TypeError: As for ``_to_json()``.
+            ValueError: As for ``_to_written_json()``, except for the depth.
+        """
         token = _WRITING.set(True)
         parent_token = _WRITE_PARENT.set(parent)
         try:
@@ -7741,8 +7774,7 @@ class JSONObject:
         finally:
             _WRITE_PARENT.reset(parent_token)
             _WRITING.reset(token)
-        _check_write_depth(encoded, "")
-        return encoded
+        return _checked_json(encoded)
 
     @classmethod
     def _encode_value(
@@ -8255,11 +8287,9 @@ class JSONObject:
                 _refuse_bare_items(current, descriptor.analyzed_type)
                 # A set put into a nested sequence in place is a value that a
                 # caller gave to be written, as an assigned one is.
-                token = _WRITING.set(True)
-                try:
-                    encoded = self._to_json(current, descriptor.analyzed_type)
-                finally:
-                    _WRITING.reset(token)
+                encoded = self._to_reduced_json(
+                    current, descriptor.analyzed_type
+                )
                 # A value that was read and not changed is not written, however
                 # deep it is, so only a change is counted.
                 if _json_equal(encoded, snapshot):
