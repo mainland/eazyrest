@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import time
 from collections.abc import Callable, Collection, Iterable, Mapping
@@ -173,6 +174,33 @@ def _permitted_origins(
 
 
 _UNPARSABLE_PAGE_URL = "A page URL cannot be parsed, so nothing was sent."
+
+
+def _resolve_page_url(client: Client, url: str) -> str:
+    """Resolve the URL of a page that a caller named, or refuse it.
+
+    This is the one place that decides that a page URL cannot be parsed, so
+    every entry that takes one raises the same error for it, whichever class of
+    ``RequestException`` ``resolve_url()`` would raise.
+
+    Args:
+        client: Client whose ``base_url`` a relative URL resolves against.
+        url: Relative or absolute URL of a page.
+
+    Returns:
+        The absolute URL.
+
+    Raises:
+        PaginationError: If the URL cannot be parsed. The message quotes none
+            of it, and no error is attached.
+    """
+    resolved = None
+    # The raise comes after the handler, so that no error is attached.
+    with contextlib.suppress(requests.RequestException):
+        resolved = client.resolve_url(url)
+    if resolved is None:
+        raise PaginationError(_UNPARSABLE_PAGE_URL)
+    return resolved
 
 
 def _page_url_subject(
@@ -1349,9 +1377,11 @@ class API:
             Fully resolved request URL.
 
         Raises:
-            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
-                rejects the URI, as for a host that Unicode normalization
-                changes. The message quotes none of the URI.
+            requests.RequestException: If ``urlparse()`` rejects the URI, as
+                for an unclosed bracket or a host that Unicode normalization
+                changes. Its class is the one that requests raises for the same
+                text, ``InvalidURL`` or ``MissingSchema``, and its message
+                quotes none of the URI.
         """
         if _is_absolute(uri):
             return uri

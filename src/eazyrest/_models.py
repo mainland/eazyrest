@@ -87,7 +87,6 @@ from ._errors import (
     DoesNotExist,
     EazyrestError,
     MultipleObjectsReturned,
-    PaginationError,
     PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
@@ -97,7 +96,6 @@ from ._errors import (
 from ._protocols import Client, Response
 from ._results import Results, _count_of, _valid_count
 from .api import (
-    _UNPARSABLE_PAGE_URL,
     API,
     _AnyAPI,
     _as_client,
@@ -105,6 +103,7 @@ from .api import (
     _check_mergeable_options,
     _merge_request_options,
     _registered_api,
+    _resolve_page_url,
     _takes_kwargs,
 )
 from .pagination import (
@@ -10690,12 +10689,7 @@ class JSONObject:
                 "the query has no collection to read",
             )
         else:
-            page_url = None
-            # The raise comes after the handler, so that no error is attached.
-            with contextlib.suppress(requests.exceptions.InvalidURL):
-                page_url = client.resolve_url(url)
-            if page_url is None:
-                raise PaginationError(_UNPARSABLE_PAGE_URL)
+            page_url = _resolve_page_url(client, url)
             resp = _request_page(client, page_url, allow_other_origins=False)
         return context, prefetch_fields, resp
 

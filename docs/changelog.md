@@ -898,9 +898,12 @@ describe them further.
   bare `TypeError` of `tuple()`. Pass a list or a tuple, not a set or a
   generator.
 - `get_page(url=...)` raises `PaginationError` for every `url=` that it cannot
-  parse, before anything is sent, and its message quotes none of the URL. A
-  bracketed host that is no address, as in `http://[bad/`, raised requests'
-  `InvalidURL` while a port out of range raised `PaginationError`.
+  parse, before anything is sent, and its message quotes none of the URL.
+  `v1.0.0a5` raised `ValueError` for a bracketed host that is no address, as in
+  `http://[bad/`, and for a bracket after a backslash, as in `//\[`, and
+  requests' `InvalidURL` for a port out of range. `follow_next_links(url=...)`
+  raises `PaginationError` for a URL that it cannot resolve, where it raised
+  `ValueError`.
 - `get_or_create()` refuses an argument that `create()` could not send before
   it sends the lookup. A model under a name that is no field, as in
   `get_or_create(x=User(id=1))`, raises `TypeError`, and a single item for a

@@ -23,6 +23,7 @@ from .api import (
     _as_sender,
     _check_final_response,
     _page_url_subject,
+    _resolve_page_url,
 )
 
 __all__ = [
@@ -586,9 +587,10 @@ def follow_next_links(
         ResponseShapeError: If a page is not JSON, if a payload is neither a
             list nor a mapping, or if a page's ``results_key`` member is
             missing or is not a list.
-        PaginationError: If a next-page URL names a page already read, or if a
-            next-page URL or a redirect that the request follows has another
-            origin and ``allow_other_origins`` is ``False``.
+        PaginationError: If ``url`` cannot be parsed, if a next-page URL names
+            a page already read, or if a next-page URL or a redirect that the
+            request follows has another origin and ``allow_other_origins`` is
+            ``False``.
         RedirectError: If a redirect from a page request is refused, as for any
             request, or if the request does not follow redirects and a page
             request is redirected.
@@ -605,7 +607,7 @@ def follow_next_links(
             JSON items from every page, in order.
         """
         page = payload
-        page_url = api.base_url if url is None else api.resolve_url(url)
+        page_url = api.base_url if url is None else _resolve_page_url(api, url)
         # Without url=, the first page's URL is unknown, and the base URL is
         # not a page.
         reader = _PageReader(

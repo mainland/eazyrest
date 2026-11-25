@@ -409,8 +409,11 @@ def _is_absolute(uri: str | bytes) -> bool:
         Whether the URI is absolute, as ``urlparse()`` reads it.
 
     Raises:
-        requests.RequestException: If ``urlparse()`` rejects the URI, which
-            is ``InvalidURL`` with a message that quotes none of it.
+        requests.RequestException: If ``urlparse()`` rejects the URI. Its class
+            is the one that requests raises for the same text, as
+            ``_unreadable_error()`` finds it, which is ``MissingSchema`` for a
+            URI that requests reads as having no scheme, and its message quotes
+            none of the URI.
     """
     try:
         parts = urlparse(uri)
