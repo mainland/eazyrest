@@ -42,6 +42,7 @@ from ._urls import (
     Source,
     _asked_text,
     _base_origins,
+    _check_uri_type,
     _is_absolute,
     _Origin,
     _origin_matches,
@@ -53,6 +54,7 @@ from ._urls import (
     _ServerURL,
     _shown,
     _unreadable_error,
+    _uri_text,
 )
 from .write_mode import WriteMode, validate_write_mode
 
@@ -191,9 +193,12 @@ def _resolve_page_url(client: Client, url: str) -> str:
         The absolute URL.
 
     Raises:
+        TypeError: If ``url`` is neither ``str`` nor ``bytes``. The message
+            names ``url``.
         PaginationError: If the URL cannot be parsed. The message quotes none
             of it, and no error is attached.
     """
+    _check_uri_type(url, "url")
     resolved = None
     # The raise comes after the handler, so that no error is attached.
     with contextlib.suppress(requests.RequestException):
@@ -1368,25 +1373,31 @@ class API:
 
         Absolute URIs are returned unchanged. Relative paths are appended to
         ``base_url`` without letting leading slashes discard any existing path
-        prefix on the base URL.
+        prefix on the base URL. A URI given as ``bytes`` is decoded as UTF-8
+        first, as requests decodes an absolute one, whether it is relative or
+        absolute.
 
         Args:
-            uri: Relative or absolute request URI.
+            uri: Relative or absolute request URI, as ``str`` or ``bytes``.
 
         Returns:
-            Fully resolved request URL.
+            Fully resolved request URL, as ``str``.
 
         Raises:
+            TypeError: If ``uri`` is neither ``str`` nor ``bytes``. The message
+                names ``uri``.
             requests.RequestException: If ``urlparse()`` rejects the URI, as
                 for an unclosed bracket or a host that Unicode normalization
                 changes. Its class is the one that requests raises for the same
                 text, ``InvalidURL`` or ``MissingSchema``, and its message
                 quotes none of the URI.
         """
-        if _is_absolute(uri):
-            return uri
+        _check_uri_type(uri, "uri")
+        text = _uri_text(uri)
+        if _is_absolute(text):
+            return text
 
-        return f"{self.base_url.rstrip('/')}/{uri.lstrip('/')}"
+        return f"{self.base_url.rstrip('/')}/{text.lstrip('/')}"
 
     def _read_server_url(self, url: str) -> _ServerURL | None:
         """Read a URL that a server supplied, as this session will send it.
@@ -1477,9 +1488,10 @@ class API:
                 adapter for it, so that nothing was sent. Its message quotes
                 none of the URL, and it has no ``__cause__`` or
                 ``__context__``.
-            TypeError: If ``headers`` or ``hooks`` is no mapping, or
-                ``redirect_origins`` is not a tuple, a list, or a frozenset of
-                strings. The request is not sent.
+            TypeError: If ``uri`` is neither ``str`` nor ``bytes``, ``headers``
+                or ``hooks`` is no mapping, or ``redirect_origins`` is not a
+                tuple, a list, or a frozenset of strings. The request is not
+                sent.
             ValueError: If a string in ``redirect_origins`` is no absolute
                 ``http`` or ``https`` URL with a host. The request is not sent.
         """
@@ -1532,8 +1544,9 @@ class API:
                 response is a redirect that was not followed.
             requests.RequestException: If the request fails, as for any
                 request.
-            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
-                frozenset of strings. The request is not sent.
+            TypeError: If ``url`` is neither ``str`` nor ``bytes``, or
+                ``redirect_origins`` is not a tuple, a list, or a frozenset of
+                strings. The request is not sent.
             ValueError: If a string in ``redirect_origins`` is no absolute
                 ``http`` or ``https`` URL with a host. The request is not sent.
         """
@@ -1914,9 +1927,10 @@ class API:
                 response exceeds ``max_response_bytes``.
             requests.RequestException: If the request fails to send, as
                 ``requests.ConnectionError`` does.
-            TypeError: If ``headers`` or ``hooks`` is no mapping, or
-                ``redirect_origins`` is not a tuple, a list, or a frozenset of
-                strings. The request is not sent.
+            TypeError: If ``uri`` is neither ``str`` nor ``bytes``, ``headers``
+                or ``hooks`` is no mapping, or ``redirect_origins`` is not a
+                tuple, a list, or a frozenset of strings. The request is not
+                sent.
             ValueError: If a string in ``redirect_origins`` is no absolute
                 ``http`` or ``https`` URL with a host. The request is not sent.
         """
@@ -2144,10 +2158,14 @@ class _ScopedAPI:
         """Resolve a request URI against the API's ``base_url``.
 
         Args:
-            uri: Relative or absolute request URI.
+            uri: Relative or absolute request URI, as ``str`` or ``bytes``.
 
         Returns:
-            Fully resolved request URL.
+            Fully resolved request URL, as ``str``.
+
+        Raises:
+            TypeError: If ``uri`` is neither ``str`` nor ``bytes``.
+            requests.RequestException: As for ``API.resolve_url()``.
         """
         return self._api.resolve_url(uri)
 

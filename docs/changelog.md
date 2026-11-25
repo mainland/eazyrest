@@ -904,6 +904,13 @@ describe them further.
   requests' `InvalidURL` for a port out of range. `follow_next_links(url=...)`
   raises `PaginationError` for a URL that it cannot resolve, where it raised
   `ValueError`.
+- A `url=` or a request's URI that is neither `str` nor `bytes` raises
+  `TypeError` naming the argument, before any request, from `get_page(url=)`,
+  `follow_next_links(url=)`, `resolve_url()`, and every request method of `API`
+  and of a view. It raised an `AttributeError` that named nothing. A relative
+  `bytes` URI is decoded as UTF-8 and resolved against the base URL, as an
+  absolute one is decoded and sent, where it raised `TypeError`.
+  `resolve_url()` returns `str` for either.
 - `get_or_create()` refuses an argument that `create()` could not send before
   it sends the lookup. A model under a name that is no field, as in
   `get_or_create(x=User(id=1))`, raises `TypeError`, and a single item for a

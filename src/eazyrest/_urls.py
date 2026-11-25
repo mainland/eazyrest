@@ -399,6 +399,51 @@ def _origin_matches(
     return origin is not None and origin in allowed
 
 
+def _check_uri_type(uri: object, name: str) -> None:
+    """Refuse a request URI that is neither ``str`` nor ``bytes``.
+
+    This is the one rule for the type of a URI. The message names the argument
+    and the type that it got, and quotes nothing of the value.
+
+    Args:
+        uri: The value given as a URI.
+        name: The argument's name in the caller's signature, such as ``"uri"``
+            or ``"url"``.
+
+    Raises:
+        TypeError: If ``uri`` is neither ``str`` nor ``bytes``.
+    """
+    if not isinstance(uri, str | bytes):
+        raise TypeError(
+            f"{name} must be a str or bytes, got {type(uri).__name__}"
+        )
+
+
+def _uri_text(uri: str | bytes) -> str:
+    """Return a request URI as text, decoding ``bytes`` as requests does.
+
+    Args:
+        uri: Relative or absolute request URI, as ``str`` or ``bytes``. The
+            type is checked by ``_check_uri_type()``.
+
+    Returns:
+        ``uri`` as it stands, or decoded as UTF-8 if it is ``bytes``, as
+        requests decodes an absolute URI.
+
+    Raises:
+        requests.RequestException: An ``InvalidURL`` if ``uri`` is ``bytes``
+            that are no UTF-8. Its message quotes none of the URI, and it has
+            no cause or context.
+    """
+    if isinstance(uri, str):
+        return uri
+    try:
+        return uri.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    raise _unreadable_error(uri)
+
+
 def _is_absolute(uri: str | bytes) -> bool:
     """Return whether a request URI names a scheme or a host.
 
