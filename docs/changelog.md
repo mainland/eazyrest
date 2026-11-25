@@ -1257,13 +1257,12 @@ that can break code written for 0.9.0, followed by what to do about it.
   takes precedence over `REQUESTS_CA_BUNDLE`. `verify=False` no longer
   suppresses urllib3's `InsecureRequestWarning` for the whole process. Filter
   the warning yourself if you accept unverified connections.
-- A request to a URL that requests cannot prepare, a base URL or a redirect
-  origin that it cannot prepare, and a request URI whose host Unicode
-  normalization changes raise `requests.exceptions.MissingSchema`,
-  `InvalidURL`, or `InvalidSchema` before anything is sent. 0.9.0 let requests
-  raise them while it sent, with a message that quoted the URL's user and
-  password. The message now quotes none of the URL, and the error has no
-  `__cause__` or `__context__`.
+- A request to a URL that requests cannot prepare, a base URL that it cannot
+  prepare, and a request URI whose host Unicode normalization changes raise
+  `requests.exceptions.MissingSchema`, `InvalidURL`, or `InvalidSchema` before
+  anything is sent. 0.9.0 let requests raise them while it sent, with a message
+  that quoted the URL's user and password. The message now quotes none of the
+  URL, and the error has no `__cause__` or `__context__`.
 - A redirect of a `GET` is followed only to the origin of the request it
   answers, or to an origin in `API.redirect_origins`, so that session headers
   such as API keys are not sent elsewhere. A `Location` that cannot be parsed,

@@ -698,7 +698,8 @@ fragment. The error's `request` and `response` keep the real URL.
 - A URL that you gave, such as the one that you pass to `get()` or an object's
   URL resolved against `base_url`, shows its origin and path, and `?...` in
   place of its query, which can hold a secret. A 500 for `api.get("items?k=v")`
-  reads `500 Server Error: None for GET https://api.example.com/items?...`.
+  reads
+  `500 Server Error: Internal Server Error for GET https://api.example.com/items?...`.
   Send a secret in a header or the body, not in the query.
 - A configured URL, `base_url`, shows its origin and path, as in
   `'https://api.example.com/v1/'`.

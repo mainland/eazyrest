@@ -1083,8 +1083,9 @@ class API:
                 ``timeout`` attribute instead.
 
         Raises:
-            requests.RequestException: An ``InvalidURL`` if ``urlparse()``
-                rejects ``url``. The message quotes none of it.
+            requests.RequestException: If requests cannot prepare ``url``, as
+                ``MissingSchema`` or ``InvalidURL``. The message quotes none of
+                it.
         """
         self.base_url = url
         self.default_write_mode = validate_write_mode(default_write_mode)
@@ -1839,6 +1840,7 @@ class API:
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
             TypeError: As for ``get()``.
+            ValueError: As for ``get()``.
         """
         return self._send("POST", self.session.post, uri, *args, **kwargs)
 
@@ -1865,6 +1867,7 @@ class API:
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
             TypeError: As for ``get()``.
+            ValueError: As for ``get()``.
         """
         return self._send("PATCH", self.session.patch, uri, *args, **kwargs)
 
@@ -1889,6 +1892,7 @@ class API:
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
             TypeError: As for ``get()``.
+            ValueError: As for ``get()``.
         """
         return self._send("PUT", self.session.put, uri, *args, **kwargs)
 
@@ -1912,6 +1916,7 @@ class API:
             LimitExceeded: As for ``get()``.
             requests.RequestException: As for ``get()``.
             TypeError: As for ``get()``.
+            ValueError: As for ``get()``.
         """
         return self._send("DELETE", self.session.delete, uri, *args, **kwargs)
 
