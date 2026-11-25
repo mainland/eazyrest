@@ -2930,6 +2930,69 @@ def _check_files(files: Any) -> None:
         _check_names_mapping(files, "files")
 
 
+def _parameter_refusal(
+    cls: type, names: str | tuple[str, str], reason: str
+) -> ValueError:
+    """Build the refusal of a query parameter, or of two that clash.
+
+    This is the one place that writes how a refusal begins, so that every
+    refusal names the parameter and the model the same way.
+
+    Args:
+        cls: Model whose query is refused.
+        names: The parameter's name, with the position of an item after it if
+            the refusal is of one item, or the names of two parameters.
+        reason: What is wrong, which continues the sentence that names the
+            parameter.
+
+    Returns:
+        The error to raise.
+    """
+    if isinstance(names, str):
+        subject = f"Query parameter {names}"
+    else:
+        subject = f"Query parameters {names[0]} and {names[1]}"
+    return ValueError(f"{subject} for {cls.__name__} {reason}")
+
+
+def _unsendable_parameter(
+    cls: type, names: str | tuple[str, str], because: str
+) -> ValueError:
+    """Build the refusal of a query parameter that cannot be sent.
+
+    Args:
+        cls: Model whose query is refused.
+        names: As for ``_parameter_refusal()``.
+        because: Why the parameter cannot be sent, as the clause after
+            "because".
+
+    Returns:
+        The error to raise.
+    """
+    return _parameter_refusal(cls, names, f"cannot be sent, because {because}")
+
+
+def _one_value_refusal(cls: type, name: str, several_name: str) -> ValueError:
+    """Build the refusal of a collection for a parameter of one value.
+
+    Args:
+        cls: Model whose query is refused.
+        name: The parameter's name.
+        several_name: The name of the lookup that takes several values.
+
+    Returns:
+        The error to raise.
+    """
+    return _unsendable_parameter(
+        cls,
+        name,
+        "it compares one value and its value is a collection, which requests "
+        "would send as the parameter repeated, and a server applies only one "
+        "of those. Pass one value, or use a lookup that takes several, such "
+        f"as {several_name}__in",
+    )
+
+
 def _query_params(
     params: Mapping[str, Any] | None,
     kwargs: Mapping[str, Any],
@@ -9441,14 +9504,7 @@ class JSONObject:
         ):
             # A server applies one value of a repeated parameter and ignores
             # the others, so a query for several would change its meaning.
-            raise ValueError(
-                f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                "because it compares one value and its value is a "
-                "collection, which requests would send as the parameter "
-                "repeated, and a server applies only one of those. Pass one "
-                "value, or use a lookup that takes several, such as "
-                f"{parameter.field}__in"
-            )
+            raise _one_value_refusal(cls, name, parameter.field)
         if parameter.one_value and _is_collection_value(value) and not whole:
             named = parameter.named
             assert named is not None
@@ -9464,14 +9520,7 @@ class JSONObject:
                 if last in _ONE_VALUE_LOOKUPS
                 else name
             )
-            raise ValueError(
-                f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                "because it compares one value and its value is a "
-                "collection, which requests would send as the parameter "
-                "repeated, and a server applies only one of those. Pass one "
-                "value, or use a lookup that takes several, such as "
-                f"{several_name}__in"
-            )
+            raise _one_value_refusal(cls, name, several_name)
         unconverted = cls._sends_no_conversion(parameter)
 
         def refuse_unconverted(position: int | None) -> NoReturn:
@@ -9491,12 +9540,13 @@ class JSONObject:
             )
             kind = "JSON" if named.by == "json" else "write"
             where = "" if position is None else f"[{position}]"
-            error = ValueError(
-                f"Query parameter {name}{where} for {cls.__name__} cannot be "
-                f"sent, because it is the {kind} key of {named.field}, which "
-                "sends no conversion, so a value other than a string, number, "
-                "or None would go out other than as the field's name sends "
-                f"it. Pass it as {python_name}"
+            error = _unsendable_parameter(
+                cls,
+                f"{name}{where}",
+                f"it is the {kind} key of {named.field}, which sends no "
+                "conversion, so a value other than a string, number, or None "
+                "would go out other than as the field's name sends it. Pass "
+                f"it as {python_name}",
             )
             # The message names the position, so the item loop adds none.
             setattr(error, _RAISED_AS_IS, True)
@@ -9509,10 +9559,11 @@ class JSONObject:
             or not _is_collection_value(value)
             or whole
         ):
-            raise ValueError(
-                f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                "because it takes several values and its value is not a "
-                "collection of them. Pass a list"
+            raise _unsendable_parameter(
+                cls,
+                name,
+                "it takes several values and its value is not a collection "
+                "of them. Pass a list",
             )
 
         # The position of the item that convert() reads next, which stays None
@@ -9610,28 +9661,26 @@ class JSONObject:
                 "its start and its end"
             )
         if problem is not None:
-            raise ValueError(
-                f"Query parameter {name} for {cls.__name__} cannot be sent, "
-                f"because its value {problem}"
-            )
+            raise _unsendable_parameter(cls, name, f"its value {problem}")
         if several:
             if isinstance(value, AbstractSet):
                 operands.sort(key=_lookup_operand_order)
             texts = [str(operand) for operand in operands]
             if "" in texts:
-                raise ValueError(
-                    f"Query parameter {name} for {cls.__name__} cannot be "
-                    "sent, because an item's text is empty, which "
-                    "django-filter would read as no filter"
+                raise _unsendable_parameter(
+                    cls,
+                    name,
+                    "an item's text is empty, which django-filter would read "
+                    "as no filter",
                 )
             if style == "comma":
                 if any("," in text for text in texts):
-                    raise ValueError(
-                        f"Query parameter {name} for {cls.__name__} cannot "
-                        "be sent, because an item's text holds a comma, "
-                        "which the server would read as two items. Set "
-                        'the API\'s list_lookup_style to "repeat" if it '
-                        "reads repeated parameters"
+                    raise _unsendable_parameter(
+                        cls,
+                        name,
+                        "an item's text holds a comma, which the server would "
+                        "read as two items. Set the API's list_lookup_style "
+                        'to "repeat" if it reads repeated parameters',
                     )
                 return [",".join(texts)]
         return operands
@@ -9679,18 +9728,19 @@ class JSONObject:
         for name, value in params.items():
             parameter = cls._parameter(name)
             if parameter.wire in senders:
-                raise ValueError(
-                    f"Query parameters {senders[parameter.wire]} and {name} "
-                    f"for {cls.__name__} both send {parameter.wire}"
+                raise _parameter_refusal(
+                    cls,
+                    (senders[parameter.wire], name),
+                    f"both send {parameter.wire}",
                 )
             senders[parameter.wire] = name
             key_suffix = parameter.key_suffix
             if key_suffix is not None:
                 if key_suffix in keys:
-                    raise ValueError(
-                        f"Query parameters {keys[key_suffix]} and "
-                        f"{name} for {cls.__name__} both compare its key. "
-                        "Name the key once"
+                    raise _parameter_refusal(
+                        cls,
+                        (keys[key_suffix], name),
+                        "both compare its key. Name the key once",
                     )
                 keys[key_suffix] = name
             payload[parameter.wire] = cls._query_operands(name, value, style)
@@ -11162,11 +11212,13 @@ class JSONObject:
                 else:
                     advice = f"{named.field} up as {named.field}"
                     subject = f"{named.field}'s"
-                raise ValueError(
-                    f"Query parameter {name} for {cls.__name__} is "
-                    f"{subject} {'JSON' if named.by == 'json' else 'write'} "
-                    "name, which holds '__', so a lookup would read it as a "
-                    f"field and a suffix. Look {advice}"
+                raise _parameter_refusal(
+                    cls,
+                    name,
+                    f"is {subject} "
+                    f"{'JSON' if named.by == 'json' else 'write'} name, "
+                    "which holds '__', so a lookup would read it as a field "
+                    f"and a suffix. Look {advice}",
                 )
 
         def sets_field(name: str) -> bool:
