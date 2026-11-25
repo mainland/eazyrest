@@ -1397,6 +1397,17 @@ that can break code written for 0.9.0, followed by what to do about it.
 - The adapters that `API` creates read a response's body within the response
   limits before any response hook runs, so an authentication handler cannot
   read the body of a challenge past `max_response_bytes` or `total_timeout`.
+- `max_items` bounds the items that `filter()` and `all()` yield whichever hook
+  gave them, so a class that overrides `collection_items()` or
+  `collection_items_from_response()` raises `LimitExceeded` for more items, as
+  a class with the default hooks does. A result with a size, such as a list,
+  raises before `filter()` yields any item. `max_pages` counts only the pages
+  that eazyrest requests, so a `collection_items()` that requests its own pages
+  is not bounded by it.
+- A collection size that a hook reports is kept only if it is an integer that
+  is no boolean and is not below zero. `filter().count` and `get_page().count`
+  are `None` for a hook's -1, `'5'`, `True`, or `5.0`. A `Page` or `Results`
+  that you build keeps the count that you give it.
 - `APIError` messages do not quote the error body, which can quote submitted
   values, and show at most 40 characters of the response's reason phrase, which
   the server chooses, as they show of each name of the body's members.

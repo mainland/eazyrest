@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from typing import Any, Generic, TypeVar
 
 import requests
@@ -15,7 +15,7 @@ from ._errors import (
     _asked_url,
 )
 from ._protocols import Client, Response
-from ._results import Results
+from ._results import Results, _valid_count
 from ._urls import Source, _asked_text, _base_origins, _join
 from .api import (
     _UNPARSABLE_PAGE_URL,
@@ -326,6 +326,73 @@ def _request_page(
     return _check_final_response(resp, "the page has no response to read")
 
 
+class _ItemBound:
+    """The items that one traversal has yielded, against ``max_items``."""
+
+    def __init__(self, api: Client) -> None:
+        """Count the items of one traversal against ``api``'s limit.
+
+        Args:
+            api: Client whose ``max_items`` applies.
+        """
+        self._limit = api.max_items
+        self._items = 0
+
+    def admit(self, items: Iterable[T]) -> Iterable[T]:
+        """Count items against the limit as they are yielded.
+
+        This is the one rule for ``max_items``, for every hook that gives a
+        traversal its items. A sized collection, such as a page's list of
+        items, is counted whole, so that one that would pass the limit raises
+        before it yields any item. Any other iterable is counted item by item,
+        and raises when it would yield the item past the limit.
+
+        Args:
+            items: Items of a page, or of a whole traversal.
+
+        Returns:
+            ``items`` if it is sized and within the limit, or an iterator over
+            ``items`` that counts as it yields.
+
+        Raises:
+            LimitExceeded: If a sized ``items``, counted with those yielded
+                before, has more than the API's ``max_items``.
+        """
+        if self._limit is None:
+            return items
+        if isinstance(items, Sized):
+            self._items += len(items)
+            self._check()
+            return items
+        return self._counted(items)
+
+    def _counted(self, items: Iterable[T]) -> Iterator[T]:
+        """Yield items, counting each before it is yielded.
+
+        Args:
+            items: The items.
+
+        Yields:
+            Each item, unless it is the one past the limit.
+        """
+        for item in items:
+            self._items += 1
+            self._check()
+            yield item
+
+    def _check(self) -> None:
+        """Raise if more items have been counted than the limit allows.
+
+        Raises:
+            LimitExceeded: If the count is over ``max_items``.
+        """
+        if self._limit is not None and self._items > self._limit:
+            raise LimitExceeded(
+                "max_items",
+                f"The collection has more than {self._limit} items",
+            )
+
+
 class _PageReader:
     """Request the next pages of a collection, guarding their URLs."""
 
@@ -345,29 +412,8 @@ class _PageReader:
         """The URLs of the pages read so far."""
         self.pages = 1
         """The number of pages read so far, counting the first."""
-        self.items = 0
-        """The number of items yielded so far."""
-
-    def count_items(self, items: list[Any]) -> list[Any]:
-        """Count a page's items against the API's limit before yielding them.
-
-        Args:
-            items: Items of a page.
-
-        Returns:
-            ``items``.
-
-        Raises:
-            LimitExceeded: If yielding ``items`` would yield more than the
-                API's ``max_items``.
-        """
-        self.items += len(items)
-        limit = self.api.max_items
-        if limit is not None and self.items > limit:
-            raise LimitExceeded(
-                "max_items", f"The collection has more than {limit} items"
-            )
-        return items
+        self.bound = _ItemBound(api)
+        """The items yielded so far, counted against ``max_items``."""
 
     def read(self, url: str) -> requests.Response:
         """Request the page at ``url``, a link resolved to an absolute URL.
@@ -425,15 +471,12 @@ def _count_of(payload: Any, count_key: str) -> int | None:
         count_key: Member of a page that holds the collection's size.
 
     Returns:
-        The member's value, if the payload is a mapping and the value is an
-        integer that is not negative, and ``None`` otherwise.
+        The member's value, if the payload is a mapping and the value is a
+        valid size as ``_valid_count()`` reads it, and ``None`` otherwise.
     """
     if not isinstance(payload, Mapping):
         return None
-    count = payload.get(count_key)
-    if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
-        return count
-    return None
+    return _valid_count(payload.get(count_key))
 
 
 def follow_next_links(
@@ -530,9 +573,9 @@ def follow_next_links(
         while True:
             results = _page_results(page, results_key)
             if results is None:
-                yield from reader.count_items(page)
+                yield from reader.bound.admit(page)
                 return
-            yield from reader.count_items(results)
+            yield from reader.bound.admit(results)
 
             next_url = _page_link(page, next_key, page_url)
             if next_url is None:
@@ -611,7 +654,7 @@ def follow_link_headers(
                     f"got {type(payload).__name__}"
                 )
 
-            yield from reader.count_items(payload)
+            yield from reader.bound.admit(payload)
 
             next_url = _link(page, frozenset({"next"}))
             if not next_url:
@@ -661,7 +704,7 @@ def _follow_pages(
         reader = _PageReader(api, first._allow_other_origins)
         reader.read_urls.add(first.url)
         while True:
-            yield from reader.count_items(page.items)
+            yield from reader.bound.admit(page.items)
             if page._source is None or page.next_url is None:
                 return
             page = read_page(reader.read(page.next_url))
@@ -920,23 +963,6 @@ class Page(Generic[T]):
         return read
 
 
-def _check_page_size(api: Client, items: list[Any]) -> None:
-    """Reject a page with more items than the API allows in a collection.
-
-    Args:
-        api: Client whose ``max_items`` applies.
-        items: Items of the page.
-
-    Raises:
-        LimitExceeded: If the page has more than ``max_items`` items.
-    """
-    limit = api.max_items
-    if limit is not None and len(items) > limit:
-        raise LimitExceeded(
-            "max_items", f"The collection page has more than {limit} items"
-        )
-
-
 class _JSONPageSource(_PageSource[Any]):
     """Reads pages of JSON items with one of the page helpers."""
 
@@ -996,7 +1022,7 @@ class _JSONPageSource(_PageSource[Any]):
             The page, which can read the pages it links to.
         """
         page = self._parse(resp)
-        _check_page_size(self.api, page.items)
+        _ItemBound(self.api).admit(page.items)
         page._source = self
         page._asked_url = _asked_url(resp)
         page._allow_other_origins = self._allow_other_origins

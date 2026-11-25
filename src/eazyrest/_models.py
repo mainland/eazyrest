@@ -93,7 +93,7 @@ from ._errors import (
     _json_depth,
 )
 from ._protocols import Client, Response
-from ._results import Results, _count_of
+from ._results import Results, _count_of, _valid_count
 from ._urls import _base_origins, _origin, _origin_matches
 from .api import (
     API,
@@ -106,8 +106,8 @@ from .api import (
 )
 from .pagination import (
     Page,
-    _check_page_size,
     _follow_pages,
+    _ItemBound,
     _PageSource,
     _request_page,
     next_links_page,
@@ -498,7 +498,7 @@ class _ModelPageSource(_PageSource[Any]):
         raw = _hook_result(
             model, "collection_page", model.collection_page(resp, api=self.api)
         )
-        _check_page_size(self.api, raw.items)
+        _ItemBound(self.api).admit(raw.items)
         if self._prefetch:
             objects: list[JSONObject] = list(
                 model._prefetched_filter(
@@ -513,7 +513,7 @@ class _ModelPageSource(_PageSource[Any]):
         page: Page[Any] = Page(
             objects,
             url=raw.url,
-            count=raw.count,
+            count=_valid_count(raw.count),
             next_url=raw.next_url,
         )
         page._defer_previous(lambda: raw.previous_url)
@@ -10148,8 +10148,11 @@ class JSONObject:
         payload, so ``filter()`` and ``all()`` call it and ``get_page()`` does
         not. Override it to unwrap envelope responses, or to follow pagination
         links by issuing additional requests through ``api``, the query's
-        client. Code that reads a collection itself should call ``filter()``,
-        or ``follow_next_links()`` with ``url=``, rather than this hook.
+        client. ``max_pages`` does not bound the pages that such a hook
+        requests, since it counts the pages that eazyrest requests, but
+        ``max_items`` bounds the items that ``filter()`` yields. Code that
+        reads a collection itself should call ``filter()``, or
+        ``follow_next_links()`` with ``url=``, rather than this hook.
 
         ``api`` is the API that the query passed as ``api=``, or the class's
         registered API. With ``request_options=`` it is a view of that API, not
@@ -10815,6 +10818,9 @@ class JSONObject:
         )
 
         count = _count_of(items)
+        # Whichever hook gave the items, they count against max_items before
+        # prefetch reads ahead of them.
+        items = _ItemBound(client).admit(items)
         # Treat an empty prefetch list the same as no prefetch at all.
         if len(prefetch_fields) == 0:
             return Results(

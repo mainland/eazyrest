@@ -1763,6 +1763,13 @@ accepts only a list, so code that reads a collection itself, such as a
 `bulk_get_by_pks()` hook, should call `filter()` rather than
 `collection_items()`.
 
+`max_items` counts the items that `filter()` yields, whatever hook gave them. A
+result with a size, such as a list, that holds more items than `max_items`
+raises `LimitExceeded` before `filter()` yields any, and any other iterable
+raises when it would yield the item past the limit. `max_pages` counts only the
+pages that eazyrest requests. A `collection_items()` that requests more pages
+through `api` is not bounded by it.
+
 A next-page URL is resolved against the URL of the page that holds it, as a
 browser resolves a link. An absolute URL, which is what Django REST Framework
 sends, is used as is. A path such as `/v1/items/?page=2` is resolved against
@@ -2279,8 +2286,8 @@ attribute that sets it:
 | `max_response_bytes` | 16 MiB | The decompressed size of all the response bodies that one request reads, those of its redirects and challenges included, checked as they are read. |
 | `total_timeout` | 300 seconds | The time of each request, including redirects, retries, retry delays, and reading response bodies. |
 | `max_json_depth` | 128 | The nesting depth of arrays and objects in a response's JSON. |
-| `max_pages` | 1,000 | The pages that one traversal reads, counting the first, by `filter()`, `all()`, `follow_next_links()`, or `follow_link_headers()`. |
-| `max_items` | 100,000 | The items that one traversal yields. |
+| `max_pages` | 1,000 | The pages that eazyrest requests in one traversal, counting the first, by `filter()`, `all()`, `follow_next_links()`, `follow_link_headers()`, `next_page()`, or `previous_page()`. A hook that requests its own pages is not bounded by it. |
+| `max_items` | 100,000 | The items that one traversal yields, whichever hook gave them. |
 
 Set an attribute on an instance or in a subclass to change a limit, or set it
 to `None` to remove it:
