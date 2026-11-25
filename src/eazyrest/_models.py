@@ -2803,24 +2803,33 @@ class _MemberResult:
         must: What the member must return, as the error says it.
         call: Whether the member is a method, so the error writes ``()`` after
             its name, as opposed to a property.
+        items: Whether the result must be a collection of items, as
+            ``_is_collection_value()`` says, so that a mapping, a string, or
+            bytes is refused though it is iterable.
+        names: Whether the result is a JSON object, whose names must all be
+            strings.
     """
 
     kind: type | tuple[type, ...]
     must: str
     call: bool = True
+    items: bool = False
+    names: bool = False
 
 
 _MEMBER_RESULTS: dict[str, _MemberResult] = {
     "bulk_get_by_pks": _MemberResult(
         Mapping, "the related objects by key, as a mapping"
     ),
-    "collection_items": _MemberResult(Iterable, "an iterable of JSON objects"),
+    "collection_items": _MemberResult(
+        Iterable, "an iterable of JSON objects", items=True
+    ),
     "collection_items_from_response": _MemberResult(
-        Iterable, "an iterable of JSON objects"
+        Iterable, "an iterable of JSON objects", items=True
     ),
     "collection_page": _MemberResult(Page, "a Page"),
-    "merge_response": _MemberResult(Mapping, "a JSON object"),
-    "object_json": _MemberResult(Mapping, "a JSON object"),
+    "merge_response": _MemberResult(Mapping, "a JSON object", names=True),
+    "object_json": _MemberResult(Mapping, "a JSON object", names=True),
     "url": _MemberResult(str, "a str", call=False),
 }
 """What each overridable member that the library reads must return."""
@@ -2852,19 +2861,32 @@ def _hook_result(
         ``result``.
 
     Raises:
-        ResponseShapeError: If ``result`` is not what the member must return
-            and ``resp`` is given. The error holds the response.
+        ResponseShapeError: If ``result`` is not what the member must return,
+            or is a JSON object with a name that is no string, and ``resp`` is
+            given. The error holds the response.
         TypeError: If ``result`` is not what the member must return and no
             response is given.
     """
     expected = _MEMBER_RESULTS[member]
-    if isinstance(result, expected.kind):
-        return result
     call = "()" if expected.call else ""
-    message = (
-        f"{model.__name__}.{member}{call} must return {expected.must}, got "
-        f"{type(result).__name__}"
-    )
+    if not isinstance(result, expected.kind) or (
+        expected.items and not _is_collection_value(result)
+    ):
+        message = (
+            f"{model.__name__}.{member}{call} must return {expected.must}, "
+            f"got {type(result).__name__}"
+        )
+    elif expected.names and not all(
+        isinstance(name, str) for name in cast(Mapping[Any, Any], result)
+    ):
+        # A name that is no string cannot be a field of the object, so the
+        # message does not quote it, which can be a secret.
+        message = (
+            f"{model.__name__}.{member}{call} must return {expected.must} "
+            "whose names are all strings"
+        )
+    else:
+        return result
     if resp is not None:
         raise ResponseShapeError(message, response=resp)
     raise TypeError(message)

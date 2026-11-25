@@ -219,3 +219,65 @@ def test_a_single_object_hook_must_return_a_mapping(wrong: str) -> None:
     ) as info:
         _ = Wrapped(id=1).name
     assert info.value.response is not None
+
+
+NOT_COLLECTIONS: dict[str, Callable[[], Any]] = {
+    "a mapping": lambda: {"results": [{"id": 1}]},
+    "a string": lambda: "abc",
+    "bytes": lambda: b"ab",
+}
+"""Iterable results that are no collection of items."""
+
+
+@pytest.mark.parametrize("wrong", sorted(NOT_COLLECTIONS))
+@pytest.mark.parametrize(
+    ("hook", "query"),
+    [
+        ("collection_items", lambda: list(ByItems.filter())),
+        ("collection_items_from_response", lambda: list(ByResponse.filter())),
+    ],
+    ids=["collection_items-filter", "collection_items_from_response-filter"],
+)
+def test_a_collection_hook_must_return_a_collection_of_items(
+    hook: str, query: Callable[[], Any], wrong: str
+) -> None:
+    """A mapping, a string, or bytes is no collection, though iterable."""
+    choose(NOT_COLLECTIONS[wrong]())
+    with pytest.raises(TypeError, match=rf"\.{hook}\(\) must return"):
+        query()
+
+
+BAD_NAMES: dict[str, Any] = {
+    "an integer": {"id": 1, 7: "x"},
+    "None": {"id": 1, None: "x"},
+}
+
+
+@pytest.mark.parametrize("names", sorted(BAD_NAMES))
+@pytest.mark.parametrize(
+    ("hook", "run"),
+    [
+        ("merge_response", lambda: Merged.create(name="n")),
+        ("merge_response", lambda: _saved()),
+        ("object_json", lambda: Wrapped(id=1).name),
+    ],
+    ids=["merge_response-create", "merge_response-save", "object_json-load"],
+)
+def test_a_hook_result_with_a_name_that_is_no_string_holds_the_response(
+    hook: str, run: Callable[[], Any], names: str
+) -> None:
+    """The error names the hook, and holds the response, as for any shape."""
+    choose(BAD_NAMES[names])
+    with pytest.raises(
+        ResponseShapeError, match=rf"\.{hook}\(\) must"
+    ) as info:
+        run()
+    assert info.value.response is not None
+    assert "json=" not in str(info.value)
+
+
+def _saved() -> None:
+    """Save a changed object."""
+    obj = Merged(json={"id": 1, "name": "a"})
+    obj.name = "b"
+    obj.save()
