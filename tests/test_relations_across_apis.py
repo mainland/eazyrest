@@ -5,15 +5,15 @@ are registered on different ``API`` objects has no API to load through. The
 refusal is one check of the two classes, made whatever the field holds and
 whether or not the object has loaded: a read, an assignment, a constructor
 keyword, a creation, a full write, and a prefetch. It raises ``UsageError``
-before any request. A model that has no registered API agrees with any, but
-passes the registration of the graph that reached it on to the models that it
-relates to.
+before any request. A model that has no registered API agrees with any. Nothing
+else about the APIs of a graph is checked.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 import requests_mock
@@ -340,16 +340,15 @@ def test_a_relation_on_one_api_or_none_is_not_refused(
         registrations: The APIs that the two classes are registered on.
     """
     register(monkeypatch, **registrations)
-    # A use may be refused for another reason, such as an object whose own API
-    # is not its parent's, but never for registrations that agree.
+    # A use may be refused for another reason, such as a model with no API to
+    # load through, but never for registrations that agree.
     refusal = ""
     try:
         USES[use]()()
-    except (UsageError, ValueError) as err:
+    except UsageError as err:
         refusal = str(err)
 
     assert "different APIs" not in refusal
-    assert "reached through" not in refusal
 
 
 def test_a_relation_across_apis_is_refused_at_a_read_after_registering_later(
@@ -415,17 +414,28 @@ ORGS: dict[str, Callable[[API | None], Any]] = {
 }
 
 
-@pytest.mark.parametrize("reached", ORGS)
-@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_a_model_with_no_api_passes_its_graphs_api_on(
+# An org that is read by its key has no API to load through unless the root was
+# given one.
+UNCHECKED = [
+    (reached, given)
+    for reached in ORGS
+    for given in (False, True)
+    if given or reached != "built with an org by key"
+]
+
+
+@pytest.mark.parametrize(("reached", "given"), UNCHECKED)
+def test_a_model_with_no_api_between_two_registered_ones_is_not_checked(
     mock: requests_mock.Mocker,
     monkeypatch: pytest.MonkeyPatch,
     reached: str,
     given: bool,
 ) -> None:
-    """A model between two registered ones cannot reach another API.
+    """Only the classes of a relation are checked, and each object loads alone.
 
-    Thing and Owner are on A, Org on none, and Team on B.
+    Thing and Owner are on A, Org on none, and Team on B. The outcome of
+    reaching Team through Org is unspecified, but the object sends its request
+    through its own client.
 
     Args:
         reached: How the org is reached from the root.
@@ -433,13 +443,14 @@ def test_a_model_with_no_api_passes_its_graphs_api_on(
     """
     register(monkeypatch, thing=A, owner=A, team=B)
     org = ORGS[reached](A if given else None)
-    sent = len(mock.request_history)
+    team = org.team
 
-    with pytest.raises(UsageError, match="reached through"):
-        _ = org.team
+    assert team.name == "tm"
 
-    assert not any(r.hostname == "b.test" for r in mock.request_history[sent:])
-    assert not any("teams" in r.path for r in mock.request_history)
+    assert (
+        mock.request_history[-1].hostname
+        == urlparse(team.api.base_url).hostname
+    )
 
 
 @pytest.mark.parametrize("reached", ORGS)
@@ -552,15 +563,35 @@ def test_a_generator_that_reads_another_apis_relation_is_taken(
     assert mock.request_history[-1].json() == {"names": ["o"]}
 
 
-def test_a_generator_that_yields_another_apis_object_is_refused(
+def test_a_generator_that_yields_another_apis_object_is_taken(
     mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A related object that a one-shot value holds is checked as a list's."""
+    """A related object of another API that a one-shot value holds is taken."""
     register(monkeypatch)
     new = Thing(json=dict(THING, owners=[]), api=B)
 
-    with pytest.raises(ValueError, match="another API"):
-        write(new, "owners", (Owner(id=n, api=A) for n in (1, 2)))
+    write(new, "owners", (Owner(id=n, api=A) for n in (1, 2)))
 
-    with pytest.raises(ValueError, match="another API"):
-        new.owners = [Owner(id=n, api=A) for n in (1, 2)]
+    assert new._pending_updates == {"owners": [1, 2]}
+
+
+def test_a_generator_that_runs_a_query_on_a_related_object_is_taken(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query that a generator runs sends what it sends, as outside a write.
+
+    Its parameter is a related object of the query's API, which the object that
+    is written to does not use.
+    """
+    register(monkeypatch)
+
+    def names() -> Iterator[Any]:
+        for thing in Thing.filter(api=A, owner=Owner(id=5, api=A)):
+            yield thing.name
+
+    new = Thing(json=dict(THING, owners=[]), api=B)
+    write(new, "names", names())
+
+    assert new._pending_updates == {"names": ["t"]}
+    assert "owner=5" in mock.request_history[0].url
+    assert mock.request_history[0].hostname == "a.test"

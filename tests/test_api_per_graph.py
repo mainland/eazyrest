@@ -4,8 +4,9 @@ An object that a query builds, and each object that a relation, an embedded
 object, a prefetch, or a bulk hook reaches from it, sends its requests through
 one API: the ``api=`` that the query was given, or else the API registered for
 the class that the query reads. A relation between classes that are registered
-on different APIs is refused before any request, and so is a related object
-that is given with another API than its parent's.
+on different APIs is refused before any request. An object that a caller gives
+another API than its parent's is no error, and each request goes through the
+client of the object that sends it.
 
 Each test runs the entry points of the rule over models that are registered on
 one API, on two, and on none, with and without ``api=`` and
@@ -651,14 +652,14 @@ ASSIGNMENTS: dict[str, Callable[[Thing, Owner], None]] = {
 
 @pytest.mark.parametrize("assignment", ASSIGNMENTS)
 @pytest.mark.parametrize(
-    ("parent_api", "owner_api", "refused"),
+    ("parent_api", "owner_api"),
     [
-        (None, None, False),
-        ("G", "G", False),
-        ("G", None, True),
-        (None, "G", True),
-        ("G", "C", True),
-        ("C", "G", True),
+        (None, None),
+        ("G", "G"),
+        ("G", None),
+        (None, "G"),
+        ("G", "C"),
+        ("C", "G"),
     ],
     ids=[
         "both registered",
@@ -669,21 +670,19 @@ ASSIGNMENTS: dict[str, Callable[[Thing, Owner], None]] = {
         "parent on another, owner given",
     ],
 )
-def test_an_assigned_related_object_must_use_its_parents_api(
+def test_an_assigned_object_sends_its_requests_through_its_own_client(
     world: World,
     monkeypatch: pytest.MonkeyPatch,
     assignment: str,
     parent_api: str | None,
     owner_api: str | None,
-    refused: bool,
 ) -> None:
-    """Assigning an object of another API raises before anything is sent.
+    """An assigned object of another API is taken, and keeps its own client.
 
     Args:
         assignment: What is assigned.
         parent_api: The ``api=`` of the parent, or ``None`` for none.
         owner_api: The ``api=`` of the related object, or ``None`` for none.
-        refused: Whether the assignment is refused.
     """
     register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
     apis = world.apis
@@ -693,13 +692,12 @@ def test_an_assigned_related_object_must_use_its_parents_api(
     thing.set_write_mode("eager")
     owner = Owner(id=6, api=apis[owner_api] if owner_api else None)
 
-    if not refused:
-        ASSIGNMENTS[assignment](thing, owner)
-        return
-    with pytest.raises(ValueError, match="another API"):
-        ASSIGNMENTS[assignment](thing, owner)
+    ASSIGNMENTS[assignment](thing, owner)
 
-    assert world.log == []
+    assert world.reached() == {parent_api or "A"}
+    world.log.clear()
+    assert owner.label == "o6"
+    assert world.reached() == {owner_api or "A"}
 
 
 @pytest.mark.parametrize(
@@ -728,40 +726,40 @@ def test_a_model_with_no_api_agrees_with_any_in_an_assignment(
 
 
 @pytest.mark.parametrize(
-    ("parent_api", "owner_api", "refused"),
-    [(None, None, False), ("G", "G", False), ("G", None, True)],
-    ids=["both registered", "both given", "parent given, owner registered"],
+    ("parent_api", "owner_api"),
+    [(None, None), ("G", "G"), ("G", None), (None, "G")],
+    ids=[
+        "both registered",
+        "both given",
+        "parent given, owner registered",
+        "owner given, parent registered",
+    ],
 )
 @pytest.mark.parametrize("field", ["owner", "boss"])
-def test_a_constructor_refuses_a_related_object_of_another_api(
+def test_a_constructor_takes_a_related_object_of_another_api(
     world: World,
     field: str,
     monkeypatch: pytest.MonkeyPatch,
     parent_api: str | None,
     owner_api: str | None,
-    refused: bool,
 ) -> None:
-    """A field given to the constructor is checked as an assignment is.
+    """A field given to the constructor sends only the parent's requests.
 
     Args:
         parent_api: The ``api=`` of the parent, or ``None`` for none.
         owner_api: The ``api=`` of the related object, or ``None`` for none.
-        refused: Whether the constructor refuses the related object.
     """
     register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
     apis = world.apis
     owner = Owner(id=6, api=apis[owner_api] if owner_api else None)
     api = apis[parent_api] if parent_api else None
+
+    # The name is assigned first, and loads the object.
     given: dict[str, Any] = {field: owner}
+    thing = Thing(id=1, api=api, name="x", **given)
 
-    if not refused:
-        assert Thing(id=1, api=api, **given).pk == 1
-        return
-    # The name is assigned first, and would load the object.
-    with pytest.raises(ValueError, match="another API"):
-        Thing(id=1, api=api, name="x", **given)
-
-    assert world.log == []
+    assert thing.pk == 1
+    assert world.reached() <= {parent_api or "A"}
 
 
 CREATIONS: dict[str, Callable[..., Any]] = {
@@ -783,13 +781,13 @@ CREATIONS: dict[str, Callable[..., Any]] = {
 
 @pytest.mark.parametrize("creation", CREATIONS)
 @pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_a_related_object_of_another_api_is_refused_in_a_creation(
+def test_a_creation_sends_every_request_through_its_own_client(
     world: World,
     monkeypatch: pytest.MonkeyPatch,
     creation: str,
     given: bool,
 ) -> None:
-    """A creation sends nothing for a related object of another API.
+    """A related object of another API is taken, and sends nothing.
 
     Args:
         creation: The call that creates, and is given the related object.
@@ -800,10 +798,9 @@ def test_a_related_object_of_another_api_is_refused_in_a_creation(
     kwargs: dict[str, Any] = {"api": world.apis["G"]} if given else {}
     owner = Owner(id=6, api=None if given else world.apis["G"])
 
-    with pytest.raises(ValueError, match="another API"):
-        CREATIONS[creation](owner, **kwargs)
+    CREATIONS[creation](owner, **kwargs)
 
-    assert world.log == []
+    assert world.reached() == {"G" if given else "A"}
 
 
 @pytest.mark.parametrize("creation", CREATIONS)

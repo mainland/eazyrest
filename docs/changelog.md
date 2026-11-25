@@ -1019,25 +1019,27 @@ describe them further.
   `FieldConversionError` for it, saying that the name is not defined. A field
   named like a builtin that its annotation names, as in `list: list[int]` of a
   `NamedTuple`, is read too.
-- Every object that a query reaches uses one API: the `api=` that the query was
-  given, or else the API registered for the class that it reads. A relation
-  between two models that are registered on different `API` objects raises
-  `UsageError` at every use, before any request, whatever the field holds, a
-  bare key, `null`, or an empty collection included, where `v1.0.0a5` loaded
-  the related object through the API registered for its own class. A read, an
-  assignment, a constructor keyword, `create()`, `get_or_create()`, a prefetch,
-  and `save(full=True)` raise alike. A model with no registered API passes on
-  the registration of the graph that reached it, so a model of another API
-  cannot be reached through it. A related object that is assigned, or given to
-  `create()` or `get_or_create()`, raises `ValueError` if it uses another API
-  than its parent. A generator that reads a relation of an object of another
-  API while a value is written is no longer refused. A bulk hook's `api` is the
-  query's client, so passing it on to `filter()` sends no request to another
-  API, and each object that uses that client, and each object that it reaches,
-  keeps the query's `api=` and none of its request options. A hook's object
-  that uses another client is left as it is. A model with no registered API
-  still takes the `api=` of its parent. Read the key of a relation to a model
-  of another API and call that model's `get()`.
+- Every object of a graph must use the graph's API: the `api=` that the query
+  was given, or else the API registered for the class that it reads. The
+  library checks the classes of a relation, and not the API that each object
+  was given. A relation between two models that are registered on different
+  `API` objects raises `UsageError` at every use, before any request, whatever
+  the field holds, a bare key, `null`, or an empty collection included, where
+  `v1.0.0a5` loaded the related object through the API registered for its own
+  class. A read, an assignment, a constructor keyword, `create()`,
+  `get_or_create()`, a prefetch, and `save(full=True)` raise alike. A graph
+  that mixes APIs in any other way, through `api=`, a model with no registered
+  API between two registered ones, a subclass registered on another API, or an
+  object of another API that is assigned, appended in place, or returned by a
+  bulk hook, is unsupported and its outcome is unspecified, except that each
+  request goes through the client of the object or query that sends it. A model
+  with no registered API still takes the `api=` of its parent. Read the key of
+  a relation to a model of another API and call that model's `get()`.
+- The objects that a bulk hook returns, and the objects that they reach, keep
+  the query's `api=` and none of its request options when they use the client
+  that the query passed to the hook, where `v1.0.0a5` kept the options on every
+  object that the hook built. An object that uses another client is left as it
+  is.
 - `url` and `absolute_url` raise `UsageError`, as a request does, when a class
   of the model had `api` assigned, where `absolute_url` returned a URL of the
   assigned value.

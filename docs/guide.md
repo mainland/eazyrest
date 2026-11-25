@@ -2404,26 +2404,36 @@ Prefetch passes the query's client to `bulk_get_by_pks(api=...)`, and the
 collection hooks receive it as `api`, so a hook such as
 `follow_next_links(api, payload)` reads later pages with it.
 
-Every object that a query reaches uses one API: the `api=` that the query or
+Every object of a graph must use the graph's API: the `api=` that the query or
 the constructor was given, or else the API registered for the class that it
-reads. That holds for the objects that a relation, an embedded object, a
-prefetch, or a bulk hook reaches from it. A relation between two models that
-are registered on different `API` objects raises `UsageError` at every use,
-before any request, whether or not `api=` is given and whatever the field
-holds, `null`, an empty collection, or a bare key included. Reading it,
-assigning it, giving it to the constructor, `create()`, or `get_or_create()`,
-prefetching it, and `save(full=True)` all raise. Read the key and call the
-other model's `get()` instead. A model with no registered API agrees with any,
-so `api=` serves a graph whose models are not registered. A model with none
-passes on the API of the graph that reached it, so a model registered on
-another API cannot be reached through it either. A related object that you
-assign, or give to `create()` or `get_or_create()`, must also use its parent's
-API, or it raises `ValueError`. A bulk hook should build its objects with the
-`api` that it receives. Each object of its result that uses that client, and
-each object that it reaches through relations and prefetches, then keeps the
-query's `api=`, or none if the query has none, so it keeps none of the query's
-request options. An object that uses another client is left as it is, and no
-result is refused for it.
+reads. The library checks the classes of a relation, and not the API that each
+object was given. A relation between two models that are registered on
+different `API` objects raises `UsageError` at every use, before any request,
+whether or not `api=` is given and whatever the field holds, `null`, an empty
+collection, or a bare key included. Reading it, assigning it, giving it to the
+constructor, `create()`, or `get_or_create()`, prefetching it, and
+`save(full=True)` all raise, and a read-only field is no use of the relation. A
+query that names the field as a parameter is not checked, since it sends the
+related object's key. Read the key and call the other model's `get()` instead.
+A model with no registered API agrees with any, so `api=` serves a graph whose
+models are not registered.
+
+A graph that mixes APIs in any other way is unsupported, and its outcome is
+unspecified. That covers objects built with an `api=` that is not the graph's,
+a model with no registered API between two models registered on different ones,
+a subclass registered on another API, and an object of another API that a bulk
+hook returns or that you assign, give to `create()` or `get_or_create()`, or
+append to a collection in place. It may raise, or read and write through either
+API, and a later release may check more. What holds is that each request goes
+through the client of the object or query that sends it. An object loads,
+saves, refreshes, and deletes through its own `api=`, or else the API
+registered for its class. A query sends its requests, those of a prefetch's
+bulk lookup and of a page's next link too, through its own client. A bulk hook
+should build its objects with the `api` that it receives. Each object of its
+result that uses that client, and each object that it reaches through relations
+and prefetches, then keeps the query's `api=`, or none if the query has none,
+so it keeps none of the query's request options. An object that uses another
+client is left as it is, and no result is refused for it.
 
 ## Errors
 

@@ -44,7 +44,6 @@ from typing import (
     Any,
     ClassVar,
     Literal,
-    NamedTuple,
     NoReturn,
     Self,
     SupportsIndex,
@@ -101,7 +100,6 @@ from .api import (
     _UNPARSABLE_PAGE_URL,
     API,
     _AnyAPI,
-    _as_api,
     _as_client,
     _check_final_response,
     _merge_request_options,
@@ -550,96 +548,33 @@ def _registered_api_of(model: type[Any]) -> API | None:
     return None
 
 
-def _object_api(obj: JSONObject) -> API | None:
-    """Return the API that an object's requests go through, if it has one.
-
-    Args:
-        obj: A model object.
-
-    Returns:
-        The API of the object's client, which is the object's own ``api=``
-        without a request-scoped view's options, or else the API registered for
-        its class, or ``None`` if it has neither.
-    """
-    if obj._api_override is not None:
-        return _as_api(obj._api_override)
-    return _registered_api_of(type(obj))
-
-
-def _agrees_with_graph(graph: API | None, api: API | None) -> bool:
-    """Return whether an API agrees with the API of a graph.
-
-    This is the one rule of which APIs may share a graph. Every object that a
-    query or an object reaches uses one API, so a class or an object that is
-    tied to another has none to load through. One that is tied to none agrees
-    with any.
-
-    Args:
-        graph: The API that the graph is tied to, or ``None`` if it is tied to
-            none.
-        api: The API that a class is registered on or an object uses, or
-            ``None`` if it has none.
-
-    Returns:
-        Whether either is ``None`` or they are the same ``API`` object.
-    """
-    return graph is None or api is None or graph is api
-
-
-def _graph_api_of(obj: JSONObject) -> API | None:
-    """Return the API that the graph of an object is registered on.
-
-    A related object that no API is registered for, such as an embedded one,
-    belongs to the graph of the object that it was reached from, so a model
-    registered on another API cannot be reached through it.
-
-    Args:
-        obj: A model object.
-
-    Returns:
-        The API registered for the object's class, or else the API that the
-        graph that it was reached through is registered on, or ``None`` if
-        neither has one.
-    """
-    registered = _registered_api_of(type(obj))
-    return obj._graph_api if registered is None else registered
-
-
 def _check_related_apis(
-    graph: API | None,
-    parent: type[Any],
-    related: type[Any],
-    *,
-    required: bool = False,
+    parent: type[Any], related: type[Any], *, required: bool = False
 ) -> None:
     """Refuse a relation to a model that is registered on another API.
 
-    Every object that is reached from a root uses the root's API, so a relation
-    to a model that is registered on another API than its graph has no API to
-    load through. A model with no registered API agrees with any.
+    A relation to a model that is registered on another API than the model that
+    holds it has no API to load through. A model with no registered API agrees
+    with any. The check reads the two classes' registrations and nothing else,
+    so it gives the same answer whatever the objects hold.
 
     Args:
-        graph: The API that the graph of the model that holds the relation is
-            registered on, or ``None`` if it is registered on none.
         parent: The model that holds the relation.
         related: The model that the relation names.
         required: Whether ``related`` must be registered, as for a bulk lookup
             that no ``api=`` gives a client for.
 
     Raises:
-        UsageError: If ``related`` is registered on another ``API`` object than
-            ``graph``, or ``required`` and ``related`` is not registered.
+        UsageError: If ``parent`` and ``related`` are registered on different
+            ``API`` objects, or ``required`` and ``related`` is not registered.
     """
+    parent_api = _registered_api_of(parent)
     related_api = _registered_api_of(related)
-    if not _agrees_with_graph(graph, related_api):
-        if _registered_api_of(parent) is None:
-            raise UsageError(
-                f"{parent.__name__} is reached through models that are "
-                f"registered on another API than {related.__name__}, so a "
-                "relation between them has no API to load through. Register "
-                f"{related.__name__} on that API, or read the key and call "
-                f"{related.__name__}.get()"
-            )
+    if (
+        parent_api is not None
+        and related_api is not None
+        and parent_api is not related_api
+    ):
         raise UsageError(
             f"{parent.__name__} and {related.__name__} are registered on "
             "different APIs, so a relation between them has no API to load "
@@ -651,48 +586,6 @@ def _check_related_apis(
         raise UsageError(f"No API registered for {related.__name__}")
 
 
-class _Parent(NamedTuple):
-    """The object or model that a related object is written to."""
-
-    model: type[Any]
-    """The class of the parent."""
-
-    api: API | None
-    """The parent's API, or ``None`` if it has none and agrees with any."""
-
-
-_WRITE_PARENT: contextvars.ContextVar[_Parent | None] = contextvars.ContextVar(
-    "eazyrest_write_parent", default=None
-)
-"""The parent of the related objects that are being encoded, if any.
-
-A related object that a caller gives for a field, or for the creation of a
-parent, must use the parent's API, since the parent's graph has one.
-"""
-
-
-def _check_related_graph(value: JSONObject) -> None:
-    """Refuse a related object whose API is not its parent's.
-
-    Args:
-        value: A related object that is being written.
-
-    Raises:
-        ValueError: If a parent is being written to, both it and ``value`` have
-            an API, and the two are different ``API`` objects.
-    """
-    parent = _WRITE_PARENT.get()
-    if parent is None or parent.api is None:
-        return
-    if not _agrees_with_graph(parent.api, _object_api(value)):
-        raise ValueError(
-            f"The {type(value).__name__} object uses another API than the "
-            f"{parent.model.__name__} that it is written to, but every "
-            "object of a graph uses one API. Build it with the "
-            f"{parent.model.__name__}'s api="
-        )
-
-
 @dataclass(frozen=True)
 class _Query:
     """The APIs and request options of one query."""
@@ -702,13 +595,6 @@ class _Query:
 
     client: _AnyAPI
     """The client that sends the query's own requests, with its options."""
-
-    graph: API | None
-    """The API that the query's model is registered on, if it has one.
-
-    Every model of the graph that the query builds is registered on it or on
-    none, whatever ``api=`` the objects use.
-    """
 
     @classmethod
     def choose(
@@ -743,11 +629,7 @@ class _Query:
         _check_api_attribute(model, UsageError)
         given = None if api is None else _as_client(api)
         base = model.api if given is None else given
-        return cls(
-            given,
-            base._scoped(options) if options else base,
-            _registered_api_of(model),
-        )
+        return cls(given, base._scoped(options) if options else base)
 
 
 class _ModelPageSource(_PageSource[Any]):
@@ -3038,7 +2920,6 @@ def _adopt_hook_results(query: _Query, objects: Iterable[Any]) -> None:
             if id(value) in seen:
                 continue
             seen.add(id(value))
-            value._graph_api = query.graph
             if value._api_override is query.client:
                 value._api_override = query.api
             stack.extend(value._field_cache.values())
@@ -6623,7 +6504,7 @@ class JSONProperty:
         # A field that cannot be read, or a relation to a model of another API,
         # is refused whatever the object holds, and before a load, so that it
         # sends no request.
-        self._check_relation_apis(obj)
+        self._check_relation_apis(type(obj))
         raw = obj._working_value(self.json_field)
         if raw is _MISSING:
             raw = obj._json_having(self.json_field)
@@ -6662,7 +6543,7 @@ class JSONProperty:
 
         return value
 
-    def _check_relation_apis(self, obj: JSONObject) -> None:
+    def _check_relation_apis(self, model: type[JSONObject]) -> None:
         """Refuse a relation to another API's model, whatever the field holds.
 
         Every use of a relation field checks its two classes here, before any
@@ -6672,30 +6553,11 @@ class JSONProperty:
         without a request.
 
         Args:
-            obj: The object whose field is used.
-
-        Raises:
-            UsageError: If the field is a relation to a model that is
-                registered on another API than the graph of ``obj``.
-            NameError: As ``analyzed_type`` raises it.
-            AttributeError: As ``analyzed_type`` raises it.
-            TypeError: As ``analyzed_type`` raises it.
-            FieldConversionError: As ``analyzed_type`` raises it.
-        """
-        self._check_relation_graph(type(obj), _graph_api_of(obj))
-
-    def _check_relation_graph(
-        self, model: type[JSONObject], graph: API | None
-    ) -> None:
-        """Refuse a relation to a model registered on another API than a graph.
-
-        Args:
             model: The model that holds the field.
-            graph: The API that the graph of ``model`` is registered on.
 
         Raises:
             UsageError: If the field is a relation to a model that is
-                registered on another API than ``graph``.
+                registered on another API than ``model``.
             NameError: As ``analyzed_type`` raises it.
             AttributeError: As ``analyzed_type`` raises it.
             TypeError: As ``analyzed_type`` raises it.
@@ -6703,7 +6565,7 @@ class JSONProperty:
         """
         relation = _relation_of(self.analyzed_type)
         if relation is not None:
-            _check_related_apis(graph, model, relation.related.model_type)
+            _check_related_apis(model, relation.related.model_type)
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -6718,15 +6580,15 @@ class JSONProperty:
 
         Raises:
             UsageError: If the model has no primary-key field, so its objects
-                are read-only values.
+                are read-only values. Also if the field is a relation to a
+                model that is registered on another API than ``obj``'s model.
             AttributeError: If the backing JSON does not contain this field, or
                 the field is the key of an object that already names a resource
                 and the value names another key. Assigning the same key does
                 nothing.
             FieldConversionError: If the value cannot be converted to the
                 field's JSON value, or a primary key that an object takes is
-                not a valid value of the field's type. Also if it is, or holds,
-                a related object that uses another API than ``obj``.
+                not a valid value of the field's type.
         """
         checked = self._check_assignment(obj, value)
         if checked is None:
@@ -6815,19 +6677,20 @@ class JSONProperty:
             is ``_MISSING`` if the field reads its value from its JSON.
 
         Raises:
-            UsageError: If the model has no primary-key field.
+            UsageError: If the model has no primary-key field, or the field is
+                a relation to a model that is registered on another API than
+                ``obj``'s model.
             AttributeError: If the field is read-only, or is the key and the
                 value names another key.
             FieldConversionError: If the value cannot be converted to the
-                field's JSON value, a key is not of the key's type, or it is,
-                or holds, a related object that uses another API than ``obj``.
+                field's JSON value, or a key is not of the key's type.
         """
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
-            self._check_relation_apis(obj)
+            self._check_relation_apis(type(obj))
             with _converting(type(obj), self.field):
                 return obj._to_written_json(
-                    value, self.analyzed_type, obj._as_parent()
+                    value, self.analyzed_type
                 ), _MISSING
         if self._is_key_of(obj):
             self._set_key(obj, value)
@@ -6836,11 +6699,9 @@ class JSONProperty:
             raise AttributeError(
                 f"{type(obj).__name__}.{self.field} is read-only"
             )
-        self._check_relation_apis(obj)
+        self._check_relation_apis(type(obj))
         with _converting(type(obj), self.field):
-            new_value = obj._to_written_json(
-                value, self.analyzed_type, obj._as_parent()
-            )
+            new_value = obj._to_written_json(value, self.analyzed_type)
             # Build the collection that the field keeps before anything is sent
             # or queued, so that a value it cannot hold, such as an object that
             # has no hash for a set, writes nothing.
@@ -6993,14 +6854,6 @@ class JSONObject:
 
     _api_override: _AnyAPI | None
     """Instance-scoped API override."""
-
-    _graph_api: API | None = None
-    """The API that the graph that reached this object is registered on.
-
-    It is set on an object that a relation, an embedded object, a prefetch, or
-    a bulk hook reached from a root, and lets a model with no registration pass
-    the root's registration on to the models that it relates to.
-    """
 
     _write_mode: WriteMode
     """Whether field assignment is saved eagerly or lazily."""
@@ -7514,24 +7367,17 @@ class JSONObject:
         """
         # Refuse an assigned ``api`` before the object is built.
         _check_api_attribute(ty, UsageError)
-        # The field that is read has checked that ``ty`` is not registered on
-        # another API than the graph's. The related object joins the graph, so
-        # it passes on the registration of the graph, which a model with no
-        # registration has not.
-        graph = _graph_api_of(self)
-        # Pass on the instance override. Without one, the graph's API is the
-        # one that both classes are registered on.
+        # Pass on the instance override. Without one, the API is the one that
+        # both classes are registered on.
         api = self._api_override
         # If the argument is a dict, we treat it as JSON.
         if isinstance(arg, dict):
             # An embedded object is read as the value of a field.
             assert field is not None
             self._check_embedded_key(arg, ty, field)
-            embedded = ty(
+            return ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
-            embedded._graph_api = graph
-            return embedded
 
         try:
             with _converting(ty, ty._pk.field):
@@ -7549,9 +7395,7 @@ class JSONObject:
             if prefetched is not None:
                 return cast(T, prefetched)
 
-        related = ty(pk=key, api=api, write_mode=self.write_mode)
-        related._graph_api = graph
-        return related
+        return ty(pk=key, api=api, write_mode=self.write_mode)
 
     def _read_at(
         self,
@@ -7783,33 +7627,24 @@ class JSONObject:
                 A ``RecursionError`` that a conversion's own code raises, or
                 that a read meets, propagates unchanged.
         """
-        # A read that happens while a value is written, as a generator's does,
-        # is no related object that is written to the parent.
-        parent_token = _WRITE_PARENT.set(None) if reading else None
         try:
             return cls._encode_value(value, conversion)
         except RecursionError as err:
             if reading or getattr(err, _CONVERSION_RECURSION, False):
                 raise
             raise _too_deep("") from None
-        finally:
-            if parent_token is not None:
-                _WRITE_PARENT.reset(parent_token)
 
     @classmethod
     def _to_written_json(
         cls,
         value: Any,
         conversion: AnalyzedType,
-        parent: _Parent | None = None,
     ) -> Any:
         """Convert a value that a caller gives to be written.
 
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
-            parent: The object or model that the value is written to, if the
-                value may hold related objects that must use its API.
 
         Returns:
             JSON-serializable representation of ``value``, which nests no more
@@ -7818,10 +7653,9 @@ class JSONObject:
         Raises:
             TypeError: As for ``_to_json()``.
             ValueError: As for ``_to_json()``, if the encoding nests more
-                deeply than ``_MAX_WRITE_DEPTH``, and if ``value`` holds a
-                related object whose API is not the parent's.
+                deeply than ``_MAX_WRITE_DEPTH``.
         """
-        encoded = cls._to_reduced_json(value, conversion, parent)
+        encoded = cls._to_reduced_json(value, conversion)
         _check_write_depth(encoded, "")
         return encoded
 
@@ -7830,7 +7664,6 @@ class JSONObject:
         cls,
         value: Any,
         conversion: AnalyzedType,
-        parent: _Parent | None = None,
     ) -> Any:
         """Encode a value that a caller gives to be written, as plain JSON.
 
@@ -7842,7 +7675,6 @@ class JSONObject:
         Args:
             value: Python value to serialize.
             conversion: Analyzed type metadata that guides conversion.
-            parent: As for ``_to_written_json()``.
 
         Returns:
             The encoding, with each scalar and key reduced to its plain type.
@@ -7853,11 +7685,9 @@ class JSONObject:
             ValueError: As for ``_to_written_json()``, except for the depth.
         """
         token = _WRITING.set(True)
-        parent_token = _WRITE_PARENT.set(parent)
         try:
             encoded = cls._to_json(value, conversion)
         finally:
-            _WRITE_PARENT.reset(parent_token)
             _WRITING.reset(token)
         return _checked_json(encoded)
 
@@ -7903,7 +7733,6 @@ class JSONObject:
                 if isinstance(value, JSONObject):
                     _check_related_class(value, model_type)
                     _check_related_key(value, model_type)
-                    _check_related_graph(value)
                     return _related_wire_key(value, model_type)
 
                 return _bare_wire_key(value, model_type)
@@ -8088,14 +7917,6 @@ class JSONObject:
             self._write_options,
             _checked_request_options(request_options, "write"),
         )
-
-    def _as_parent(self) -> _Parent:
-        """Return this object as the parent of related objects it is given.
-
-        Returns:
-            The object's class and its API, which is ``None`` if it has none.
-        """
-        return _Parent(type(self), _object_api(self))
 
     def _request_api(self) -> API:
         """Return the API that this object's own requests go through.
@@ -8736,7 +8557,7 @@ class JSONObject:
 
         Raises:
             UsageError: If a relation field names a model that is registered on
-                another API than this object's graph, which is refused before
+                another API than this object's model, which is refused before
                 the load.
             FieldConversionError: If a field's value cannot be converted.
         """
@@ -8749,7 +8570,7 @@ class JSONObject:
             with contextlib.suppress(
                 NameError, AttributeError, TypeError, FieldConversionError
             ):
-                descriptor._check_relation_apis(self)
+                descriptor._check_relation_apis(type(self))
         if self._json_is_partial:
             self._load_json()
         json = self.json
@@ -9237,19 +9058,12 @@ class JSONObject:
     def _encode_fields(
         cls,
         fields: Mapping[str, Any],
-        *,
-        query: bool = False,
-        api: API | None = None,
     ) -> dict[str, Any]:
         """Encode field values as JSON object members.
 
         Args:
             fields: Values keyed by Python attribute name for JSON-backed
                 fields, or by JSON key for other values.
-            query: Whether to encode a query, whose related values use keys.
-            api: The API of the object that the fields create, if the fields
-                are a creation's. A related object that uses another API is
-                refused.
 
         Returns:
             JSON values keyed by JSON key. JSON-backed fields are renamed by
@@ -9263,9 +9077,7 @@ class JSONObject:
             TypeError: If two values name one field, or a name is the key's
                 JSON or write key and also another field's.
             FieldConversionError: If a value cannot be converted, as a key that
-                is not of the key's type cannot, or the key is ``None`` and the
-                fields are not a query's. Also if a related object uses another
-                API than ``api``.
+                is not of the key's type cannot, or the key is ``None``.
         """
         payload: dict[str, Any] = {}
         names: dict[str, str] = {}
@@ -9282,13 +9094,13 @@ class JSONObject:
                 )
             names[key] = given
             if descriptor is not None:
-                if descriptor.read_only and not query:
+                if descriptor.read_only:
                     raise AttributeError(
                         f"{cls.__name__}.{field} is read-only"
                     )
                 with _converting(cls, field):
                     if descriptor is key_property:
-                        if value is None and not query:
+                        if value is None:
                             raise ValueError(
                                 "A new object's key cannot be None. Leave "
                                 "the key out to let the server assign it"
@@ -9297,14 +9109,9 @@ class JSONObject:
                         # and kept under its JSON key for the response merge.
                         payload[key] = _build_key(cls, value)
                     else:
-                        if not query:
-                            descriptor._check_relation_graph(
-                                cls, _registered_api_of(cls)
-                            )
+                        descriptor._check_relation_apis(cls)
                         conversion = descriptor.analyzed_type
-                        payload[key] = cls._to_written_json(
-                            value, conversion, _Parent(cls, api)
-                        )
+                        payload[key] = cls._to_written_json(value, conversion)
             else:
                 payload[key] = value
 
@@ -10308,8 +10115,7 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
             FieldConversionError: If a field's value cannot be converted, or
                 the key is ``None``. Leave the key out to let the server assign
-                it. Also if a field's value is, or holds, a related object that
-                uses another API than the new object's.
+                it.
         """
         _check_files(files)
         _require_decorated(cls)
@@ -10323,7 +10129,6 @@ class JSONObject:
             _query_params(
                 fields, kwargs, "Field", "fields", reserved=frozenset()
             ),
-            api=_as_api(query.client),
         )
         if not files:
             # The body is JSON, as _write_body() decides. An extra has no
@@ -10507,8 +10312,8 @@ class JSONObject:
 
         Raises:
             PrefetchNotSupported: Always, unless overridden by a subclass.
-            UsageError: Raised by prefetch, if an object that the hook returns,
-                or one that it holds, uses another API than the query's.
+            UsageError: Raised by prefetch, if the class is registered on
+                another API than the model that holds the relation.
         """
         del pks, api, kwargs
         raise PrefetchNotSupported(
@@ -11003,9 +10808,7 @@ class JSONObject:
         # is registered on it or on none. Without an ``api=``, the query's API
         # is the one that the related model is registered on, which must exist
         # before the request for the parents is sent.
-        _check_related_apis(
-            _registered_api_of(cls), cls, model_type, required=api is None
-        )
+        _check_related_apis(cls, model_type, required=api is None)
 
         return descriptor, analyzed_type, collection_type
 
@@ -11664,8 +11467,7 @@ class JSONObject:
             FieldConversionError: If a field's value cannot be converted, as
                 when a field that holds a collection is given a single item, or
                 if the creation's key is ``None``. Also if a lookup value is of
-                the wrong type for its field, or a related object that the
-                creation would send uses another API than the new object's.
+                the wrong type for its field.
             ResponseShapeError: If an item of the lookup's response is not a
                 JSON object, or holds no key, or a key that is not of the key's
                 type. The creation raises what ``create()`` raises, as
@@ -11785,10 +11587,7 @@ class JSONObject:
         # here, ahead of the payload's.
         chosen = _Query.choose(cls, api, {})
         cls._encode_query(kwargs, chosen.client)
-        _checked_payload(
-            cls,
-            cls._encode_fields(create_kwargs, api=_as_api(chosen.client)),
-        )
+        _checked_payload(cls, cls._encode_fields(create_kwargs))
         # The creation sends the key as it is built, so the lookup does too,
         # under the JSON or write name that the caller gave. filter() sends
         # such a name as given, because it is an ordinary query parameter.
