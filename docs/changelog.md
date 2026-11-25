@@ -940,6 +940,12 @@ describe them further.
   conversion writes it as a list, where before it repeated the parameter with
   each item. A query argument must be finite, because the whole of it is read
   before the request is sent.
+- A mapping that is no `dict`, such as a `UserDict`, given as the JSON of a
+  field that holds a collection raises `FieldConversionError`, as a string,
+  bytes, or a `dict` does. `v1.0.0a5` read it as a collection of its keys when
+  it came from `json=` or `update_from_json()`, and refused it when it was
+  assigned or sent in a query. A response holds only `dict` objects, so a read
+  of a response is unchanged.
 
 ### Migrating from 0.9.0
 

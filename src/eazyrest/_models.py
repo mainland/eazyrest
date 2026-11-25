@@ -6541,7 +6541,7 @@ class JSONProperty:
         if (
             # A one-shot iterable was used up by encoding it.
             not isinstance(value, Collection)
-            or isinstance(value, (str, bytes, Mapping))
+            or not _is_collection_value(value)
             or not all(
                 item is None or isinstance(item, JSONObject) for item in value
             )
@@ -7387,9 +7387,7 @@ class JSONObject:
                 return _copy_json(value)
 
             case CollectionType(collection_type, item_type):
-                if not isinstance(value, Iterable) or isinstance(
-                    value, (str, bytes, dict)
-                ):
+                if not _is_collection_value(value):
                     if isinstance(_inside_wrappers(item_type), RelatedType):
                         kind = "Related collection"
                     else:
@@ -9683,12 +9681,7 @@ class JSONObject:
             return item._key
 
         with guard:
-            if (
-                whole
-                or value is None
-                or isinstance(value, (str, bytes, Mapping))
-                or not isinstance(value, Iterable)
-            ):
+            if whole or value is None or not _is_collection_value(value):
                 operands, repeated = [convert(value)], False
             else:
                 if not isinstance(value, AbstractSet):
@@ -10575,9 +10568,7 @@ class JSONObject:
                         )
                     continue
 
-                if not isinstance(raw_value, Iterable) or isinstance(
-                    raw_value, (str, bytes, dict)
-                ):
+                if not _is_collection_value(raw_value):
                     continue
 
                 # Explicit prefetch only bulk-loads foreign-key style entries.
@@ -11311,8 +11302,8 @@ class JSONObject:
 
             return {
                 name: list(value)
-                if isinstance(value, Iterable)
-                and not isinstance(value, (Collection, str, bytes, Mapping))
+                if _is_collection_value(value)
+                and not isinstance(value, Collection)
                 and not cls._takes_whole_value(name, value)
                 and not sent_as_an_extra(name)
                 else value
