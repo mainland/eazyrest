@@ -6225,29 +6225,14 @@ class JSONProperty:
                 field's JSON value, or a primary key that an object takes is
                 not a valid value of the field's type.
         """
-        _refuse_keyless_assignment(type(obj))
+        checked = self._check_assignment(obj, value)
+        if checked is None:
+            return
+        new_value, kept = checked
         if self.write_only:
-            with _converting(type(obj), self.field):
-                encoded = obj._to_written_json(value, self.analyzed_type)
-            obj._update_json_field(self.json_field, _copy_json(encoded))
+            obj._update_json_field(self.json_field, _copy_json(new_value))
             return
 
-        if self._is_key_of(obj):
-            self._set_key(obj, value)
-            return
-
-        if self.read_only:
-            raise AttributeError(
-                f"{type(obj).__name__}.{self.field} is read-only"
-            )
-        # Convert the value before anything is read from the server, so that a
-        # value that is refused sends no request, not even the load's.
-        with _converting(type(obj), self.field):
-            new_value = obj._to_written_json(value, self.analyzed_type)
-            # Build the collection that the field keeps before anything is sent
-            # or queued, so that a value it cannot hold, such as an object that
-            # has no hash for a set, writes nothing.
-            kept = self._assigned_related(value)
         stored = obj._json_with_field(self.json_field, self.field)
 
         # A pending update is not on the server, even though the working JSON
@@ -6289,16 +6274,26 @@ class JSONProperty:
                 # from JSON.
                 obj._field_snapshots[self.field] = _copy_json(new_value)
 
-    def _check_assignment(self, obj: JSONObject, value: Any) -> None:
+    def _check_assignment(
+        self, obj: JSONObject, value: Any
+    ) -> tuple[Any, Any] | None:
         """Refuse the value that assigning to this field would refuse.
 
-        This is what ``__set__()`` checks before it reads anything from the
-        server, without its changes, so that a caller can check a group of
-        assignments before it makes the first.
+        This is the one place that decides what an assignment refuses, and it
+        checks before anything is read from the server or sent. ``__set__()``
+        assigns what it returns. The constructor calls it for each keyword
+        before it assigns any, so that a keyword that is refused sends nothing,
+        not even the requests of the keywords before it.
 
         Args:
             obj: ``JSONObject`` instance that the value would be assigned to.
             value: Python value to assign.
+
+        Returns:
+            ``None`` if there is nothing to assign, because the value names the
+            key that the object already has. Otherwise the JSON value to store
+            and the collection of related objects that the field keeps, which
+            is ``_MISSING`` if the field reads its value from its JSON.
 
         Raises:
             UsageError: If the model has no primary-key field.
@@ -6310,18 +6305,22 @@ class JSONProperty:
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
             with _converting(type(obj), self.field):
-                obj._to_written_json(value, self.analyzed_type)
-            return
+                return obj._to_written_json(
+                    value, self.analyzed_type
+                ), _MISSING
         if self._is_key_of(obj):
             self._set_key(obj, value)
-            return
+            return None
         if self.read_only:
             raise AttributeError(
                 f"{type(obj).__name__}.{self.field} is read-only"
             )
         with _converting(type(obj), self.field):
-            obj._to_written_json(value, self.analyzed_type)
-            self._assigned_related(value)
+            new_value = obj._to_written_json(value, self.analyzed_type)
+            # Build the collection that the field keeps before anything is sent
+            # or queued, so that a value it cannot hold, such as an object that
+            # has no hash for a set, writes nothing.
+            return new_value, self._assigned_related(value)
 
     def _set_key(self, obj: JSONObject, value: Any) -> None:
         """Check that an assignment to an object's key keeps its key.
