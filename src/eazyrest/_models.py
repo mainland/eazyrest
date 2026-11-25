@@ -3841,6 +3841,11 @@ _KEY_TYPES: Mapping[Any, str] = MappingProxyType(
 )
 """The types that a primary key may be, by the name of each."""
 
+_KEY_TYPE_OF_KIND: Mapping[str, type] = MappingProxyType(
+    {kind: ty for ty, kind in _KEY_TYPES.items()}
+)
+"""The type of each kind of key, as ``_key_kind_of()`` names it."""
+
 
 def _key_type_error(cls: type[JSONObject], field: str) -> TypeError:
     """Return the refusal of a primary key whose type is not a key type.
@@ -5547,11 +5552,16 @@ def _array_schema(items: list[Any]) -> dict[str, Any]:
     return schema
 
 
-def _key_schema(cls: type[JSONObject]) -> dict[str, Any]:
+def _key_schema(cls: type[JSONObject], mode: str) -> dict[str, Any]:
     """Return the JSON schema of the key that a model's builder sends.
+
+    A key is built from the value as given, before any field conversion, and a
+    model has no conversion of its key's type, so the schema is that of the
+    type under the default conversions.
 
     Args:
         cls: Model that has a key field.
+        mode: ``"read"`` or ``"write"``.
 
     Returns:
         ``integer`` for an ``int`` key, ``string`` for a ``str`` key, and
@@ -5559,12 +5569,9 @@ def _key_schema(cls: type[JSONObject]) -> dict[str, Any]:
         writes alike. A key is never ``null``, even if its annotation is
         optional.
     """
-    match _key_kind_of(cls):
-        case "int":
-            return {"type": "integer"}
-        case "str":
-            return {"type": "string"}
-    return {"type": "string", "format": "uuid"}
+    return _base_schema(
+        _KEY_TYPE_OF_KIND[_key_kind_of(cls)], mode, DEFAULT_CONVERSIONS
+    )
 
 
 def _json_schema_of(
@@ -5614,7 +5621,7 @@ def _json_schema_of(
             return schema
         case RelatedType(model_type):
             pk = model_type._pk
-            key = _key_schema(model_type)
+            key = _key_schema(model_type, mode)
             # A read also accepts the related object embedded as JSON, which
             # names its key, as every object of the model has one.
             if mode == "read":
@@ -10256,7 +10263,7 @@ class JSONObject:
                 key = descriptor.write_field
             with _converting(cls, field):
                 properties[key] = (
-                    _key_schema(cls)
+                    _key_schema(cls, mode)
                     if descriptor._is_key_of_class(cls)
                     else _json_schema_of(
                         descriptor.analyzed_type,
