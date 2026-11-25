@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import time
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from http.cookiejar import CookieJar
 from types import MappingProxyType
 from typing import Any, Literal, Self, TypeAlias
@@ -243,6 +243,58 @@ def _response_hooks(hooks: Any) -> list[Callable[..., Any]]:
     return list(hooks)
 
 
+# Request options that are merged by name or by event, so that a value of
+# another type cannot be merged over the options of an open block.
+_MERGED_OPTION_NAMES = ("headers", "hooks")
+
+
+def _check_mergeable_options(options: Mapping[str, Any]) -> None:
+    """Refuse a ``headers`` or ``hooks`` option that cannot be merged.
+
+    This is the one check of which values merge. ``None`` stays allowed, as it
+    means the option is absent. Other values of the options that ``requests``
+    refuses itself, such as a header value of the wrong type or an unknown hook
+    event, are left to it.
+
+    Args:
+        options: Request options given as ``request_options``, to a
+            ``write_options()`` block, or to a view, or laid over them.
+
+    Raises:
+        TypeError: If ``headers`` or ``hooks`` is set to something other than a
+            mapping or ``None``, a header's name is neither ``str`` nor
+            ``bytes``, or an entry of ``hooks`` is neither ``None``, a
+            callable, nor an iterable.
+    """
+    for name in _MERGED_OPTION_NAMES:
+        value = options.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, Mapping):
+            raise TypeError(
+                f"The {name} request option must be a mapping, got "
+                f"{type(value).__name__}"
+            )
+        if name == "headers":
+            for header in value:
+                if not isinstance(header, str | bytes):
+                    raise TypeError(
+                        "The headers request option must be a mapping from "
+                        "names that are str or bytes, got a name of type "
+                        f"{type(header).__name__}"
+                    )
+        else:
+            for event, entry in value.items():
+                if entry is None or callable(entry):
+                    continue
+                if not isinstance(entry, Iterable):
+                    raise TypeError(
+                        "The hooks request option must map each event to a "
+                        f"callable or an iterable of callables, got "
+                        f"{type(entry).__name__} for {event!r}"
+                    )
+
+
 def _merge_request_options(
     base: Mapping[str, Any], override: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -251,10 +303,11 @@ def _merge_request_options(
     Headers are merged, matching names without regard to case, and hooks are
     combined per event, with ``base``'s first. Both are merged whenever
     ``override`` holds a mapping, an empty one included. A value of ``None``
-    means the option is absent, so ``override``'s ``None`` keeps ``base``'s
-    value, as requests does with the options of a session. For any other
-    option, ``override``'s value wins. A header whose value is ``None`` is
-    kept, so requests still removes that header from the session's.
+    means the option is absent, whichever option it is, so ``override``'s
+    ``None`` keeps ``base``'s value, as requests does with the options of a
+    session. For any other option, ``override``'s value wins. A header whose
+    value is ``None`` is kept, so requests still removes that header from the
+    session's.
 
     Args:
         base: Options that apply unless ``override`` sets them.
@@ -262,10 +315,17 @@ def _merge_request_options(
 
     Returns:
         The merged options, as a new dict.
+
+    Raises:
+        TypeError: If either holds ``headers`` or ``hooks`` that is neither a
+            mapping nor ``None``, so that it cannot be merged, or a header name
+            or hook entry of the wrong type.
     """
+    _check_mergeable_options(base)
+    _check_mergeable_options(override)
     merged = {**base, **override}
-    for name in ("headers", "hooks"):
-        if override.get(name) is None and base.get(name) is not None:
+    for name, value in override.items():
+        if value is None and base.get(name) is not None:
             merged[name] = base[name]
     if base.get("headers") is not None and override.get("headers") is not None:
         headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
@@ -1344,7 +1404,12 @@ class API:
 
         Returns:
             The view, which sends every request through this client.
+
+        Raises:
+            TypeError: If ``options`` hold ``headers`` or ``hooks`` that cannot
+                be merged.
         """
+        _check_mergeable_options(options)
         return _ScopedAPI(self, dict(options))
 
     def _send(
@@ -1382,8 +1447,9 @@ class API:
                 adapter for it, so that nothing was sent. Its message quotes
                 none of the URL, and it has no ``__cause__`` or
                 ``__context__``.
-            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
-                frozenset of strings. The request is not sent.
+            TypeError: If ``headers`` or ``hooks`` is no mapping, or
+                ``redirect_origins`` is not a tuple, a list, or a frozenset of
+                strings. The request is not sent.
             ValueError: If a string in ``redirect_origins`` is no absolute
                 ``http`` or ``https`` URL with a host. The request is not sent.
         """
@@ -1580,9 +1646,12 @@ class API:
                 while it prepares the next request for it.
             requests.HTTPError: If ``raise_for_response()`` raises it for the
                 response.
+            TypeError: If ``headers`` or ``hooks`` in ``kwargs`` is no mapping.
+                The request is not sent.
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
         """
+        _check_mergeable_options(kwargs)
         kwargs.setdefault("timeout", self.timeout)
         # A request that streams reads its own body, but not the bodies of
         # redirects, which requests reads, or of a failure, which the error
@@ -1815,8 +1884,9 @@ class API:
                 response exceeds ``max_response_bytes``.
             requests.RequestException: If the request fails to send, as
                 ``requests.ConnectionError`` does.
-            TypeError: If ``redirect_origins`` is not a tuple, a list, or a
-                frozenset of strings. The request is not sent.
+            TypeError: If ``headers`` or ``hooks`` is no mapping, or
+                ``redirect_origins`` is not a tuple, a list, or a frozenset of
+                strings. The request is not sent.
             ValueError: If a string in ``redirect_origins`` is no absolute
                 ``http`` or ``https`` URL with a host. The request is not sent.
         """

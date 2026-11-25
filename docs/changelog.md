@@ -884,8 +884,14 @@ describe them further.
   ones under it, as a non-empty one is. A write with
   `request_options={"headers": {}}` inside a `write_options()` block that sets
   `If-Match` still sends it, and a hook that a block sets still runs. `None`
-  means that the option is absent, so the options under it apply, as they do in
-  requests. They were discarded.
+  for any request option, `auth`, `cookies`, and `timeout` included, means that
+  the option is absent, so the options under it apply, as they do in requests.
+  They were discarded. A `headers` or `hooks` that is no mapping, such as
+  `hooks=[]` or a list of header pairs, raises `TypeError` naming the option
+  from every request that lays options over others and from a client's own
+  request. `v1.0.0a5` sent `hooks=[]` with its request, and through a view with
+  hooks it dropped the view's hooks. It merged a list of header pairs through a
+  view, and `API.get()` raised a bare `AttributeError` for one.
 - `prefetch=` takes a field name or a sequence of field names, and anything
   else raises `TypeError` naming `prefetch=` before any request. A mapping used
   to prefetch its keys, bytes were read as integers, and an `int` raised the

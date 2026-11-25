@@ -102,6 +102,7 @@ from .api import (
     _AnyAPI,
     _as_client,
     _check_final_response,
+    _check_mergeable_options,
     _merge_request_options,
     _registered_api,
     _takes_kwargs,
@@ -3315,57 +3316,6 @@ def _check_options_mapping(options: Mapping[str, Any]) -> None:
         )
 
 
-# Request options that are merged by name or by event, so that a value of
-# another type cannot be merged over the options of an open block.
-_MERGED_OPTION_NAMES = ("headers", "hooks")
-
-
-def _check_merged_options(options: Mapping[str, Any]) -> None:
-    """Refuse a ``headers`` or ``hooks`` option that cannot be merged.
-
-    ``None`` stays allowed, as ``requests`` takes it. Other values of the
-    options that ``requests`` refuses itself, such as a header value of the
-    wrong type or an unknown hook event, are left to it.
-
-    Args:
-        options: Request options given as ``request_options`` or to a
-            ``write_options()`` block.
-
-    Raises:
-        TypeError: If ``headers`` or ``hooks`` is set to something other than a
-            mapping or ``None``, a header's name is neither ``str`` nor
-            ``bytes``, or an entry of ``hooks`` is neither ``None``, a
-            callable, nor an iterable.
-    """
-    for name in _MERGED_OPTION_NAMES:
-        value = options.get(name)
-        if value is None:
-            continue
-        if not isinstance(value, Mapping):
-            raise TypeError(
-                f"The {name} request option must be a mapping, got "
-                f"{type(value).__name__}"
-            )
-        if name == "headers":
-            for header in value:
-                if not isinstance(header, str | bytes):
-                    raise TypeError(
-                        "The headers request option must be a mapping from "
-                        "names that are str or bytes, got a name of type "
-                        f"{type(header).__name__}"
-                    )
-        else:
-            for event, entry in value.items():
-                if entry is None or callable(entry):
-                    continue
-                if not isinstance(entry, Iterable):
-                    raise TypeError(
-                        "The hooks request option must map each event to a "
-                        f"callable or an iterable of callables, got "
-                        f"{type(entry).__name__} for {event!r}"
-                    )
-
-
 # Request arguments that eazyrest sets itself for a write.
 _WRITE_BODY_ARGUMENTS = frozenset({"json", "data", "files"})
 
@@ -3415,7 +3365,7 @@ def _checked_request_options(
     if options is None:
         return {}
     _check_options_mapping(options)
-    _check_merged_options(options)
+    _check_mergeable_options(options)
     body = sorted(_WRITE_BODY_ARGUMENTS.intersection(options))
     if body:
         raise TypeError(
