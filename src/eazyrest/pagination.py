@@ -393,73 +393,115 @@ class _ItemBound:
             )
 
 
-class _PageReader:
-    """Request the next pages of a collection, guarding their URLs."""
+class _Trail:
+    """The pages read in one direction from a first page."""
 
-    def __init__(self, api: Client, allow_other_origins: bool) -> None:
+    def __init__(self, urls: frozenset[str], pages: int) -> None:
+        """Record the pages read in one direction.
+
+        Args:
+            urls: URLs of the pages, as requested and after redirects.
+            pages: Number of pages, counting the first.
+        """
+        self.urls = urls
+        self.pages = pages
+
+
+def _follow_link(
+    api: Client,
+    trail: _Trail,
+    url: str,
+    allow_other_origins: bool,
+    page: str,
+) -> tuple[requests.Response, _Trail]:
+    """Request the page that a link names, as every traversal does.
+
+    This is the one place that follows a link. It refuses a link to a page
+    already read, then a link whose origin is not the API's base URL's unless
+    the page that holds the link allows other origins, then a page past the
+    API's ``max_pages``. It then sends the request and records the URL that the
+    link named and the URL that the response came from, which is the response's
+    own and never a URL that a hook reported.
+
+    Args:
+        api: Client that requests the page.
+        trail: The pages read so far in the direction of the traversal.
+        url: Absolute URL of the page.
+        allow_other_origins: Whether the page that holds the link allows it and
+            the redirects of the request to have another origin.
+        page: Which page the link names, as ``"page 3"`` or ``"the next
+            page"``, for a message.
+
+    Returns:
+        The response for the page, and the trail with the page added.
+
+    Raises:
+        PaginationError: If ``url`` names a page already read, or if it or a
+            redirect has another origin and other origins are not allowed.
+        LimitExceeded: If the page would be one more than ``max_pages``.
+    """
+    if url in trail.urls:
+        subject = _page_url_subject(
+            _as_api(api)._read_server_url(url),
+            "Page URL",
+            Source.SERVER,
+            page,
+        )
+        raise PaginationError(
+            f"{subject} names a page that was already read, so following it "
+            "would never end"
+        )
+    # A link that cannot be requested is refused before it counts as a page.
+    if not allow_other_origins:
+        _check_page_origin(api, url, from_server=True, page=page)
+    limit = api.max_pages
+    if limit is not None and trail.pages >= limit:
+        raise LimitExceeded(
+            "max_pages", f"The collection has more than {limit} pages"
+        )
+    resp = _request_page(
+        api, url, allow_other_origins, from_server=True, page=page
+    )
+    # After a redirect, a page's links are relative to its final URL.
+    return resp, _Trail(trail.urls | {url, resp.url}, trail.pages + 1)
+
+
+class _PageReader:
+    """Request the next pages of one traversal, in one direction."""
+
+    def __init__(self, api: Client, first: frozenset[str]) -> None:
         """Prepare to read pages through ``api``.
 
         Args:
             api: Client used to request the next pages.
-            allow_other_origins: Whether to follow next-page URLs, and
-                redirects from page requests, whose origin differs from the
-                API's base URL. A redirect must still lead to an origin that
-                the API allows.
+            first: The URLs of the first page, which a link must not name.
         """
         self.api = api
-        self.allow_other_origins = allow_other_origins
-        self.read_urls: set[str] = set()
-        """The URLs of the pages read so far."""
-        self.pages = 1
-        """The number of pages read so far, counting the first."""
+        self.trail = _Trail(first, 1)
         self.bound = _ItemBound(api)
-        """The items yielded so far, counted against ``max_items``."""
 
-    def read(self, url: str) -> requests.Response:
-        """Request the page at ``url``, a link resolved to an absolute URL.
+    def read(self, url: str, allow_other_origins: bool) -> requests.Response:
+        """Request the page that the last page read links to.
 
         Args:
             url: Absolute URL of the page.
+            allow_other_origins: Whether the page that holds the link allows
+                other origins for it and its redirects.
 
         Returns:
             Response for the page.
 
         Raises:
-            PaginationError: If ``url`` names a page already read, or if it or
-                a redirect has another origin and other origins are not
-                allowed.
-            LimitExceeded: If the page would be one more than the API's
-                ``max_pages``.
+            PaginationError: As for ``_follow_link()``.
+            LimitExceeded: As for ``_follow_link()``.
         """
-        page = f"page {self.pages + 1}"
-        if url in self.read_urls:
-            subject = _page_url_subject(
-                _as_api(self.api)._read_server_url(url),
-                "Next-page URL",
-                Source.SERVER,
-                page,
-            )
-            raise PaginationError(
-                f"{subject} names a page that was already read, so "
-                "following it would never end"
-            )
-        if not self.allow_other_origins:
-            _check_page_origin(self.api, url, from_server=True, page=page)
-        limit = self.api.max_pages
-        if limit is not None and self.pages >= limit:
-            raise LimitExceeded(
-                "max_pages", f"The collection has more than {limit} pages"
-            )
-        self.pages += 1
-        resp = _request_page(
+        resp, self.trail = _follow_link(
             self.api,
+            self.trail,
             url,
-            self.allow_other_origins,
-            from_server=True,
-            page=page,
+            allow_other_origins,
+            f"page {self.trail.pages + 1}",
         )
-        # After a redirect, a page's links are relative to its final URL.
-        self.read_urls.update((url, resp.url))
         return resp
 
 
@@ -563,12 +605,12 @@ def follow_next_links(
             JSON items from every page, in order.
         """
         page = payload
-        reader = _PageReader(api, allow_other_origins)
         page_url = api.base_url if url is None else api.resolve_url(url)
         # Without url=, the first page's URL is unknown, and the base URL is
         # not a page.
-        if url is not None:
-            reader.read_urls.add(page_url)
+        reader = _PageReader(
+            api, frozenset() if url is None else frozenset({page_url})
+        )
 
         while True:
             results = _page_results(page, results_key)
@@ -581,7 +623,7 @@ def follow_next_links(
             if next_url is None:
                 return
 
-            resp = reader.read(next_url)
+            resp = reader.read(next_url, allow_other_origins)
             # After a redirect, a page's links are relative to its final URL.
             page_url = resp.url
             page = api.json(resp)
@@ -643,8 +685,7 @@ def follow_link_headers(
             JSON items from every page, in order.
         """
         page = resp
-        reader = _PageReader(api, allow_other_origins)
-        reader.read_urls.add(page.url)
+        reader = _PageReader(api, frozenset({page.url}))
 
         while True:
             payload = api.json(page)
@@ -660,7 +701,9 @@ def follow_link_headers(
             if not next_url:
                 return
 
-            page = reader.read(_resolve(page.url, next_url))
+            page = reader.read(
+                _resolve(page.url, next_url), allow_other_origins
+            )
 
     return Results(items())
 
@@ -701,29 +744,18 @@ def _follow_pages(
             Items from every page, in order.
         """
         page = first
-        reader = _PageReader(api, first._allow_other_origins)
-        reader.read_urls.add(first.url)
+        reader = _PageReader(api, first._forward.urls)
         while True:
             yield from reader.bound.admit(page.items)
             if page._source is None or page.next_url is None:
                 return
-            page = read_page(reader.read(page.next_url))
+            # The page that holds the link says whether it may be followed to
+            # another origin.
+            page = read_page(
+                reader.read(page.next_url, page._allow_other_origins)
+            )
 
     return Results(items(), first.count)
-
-
-class _Trail:
-    """The pages read in one direction from a first page."""
-
-    def __init__(self, urls: frozenset[str], pages: int) -> None:
-        """Record the pages read in one direction.
-
-        Args:
-            urls: URLs of the pages, as requested and after redirects.
-            pages: Number of pages, counting the first.
-        """
-        self.urls = urls
-        self.pages = pages
 
 
 class _PageSource(Generic[T]):
@@ -734,19 +766,14 @@ class _PageSource(Generic[T]):
         """Client that requests the pages, which never changes."""
         raise NotImplementedError
 
-    def read(
-        self, url: str, allow_other_origins: bool, page: str | None = None
-    ) -> Page[T]:
-        """Request and read the page at ``url``.
+    def page(self, resp: Response) -> Page[T]:
+        """Read a page from the response that requested it.
 
         Args:
-            url: Absolute URL of the page.
-            allow_other_origins: Whether the page may have another origin.
-            page: Which page the link names, as ``"the next page"``, for a
-                message, or ``None``.
+            resp: Response for the page.
 
         Returns:
-            The page.
+            The page, which can read the pages it links to.
         """
         raise NotImplementedError
 
@@ -829,6 +856,28 @@ class Page(Generic[T]):
     def previous_url(self, url: str | None) -> None:
         self._previous_link = None
         self._previous_url = url
+
+    def _attach(
+        self,
+        source: _PageSource[T],
+        resp: Response,
+        allow_other_origins: bool,
+    ) -> None:
+        """Record how a page was read, so that it can read the pages around it.
+
+        The pages that it reads count from the URL that the response came from,
+        and not from the ``url`` that a hook gave the page.
+
+        Args:
+            source: Reads the pages that this page links to.
+            resp: The response that the page was read from.
+            allow_other_origins: Whether this page's links, and the redirects
+                of their requests, may have another origin.
+        """
+        self._source = source
+        self._asked_url = _asked_url(resp)
+        self._allow_other_origins = allow_other_origins
+        self._forward = self._backward = _Trail(frozenset({resp.url}), 1)
 
     def _defer_previous(self, link: Callable[[], str | None]) -> None:
         """Resolve the previous page's URL when it is first read.
@@ -931,31 +980,14 @@ class Page(Generic[T]):
                 "next_links_page() or link_headers_page()."
             )
         trail = self._forward if forward else self._backward
-        page = "the next page" if forward else "the previous page"
-        if url in trail.urls:
-            subject = _page_url_subject(
-                _as_api(self._source.api)._read_server_url(url),
-                "Page URL",
-                Source.SERVER,
-                page,
-            )
-            raise PaginationError(
-                f"{subject} names a page that was already read, so "
-                "following it would never end"
-            )
-        # A link that cannot be requested is refused before it counts as a
-        # page, as when the pages are read in one pass.
-        if not self._allow_other_origins:
-            _check_page_origin(
-                self._source.api, url, from_server=True, page=page
-            )
-        limit = self._source.api.max_pages
-        if limit is not None and trail.pages >= limit:
-            raise LimitExceeded(
-                "max_pages", f"The collection has more than {limit} pages"
-            )
-        read = self._source.read(url, self._allow_other_origins, page)
-        extended = _Trail(trail.urls | {url, read.url}, trail.pages + 1)
+        resp, extended = _follow_link(
+            self._source.api,
+            trail,
+            url,
+            self._allow_other_origins,
+            "the next page" if forward else "the previous page",
+        )
+        read = self._source.page(resp)
         if forward:
             read._forward = extended
         else:
@@ -988,30 +1020,6 @@ class _JSONPageSource(_PageSource[Any]):
         """Client that requests the pages."""
         return self._api
 
-    def read(
-        self, url: str, allow_other_origins: bool, page: str | None = None
-    ) -> Page[Any]:
-        """Request and read the page at ``url``.
-
-        Args:
-            url: Absolute URL of the page.
-            allow_other_origins: Whether the page may have another origin.
-            page: Which page the link names, as ``"the next page"``, for a
-                message, or ``None``.
-
-        Returns:
-            The page.
-        """
-        return self.page(
-            _request_page(
-                self.api,
-                url,
-                allow_other_origins,
-                from_server=True,
-                page=page,
-            )
-        )
-
     def page(self, resp: Response) -> Page[Any]:
         """Read a page from its response and attach this source.
 
@@ -1023,9 +1031,7 @@ class _JSONPageSource(_PageSource[Any]):
         """
         page = self._parse(resp)
         _ItemBound(self.api).admit(page.items)
-        page._source = self
-        page._asked_url = _asked_url(resp)
-        page._allow_other_origins = self._allow_other_origins
+        page._attach(self, resp, self._allow_other_origins)
         return page
 
 

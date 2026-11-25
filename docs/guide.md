@@ -1782,7 +1782,10 @@ scheme, host, or port differs from `base_url`, because the session would send
 its headers and credentials there too. A server behind a misconfigured reverse
 proxy can send such links, for example `http://` links from a server that does
 not know that TLS ended at the proxy. Pass `allow_other_origins=True` for an
-API that serves pages from another host.
+API that serves pages from another host. A link is followed or refused by the
+setting of the page that holds it, in `filter()`, `all()`, and `next_page()`
+alike, so a `collection_page()` hook can allow other origins for some pages and
+not for others.
 
 A link from a `Link` header is checked the same way. Each link is read once, as
 requests prepares it, and the check and the message use that reading. A link

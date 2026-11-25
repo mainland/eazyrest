@@ -1397,6 +1397,15 @@ that can break code written for 0.9.0, followed by what to do about it.
 - The adapters that `API` creates read a response's body within the response
   limits before any response hook runs, so an authentication handler cannot
   read the body of a challenge past `max_response_bytes` or `total_timeout`.
+- A next-page link is followed or refused by the `allow_other_origins` of the
+  page that holds it, in `filter()`, `all()`, and `next_page()` alike, as the
+  guide says. A `collection_page()` hook that allows other origins for some
+  pages only, such as those that its own host served, no longer lets `filter()`
+  follow a link from a page that refuses it, and `filter()` now follows a link
+  from a page that allows it when only a later page does.
+- A link is recorded as read by the URL that the response came from, and not by
+  the `url` of the `Page` that a hook returned, so `next_page()` finds a loop
+  after the same requests as `filter()` does.
 - `max_items` bounds the items that `filter()` and `all()` yield whichever hook
   gave them, so a class that overrides `collection_items()` or
   `collection_items_from_response()` raises `LimitExceeded` for more items, as

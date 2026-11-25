@@ -457,30 +457,6 @@ class _ModelPageSource(_PageSource[Any]):
         """The query's client, which requests the pages."""
         return self._client
 
-    def read(
-        self, url: str, allow_other_origins: bool, page: str | None = None
-    ) -> Page[Any]:
-        """Request and read the page at ``url``.
-
-        Args:
-            url: Absolute URL of the page.
-            allow_other_origins: Whether the page may have another origin.
-            page: Which page the link names, as ``"the next page"``, for a
-                message, or ``None``.
-
-        Returns:
-            The page of objects.
-        """
-        return self.page(
-            _request_page(
-                self.api,
-                url,
-                allow_other_origins,
-                from_server=True,
-                page=page,
-            )
-        )
-
     def page(self, resp: Response) -> Page[Any]:
         """Read a page of objects from its response.
 
@@ -518,9 +494,9 @@ class _ModelPageSource(_PageSource[Any]):
         )
         page._defer_previous(lambda: raw.previous_url)
         if raw._source is not None:
-            page._source = self
-            page._allow_other_origins = raw._allow_other_origins
-        page._asked_url = _asked_url(resp)
+            page._attach(self, resp, raw._allow_other_origins)
+        else:
+            page._asked_url = _asked_url(resp)
         return page
 
 
