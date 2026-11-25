@@ -490,11 +490,7 @@ class _ModelPageSource(_PageSource[Any]):
         """
         model = self._model
         raw = _hook_result(
-            model,
-            "collection_page",
-            model.collection_page(resp, api=self.api),
-            Page,
-            "a Page",
+            model, "collection_page", model.collection_page(resp, api=self.api)
         )
         _check_page_size(self.api, raw.items)
         if self._prefetch:
@@ -2589,42 +2585,75 @@ _BEFORE_CREATION = _BeforeCreation()
 """The one key of every object that reads a creation's response."""
 
 
+@dataclass(frozen=True)
+class _MemberResult:
+    """The type that an overridable member must return.
+
+    Attributes:
+        kind: The class or classes that the result must be an instance of.
+        must: What the member must return, as the error says it.
+        call: Whether the member is a method, so the error writes ``()`` after
+            its name, as opposed to a property.
+    """
+
+    kind: type | tuple[type, ...]
+    must: str
+    call: bool = True
+
+
+_MEMBER_RESULTS: dict[str, _MemberResult] = {
+    "bulk_get_by_pks": _MemberResult(
+        Mapping, "the related objects by key, as a mapping"
+    ),
+    "collection_items": _MemberResult(Iterable, "an iterable of JSON objects"),
+    "collection_items_from_response": _MemberResult(
+        Iterable, "an iterable of JSON objects"
+    ),
+    "collection_page": _MemberResult(Page, "a Page"),
+    "merge_response": _MemberResult(Mapping, "a JSON object"),
+    "object_json": _MemberResult(Mapping, "a JSON object"),
+    "url": _MemberResult(str, "a str", call=False),
+}
+"""What each overridable member that the library reads must return."""
+
+
 def _hook_result(
     model: type[Any],
-    hook: str,
+    member: str,
     result: Any,
-    kind: type | tuple[type, ...],
-    must: str,
     *,
     resp: Response | None = None,
 ) -> Any:
-    """Return what an overridable hook gave, if it is what the hook must give.
+    """Return what an overridable member gave, if it is what it must give.
 
-    Every call of a hook that a subclass may override goes through this check,
-    so that a wrong result names the hook instead of failing later in the
-    library's own code.
+    Every read of a member that a subclass may override goes through this
+    check, so that a wrong result names the member instead of failing later in
+    the library's own code. Which type each member must return is in one table,
+    so that every call that reads it checks the same type and says the same
+    words.
 
     Args:
-        model: The model whose hook was called.
-        hook: Name of the hook.
-        result: The hook's result.
-        kind: The class or classes that the result must be an instance of.
-        must: What the hook must return, as the error says it.
-        resp: The response that the hook read, if a write's or a load's
+        model: The model whose member was read.
+        member: Name of the member, which ``_MEMBER_RESULTS`` has.
+        result: The member's result.
+        resp: The response that the member read, if a write's or a load's
             response is what it was given.
 
     Returns:
         ``result``.
 
     Raises:
-        ResponseShapeError: If ``result`` is not of ``kind`` and ``resp`` is
-            given. The error holds the response.
-        TypeError: If ``result`` is not of ``kind`` and no response is given.
+        ResponseShapeError: If ``result`` is not what the member must return
+            and ``resp`` is given. The error holds the response.
+        TypeError: If ``result`` is not what the member must return and no
+            response is given.
     """
-    if isinstance(result, kind):
+    expected = _MEMBER_RESULTS[member]
+    if isinstance(result, expected.kind):
         return result
+    call = "()" if expected.call else ""
     message = (
-        f"{model.__name__}.{hook}() must return {must}, got "
+        f"{model.__name__}.{member}{call} must return {expected.must}, got "
         f"{type(result).__name__}"
     )
     if resp is not None:
@@ -2682,12 +2711,7 @@ def _object_url(obj: JSONObject) -> str:
         TypeError: If ``obj.url`` is not a string, naming the class and
             ``url``.
     """
-    url = obj.url
-    if isinstance(url, str):
-        return url
-    raise TypeError(
-        f"{type(obj).__name__}.url must return a str, got {type(url).__name__}"
-    )
+    return cast(str, _hook_result(type(obj), "url", obj.url))
 
 
 class _OwnedJSON(dict[str, Any]):
@@ -8005,8 +8029,6 @@ class JSONObject:
                     {key: _copy_json(value) for key, value in current.items()},
                     {key: _copy_json(value) for key, value in sent.items()},
                 ),
-                Mapping,
-                "a JSON object",
                 resp=resp,
             ),
         )
@@ -9866,8 +9888,6 @@ class JSONObject:
                 cls,
                 "merge_response",
                 cls._before_creation(api).merge_response(resp, {}, sent),
-                Mapping,
-                "a JSON object",
                 resp=resp,
             )
             cls._refuse_other_created_key(payload, merged, resp)
@@ -10094,8 +10114,6 @@ class JSONObject:
                     cls,
                     "collection_items",
                     cls.collection_items(api.json(resp), api=api, **kwargs),
-                    Iterable,
-                    "an iterable of JSON objects",
                 ),
             )
 
@@ -10106,8 +10124,6 @@ class JSONObject:
                     cls,
                     "collection_page",
                     cls.collection_page(page_resp, api=api, **kwargs),
-                    Page,
-                    "a Page",
                 ),
             )
 
@@ -10376,9 +10392,7 @@ class JSONObject:
                 + f" is not a JSON object, but a {type(json).__name__}",
                 response=resp,
             )
-        json = _hook_result(
-            cls, "object_json", json, Mapping, "a JSON object", resp=resp
-        )
+        json = _hook_result(cls, "object_json", json, resp=resp)
 
         return dict(json)
 
@@ -10544,8 +10558,6 @@ class JSONObject:
                     _prefetch_keys(cls, field, model_type, raw_keys.values()),
                     api=scoped,
                 ),
-                Mapping,
-                "the related objects by key, as a mapping",
             )
             # A hook that reads a relation of an object that it built gives the
             # related object the client that built its parent, which carries
@@ -10794,8 +10806,6 @@ class JSONObject:
             cls,
             "collection_items_from_response",
             cls.collection_items_from_response(resp, api=client),
-            Iterable,
-            "an iterable of JSON objects",
         )
 
         count = _count_of(items)

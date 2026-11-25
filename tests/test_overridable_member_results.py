@@ -356,3 +356,39 @@ def test_a_scalar_response_blames_the_response_when_no_hook_is_overridden(
     assert "object_json" not in message
     assert phrase in message
     assert caught.value.response is not None
+
+
+def create_one() -> None:
+    """Create an object, whose response ``merge_response()`` reads."""
+    Merged.create(name="a")
+
+
+def get_one_page() -> None:
+    """Read one page, whose items ``collection_page()`` gives."""
+    ByPage.get_page()
+
+
+# A member that two entry points read gives one error at both.
+SHARED_MEMBERS: dict[str, tuple[Callable[[], Any], Callable[[], Any]]] = {
+    "collection_page": (lambda: list(ByPage.filter()), get_one_page),
+    "merge_response": (lazy_save, create_one),
+}
+
+
+@pytest.mark.parametrize("member", SHARED_MEMBERS)
+def test_every_entry_point_that_reads_a_member_says_the_same_words(
+    member: str,
+) -> None:
+    """The class, the member, the type, and the error class agree."""
+    choose([1, 2])
+    messages = []
+    classes = []
+    for call in SHARED_MEMBERS[member]:
+        with pytest.raises((TypeError, ResponseShapeError)) as caught:
+            call()
+        messages.append(str(caught.value).split(" (")[0])
+        classes.append(type(caught.value))
+    assert messages[0] == messages[1]
+    assert classes[0] is classes[1]
+    assert f".{member}() must return " in messages[0]
+    assert messages[0].endswith(", got list")
