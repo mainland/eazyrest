@@ -57,9 +57,38 @@ def model_schema(schema: Any, make: Any = conversion) -> dict[str, Any]:
     return Holder.json_schema()
 
 
-DATA = ["const", "enum", "default", "examples"]
-SCHEMA_KEYWORDS = ["items", "additionalProperties", "not", "contains"]
-MAP_KEYWORDS = ["properties", "patternProperties", "dependentSchemas"]
+DATA = [
+    "const",
+    "enum",
+    "default",
+    "examples",
+    "dependentRequired",
+    "example",
+    "x-extension",
+    "discriminatorish",
+]
+SCHEMA_KEYWORDS = [
+    "items",
+    "additionalProperties",
+    "not",
+    "contains",
+    "if",
+    "then",
+    "else",
+    "propertyNames",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+    "contentSchema",
+    "additionalItems",
+]
+MAP_KEYWORDS = [
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "definitions",
+    "dependencies",
+]
+LIST_KEYWORDS = ["anyOf", "allOf", "oneOf", "prefixItems"]
 MAKERS = [conversion, function_conversion]
 NESTED = {"$defs": {"D": {"type": "null"}}, "$ref": "#/$defs/D"}
 
@@ -113,14 +142,47 @@ def test_the_members_of_a_map_keyword_are_schemas(
 
 
 @pytest.mark.parametrize("make", MAKERS, ids=lambda f: f.__name__)
-def test_the_members_of_a_list_keyword_are_schemas(make: Any) -> None:
+@pytest.mark.parametrize("keyword", LIST_KEYWORDS)
+def test_the_members_of_a_list_keyword_are_schemas(
+    keyword: str, make: Any
+) -> None:
     """The members of a list of schemas are checked and hoisted."""
     with pytest.raises(TypeError, match=r"\$id"):
-        model_schema({"anyOf": [{"type": "null"}, {"$id": "urn:x"}]}, make)
-    assert hoisted({"anyOf": [NESTED]}) == (
-        {"anyOf": [{"$ref": "#/$defs/D"}]},
+        model_schema({keyword: [{"type": "null"}, {"$id": "urn:x"}]}, make)
+    assert hoisted({keyword: [NESTED]}) == (
+        {keyword: [{"$ref": "#/$defs/D"}]},
         {"D": {"type": "null"}},
     )
+
+
+@pytest.mark.parametrize("make", MAKERS, ids=lambda f: f.__name__)
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "properties": {
+                "$ref": {"type": "string"},
+                "s": {"type": "string"},
+            },
+            "dependentRequired": {"$ref": ["s"]},
+        },
+        {
+            "properties": {
+                "$id": {"type": "string"},
+                "r": {"type": "integer"},
+            },
+            "dependentRequired": {"$id": ["r"]},
+        },
+        {"type": "object", "example": {"$id": "doc-1", "title": "First"}},
+        {"type": "object", "x-note": {"$ref": "#/$defs/Missing"}},
+    ],
+    ids=["ref", "id", "example", "extension"],
+)
+def test_a_property_named_like_a_keyword_in_data_is_data(
+    schema: Any, make: Any
+) -> None:
+    """A name or key in a data keyword, or an unlisted one, is no keyword."""
+    assert model_schema(schema, make)["properties"]["thing"] == schema
 
 
 CAT = {"type": "object", "title": "Cat"}

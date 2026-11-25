@@ -101,8 +101,10 @@ class Conversion:
     ``$defs`` below its root, or ``$defs`` at its root that is no mapping,
     raises ``TypeError``, when the conversion is made or, for a function, when
     ``json_schema()`` calls it. So does a schema that is no mapping, as
-    ``True`` or ``"string"`` are. Put such a schema in ``$defs``
-    and refer to it there."""
+    ``True`` or ``"string"`` are. Put such a schema in ``$defs`` and refer to
+    it there. Only the keywords that JSON Schema defines to hold schemas are
+    read as schemas. The value of any other keyword, such as ``example``,
+    ``dependentRequired``, or an extension's, is data, and is not checked."""
 
     def __post_init__(self) -> None:
         """Check a schema given as a mapping.
@@ -115,11 +117,49 @@ class Conversion:
             _check_embeddable(_plain_schema(self.schema))
 
 
-# Keywords whose values are JSON data rather than schemas, and keywords whose
-# values map names to schemas.
-_SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
+# Keywords whose values are schemas or lists of them, keywords whose values map
+# names to schemas, and keywords whose values are JSON data that looks like
+# schemas. The value of any other keyword, as an extension's or a vocabulary's
+# that is not listed, is data.
+_SCHEMA_KEYWORDS = frozenset(
+    {
+        "additionalItems",
+        "additionalProperties",
+        "allOf",
+        "anyOf",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "oneOf",
+        "prefixItems",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
 _SCHEMA_MAPS = frozenset(
-    {"properties", "patternProperties", "dependentSchemas", "$defs"}
+    {
+        "$defs",
+        "definitions",
+        "dependencies",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    }
+)
+_SCHEMA_DATA = frozenset(
+    {
+        "const",
+        "default",
+        "dependentRequired",
+        "enum",
+        "example",
+        "examples",
+    }
 )
 # Keywords that a schema embedded in a model's cannot keep, since they name its
 # root or its resource.
@@ -217,9 +257,10 @@ def _schema_parts(schema: Any) -> Iterator[_SchemaPart]:
 
     This is the one place that decides which values of a schema are schemas,
     which are JSON data, and which are references. The data keywords hold JSON,
-    so nothing in them is yielded. The keywords that map names to schemas yield
-    the schemas and not the names, so a property named ``"$id"`` is no keyword.
-    A ``discriminator`` yields the values of its ``mapping`` as references, and
+    and so does any keyword that is not listed as holding schemas, so nothing
+    in them is yielded. The keywords that map names to schemas yield the
+    schemas and not the names, so a property named ``"$id"`` is no keyword. A
+    ``discriminator`` yields the values of its ``mapping`` as references, and
     nothing else of it.
 
     The schema must hold dictionaries and lists only, as ``_plain()`` gives. A
@@ -268,7 +309,7 @@ def _schema_parts_at(holder: Any, key: Any) -> Iterator[_SchemaPart]:
             if isinstance(item, dict):
                 for member in list(item):
                     yield from _schema_parts_at(item, member)
-        else:
+        elif name in _SCHEMA_KEYWORDS:
             yield from _schema_parts_at(value, name)
 
 
