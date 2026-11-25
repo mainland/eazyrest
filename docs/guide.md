@@ -1759,6 +1759,11 @@ class GitHubObject(JSONObject):
         return link_headers_page(api, resp)
 ```
 
+Each item that `collection_items()`, `collection_items_from_response()`, or
+`collection_page()` gives must be a JSON object whose names are all strings. An
+item that is not raises `ResponseShapeError` when the item is read, before any
+object is built from it.
+
 A page that a hook builds with `Page(...)` and no source cannot read other
 pages, so `filter()` stops after its items. `max_pages` and `max_items` count
 the pages and items of the whole traversal, and the result's `count` is the

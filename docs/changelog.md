@@ -481,6 +481,10 @@ describe them further.
   `Model(json=obj.json, api=api)`, which holds the pending changes of the first
   as loaded values, or read the object from the server again. Errors, `API`
   objects, and the views of a query still pickle.
+- An item that `collection_items()`, `collection_items_from_response()`, or
+  `collection_page()` gives, with a name that is no string, raises
+  `ResponseShapeError` when the item is read, where `v1.0.0a5` built the object
+  and kept the name in its JSON.
 - A `UUID` key reads a string only in the hyphenated, compact, braced, or
   `urn:uuid:` form, in ASCII hex of either case, from the program, from JSON,
   in a query, and in a relation. Any other string raises `FieldConversionError`

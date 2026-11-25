@@ -2875,27 +2875,25 @@ def _hook_result(
     """
     expected = _MEMBER_RESULTS[member]
     call = "()" if expected.call else ""
+    refuse = _refusal(resp)
     if not isinstance(result, expected.kind) or (
         expected.items and not _is_collection_value(result)
     ):
-        message = (
+        raise refuse(
             f"{model.__name__}.{member}{call} must return {expected.must}, "
             f"got {type(result).__name__}"
         )
-    elif expected.names and not all(
-        isinstance(name, str) for name in cast(Mapping[Any, Any], result)
-    ):
-        # A name that is no string cannot be a field of the object, so the
-        # message does not quote it, which can be a secret.
-        message = (
-            f"{model.__name__}.{member}{call} must return {expected.must} "
-            "whose names are all strings"
+    if expected.names:
+        _check_names_mapping(
+            result,
+            f"{model.__name__}.{member}{call}",
+            message=(
+                f"{model.__name__}.{member}{call} must return "
+                f"{expected.must} whose names are all strings"
+            ),
+            refuse=refuse,
         )
-    else:
-        return result
-    if resp is not None:
-        raise ResponseShapeError(message, response=resp)
-    raise TypeError(message)
+    return result
 
 
 def _adopt_hook_results(query: _Query, objects: Iterable[Any]) -> None:
@@ -3135,16 +3133,47 @@ _QUERY_OPTIONS = frozenset(
 )
 
 
-def _check_names_mapping(values: Any, argument: str) -> None:
-    """Refuse an argument that is no mapping of names to values.
+def _refusal(resp: Response | None) -> Callable[[str], Exception]:
+    """Return what raises for a result that a hook or a response gave wrong.
 
     Args:
-        values: What the caller gave for ``argument``.
+        resp: The response that the result was read from, if there is one.
+
+    Returns:
+        ``ResponseShapeError`` holding ``resp`` if it is given, and
+        ``TypeError`` otherwise, since a caller's own argument is no response.
+    """
+    if resp is None:
+        return TypeError
+    return lambda message: ResponseShapeError(message, response=resp)
+
+
+def _check_names_mapping(
+    values: Any,
+    argument: str,
+    *,
+    message: str | None = None,
+    refuse: Callable[[str], Exception] = TypeError,
+) -> None:
+    """Refuse an argument that is no mapping of names to values.
+
+    This is the one rule that every name of a JSON object is a string, whether
+    a caller or a hook gave the object. A name that is no string cannot be a
+    field of an object, and the message does not quote it, which can be a
+    secret.
+
+    Args:
+        values: What the caller or the hook gave for ``argument``.
         argument: Name of the argument, for the error message.
+        message: The message for a name that is no string, in place of the one
+            that names ``argument``.
+        refuse: Builds the exception to raise from a message.
 
     Raises:
-        TypeError: If ``values`` is not a mapping, or has a name that is not a
-            string.
+        TypeError: If ``values`` is not a mapping, or, with the default
+            ``refuse``, has a name that is not a string.
+        Exception: What ``refuse`` builds, if ``values`` has a name that is not
+            a string.
     """
     if not isinstance(values, Mapping):
         raise TypeError(
@@ -3152,8 +3181,9 @@ def _check_names_mapping(values: Any, argument: str) -> None:
         )
     for name in values:
         if not isinstance(name, str):
-            raise TypeError(
-                f"A name in {argument}= must be a string, got "
+            raise refuse(
+                message
+                or f"A name in {argument}= must be a string, got "
                 f"{type(name).__name__}"
             )
 
@@ -10221,15 +10251,24 @@ class JSONObject:
             The object.
 
         Raises:
-            ResponseShapeError: If the item is not a JSON object, lacks the
-                key, holds ``null`` for it, or holds a key that is not of the
-                key's type. The message names the item's position.
+            ResponseShapeError: If the item is not a JSON object, has a name
+                that is no string, lacks the key, holds ``null`` for it, or
+                holds a key that is not of the key's type. The message names
+                the item's position.
         """
         if not isinstance(item, Mapping):
             raise ResponseShapeError(
                 f"Item [{index}] of the {cls.__name__} collection must be a "
                 f"JSON object, got {type(item).__name__}"
             )
+        place = f"Item [{index}] of the {cls.__name__} collection"
+        _check_names_mapping(
+            item,
+            place,
+            message=f"{place} must be a JSON object whose names are all "
+            "strings",
+            refuse=ResponseShapeError,
+        )
         try:
             return cls(json=_OwnedJSON(item), api=api)
         except FieldConversionError as err:
