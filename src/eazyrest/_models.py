@@ -3497,8 +3497,12 @@ def _form_value(name: str, value: Any) -> Any:
         TypeError: If the value is ``None``, a mapping, an empty list, or a
             list that holds anything but scalars, which a form field cannot
             express.
+        ValueError: If a scalar is a float that is not finite or an integer
+            that Python cannot write as text, as for a JSON body. The message
+            names the value as ``[key]``, since its name can be a secret.
     """
     if isinstance(value, (str, int, float)):
+        _check_json_leaf(value, "[key]")
         return _scalar_text(value)
     if (
         isinstance(value, list)

@@ -271,7 +271,10 @@ describe them further.
   the assignment. Inside a type that eazyrest does not convert, such as an
   `Any` field or a value of `dict[str, Any]`, a tuple, which reads back as a
   list, and a mapping whose keys are not strings are such values. Assign a list
-  instead of a tuple.
+  instead of a tuple. An extra of `create()` that is a float that is not
+  finite, or an integer of more than 4300 digits, raises `ValueError` naming
+  the value as `[key]` before any request, also when `files=` sends it as a
+  form field.
 - A field of a plain type writes the plain value of a subclass of `str`, `int`,
   or `float`, such as a member of an enum that mixes in one of them, in a JSON
   body, in a form field of a write with `files=`, in a query by the field's

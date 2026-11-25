@@ -1451,11 +1451,12 @@ request: a tuple, which would read back as a list, a mapping with a key that is
 not a string, and a generator. A float that is not finite, and a value that
 holds itself or nests more than 127 levels deep, so that the body nests more
 than 128, raise `ValueError` before any request, and the message names the
-value as `[key]`. The lookup of `get_or_create()` builds the key under its JSON
-or write key too, so a `UUID` given in uppercase is sent in the query and in
-the `POST` in one spelling, where `filter()` sends such a name as it was given.
-A JSON key or write key that holds `__`, as `doc__id` for a field `id` or
-`the__title` for a field `title`, is no lookup of `get_or_create()`, which
+value as `[key]`. A float that is not finite raises it also when `files=` sends
+the extras as form fields. The lookup of `get_or_create()` builds the key under
+its JSON or write key too, so a `UUID` given in uppercase is sent in the query
+and in the `POST` in one spelling, where `filter()` sends such a name as it was
+given. A JSON key or write key that holds `__`, as `doc__id` for a field `id`
+or `the__title` for a field `title`, is no lookup of `get_or_create()`, which
 would read it as a field and a suffix, so the call raises `ValueError` naming
 the parameter before any request. Look the field up by its name, as `title`,
 and the key as `id` or `pk`. A key whose field name holds `__`, as `doc__id`
