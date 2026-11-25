@@ -117,10 +117,10 @@ class Conversion:
             _check_embeddable(_plain_schema(self.schema))
 
 
-# Keywords whose values are schemas or lists of them, keywords whose values map
-# names to schemas, and keywords whose values are JSON data that looks like
-# schemas. The value of any other keyword, as an extension's or a vocabulary's
-# that is not listed, is data.
+# Keywords whose values are schemas or lists of them, and keywords whose values
+# map names to schemas. The value of any other keyword, such as ``const``,
+# ``enum``, ``example``, an extension's, or a vocabulary's that is not listed,
+# is JSON data.
 _SCHEMA_KEYWORDS = frozenset(
     {
         "additionalItems",
@@ -149,16 +149,6 @@ _SCHEMA_MAPS = frozenset(
         "dependentSchemas",
         "patternProperties",
         "properties",
-    }
-)
-_SCHEMA_DATA = frozenset(
-    {
-        "const",
-        "default",
-        "dependentRequired",
-        "enum",
-        "example",
-        "examples",
     }
 )
 # Keywords that a schema embedded in a model's cannot keep, since they name its
@@ -256,10 +246,10 @@ def _schema_parts(schema: Any) -> Iterator[_SchemaPart]:
     """Yield each subschema of a schema and each reference in it.
 
     This is the one place that decides which values of a schema are schemas,
-    which are JSON data, and which are references. The data keywords hold JSON,
-    and so does any keyword that is not listed as holding schemas, so nothing
-    in them is yielded. The keywords that map names to schemas yield the
-    schemas and not the names, so a property named ``"$id"`` is no keyword. A
+    which are JSON data, and which are references. A keyword that is not listed
+    as holding schemas, such as ``const`` or ``enum``, holds JSON, so nothing
+    in it is yielded. The keywords that map names to schemas yield the schemas
+    and not the names, so a property named ``"$id"`` is no keyword. A
     ``discriminator`` yields the values of its ``mapping`` as references, and
     nothing else of it.
 
@@ -296,8 +286,6 @@ def _schema_parts_at(holder: Any, key: Any) -> Iterator[_SchemaPart]:
         return
     yield _SchemaPart("schema", holder, key, value)
     for name, item in list(value.items()):
-        if name in _SCHEMA_DATA:
-            continue
         if name == "$ref":
             yield _SchemaPart("$ref", value, name, item)
         elif name == "discriminator" and isinstance(item, dict):
