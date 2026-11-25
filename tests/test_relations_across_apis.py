@@ -499,3 +499,30 @@ def test_a_hook_that_returns_a_subclass_on_its_own_api_is_taken(
 
     assert type(thing.owner) is Special
     assert thing.owner.api is A
+
+
+def test_a_refused_hook_result_leaves_every_object_as_it_was(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No object that the hook returned changes if one is refused."""
+    register(monkeypatch, thing=A, owner=A, special=B)
+    returned: list[Owner] = []
+
+    def hook(pks: set[Any], *, api: Any, **kwargs: Any) -> dict[Any, Owner]:
+        # The refused object comes first, and the walk visits the last first.
+        made = {
+            5: Special(json=owner_json(5), api=api),
+            6: Owner(json=owner_json(6), api=api),
+        }
+        returned.extend(made.values())
+        return made
+
+    monkeypatch.setattr(Owner, "bulk_get_by_pks", staticmethod(hook))
+    clients = []
+
+    with pytest.raises(UsageError, match=r"Owner\.bulk_get_by_pks\(\)"):
+        list(Thing.filter(prefetch="owner"))
+
+    clients = [obj._api_override for obj in returned]
+    assert all(client is A for client in clients)
+    assert [obj._graph_api for obj in returned] == [None, None]

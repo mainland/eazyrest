@@ -2387,7 +2387,7 @@ API, or it raises `ValueError`. A bulk hook must build its objects with the
 `api` that it receives, or with no `api=` when the query has none. A hook that
 returns an object, or an object that holds one, of another `API`, or of a class
 registered on another API than the query's model, raises `UsageError` naming
-the hook.
+the hook, and none of the objects that it returned is changed.
 
 ## Errors
 

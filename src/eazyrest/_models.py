@@ -2878,7 +2878,8 @@ def _adopt_hook_results(
     Walks the objects, their relation caches, and the objects that they
     prefetched, to any depth. Every object that the walk reaches then keeps the
     query's ``api=``, or none if the query has none, and so does not keep the
-    request options that the hook's client carried.
+    request options that the hook's client carried. Every object is checked
+    before any is changed, so a refused result leaves all of them as they were.
 
     Args:
         query: The query whose graph the objects join.
@@ -2893,6 +2894,7 @@ def _adopt_hook_results(
     """
     graph = _as_api(query.client)
     seen: set[int] = set()
+    reached: list[JSONObject] = []
     stack: list[Any] = list(objects)
     while stack:
         value = stack.pop()
@@ -2900,19 +2902,7 @@ def _adopt_hook_results(
             if id(value) in seen:
                 continue
             seen.add(id(value))
-            if not _agrees_with_graph(
-                graph, _object_api(value)
-            ) or not _agrees_with_graph(
-                query.graph, _registered_api_of(type(value))
-            ):
-                raise UsageError(
-                    f"{model.__name__}.{hook}() returned an object of "
-                    f"{type(value).__name__} that uses another API than the "
-                    "query. Build every object with the api that the hook "
-                    "was given, from a class registered on the query's API"
-                )
-            value._api_override = query.api
-            value._graph_api = query.graph
+            reached.append(value)
             stack.extend(value._field_cache.values())
             stack.extend(value._prefetched_related.values())
         elif isinstance(value, Mapping):
@@ -2921,6 +2911,21 @@ def _adopt_hook_results(
             value, (list, tuple, set, frozenset, collections.deque)
         ):
             stack.extend(value)
+    for value in reached:
+        if not _agrees_with_graph(
+            graph, _object_api(value)
+        ) or not _agrees_with_graph(
+            query.graph, _registered_api_of(type(value))
+        ):
+            raise UsageError(
+                f"{model.__name__}.{hook}() returned an object of "
+                f"{type(value).__name__} that uses another API than the "
+                "query. Build every object with the api that the hook "
+                "was given, from a class registered on the query's API"
+            )
+    for value in reached:
+        value._api_override = query.api
+        value._graph_api = query.graph
 
 
 def _object_url(obj: JSONObject) -> str:
