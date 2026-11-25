@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import codecs
 import contextvars
 import json
 import math
@@ -236,8 +235,8 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
 
     Raises:
         ResponseShapeError: If the body is not JSON, or is not text in the
-            charset that the response declares, or in UTF-8 if it declares
-            none. The message does not quote the body.
+            UTF-8, or in the UTF-16 or UTF-32 charset that the response
+            declares. The message does not quote the body.
         LimitExceeded: If the JSON nests more deeply than ``max_depth``, or
             too deeply for Python's decoder.
     """
@@ -268,13 +267,25 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
     return value
 
 
+# The charsets besides UTF-8 in which a JSON body is decoded, by RFC 8259,
+# section 8.1, compared in lower case.
+_JSON_CHARSETS = frozenset(
+    f"utf-{width}{order}"
+    for width in ("16", "32")
+    for order in ("", "be", "le")
+)
+
+
 def _body_text(resp: Response) -> str:
-    """Decode a response's body strictly, as the response declares.
+    """Decode a response's body strictly, as JSON is exchanged.
 
     JSON that systems exchange is UTF-8, by RFC 8259, section 8.1, and a body
     that is not valid in its charset must not read as other text, which
     ``requests`` would do by replacing each bad byte with U+FFFD, or by
-    guessing the charset of a body that declares none.
+    guessing the charset of a body that declares none. The body is decoded as
+    UTF-8 unless its ``Content-Type`` declares UTF-16 or UTF-32, in any byte
+    order and case. Any other charset, or none, is UTF-8, so no name that a
+    server sends reaches the codec registry.
 
     Args:
         resp: Response whose body is decoded.
@@ -284,25 +295,16 @@ def _body_text(resp: Response) -> str:
         that is UTF-8.
 
     Raises:
-        ValueError: If the body does not decode in the charset that the
-            response declares, UTF-8 if it declares none, or the charset is
-            unknown or names no text encoding.
+        ValueError: If the body does not decode in UTF-8, or in the UTF-16 or
+            UTF-32 charset that the response declares.
     """
     header = Message()
     header["Content-Type"] = resp.headers.get("Content-Type", "")
-    charset = header.get_content_charset() or "utf-8"
-    try:
-        codec = codecs.lookup(charset)
-    except LookupError as err:
-        raise ValueError("The response declares an unknown charset") from err
-    if codec.name == "utf-8":
+    charset = (header.get_content_charset() or "").lower()
+    if charset not in _JSON_CHARSETS:
         charset = "utf-8-sig"
     try:
         return resp.content.decode(charset)
-    except LookupError as err:
-        # A codec that is registered but is no text encoding, such as zip or
-        # rot13, passes the lookup and is refused only when it decodes.
-        raise ValueError("The response declares an unknown charset") from err
     except UnicodeError as err:
         raise ValueError("The body is not valid text") from err
 

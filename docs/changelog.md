@@ -744,17 +744,21 @@ describe them further.
   writes, so assigning the key or an object of that key over it sends the
   write, for a relation, a sequence of relations, and a set of them. It
   compared equal to `7`, and nothing was sent, so the field kept raising.
-- A response body is decoded as UTF-8, or as the charset that the response
-  declares, and one that does not decode raises `ResponseShapeError`, as a body
-  that is not JSON does. `v1.0.0a5` replaced each bad byte with U+FFFD and read
-  the result, so that `save(full=True)` wrote the replacement character back,
-  and it guessed the charset of a body that declared none. A body in UTF-16
-  that declares no charset no longer reads.
-- A charset that names a codec that is no text encoding, such as `zip`,
-  `base64`, or `rot13`, makes a body one that holds no JSON, so a read raises
-  `ResponseShapeError` and a failed status raises `APIError`. A bare
-  `LookupError` escaped from `api.json()`, a load, `filter()`, and
-  `get_page()`.
+- A response body is decoded as UTF-8, or as UTF-16 or UTF-32 when the response
+  declares one of `UTF-16`, `UTF-16BE`, `UTF-16LE`, `UTF-32`, `UTF-32BE`, or
+  `UTF-32LE`, in any case, and one that does not decode raises
+  `ResponseShapeError`, as a body that is not JSON does. A body that declares
+  any other charset, or none, is decoded as UTF-8, as RFC 8259 says JSON is
+  exchanged, and the name is never looked up as a codec. `v1.0.0a5` decoded a
+  body in any charset that it declared, so a body declared `ISO-8859-1` that
+  held an accented letter as one byte read as that letter and now raises
+  `ResponseShapeError`. A declared name such as `punycode` took time quadratic
+  in the size of the body to decode, and each name that a response declared was
+  kept in the codec cache for the life of the process. `v1.0.0a5` also replaced
+  each bad byte with U+FFFD and read the result, so that `save(full=True)`
+  wrote the replacement character back, and it guessed the charset of a body
+  that declared none. A body in UTF-16 that declares no charset no longer
+  reads.
 - A redirect or a page link to port 0 of the request's host is refused as a
   redirect or a link to another origin, where `v1.0.0a5` took it for the
   scheme's default port, and the request then failed with a `ConnectionError`

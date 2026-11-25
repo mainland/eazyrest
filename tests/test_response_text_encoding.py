@@ -1,4 +1,4 @@
-"""A JSON body is decoded strictly, as UTF-8 or as the charset it declares.
+"""A JSON body is decoded strictly, as UTF-8, UTF-16, or UTF-32.
 
 A body that does not decode must not read as other text. requests replaces each
 bad byte with U+FFFD, or guesses an encoding for a body that declares none, so
@@ -39,6 +39,8 @@ BAD_BODIES = {
 TYPES = {
     "json": "application/json",
     "json with utf-8": "application/json; charset=utf-8",
+    "json with latin-1": "application/json; charset=iso-8859-1",
+    "text with latin-1": "text/plain; charset=latin-1",
     "a structured type": "application/vnd.api+json",
     "no type": None,
     "text": "text/plain",
@@ -92,8 +94,6 @@ GOOD = {
     "UTF-8 without a type": (UTF_8, None),
     "UTF-8 with a BOM": (b"\xef\xbb\xbf" + UTF_8, "application/vnd.api+json"),
     "UTF-8 declared": (UTF_8, "application/json; charset=UTF-8"),
-    "Latin-1 declared": (LATIN_1, "application/json; charset=iso-8859-1"),
-    "Latin-1 declared by text": (LATIN_1, "text/plain; charset=latin-1"),
     "UTF-16 declared": (
         UTF_8.decode().encode("utf-16"),
         'application/json; charset="utf-16"',
@@ -105,16 +105,8 @@ GOOD = {
 def test_a_body_in_its_declared_charset_reads(
     body: bytes, content_type: str | None
 ) -> None:
-    """A body that decodes in UTF-8, or in the charset it names, reads."""
+    """A body that decodes in UTF-8, or in UTF-16 that it names, reads."""
     with requests_mock.Mocker() as mocker:
         serve(mocker, body, content_type)
         assert api.json(api.get("/cities/1/"))["name"] == "Zürich"
         assert City(id=1).name == "Zürich"
-
-
-def test_an_unknown_charset_is_no_json() -> None:
-    """A charset that Python does not know cannot be read."""
-    with requests_mock.Mocker() as mocker:
-        serve(mocker, UTF_8, "application/json; charset=no-such-charset")
-        with pytest.raises(ResponseShapeError, match="does not hold JSON"):
-            api.json(api.get("/cities/1/"))
