@@ -180,15 +180,27 @@ class UsageError(EazyrestError, RuntimeError):
     """
 
 
-def _json_depth(value: object) -> int:
+_DEFAULT_MAX_JSON_DEPTH = 128
+"""The default of ``API.max_json_depth``, the greatest depth of a response."""
+
+
+def _json_depth(value: object, limit: int | None = None) -> int:
     """Return the nesting depth of a JSON value.
+
+    This is the one place that counts the depth of a JSON value, whether a
+    response holds it or a caller gives it to be written.
 
     Args:
         value: Decoded JSON value.
+        limit: Depth at which to stop counting, or ``None`` to count the whole
+            value. The walk ends at the first level deeper than ``limit``, so a
+            value that holds itself ends it, and the walk needs no more memory
+            than ``limit`` levels allow.
 
     Returns:
-        The number of nested arrays and objects on the deepest path, so 0 for
-        a scalar and 1 for a flat array.
+        The number of nested arrays and objects on the deepest path, so 0 for a
+        scalar and 1 for a flat array. With a ``limit``, a depth over it is
+        reported as ``limit + 1``.
     """
     # The stack holds one iterator per open array or object, so memory grows
     # with the nesting depth, not with the number of values at each level.
@@ -203,6 +215,8 @@ def _json_depth(value: object) -> int:
             else:
                 continue
             depth = max(depth, len(stack) - 1)
+            if limit is not None and depth > limit:
+                return depth
             break
         else:
             stack.pop()
@@ -246,7 +260,7 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
             "max_json_depth", f"{where} holds JSON nested too deeply to decode"
         ) from err
 
-    if max_depth is not None and _json_depth(value) > max_depth:
+    if max_depth is not None and _json_depth(value, max_depth) > max_depth:
         raise LimitExceeded(
             "max_json_depth",
             f"{where} holds JSON nested more than {max_depth} levels deep",

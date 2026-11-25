@@ -78,6 +78,7 @@ from ._conversion import (
     _table_of,
 )
 from ._errors import (
+    _DEFAULT_MAX_JSON_DEPTH,
     DoesNotExist,
     EazyrestError,
     MultipleObjectsReturned,
@@ -85,6 +86,7 @@ from ._errors import (
     ResponseShapeError,
     UsageError,
     _asked_url,
+    _json_depth,
 )
 from ._protocols import Client, Response
 from ._results import Results, _count_of
@@ -4606,7 +4608,7 @@ def encode_json(
     return _checked_json(model._to_written_json(value, analyzed))
 
 
-_MAX_WRITE_DEPTH = 127
+_MAX_WRITE_DEPTH = _DEFAULT_MAX_JSON_DEPTH - 1
 """The greatest nesting depth of a value that a caller gives to be written.
 
 A field's value or an extra of a request nests at most this many levels, so
@@ -4678,10 +4680,9 @@ def _check_json(value: Any, path: str) -> bool:
 def _check_write_depth(value: Any, path: str) -> None:
     """Check that an encoded value is no deeper than a write may be.
 
-    This is the one place that counts the depth of a written value. The walk is
-    iterative and stops at the first level that is too deep, so the value needs
-    no more stack than its depth allows, and a value that holds itself ends the
-    walk.
+    The count is ``_json_depth()``, which stops at the first level that is too
+    deep, so the value needs no more stack than its depth allows, and a value
+    that holds itself ends the walk.
 
     Args:
         value: The JSON value that an encoding gave.
@@ -4691,20 +4692,8 @@ def _check_write_depth(value: Any, path: str) -> None:
     Raises:
         ValueError: If ``value`` nests more deeply than ``_MAX_WRITE_DEPTH``.
     """
-    stack: list[Iterator[Any]] = [iter((value,))]
-    while stack:
-        for child in stack[-1]:
-            if isinstance(child, dict):
-                stack.append(iter(child.values()))
-            elif isinstance(child, list):
-                stack.append(iter(child))
-            else:
-                continue
-            if len(stack) - 1 > _MAX_WRITE_DEPTH:
-                raise _too_deep(path)
-            break
-        else:
-            stack.pop()
+    if _json_depth(value, _MAX_WRITE_DEPTH) > _MAX_WRITE_DEPTH:
+        raise _too_deep(path)
 
 
 def _is_writable_int(value: int) -> bool:

@@ -24,6 +24,7 @@ from urllib3.response import BaseHTTPResponse
 from urllib3.util import Retry, Timeout
 
 from ._errors import (
+    _DEFAULT_MAX_JSON_DEPTH,
     LimitExceeded,
     PaginationError,
     RedirectError,
@@ -927,7 +928,7 @@ class API:
     reads.
     """
 
-    max_json_depth: int | None = 128
+    max_json_depth: int | None = _DEFAULT_MAX_JSON_DEPTH
     """Greatest nesting depth of arrays and objects in a response's JSON.
 
     eazyrest's conversions recurse through nested values, so a deeper value
