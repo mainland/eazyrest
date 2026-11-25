@@ -87,6 +87,7 @@ from ._errors import (
     DoesNotExist,
     EazyrestError,
     MultipleObjectsReturned,
+    PaginationError,
     PrefetchNotSupported,
     ResponseShapeError,
     UsageError,
@@ -96,6 +97,7 @@ from ._errors import (
 from ._protocols import Client, Response
 from ._results import Results, _count_of, _valid_count
 from .api import (
+    _UNPARSABLE_PAGE_URL,
     API,
     _AnyAPI,
     _as_api,
@@ -10900,7 +10902,13 @@ class JSONObject:
                 "the query has no collection to read",
             )
         else:
-            resp = _request_page(client, url, allow_other_origins=False)
+            page_url = None
+            # The raise comes after the handler, so that no error is attached.
+            with contextlib.suppress(requests.exceptions.InvalidURL):
+                page_url = client.resolve_url(url)
+            if page_url is None:
+                raise PaginationError(_UNPARSABLE_PAGE_URL)
+            resp = _request_page(client, page_url, allow_other_origins=False)
         return context, prefetch_fields, resp
 
     @classmethod
@@ -11435,8 +11443,9 @@ class JSONObject:
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement its bulk lookup.
             PaginationError: If ``url`` has another origin, or is a URL that
-                cannot be read, such as one whose port is out of range. The
-                message quotes none of it.
+                cannot be parsed, such as one whose port is out of range or
+                whose bracketed host is invalid. The message quotes none of it,
+                and no error is attached.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
             APIError: If the server returns an HTTP error status, as
