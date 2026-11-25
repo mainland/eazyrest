@@ -566,9 +566,6 @@ class _Query:
     client: _AnyAPI
     """The client that sends the query's own requests, with its options."""
 
-    options: Mapping[str, Any]
-    """Request options that the query's requests send."""
-
     graph: API | None
     """The API that the query's model is registered on, if it has one.
 
@@ -612,7 +609,6 @@ class _Query:
         return cls(
             given,
             base._scoped(options) if options else base,
-            options,
             _registered_api_of(model),
         )
 
