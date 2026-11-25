@@ -283,8 +283,8 @@ describe them further.
   list, and a mapping whose keys are not strings are such values. Assign a list
   instead of a tuple. An extra of `create()` that is a float that is not
   finite, or an integer of more than 4300 digits, raises `ValueError` naming
-  the value as `[key]` before any request, also when `files=` sends it as a
-  form field.
+  the value as `[key]`, or as `[key][2]` for the third item of a list, before
+  any request, also when `files=` sends it as a form field.
 - A field of a plain type writes the plain value of a subclass of `str`, `int`,
   or `float`, such as a member of an enum that mixes in one of them, in a JSON
   body, in a form field of a write with `files=`, in a query by the field's

@@ -3,7 +3,7 @@
 A float that is not finite, and an integer of more digits than Python writes as
 text, raise ``ValueError`` before any request, whether the extra is sent in a
 JSON body or as a field of a form that also uploads files. The message names
-the value as ``[key]``.
+the value as ``[key]``, and an item of a list as ``[key][2]``.
 """
 
 from __future__ import annotations
@@ -102,3 +102,27 @@ def test_get_or_create_refuses_an_extra_that_json_cannot_write(
         with pytest.raises(ValueError, match=r"\[key\]"):
             NO_FILES["get_or_create defaults"](extra)
         assert mocker.call_count == 0
+
+
+ITEMS = {
+    "a float that is not finite": [1.0, 2.0, math.nan],
+    "an integer of too many digits": [1, 2, 10**4300],
+}
+
+
+@pytest.mark.parametrize("creation", CREATIONS.values(), ids=CREATIONS)
+@pytest.mark.parametrize("extra", ITEMS.values(), ids=ITEMS)
+def test_a_form_names_the_place_of_a_refused_list_item_as_a_body_does(
+    extra: Any, creation: Callable[[Any, Any], Any]
+) -> None:
+    """The third item is ``[key][2]``, with or without files."""
+    messages = []
+    for files in FILES.values():
+        with requests_mock.Mocker() as mocker:
+            mocker.post(BASE + "items/", json={"id": 1})
+            with pytest.raises(ValueError, match=r"\[key\]\[2\]") as caught:
+                creation(extra, files)
+            assert mocker.call_count == 0
+        messages.append(str(caught.value))
+
+    assert messages[0] == messages[1]

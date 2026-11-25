@@ -3394,12 +3394,14 @@ def _checked_request_options(
     return dict(options)
 
 
-def _form_value(name: str, value: Any) -> Any:
+def _form_value(name: str, value: Any, place: str = "[key]") -> Any:
     """Return a JSON value as a multipart form field's value.
 
     Args:
         name: Name of the form field, for the error message.
         value: JSON value of the field.
+        place: Where ``value`` is, as a body names it: ``[key]`` for the field
+            and ``[key][2]`` for the third item of a list.
 
     Returns:
         A string, or a list of strings for a list of scalars, which requests
@@ -3411,17 +3413,20 @@ def _form_value(name: str, value: Any) -> Any:
             express.
         ValueError: If a scalar is a float that is not finite or an integer
             that Python cannot write as text, as for a JSON body. The message
-            names the value as ``[key]``, since its name can be a secret.
+            names the value by ``place``, since its name can be a secret.
     """
     if isinstance(value, (str, int, float)):
-        _check_json_leaf(value, _own_place, "[key]")
+        _check_json_leaf(value, _own_place, place)
         return _scalar_text(value)
     if (
         isinstance(value, list)
         and value
         and all(isinstance(item, (str, int, float)) for item in value)
     ):
-        return [_form_value(name, item) for item in value]
+        return [
+            _form_value(name, item, f"{place}[{index}]")
+            for index, item in enumerate(value)
+        ]
     raise TypeError(
         f"Field {name} cannot be sent in a multipart request with files, "
         f"because its value is {type(value).__name__}, which a form field "
