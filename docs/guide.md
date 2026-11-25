@@ -429,16 +429,18 @@ afterward does not change the object.
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
 
-Other keyword arguments to the constructor are assignments, made after the
-primary key is set. `User(id=1, name="Ada")` therefore loads user 1 and queues
-a change to its name, and in eager mode it also sends a `PATCH`. Use `create()`
-to create a new object. An object needs its key from construction, so `User()`
-and `User(name="Ada")` raise `TypeError`, as
-[Equality by key](#equality-by-key) says. The constructor checks every name and
-converts every value before its first request, as an assignment converts a
-value before it loads, so a keyword that is refused, such as a misspelled
-field, a read-only field, or a value that cannot convert, leaves no `GET` or
-`PATCH` behind it.
+Other keyword arguments to the constructor are applied as assignments are,
+after the primary key is set, but no constructor keyword, the key included,
+passes through the model's `__setattr__()`, which is no hook: a class that
+defines it sees an assignment and does not see a keyword.
+`User(id=1, name="Ada")` therefore loads user 1 and queues a change to its
+name, and in eager mode it also sends a `PATCH`. Use `create()` to create a new
+object. An object needs its key from construction, so `User()` and
+`User(name="Ada")` raise `TypeError`, as [Equality by key](#equality-by-key)
+says. The constructor checks every name and converts every value before its
+first request, as an assignment converts a value before it loads, so a keyword
+that is refused, such as a misspelled field, a read-only field, or a value that
+cannot convert, leaves no `GET` or `PATCH` behind it.
 
 An object refuses the assignment of a public name that is no field. A field,
 `pk`, and a name that begins with an underscore can be assigned. A property

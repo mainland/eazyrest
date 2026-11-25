@@ -494,6 +494,10 @@ describe them further.
   `FieldConversionError`, as `bytes` does. In `v1.0.0a5` a `bytearray` assigned
   to a field was written as a list of integers, and one from a collection hook
   raised `ResponseShapeError` on its first item, which is an integer.
+- Constructor keywords are applied as assignments are, but none passes through
+  a model's `__setattr__()`, which is no hook, the key included. `v1.0.0a5`
+  passed each keyword through it. A class that defines `__setattr__()` sees an
+  assignment and does not see a keyword.
 - A `UUID` key reads a string only in the hyphenated, compact, braced, or
   `urn:uuid:` form, in ASCII hex of either case, from the program, from JSON,
   in a query, and in a relation. Any other string raises `FieldConversionError`

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import cached_property
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import pytest
 import requests_mock
@@ -192,3 +192,40 @@ def test_the_names_that_may_be_assigned_are() -> None:
     region._note = "x"  # type: ignore[attr-defined]
     assert region.__dict__["_note"] == "x"
     assert region.slow == "NORTH"
+
+
+class _Audited(Base):
+    """A base whose assignments are recorded."""
+
+    seen: ClassVar[list[str]] = []
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if not name.startswith("_"):
+            self.seen.append(name)
+        super().__setattr__(name, value)
+
+
+@json_object
+class Audited(_Audited):
+    """A model whose class defines ``__setattr__()``."""
+
+    class_url = "/audited/"
+    id: int
+    name: str
+
+
+def test_a_constructor_keyword_does_not_pass_through_setattr() -> None:
+    """A model's ``__setattr__()`` sees an assignment and no keyword."""
+    obj = Audited(json={"id": 1, "name": "a"}, write_mode="lazy")
+    Audited.seen.clear()
+    obj.name = "b"
+    assert Audited.seen == ["name"]
+
+    Audited.seen.clear()
+    obj = Audited(json={"id": 1, "name": "a"}, name="b", write_mode="lazy")
+    assert Audited.seen == []
+    assert obj.name == "b"
+
+    Audited.seen.clear()
+    Audited(id=1, json={"id": 1, "name": "a"}, write_mode="lazy")
+    assert Audited.seen == []
