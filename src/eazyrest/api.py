@@ -1269,7 +1269,8 @@ class API:
                 representable numbers, or does not decode as UTF-8, or as
                 UTF-16 or UTF-32 when the response declares that charset. Any
                 other declared charset is ignored and the body is decoded as
-                UTF-8.
+                UTF-8. A ``Content-Type`` longer than 4 KiB makes the body one
+                that holds no JSON.
             LimitExceeded: If JSON nesting exceeds ``max_json_depth``.
         """
         return _response_json(resp, self.max_json_depth)

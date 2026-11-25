@@ -759,6 +759,12 @@ describe them further.
   wrote the replacement character back, and it guessed the charset of a body
   that declared none. A body in UTF-16 that declares no charset no longer
   reads.
+- The charset of a response is read from its `Content-Type` by a parser of the
+  library's own, which reads `charset=token` and `charset="quoted string"`,
+  skips every parameter that it cannot read, and takes time linear in the
+  header's length. A `Content-Type` longer than 4 KiB makes the body one that
+  holds no JSON, so a body that `v1.0.0a5` read with a 5 KiB header now raises
+  `ResponseShapeError`.
 - A redirect or a page link to port 0 of the request's host is refused as a
   redirect or a link to another origin, where `v1.0.0a5` took it for the
   scheme's default port, and the request then failed with a `ConnectionError`

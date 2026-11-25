@@ -5,9 +5,10 @@ from __future__ import annotations
 import contextvars
 import json
 import math
+import re
+import string
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
-from email.message import Message
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import requests
@@ -234,9 +235,10 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
         The decoded JSON value.
 
     Raises:
-        ResponseShapeError: If the body is not JSON, or is not text in the
-            UTF-8, or in the UTF-16 or UTF-32 charset that the response
-            declares. The message does not quote the body.
+        ResponseShapeError: If the body is not JSON, or is not text in UTF-8,
+            or in the UTF-16 or UTF-32 charset that the response declares, or
+            its ``Content-Type`` is longer than 4 KiB. The message does not
+            quote the body.
         LimitExceeded: If the JSON nests more deeply than ``max_depth``, or
             too deeply for Python's decoder.
     """
@@ -267,6 +269,15 @@ def _response_json(resp: Response, max_depth: int | None = None) -> object:
     return value
 
 
+# The longest Content-Type header that a response may send and still be read
+# for JSON, in characters. Real headers are far shorter.
+_MAX_CONTENT_TYPE = 4096
+
+_TOKEN_CHARS = frozenset(
+    string.ascii_letters + string.digits + "!#$%&'*+-.^_`|~"
+)
+_QUOTED_STRING = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
+
 # The charsets besides UTF-8 in which a JSON body is decoded, by RFC 8259,
 # section 8.1, compared in lower case.
 _JSON_CHARSETS = frozenset(
@@ -274,6 +285,61 @@ _JSON_CHARSETS = frozenset(
     for width in ("16", "32")
     for order in ("", "be", "le")
 )
+
+
+def _declared_charset(content_type: str) -> str | None:
+    """Return the charset that a ``Content-Type`` header declares.
+
+    The header is ``type/subtype`` followed by ``;``-separated parameters. Only
+    a parameter of the form ``token=token`` or ``token="quoted string"`` is
+    read. Anything else is skipped, including the extended ``charset*=`` form,
+    so no header raises. The scan moves forward only, so its time is linear in
+    the header's length.
+
+    Args:
+        content_type: Value of the header, or an empty string if absent.
+
+    Returns:
+        The value of the first ``charset`` parameter that can be read, as
+        written, or ``None`` if there is none.
+    """
+    size = len(content_type)
+    pos = content_type.find(";")
+    while pos != -1:
+        start = pos + 1
+        semicolon = content_type.find(";", start)
+        stop = size if semicolon == -1 else semicolon
+        equals = content_type.find("=", start, stop)
+        if equals == -1:
+            pos = semicolon
+            continue
+        name = content_type[start:equals].strip(" \t")
+        value_start = equals + 1
+        while value_start < size and content_type[value_start] in " \t":
+            value_start += 1
+        quoted = (
+            _QUOTED_STRING.match(content_type, value_start)
+            if content_type.startswith('"', value_start)
+            else None
+        )
+        if quoted is not None:
+            pos = content_type.find(";", quoted.end())
+            rest = content_type[quoted.end() : size if pos == -1 else pos]
+            value = (
+                re.sub(r"\\(.)", r"\1", quoted.group(1), flags=re.DOTALL)
+                if not rest.strip(" \t")
+                else ""
+            )
+        elif content_type.startswith('"', value_start):
+            return None
+        else:
+            pos = semicolon
+            value = content_type[value_start:stop].strip(" \t")
+            if not _TOKEN_CHARS.issuperset(value):
+                value = ""
+        if value and name.lower() == "charset":
+            return value
+    return None
 
 
 def _body_text(resp: Response) -> str:
@@ -295,12 +361,14 @@ def _body_text(resp: Response) -> str:
         that is UTF-8.
 
     Raises:
-        ValueError: If the body does not decode in UTF-8, or in the UTF-16 or
-            UTF-32 charset that the response declares.
+        ValueError: If the ``Content-Type`` is longer than 4 KiB, or the body
+            does not decode in UTF-8, or in the UTF-16 or UTF-32 charset that
+            the response declares.
     """
-    header = Message()
-    header["Content-Type"] = resp.headers.get("Content-Type", "")
-    charset = (header.get_content_charset() or "").lower()
+    content_type = resp.headers.get("Content-Type", "")
+    if len(content_type) > _MAX_CONTENT_TYPE:
+        raise ValueError("The response's Content-Type is too long")
+    charset = (_declared_charset(content_type) or "").lower()
     if charset not in _JSON_CHARSETS:
         charset = "utf-8-sig"
     try:

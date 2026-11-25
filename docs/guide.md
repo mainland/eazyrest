@@ -2433,10 +2433,11 @@ exception type that it replaced, so code written for that type keeps working:
   the response declares `UTF-16`, `UTF-16BE`, `UTF-16LE`, `UTF-32`, `UTF-32BE`,
   or `UTF-32LE`, in any case. A body that declares any other charset, or none,
   is decoded as UTF-8, so Latin-1 text served as `application/json`, with or
-  without `charset=ISO-8859-1`, does not decode and is not JSON. Its message
-  does not quote the body. Its `response` is the response that is refused, and
-  it may be `None`, as for an error that is raised from decoded JSON in a hook
-  such as `object_json()`, so test it before use.
+  without `charset=ISO-8859-1`, does not decode and is not JSON. A
+  `Content-Type` longer than 4 KiB makes the body one that holds no JSON. Its
+  message does not quote the body. Its `response` is the response that is
+  refused, and it may be `None`, as for an error that is raised from decoded
+  JSON in a hook such as `object_json()`, so test it before use.
 - `UsageError`, a `RuntimeError`, for a model without a registered API, and for
   other uses that eazyrest does not support, such as a model that declares no
   `class_url`, or a `write_options()` block that ends out of order.
