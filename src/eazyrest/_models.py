@@ -7665,12 +7665,18 @@ class JSONObject:
                 A ``RecursionError`` that a conversion's own code raises, or
                 that a read meets, propagates unchanged.
         """
+        # A read that happens while a value is written, as a generator's does,
+        # is no related object that is written to the parent.
+        parent_token = _WRITE_PARENT.set(None) if reading else None
         try:
             return cls._encode_value(value, conversion)
         except RecursionError as err:
             if reading or getattr(err, _CONVERSION_RECURSION, False):
                 raise
             raise _too_deep("") from None
+        finally:
+            if parent_token is not None:
+                _WRITE_PARENT.reset(parent_token)
 
     @classmethod
     def _to_written_json(

@@ -526,3 +526,44 @@ def test_a_refused_hook_result_leaves_every_object_as_it_was(
     clients = [obj._api_override for obj in returned]
     assert all(client is A for client in clients)
     assert [obj._graph_api for obj in returned] == [None, None]
+
+
+def test_a_generator_that_reads_another_apis_relation_is_taken(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A value is read while it is consumed, as a list's is before the write.
+
+    The generator reads a collection of relations of an object of another API,
+    and the write only holds the names that it yields.
+    """
+    register(monkeypatch)
+
+    def names() -> Iterator[Any]:
+        old = Thing(json=dict(THING, owners=[owner_json(5)]), api=A)
+        for owner in old.owners:
+            yield owner.name
+
+    kept = []
+    for value in (list(names()), names()):
+        new = Thing(json=dict(THING, owners=[]), api=B)
+        write(new, "names", value)
+        kept.append(new._pending_updates)
+    created = Thing.create(api=B, names=names())
+
+    assert kept == [{"names": ["o"]}, {"names": ["o"]}]
+    assert created.pk == 2
+    assert mock.request_history[-1].json() == {"names": ["o"]}
+
+
+def test_a_generator_that_yields_another_apis_object_is_refused(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A related object that a one-shot value holds is checked as a list's."""
+    register(monkeypatch)
+    new = Thing(json=dict(THING, owners=[]), api=B)
+
+    with pytest.raises(ValueError, match="another API"):
+        write(new, "owners", (Owner(id=n, api=A) for n in (1, 2)))
+
+    with pytest.raises(ValueError, match="another API"):
+        new.owners = [Owner(id=n, api=A) for n in (1, 2)]

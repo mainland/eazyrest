@@ -976,11 +976,12 @@ describe them further.
   `create()` or `get_or_create()`, raises `ValueError` if it uses another API
   than its parent, and a bulk hook that returns an object of another API, or of
   a class registered on another, raises `UsageError` before it changes any
-  object. A bulk hook's `api` is the query's client, so passing it on to
-  `filter()` sends no request to another API, and the related objects keep none
-  of the query's request options. A model with no registered API still takes
-  the `api=` of its parent. Read the key of a relation to a model of another
-  API and call that model's `get()`.
+  object. A generator that reads a relation of an object of another API while a
+  value is written is no longer refused. A bulk hook's `api` is the query's
+  client, so passing it on to `filter()` sends no request to another API, and
+  the related objects keep none of the query's request options. A model with no
+  registered API still takes the `api=` of its parent. Read the key of a
+  relation to a model of another API and call that model's `get()`.
 - `url` and `absolute_url` raise `UsageError`, as a request does, when a class
   of the model had `api` assigned, where `absolute_url` returned a URL of the
   assigned value.
