@@ -3417,6 +3417,29 @@ def _declared_fields(
     ]
 
 
+def _field_keys(
+    field: str, field_map: Mapping[str, str], write_map: Mapping[str, str]
+) -> tuple[str, str]:
+    """Return the JSON key that a field is read under and written under.
+
+    A field's JSON key is its entry in ``field_map``, or else its name, and its
+    write key is its entry in ``write_map``, or else its JSON key. This is the
+    one place that decides so, for the descriptors and for the check that no
+    two fields share a key.
+
+    Args:
+        field: Python attribute name of the field.
+        field_map: Mapping from Python attribute name to JSON key.
+        write_map: Mapping from Python attribute name to the JSON key that
+            writes use.
+
+    Returns:
+        The JSON key and the write key.
+    """
+    json_field = field_map.get(field, field)
+    return json_field, write_map.get(field, json_field)
+
+
 def _check_json_keys(
     cls: type[JSONObject],
     field_map: Mapping[str, str],
@@ -3451,7 +3474,7 @@ def _check_json_keys(
     fields_by_key: dict[str, str] = {}
     for field in [*inherited, *declared]:
         if field in declared:
-            json_field = field_map.get(field, field)
+            json_field = _field_keys(field, field_map, write_map)[0]
         else:
             json_field = getattr(cls, field).json_field
 
@@ -3465,7 +3488,7 @@ def _check_json_keys(
     write_fields_by_key: dict[str, str] = {}
     for field in [*inherited, *declared]:
         if field in declared:
-            write_field = write_map.get(field, field_map.get(field, field))
+            write_field = _field_keys(field, field_map, write_map)[1]
         else:
             write_field = getattr(cls, field).write_field
 
@@ -5192,15 +5215,15 @@ def json_object(
                     f"it to the JSON key {field!r} with field_map."
                 )
 
-            json_field = read_keys.get(field, field)
+            json_field, write_field = _field_keys(field, read_keys, write_keys)
 
             prop = JSONProperty(
                 cls,
                 json_field,
                 field,
+                write_field,
                 is_primary_key=field == pk_field,
                 write_only=field in hidden,
-                write_field=write_keys.get(field),
                 read_only=field in readonly,
             )
 
@@ -6001,9 +6024,9 @@ class JSONProperty:
         cls: type[JSONObject],
         json_field: str,
         field: str,
+        write_field: str,
         is_primary_key: bool = False,
         write_only: bool = False,
-        write_field: str | None = None,
         read_only: bool = False,
     ):
         """Initialize a property descriptor.
@@ -6012,11 +6035,10 @@ class JSONProperty:
             cls: Model class that owns this descriptor.
             json_field: JSON key backing this attribute.
             field: Python attribute name.
+            write_field: JSON key that writes send this field under.
             is_primary_key: Whether this property stores the primary key.
             write_only: Whether the API accepts this field in writes but never
                 returns it.
-            write_field: JSON key that writes send this field under, if not
-                ``json_field``.
             read_only: Whether the Python field value cannot be written.
         """
         self.cls = cls
@@ -6026,7 +6048,7 @@ class JSONProperty:
         self.is_primary_key = is_primary_key
         self.write_only = write_only
         self.read_only = read_only
-        self.write_field = json_field if write_field is None else write_field
+        self.write_field = write_field
 
         # If this property is a primary key, then we store a reference to it in
         # the class's _pk attribute and the JSON field corresponding to the
