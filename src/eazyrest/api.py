@@ -249,9 +249,12 @@ def _merge_request_options(
     """Return request options with ``override`` applied over ``base``.
 
     Headers are merged, matching names without regard to case, and hooks are
-    combined per event, with ``base``'s first. For any other option,
-    ``override``'s value wins. A header whose value is ``None`` is kept, so
-    requests still removes that header from the session's.
+    combined per event, with ``base``'s first. Both are merged whenever
+    ``override`` holds a mapping, an empty one included. A value of ``None``
+    means the option is absent, so ``override``'s ``None`` keeps ``base``'s
+    value, as requests does with the options of a session. For any other
+    option, ``override``'s value wins. A header whose value is ``None`` is
+    kept, so requests still removes that header from the session's.
 
     Args:
         base: Options that apply unless ``override`` sets them.
@@ -261,13 +264,16 @@ def _merge_request_options(
         The merged options, as a new dict.
     """
     merged = {**base, **override}
-    if base.get("headers") and override.get("headers"):
+    for name in ("headers", "hooks"):
+        if override.get(name) is None and base.get(name) is not None:
+            merged[name] = base[name]
+    if base.get("headers") is not None and override.get("headers") is not None:
         headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
             base["headers"]
         )
         headers.update(override["headers"])
         merged["headers"] = headers
-    if base.get("hooks") and override.get("hooks"):
+    if base.get("hooks") is not None and override.get("hooks") is not None:
         merged["hooks"] = {
             event: [
                 *_response_hooks(base["hooks"].get(event)),

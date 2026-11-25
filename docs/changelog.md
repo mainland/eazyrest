@@ -847,6 +847,12 @@ describe them further.
   raises `ValueError` naming the field before any request, where `v1.0.0a5`
   called `bulk_get_by_pks()` once for each copy with the same keys. Name each
   field once.
+- An empty `headers` or `hooks` mapping in request options is merged over the
+  ones under it, as a non-empty one is. A write with
+  `request_options={"headers": {}}` inside a `write_options()` block that sets
+  `If-Match` still sends it, and a hook that a block sets still runs. `None`
+  means that the option is absent, so the options under it apply, as they do in
+  requests. They were discarded.
 - `get_or_create()` refuses an argument that `create()` could not send before
   it sends the lookup. A model under a name that is no field, as in
   `get_or_create(x=User(id=1))`, raises `TypeError`, and a single item for a

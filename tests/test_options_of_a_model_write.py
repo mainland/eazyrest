@@ -110,18 +110,41 @@ def test_an_eager_assignment_sends_the_headers_of_the_block(
     assert mocked.last_request.headers["X-Block"] == "b"
 
 
-def test_nested_blocks_send_both_blocks_headers(requests_mock: Any) -> None:
+@pytest.mark.parametrize(("method", "write"), WRITES.values(), ids=WRITES)
+def test_nested_blocks_send_both_blocks_headers(
+    requests_mock: Any, method: str, write: Callable[..., None]
+) -> None:
     """Each open block adds its headers, for every kind of write."""
-    patch = requests_mock.patch(URL, json={"id": 1, "text": "b"})
+    mocked = requests_mock.register_uri(
+        method, URL, json={"id": 1, "text": "b"}
+    )
     note = _lazy()
+
+    with (
+        note.write_options(headers={"X-Outer": "1", "X-Both": "outer"}),
+        note.write_options(headers={"X-Inner": "2", "X-Both": "inner"}),
+    ):
+        write(note, {})
+
+    headers = mocked.last_request.headers
+    assert (headers["X-Outer"], headers["X-Inner"]) == ("1", "2")
+    assert headers["X-Both"] == "inner"
+
+
+def test_nested_blocks_send_both_blocks_headers_of_an_eager_assignment(
+    requests_mock: Any,
+) -> None:
+    """An assignment that writes at once sends the merged blocks' headers."""
+    mocked = requests_mock.patch(URL, json={"id": 1, "text": "b"})
+    note = Note(json={"id": 1, "text": "a"}, write_mode="eager")
 
     with (
         note.write_options(headers={"X-Outer": "1"}),
         note.write_options(headers={"X-Inner": "2"}),
     ):
-        note.save()
+        note.text = "b"
 
-    headers = patch.last_request.headers
+    headers = mocked.last_request.headers
     assert (headers["X-Outer"], headers["X-Inner"]) == ("1", "2")
 
 
