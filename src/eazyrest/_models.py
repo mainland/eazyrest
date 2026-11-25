@@ -1397,29 +1397,30 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
             finite, or is an integer that Python cannot write as text.
     """
     for value in values:
-        if value is not None and not isinstance(value, (str, int, float)):
-            raise TypeError(
-                f"{name} has a value of type {type(value).__name__}, which is "
-                "not a JSON scalar, so its JSON could not be read or written. "
-                "Use strings, integers, floats, bools, or None."
-            )
-        if isinstance(value, float) and not math.isfinite(value):
-            raise TypeError(
-                f"{name} has a float that is not finite, which JSON cannot "
-                "carry, so its JSON could not be read or written. Use finite "
-                "numbers."
-            )
-        if (
-            isinstance(value, int)
-            and not isinstance(value, bool)
-            and not _is_writable_int(value)
-        ):
-            raise TypeError(
-                f"{name} has an integer of more than "
-                f"{sys.get_int_max_str_digits()} digits, which Python cannot "
-                "write as JSON, so its JSON could not be written. Use a "
-                "smaller number."
-            )
+        try:
+            _check_json_leaf(value, "")
+        except (TypeError, ValueError) as err:
+            # The leaf check says which values JSON cannot carry. Only its
+            # words differ, since this one refuses a declaration.
+            if isinstance(value, float):
+                problem = (
+                    "a float that is not finite, which JSON cannot carry, so "
+                    "its JSON could not be read or written. Use finite "
+                    "numbers."
+                )
+            elif isinstance(value, int):
+                problem = (
+                    f"an integer of more than {sys.get_int_max_str_digits()} "
+                    "digits, which Python cannot write as JSON, so its JSON "
+                    "could not be written. Use a smaller number."
+                )
+            else:
+                problem = (
+                    f"a value of type {type(value).__name__}, which is not a "
+                    "JSON scalar, so its JSON could not be read or written. "
+                    "Use strings, integers, floats, bools, or None."
+                )
+            raise TypeError(f"{name} has {problem}") from err
 
 
 def _literal_of(ty: Any) -> Any | None:
