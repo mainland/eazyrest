@@ -1,8 +1,8 @@
 """One rule says which value is a collection of items, at every entry point.
 
-A collection of items is iterable and is not a string, bytes, or a mapping of
-any kind. A read, an assignment, a query, and a prefetch agree on which value
-that is.
+A collection of items is iterable and is not a string, a bytes-like value, or a
+mapping of any kind. A read, an assignment, a query, and a prefetch agree on
+which value that is.
 """
 
 from __future__ import annotations
@@ -89,7 +89,16 @@ def query(name: str) -> Callable[[Any], Any]:
 
 ORDERED: list[Any] = [["a", "b"], ("a", "b")]
 UNORDERED: list[Any] = [["a", "b"], ("a", "b"), {"a", "b"}, frozenset("a")]
-NOT_COLLECTIONS: list[Any] = ["ab", b"ab", {"a": 1}, UserDict(a=1), 5]
+NOT_COLLECTIONS: list[Any] = [
+    "ab",
+    b"ab",
+    bytearray(b"ab"),
+    {"a": 1},
+    UserDict(a=1),
+    5,
+]
+# A memoryview is no JSON value, so only an assignment can be given one.
+ASSIGNED_ONLY: list[Any] = [memoryview(b"ab")]
 MAPPINGS: list[Any] = [UserDict(a=1), MappingProxyType({"a": 1})]
 
 ACCEPTING = [
@@ -105,17 +114,29 @@ ACCEPTING = [
     ]
     for value in values
 ]
-REFUSING = [
-    (entry, value)
-    for entry in [
-        read("tags"),
-        assign("tags"),
-        read("flags"),
-        read("owners"),
-        assign("owners"),
+REFUSING = (
+    [
+        (entry, value)
+        for entry in [
+            read("tags"),
+            assign("tags"),
+            read("flags"),
+            read("owners"),
+            assign("owners"),
+        ]
+        for value in NOT_COLLECTIONS
     ]
-    for value in NOT_COLLECTIONS
-] + [(query(name), value) for name in ("tags", "flags") for value in MAPPINGS]
+    + [
+        (entry, value)
+        for entry in [assign("tags"), assign("owners")]
+        for value in ASSIGNED_ONLY
+    ]
+    + [
+        (query(name), value)
+        for name in ("tags", "flags")
+        for value in MAPPINGS
+    ]
+)
 
 
 def _id(item: Any) -> str:

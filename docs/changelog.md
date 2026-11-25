@@ -485,6 +485,11 @@ describe them further.
   `collection_page()` gives, with a name that is no string, raises
   `ResponseShapeError` when the item is read, where `v1.0.0a5` built the object
   and kept the name in its JSON.
+- A `bytearray` or `memoryview` from a collection hook raises `TypeError`
+  naming the hook, and one assigned to a collection field raises
+  `FieldConversionError`, as `bytes` does. In `v1.0.0a5` a `bytearray` assigned
+  to a field was written as a list of integers, and one from a collection hook
+  raised `ResponseShapeError` on its first item, which is an integer.
 - A `UUID` key reads a string only in the hyphenated, compact, braced, or
   `urn:uuid:` form, in ASCII hex of either case, from the program, from JSON,
   in a query, and in a relation. Any other string raises `FieldConversionError`

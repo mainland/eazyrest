@@ -876,16 +876,18 @@ def _is_sent_as_given(value: Any) -> bool:
 def _is_collection_value(value: Any) -> bool:
     """Return whether a value is a collection of items.
 
-    A string, bytes, or a mapping is iterable but is not a collection of items.
+    A string, a bytes-like value, or a mapping is iterable but is not a
+    collection of items.
 
     Args:
         value: Value to test.
 
     Returns:
-        Whether ``value`` is iterable and is not a string, bytes, or a mapping.
+        Whether ``value`` is iterable and is not a string, a ``bytes``,
+        ``bytearray``, or ``memoryview``, or a mapping.
     """
     return isinstance(value, Iterable) and not isinstance(
-        value, (str, bytes, Mapping)
+        value, (str, bytes, bytearray, memoryview, Mapping)
     )
 
 
@@ -3542,7 +3544,7 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
     given: object = prefetch
     # Bytes-like values are sequences of integers, whatever their length.
     if (
-        isinstance(given, bytes | bytearray | memoryview)
+        not _is_collection_value(given)
         or not isinstance(given, Sequence)
         or not all(isinstance(name, str) for name in given)
     ):

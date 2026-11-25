@@ -225,6 +225,9 @@ NOT_COLLECTIONS: dict[str, Callable[[], Any]] = {
     "a mapping": lambda: {"results": [{"id": 1}]},
     "a string": lambda: "abc",
     "bytes": lambda: b"ab",
+    "a bytearray": lambda: bytearray(b"ab"),
+    "an empty bytearray": lambda: bytearray(),
+    "a memoryview": lambda: memoryview(b"ab"),
 }
 """Iterable results that are no collection of items."""
 

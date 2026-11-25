@@ -896,14 +896,15 @@ relation, the field reads new related objects, and an object that you still
 hold keeps its own changes, which its `save()` sends.
 
 Collection payloads must be JSON arrays or another iterable collection shape.
-Strings, bytes, and dictionaries are rejected for collection fields so
-malformed payloads fail before they can be interpreted item by item. The same
-holds for values assigned to collection fields or passed to `create()`, which
-raise `TypeError` unless they are collections. A single model object is refused
-for a collection of related objects even if it defines `__iter__`, so pass
-`[user]` and not `user`. In `filter()` and `get()`, a single value for a
-collection field, such as `Team.filter(members=user)`, is sent as one item and
-matches the objects whose collection holds it.
+Strings, bytes-like values (`bytes`, `bytearray`, and `memoryview`), and
+dictionaries are rejected for collection fields so malformed payloads fail
+before they can be interpreted item by item. The same holds for values assigned
+to collection fields or passed to `create()`, which raise `TypeError` unless
+they are collections. A single model object is refused for a collection of
+related objects even if it defines `__iter__`, so pass `[user]` and not `user`.
+In `filter()` and `get()`, a single value for a collection field, such as
+`Team.filter(members=user)`, is sent as one item and matches the objects whose
+collection holds it.
 
 A `TypedDict` field reads a JSON object whose declared keys convert by their
 annotations, as fields do, and writes each declared key in its JSON form. A key
@@ -1762,7 +1763,9 @@ class GitHubObject(JSONObject):
 Each item that `collection_items()`, `collection_items_from_response()`, or
 `collection_page()` gives must be a JSON object whose names are all strings. An
 item that is not raises `ResponseShapeError` when the item is read, before any
-object is built from it.
+object is built from it. A hook that returns a string, bytes, a `bytearray`, a
+`memoryview`, or a mapping, which are iterable and hold no items, raises
+`TypeError` naming the hook.
 
 A page that a hook builds with `Page(...)` and no source cannot read other
 pages, so `filter()` stops after its items. `max_pages` and `max_items` count
