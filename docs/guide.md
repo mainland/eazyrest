@@ -783,21 +783,23 @@ in another order. That holds for a field annotated as a set or frozenset, an
 optional one, or a `NewType` of either. A set nested in a list, tuple, or
 mapping field is compared in the server's order. A set has no order to give a
 sequence, so a `set`, a `frozenset`, or a view of a dict's keys assigned to a
-field annotated as a list, a tuple, or a deque, or to an inner list of one,
-raises `FieldConversionError` before any request. The same holds for a set
-given to `create()` or `get_or_create()`, as a lookup or in `defaults=`, and
-for one put into a nested sequence in place and then saved. Give `sorted()` or
-`list()` of the set, or annotate the field as a set. A query still sends a set
-for such a field sorted. A set whose items have no hash, as
-`set[dict[str, int]]`, `frozenset[list[int]]`, or a set of a dataclass that is
-not frozen, raises `TypeError` when the class is decorated, naming the field
-and the item type, since a set could hold none of its items. Any other
-parameterized type, such as `Counter[str]`, raises `TypeError` when the class
-is decorated, because its items would otherwise pass through unconverted.
-Annotate a tuple of any length as `tuple[T, ...]`. As Python's types say,
-`tuple[T]` is a tuple of exactly one item, and a bare `tuple` is a tuple of any
-length whose items read as they are. A bare alias from `typing`, such as
-`typing.List` or `typing.Dict`, reads as its class, `list` or `dict`:
+field annotated as a list, a tuple, a deque, a `Sequence`, a `MutableSequence`,
+a `Collection`, or an `Iterable`, or to an inner list of one, raises
+`FieldConversionError` before any request, though a type checker accepts a set
+for a `Collection` or an `Iterable`. The same holds for a set given to
+`create()` or `get_or_create()`, as a lookup or in `defaults=`, and for one put
+into a nested sequence in place and then saved. Give `sorted()` or `list()` of
+the set, or annotate the field as a set. A query still sends a set for such a
+field sorted. A set whose items have no hash, as `set[dict[str, int]]`,
+`frozenset[list[int]]`, or a set of a dataclass that is not frozen, raises
+`TypeError` when the class is decorated, naming the field and the item type,
+since a set could hold none of its items. Any other parameterized type, such as
+`Counter[str]`, raises `TypeError` when the class is decorated, because its
+items would otherwise pass through unconverted. Annotate a tuple of any length
+as `tuple[T, ...]`. As Python's types say, `tuple[T]` is a tuple of exactly one
+item, and a bare `tuple` is a tuple of any length whose items read as they are.
+A bare alias from `typing`, such as `typing.List` or `typing.Dict`, reads as
+its class, `list` or `dict`:
 
 ```python
 import datetime
