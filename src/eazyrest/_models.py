@@ -194,6 +194,37 @@ the walk of a value does not report it as one.
 """
 
 
+def _marked_call(
+    func: Callable[..., Any], /, *args: Any, **kwargs: Any
+) -> Any:
+    """Call a conversion's code, marking a ``RecursionError`` that it raises.
+
+    Every call of code that a conversion or a declared type supplies goes
+    through here: an entry's ``decode`` or ``encode``, and the constructor of a
+    ``NamedTuple`` or dataclass, whose ``__post_init__()`` may recurse. The
+    arguments are given already read, so that the read of a value's own parts
+    is never inside the call.
+
+    Args:
+        func: The code to call.
+        *args: Its positional arguments.
+        **kwargs: Its keyword arguments.
+
+    Returns:
+        What ``func`` returns.
+
+    Raises:
+        RecursionError: If ``func`` raises it, marked so that the walk of a
+            value does not report it as a value that holds itself or nests too
+            deeply.
+    """
+    try:
+        return func(*args, **kwargs)
+    except RecursionError as err:
+        setattr(err, _CONVERSION_RECURSION, True)
+        raise
+
+
 def _encode_by(found: _Found, value: Any) -> Any:
     """Encode a value by a conversion entry.
 
@@ -205,14 +236,26 @@ def _encode_by(found: _Found, value: Any) -> Any:
         What the entry's ``encode`` gives.
 
     Raises:
-        RecursionError: If the entry's code raises it, marked so that the walk
-            of a value does not report it as a value that holds itself.
+        RecursionError: As for ``_marked_call()``.
     """
-    try:
-        return found.entry.encode(value, found.declared)
-    except RecursionError as err:
-        setattr(err, _CONVERSION_RECURSION, True)
-        raise
+    return _marked_call(found.entry.encode, value, found.declared)
+
+
+def _decode_by(found: _Found, value: Any) -> Any:
+    """Decode a JSON value by a conversion entry.
+
+    Args:
+        found: The entry that applies, with the type that it was found for.
+        value: The JSON value to decode, which the decode may keep, so it is
+            given a copy.
+
+    Returns:
+        What the entry's ``decode`` gives.
+
+    Raises:
+        RecursionError: As for ``_marked_call()``.
+    """
+    return _marked_call(found.entry.decode, _copy_json(value), found.declared)
 
 
 def _passes_through(err: Exception) -> bool:
@@ -5239,7 +5282,7 @@ def _literal_member(
         if found is None:
             continue
         try:
-            decoded = found.entry.decode(_copy_json(value), found.declared)
+            decoded = _decode_by(found, value)
         except (TypeError, ValueError):
             continue
         for member in members:
@@ -7581,9 +7624,7 @@ class JSONObject:
 
         found = _class_entry(conversion, _table_of(type(self)))
         if found is not None:
-            # A decode may keep the JSON it is given, which may belong to
-            # another object, so give it a copy.
-            return found.entry.decode(_copy_json(value), found.declared)
+            return _decode_by(found, value)
 
         match conversion:
             case OptionalType(inner_type):
@@ -7595,9 +7636,7 @@ class JSONObject:
             case BaseType(base_type):
                 found = _conversion_of(base_type, _table_of(type(self)))
                 if found is not None:
-                    return found.entry.decode(
-                        _copy_json(value), found.declared
-                    )
+                    return _decode_by(found, value)
                 if (literal := _literal_of(base_type)) is not None:
                     return _literal_member(
                         literal, value, _table_of(type(self))
@@ -7647,14 +7686,13 @@ class JSONObject:
             case NamedTupleType(named_tuple):
                 positions = conversion.fields
                 items = _fixed_items(value, len(positions), "read")
-                return named_tuple(
-                    *(
-                        self._read_at(f"[{name!r}]", item, item_type, field)
-                        for item, (name, item_type) in zip(
-                            items, positions, strict=True
-                        )
+                read_items = [
+                    self._read_at(f"[{name!r}]", item, item_type, field)
+                    for item, (name, item_type) in zip(
+                        items, positions, strict=True
                     )
-                )
+                ]
+                return _marked_call(named_tuple, *read_items)
 
             case DataclassType(dataclass_type):
                 fields = conversion.fields
@@ -7669,15 +7707,14 @@ class JSONObject:
                         f"{dataclass_type.__name__} has keys that it does not "
                         "declare, which a dataclass cannot keep"
                     )
-                return dataclass_type(
-                    **{
-                        name: self._read_at(
-                            f"[{name!r}]", value[name], item_type, field
-                        )
-                        for name, item_type, _ in fields
-                        if name in value
-                    }
-                )
+                read_fields = {
+                    name: self._read_at(
+                        f"[{name!r}]", value[name], item_type, field
+                    )
+                    for name, item_type, _ in fields
+                    if name in value
+                }
+                return _marked_call(dataclass_type, **read_fields)
 
             case UnionType():
                 return _copy_json(value)
