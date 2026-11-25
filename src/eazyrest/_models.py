@@ -2024,15 +2024,15 @@ def _holds_model(analyzed: AnalyzedType) -> bool:
         analyzed: Analyzed type.
 
     Returns:
-        Whether ``analyzed`` is a related model, or an optional or a
-        collection of one.
+        Whether ``analyzed`` is a related model, or an optional or a collection
+        of one, at any depth of collections.
     """
-    match analyzed:
-        case RelatedType():
-            return True
-        case OptionalType(inner) | CollectionType(_, inner):
-            return _holds_model(inner)
-    return False
+    if _relation_of(analyzed) is not None:
+        return True
+    inside = _inside_wrappers(analyzed)
+    return isinstance(inside, CollectionType) and _holds_model(
+        inside.item_type
+    )
 
 
 def _check_related_class(value: JSONObject, model_type: type[Any]) -> None:
@@ -2245,6 +2245,60 @@ def _unwrap_optional_type(analyzed_type: AnalyzedType) -> AnalyzedType:
     return analyzed_type
 
 
+def _inside_wrappers(analyzed: AnalyzedType) -> AnalyzedType:
+    """Return a type without its optional and ``NewType`` wrappers.
+
+    Args:
+        analyzed: Analyzed type metadata.
+
+    Returns:
+        The type inside any ``OptionalType`` and ``NewTypeType`` wrappers.
+    """
+    analyzed = _unwrap_optional_type(analyzed)
+    while isinstance(analyzed, NewTypeType):
+        analyzed = _unwrap_optional_type(analyzed.inner)
+    return analyzed
+
+
+@dataclass(frozen=True)
+class _Relation:
+    """The related model that a field names, and how the field holds it.
+
+    Attributes:
+        related: The relation to the model.
+        collection: The collection that holds the relation, or ``None`` if the
+            field names one related object.
+    """
+
+    related: RelatedType
+    collection: CollectionType | None
+
+
+def _relation_of(analyzed: AnalyzedType) -> _Relation | None:
+    """Return the related model that a field's type names, if it names one.
+
+    This is the one place that decides which related model a type names. A type
+    names one, inside any optional and ``NewType`` wrappers, if it is the model
+    or a collection of it.
+
+    Args:
+        analyzed: Analyzed type metadata of a field.
+
+    Returns:
+        The relation, with the collection that holds it if there is one, or
+        ``None`` if the type names no related model. A collection of
+        collections of relations names none, which declaring a model refuses.
+    """
+    inside = _inside_wrappers(analyzed)
+    if isinstance(inside, RelatedType):
+        return _Relation(inside, None)
+    if isinstance(inside, CollectionType):
+        item = _inside_wrappers(inside.item_type)
+        if isinstance(item, RelatedType):
+            return _Relation(item, inside)
+    return None
+
+
 def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
     """Return the relation that a primary key's type names, if it does.
 
@@ -2255,14 +2309,10 @@ def _related_key_type(analyzed_type: AnalyzedType) -> RelatedType | None:
         The relation inside any optional or ``NewType`` wrappers, or ``None``
         if the type is not a relation.
     """
-    while isinstance(analyzed_type, OptionalType | NewTypeType):
-        analyzed_type = (
-            analyzed_type.inner_type
-            if isinstance(analyzed_type, OptionalType)
-            else analyzed_type.inner
-        )
-
-    return analyzed_type if isinstance(analyzed_type, RelatedType) else None
+    relation = _relation_of(analyzed_type)
+    if relation is None or relation.collection is not None:
+        return None
+    return relation.related
 
 
 def _resolve_key(cls: type[JSONObject]) -> None:
@@ -3969,15 +4019,14 @@ def _refuse_bare_items(value: Any, conversion: AnalyzedType) -> None:
             not a related object. A sequence's error names the item's position.
             A ``None`` item is refused when the value is encoded.
     """
-    # A NewType of a collection of models analyzes as the collection, so no
-    # NewType wraps the structure here.
-    analyzed = _unwrap_optional_type(conversion)
-    if not (
-        isinstance(analyzed, CollectionType)
-        and isinstance(_unwrap_optional_type(analyzed.item_type), RelatedType)
-        and isinstance(value, Collection)
+    relation = _relation_of(conversion)
+    if (
+        relation is None
+        or relation.collection is None
+        or not isinstance(value, Collection)
     ):
         return
+    analyzed = relation.collection
 
     def check(item: Any) -> Any:
         if item is not None and not isinstance(item, JSONObject):
@@ -4224,36 +4273,6 @@ def _declaration_error(message: str) -> TypeError:
     return error
 
 
-def _inside_wrappers(analyzed: AnalyzedType) -> AnalyzedType:
-    """Return a type without its optional and ``NewType`` wrappers.
-
-    Args:
-        analyzed: Analyzed type metadata.
-
-    Returns:
-        The type inside any ``OptionalType`` and ``NewTypeType`` wrappers.
-    """
-    analyzed = _unwrap_optional_type(analyzed)
-    while isinstance(analyzed, NewTypeType):
-        analyzed = _unwrap_optional_type(analyzed.inner)
-    return analyzed
-
-
-def _holds_relations(analyzed: CollectionType) -> bool:
-    """Return whether a collection holds relations at any depth.
-
-    Args:
-        analyzed: A collection's analyzed type.
-
-    Returns:
-        Whether its items, or the items of its items, are relations.
-    """
-    item = _inside_wrappers(analyzed.item_type)
-    if isinstance(item, CollectionType):
-        return _holds_relations(item)
-    return isinstance(item, RelatedType)
-
-
 def _check_relation_collection(subject: str, analyzed: AnalyzedType) -> None:
     """Refuse a collection of relations that cannot be compared by its keys.
 
@@ -4279,7 +4298,7 @@ def _check_relation_collection(subject: str, analyzed: AnalyzedType) -> None:
         return
     item = _inside_wrappers(analyzed.item_type)
     if isinstance(item, CollectionType):
-        if _holds_relations(item):
+        if _holds_model(item):
             raise _declaration_error(
                 f"{subject} is a collection of collections of "
                 "relations. A collection of relations holds relations and "
@@ -6108,29 +6127,22 @@ class JSONProperty:
         Returns:
             The value to compare.
         """
-        conversion = self.analyzed_type
-        while True:
-            if isinstance(conversion, OptionalType):
-                conversion = conversion.inner_type
-            elif isinstance(conversion, NewTypeType):
-                # A NewType of a set is analyzed as one only if the set is
-                # parameterized, and no conversion can be registered for such a
-                # NewType, so the field's own structure is always its set.
-                conversion = conversion.inner
-            else:
-                break
-        if by_key and isinstance(conversion, RelatedType):
+        # A NewType of a set is analyzed as one only if the set is
+        # parameterized, and no conversion can be registered for such a
+        # NewType, so the field's own structure is always its set.
+        conversion = _inside_wrappers(self.analyzed_type)
+        relation = _relation_of(self.analyzed_type)
+        if by_key and relation is not None and relation.collection is None:
             stored = _stored_related_key(
-                stored, conversion.model_type, embedded=embedded
+                stored, relation.related.model_type, embedded=embedded
             )
         elif isinstance(conversion, CollectionType) and isinstance(
             stored, list
         ):
-            item = _unwrap_optional_type(conversion.item_type)
-            if by_key and isinstance(item, RelatedType):
+            if by_key and relation is not None:
                 stored = [
                     _stored_related_key(
-                        value, item.model_type, embedded=embedded
+                        value, relation.related.model_type, embedded=embedded
                     )
                     for value in stored
                 ]
@@ -6531,19 +6543,15 @@ class JSONProperty:
             that holds the same objects. ``_MISSING`` for any other value,
             which the field reads from its JSON instead.
         """
-        conversion = _unwrap_optional_type(self.analyzed_type)
-        if isinstance(conversion, RelatedType):
+        relation = _relation_of(self.analyzed_type)
+        if relation is None:
+            return _MISSING
+        if relation.collection is None:
             return value if isinstance(value, JSONObject) else _MISSING
 
-        if not isinstance(conversion, CollectionType):
-            return _MISSING
-
-        collection_type = conversion.collection_type
-        item_type = conversion.item_type
         if (
-            not isinstance(_unwrap_optional_type(item_type), RelatedType)
             # A one-shot iterable was used up by encoding it.
-            or not isinstance(value, Collection)
+            not isinstance(value, Collection)
             or isinstance(value, (str, bytes, Mapping))
             or not all(
                 item is None or isinstance(item, JSONObject) for item in value
@@ -6552,7 +6560,7 @@ class JSONProperty:
             return _MISSING
 
         # Abstract collection types read as concrete ones, as in _from_json().
-        return _READ_AS[collection_type](value)
+        return _READ_AS[relation.collection.collection_type](value)
 
 
 class JSONObject:
@@ -7393,8 +7401,7 @@ class JSONObject:
                 if not isinstance(value, Iterable) or isinstance(
                     value, (str, bytes, dict)
                 ):
-                    unwrapped_item_type = _unwrap_optional_type(item_type)
-                    if isinstance(unwrapped_item_type, RelatedType):
+                    if isinstance(_inside_wrappers(item_type), RelatedType):
                         kind = "Related collection"
                     else:
                         kind = "Collection"
@@ -7404,7 +7411,7 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                related = _unwrap_optional_type(item_type)
+                related = _inside_wrappers(item_type)
 
                 def read_item(item: Any) -> Any:
                     if isinstance(related, RelatedType):
@@ -7569,9 +7576,7 @@ class JSONObject:
                         f"got {type(value).__name__}"
                     )
 
-                relates = isinstance(
-                    _unwrap_optional_type(item_type), RelatedType
-                )
+                relates = isinstance(_inside_wrappers(item_type), RelatedType)
                 is_set = _READ_AS[collection_type] in (set, frozenset)
                 if (
                     not is_set
@@ -8994,15 +8999,10 @@ class JSONObject:
             The field's ``CollectionType``, inside any optional or ``NewType``,
             or ``None`` for a field that does not convert as a collection.
         """
-        analyzed = descriptor.analyzed_type
-        while True:
-            analyzed = _unwrap_optional_type(analyzed)
-            # A NewType is analyzed as one only around a structure, and no
-            # conversion can be registered for such a NewType, so the field's
-            # own structure is always its collection.
-            if not isinstance(analyzed, NewTypeType):
-                break
-            analyzed = analyzed.inner
+        # A NewType is analyzed as one only around a structure, and no
+        # conversion can be registered for such a NewType, so the field's own
+        # structure is always its collection.
+        analyzed = _inside_wrappers(descriptor.analyzed_type)
         return analyzed if isinstance(analyzed, CollectionType) else None
 
     @classmethod
@@ -9081,9 +9081,10 @@ class JSONObject:
             # A model object is one value for any parameter, and never its
             # members, whatever it iterates as.
             return True
-        conversion = _unwrap_optional_type(conversion)
-        if isinstance(conversion, RelatedType):
+        relation = _relation_of(conversion)
+        if relation is not None and relation.collection is None:
             return False
+        conversion = _unwrap_optional_type(conversion)
         if structured:
             return True
         found = _class_entry(conversion, _table_of(cls))
@@ -9428,16 +9429,12 @@ class JSONObject:
         """
         assert parameter.named is not None
         try:
-            analyzed = _unwrap_optional_type(
+            relation = _relation_of(
                 getattr(cls, parameter.named.field).analyzed_type
             )
         except (FieldConversionError, NameError):
             return None
-        if isinstance(analyzed, CollectionType):
-            analyzed = _unwrap_optional_type(analyzed.item_type)
-        return (
-            analyzed.model_type if isinstance(analyzed, RelatedType) else None
-        )
+        return None if relation is None else relation.related.model_type
 
     @classmethod
     def _compared_parameter(cls, named: _Name, wire: str) -> _Parameter:
@@ -9500,17 +9497,15 @@ class JSONObject:
         else:
             return False
         try:
-            analyzed = _unwrap_optional_type(getattr(cls, field).analyzed_type)
+            relation = _relation_of(getattr(cls, field).analyzed_type)
         except (FieldConversionError, NameError):
             # A lookup that compares no value of the field needs no type of it,
             # so a field that cannot be resolved yet does not stop it.
             return False
-        if isinstance(analyzed, CollectionType):
-            analyzed = _unwrap_optional_type(analyzed.item_type)
-        if not isinstance(analyzed, RelatedType):
+        if relation is None:
             return False
         if not one:
-            prop = _pk_property_of(analyzed.model_type)
+            prop = _pk_property_of(relation.related.model_type)
             one = prop is not None and segments[0] in (
                 prop.field,
                 prop.json_field,
@@ -10494,17 +10489,18 @@ class JSONObject:
                 f"{cls.__name__}.{field} is not a JSON-backed field"
             )
 
-        analyzed_type = _unwrap_optional_type(descriptor.analyzed_type)
-        collection_type = None
-        if isinstance(analyzed_type, CollectionType):
-            collection_type = analyzed_type.collection_type
-            analyzed_type = _unwrap_optional_type(analyzed_type.item_type)
-
-        if not isinstance(analyzed_type, RelatedType):
+        relation = _relation_of(descriptor.analyzed_type)
+        if relation is None:
             # As above, the field name is the invalid value.
-            raise ValueError(  # noqa: TRY004
+            raise ValueError(
                 f"{cls.__name__}.{field} is not a related-object field"
             )
+        analyzed_type = relation.related
+        collection_type = (
+            None
+            if relation.collection is None
+            else relation.collection.collection_type
+        )
         model_type = analyzed_type.model_type
         if not model_type._overrides_hook("bulk_get_by_pks"):
             raise PrefetchNotSupported(
