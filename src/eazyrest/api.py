@@ -478,6 +478,21 @@ class _Budget:
             None if total_timeout is None else time.monotonic() + total_timeout
         )
 
+    def remaining(self) -> float | None:
+        """Return the time that remains of the request.
+
+        This is the one place that computes it, as the deadline less the clock.
+        A caller applies its own floor, since a socket timeout of 0 does not
+        wait at all while a wait of 0 is no wait.
+
+        Returns:
+            The seconds until the deadline, which is not above 0 once it has
+            passed, or ``None`` if the request has no deadline.
+        """
+        if self.deadline is None:
+            return None
+        return self.deadline - time.monotonic()
+
     def timeout(self, timeout: Any) -> Any:
         """Return a request timeout that ends no later than the deadline.
 
@@ -491,9 +506,10 @@ class _Budget:
             part of a ``urllib3.Timeout`` that is unset, when the socket's
             default timeout has no limit.
         """
-        if self.deadline is None:
+        remaining = self.remaining()
+        if remaining is None:
             return timeout
-        remaining = max(self.deadline - time.monotonic(), 0.001)
+        remaining = max(remaining, 0.001)
         if timeout is None:
             return remaining
         if isinstance(timeout, Timeout):
@@ -545,7 +561,8 @@ class _Budget:
         Raises:
             LimitExceeded: If the deadline has passed.
         """
-        if self.deadline is not None and time.monotonic() >= self.deadline:
+        remaining = self.remaining()
+        if remaining is not None and remaining <= 0:
             where = self.request or "The request"
             if resp is not None:
                 resp.close()
@@ -784,7 +801,7 @@ class _BudgetRetry(Retry):
         )
         if not delay:
             delay = self.get_backoff_time()
-        remaining = max(budget.deadline - time.monotonic(), 0.0)
+        remaining = max(budget.remaining() or 0.0, 0.0)
         if delay > 0:
             time.sleep(min(delay, remaining))
         budget.check_time()
