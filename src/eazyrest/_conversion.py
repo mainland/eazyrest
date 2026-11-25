@@ -527,6 +527,48 @@ def _encode_time(value: datetime.time) -> str:
     return value.isoformat()
 
 
+def _member_reading(value: Any, member_values: Iterable[Any]) -> Any:
+    """Return the form of a JSON value that is compared with member values.
+
+    Args:
+        value: JSON value read.
+        member_values: The JSON values of the members that ``value`` may name.
+
+    Returns:
+        ``value``, or the integer it equals if it is a float with an integral
+        value and every member's value is an integer, so that the reading does
+        not depend on which combination of a ``Flag`` the process has made
+        before.
+    """
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+        and all(
+            isinstance(member_value, int)
+            and not isinstance(member_value, bool)
+            for member_value in member_values
+        )
+    ):
+        return int(value)
+    return value
+
+
+def _names_member_value(member_value: Any, value: Any) -> bool:
+    """Return whether a JSON value is a member's value.
+
+    Args:
+        member_value: The JSON value of a member.
+        value: JSON value read.
+
+    Returns:
+        Whether the two are equal, where a boolean equals no number, although
+        Python finds them equal.
+    """
+    return member_value == value and isinstance(member_value, bool) == (
+        isinstance(value, bool)
+    )
+
+
 def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
     """Decode a JSON value as a member of an enum.
 
@@ -535,10 +577,8 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
         value: Value of a member of ``cls``.
 
     Returns:
-        The member of ``cls`` whose value is ``value``. A float with an
-        integral value is read as that integer if every member's value is an
-        integer, so that the reading does not depend on which combination of a
-        ``Flag`` the process has made before.
+        The member of ``cls`` whose value is ``value``, as
+        ``_member_reading()`` and ``_names_member_value()`` read it.
 
     Raises:
         ValueError: If ``cls`` has no such member. The message does not quote
@@ -546,16 +586,7 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
             number, nor a number one whose value is a boolean, although
             Python finds them equal.
     """
-    if (
-        isinstance(value, float)
-        and value.is_integer()
-        and all(
-            isinstance(member.value, int)
-            and not isinstance(member.value, bool)
-            for member in cls
-        )
-    ):
-        value = int(value)
+    value = _member_reading(value, (member.value for member in cls))
     try:
         member = cls(value)
     except ValueError as err:
@@ -564,9 +595,7 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
             raise ValueError(f"Value is not a valid {cls.__name__}") from err
 
         raise
-    if member.value == value and isinstance(member.value, bool) != isinstance(
-        value, bool
-    ):
+    if member.value == value and not _names_member_value(member.value, value):
         raise ValueError(f"Value is not a valid {cls.__name__}")
     return member
 

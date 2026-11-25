@@ -946,6 +946,11 @@ describe them further.
   it came from `json=` or `update_from_json()`, and refused it when it was
   assigned or sent in a query. A response holds only `dict` objects, so a read
   of a response is unchanged.
+- A field of a `Literal` of enum members reads a JSON value as the member that
+  an enum field would read it as. `1.0` is the member whose value is `1`, and
+  `1` is the member whose value is `1.0`, where `v1.0.0a5` kept the number as
+  it was. A boolean is still no number, so `true` is not the member whose value
+  is `1`.
 
 ### Migrating from 0.9.0
 

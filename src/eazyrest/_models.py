@@ -73,6 +73,7 @@ from ._conversion import (
     _Found,
     _is_instance,
     _is_typed_dict,
+    _names_member_value,
     _schema_of_entry,
     _supertype,
     _table_of,
@@ -4943,15 +4944,14 @@ def _literal_member(
         table: Conversion table of the model whose field it is.
 
     Returns:
-        The enum member whose JSON value is ``value``, or else a copy of
-        ``value``, which a ``Literal`` does not check.
+        The enum member whose JSON value ``value`` is, as an enum field reads
+        it, or else a copy of ``value``, which a ``Literal`` does not check.
     """
     for member in typing.get_args(ty):
-        if isinstance(member, enum.Enum):
-            encoded = _literal_json(member, table)
-            # A JSON true is not the member whose value is 1.
-            if type(encoded) is type(value) and encoded == value:
-                return member
+        if isinstance(member, enum.Enum) and _names_member_value(
+            _literal_json(member, table), value
+        ):
+            return member
     return _copy_json(value)
 
 
