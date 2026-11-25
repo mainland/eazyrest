@@ -429,6 +429,26 @@ def _object_api(obj: JSONObject) -> API | None:
     return _registered_api_of(type(obj))
 
 
+def _agrees_with_graph(graph: API | None, api: API | None) -> bool:
+    """Return whether an API agrees with the API of a graph.
+
+    This is the one rule of which APIs may share a graph. Every object that a
+    query or an object reaches uses one API, so a class or an object that is
+    tied to another has none to load through. One that is tied to none agrees
+    with any.
+
+    Args:
+        graph: The API that the graph is tied to, or ``None`` if it is tied to
+            none.
+        api: The API that a class is registered on or an object uses, or
+            ``None`` if it has none.
+
+    Returns:
+        Whether either is ``None`` or they are the same ``API`` object.
+    """
+    return graph is None or api is None or graph is api
+
+
 def _check_related_apis(
     parent: type[Any], related: type[Any], *, required: bool = False
 ) -> None:
@@ -448,13 +468,8 @@ def _check_related_apis(
         UsageError: If both models are registered and on different ``API``
             objects, or ``required`` and ``related`` is not registered.
     """
-    parent_api = _registered_api_of(parent)
     related_api = _registered_api_of(related)
-    if (
-        parent_api is not None
-        and related_api is not None
-        and parent_api is not related_api
-    ):
+    if not _agrees_with_graph(_registered_api_of(parent), related_api):
         raise UsageError(
             f"{parent.__name__} and {related.__name__} are registered on "
             "different APIs, so a relation between them has no API to load "
@@ -499,8 +514,7 @@ def _check_related_graph(value: JSONObject) -> None:
     parent = _WRITE_PARENT.get()
     if parent is None or parent.api is None:
         return
-    other = _object_api(value)
-    if other is not None and other is not parent.api:
+    if not _agrees_with_graph(parent.api, _object_api(value)):
         raise ValueError(
             f"The {type(value).__name__} object uses another API than the "
             f"{parent.model.__name__} that it is written to, but every "
@@ -2840,8 +2854,7 @@ def _adopt_hook_results(
             if id(value) in seen:
                 continue
             seen.add(id(value))
-            own = _object_api(value)
-            if own is not None and own is not graph:
+            if not _agrees_with_graph(graph, _object_api(value)):
                 raise UsageError(
                     f"{model.__name__}.{hook}() returned an object of "
                     f"{type(value).__name__} that uses another API than the "
