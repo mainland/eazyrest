@@ -590,6 +590,26 @@ def _decode_time(value: Any) -> datetime.time:
         ) from err
 
 
+def _check_whole_minute_offset(
+    value: datetime.time | datetime.datetime, kind: str
+) -> None:
+    """Check that a value's UTC offset is a whole number of minutes.
+
+    Args:
+        value: Time or datetime to write.
+        kind: Name of its type, for the message.
+
+    Raises:
+        ValueError: If ``value`` has a UTC offset that is not a whole number of
+            minutes, which ISO 8601 cannot write.
+    """
+    offset = value.utcoffset()
+    if offset is not None and offset % _ONE_MINUTE:
+        raise ValueError(
+            f"{kind} field values must have a UTC offset of whole minutes"
+        )
+
+
 def _encode_time(value: datetime.time) -> str:
     """Encode a time as an ISO 8601 string.
 
@@ -603,11 +623,7 @@ def _encode_time(value: datetime.time) -> str:
         ValueError: If ``value`` has a UTC offset that is not a whole number of
             minutes, which ISO 8601 cannot write.
     """
-    offset = value.utcoffset()
-    if offset is not None and offset % _ONE_MINUTE:
-        raise ValueError(
-            "Time field values must have a UTC offset of whole minutes"
-        )
+    _check_whole_minute_offset(value, "Time")
     return value.isoformat()
 
 
@@ -712,11 +728,7 @@ def _encode_datetime(value: Any) -> Any:
     # isoformat() writes an offset such as +00:19:32, which a zone gives some
     # old dates, but ISO 8601 offsets are whole minutes, so neither the field
     # nor a server reads it.
-    offset = value.utcoffset()
-    if offset is not None and offset % _ONE_MINUTE:
-        raise ValueError(
-            "Datetime field values must have a UTC offset of whole minutes"
-        )
+    _check_whole_minute_offset(value, "Datetime")
     return value.isoformat()
 
 
