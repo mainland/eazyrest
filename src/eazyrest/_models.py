@@ -4059,6 +4059,53 @@ def _holds_float(value: Any) -> bool:
     return False
 
 
+def _key_in(json: Mapping[str, Any], prop: JSONProperty) -> Any:
+    """Return the key that a model's JSON holds.
+
+    JSON that holds no key, or ``null`` for it, names no object of the model.
+    This is the one place that decides so.
+
+    Args:
+        json: The JSON of an object, an embedded object, or an item.
+        prop: The model's key field.
+
+    Returns:
+        The key as the JSON spells it, or ``None`` if it holds none.
+    """
+    return json.get(prop.json_field)
+
+
+def _required_key(
+    json: Mapping[str, Any],
+    prop: JSONProperty,
+    model: type[JSONObject],
+    subject: str,
+    advice: str = "",
+) -> Any:
+    """Return the key that a model's JSON holds, or refuse JSON without one.
+
+    Args:
+        json: The JSON of an object, an embedded object, or an item.
+        prop: The model's key field.
+        model: The model that the JSON would name an object of.
+        subject: What the error calls the JSON, as the start of its sentence.
+        advice: What the error says after it, if anything.
+
+    Returns:
+        The key as the JSON spells it.
+
+    Raises:
+        ValueError: If the JSON holds no key, or holds ``null`` for it.
+    """
+    key = _key_in(json, prop)
+    if key is None:
+        held = "null for its key" if prop.json_field in json else "no key"
+        raise ValueError(
+            f"{subject} holds {held}, so it names no {model.__name__}{advice}"
+        )
+    return key
+
+
 def _stored_related_key(
     stored: Any, model: type[JSONObject], *, embedded: bool = False
 ) -> Any:
@@ -4083,13 +4130,14 @@ def _stored_related_key(
     """
     if isinstance(stored, dict):
         prop = _pk_property_of(model)
-        if not embedded or prop is None or prop.json_field not in stored:
+        if not embedded or prop is None:
             return stored
-        # A key of ``null`` is no key, so the object stays what it is, as one
-        # without the key does, and ``None`` assigned over it is a change.
-        if stored[prop.json_field] is None:
+        # JSON without a key, or with ``null`` for it, is no key, so the object
+        # stays what it is, and ``None`` assigned over it is a change.
+        key = _key_in(stored, prop)
+        if key is None:
             return stored
-        stored = stored[prop.json_field]
+        stored = key
     try:
         built = _build_key(model, stored)
     except (TypeError, ValueError):
@@ -4116,15 +4164,14 @@ def _require_item_key(item: Any, model: type[JSONObject]) -> None:
     if item is None:
         raise ValueError(_NULL_ITEM)
     prop = _pk_property_of(model)
-    if (
-        isinstance(item, dict)
-        and prop is not None
-        and item.get(prop.json_field) is None
-    ):
-        raise ValueError(
-            f"The item has no {model.__name__} key, so it is not a "
-            f"{model.__name__}. Declare items that have no key as a "
-            "TypedDict or a dataclass, which need none"
+    if isinstance(item, dict) and prop is not None:
+        _required_key(
+            item,
+            prop,
+            model,
+            "The item",
+            ". Declare items that have no key as a TypedDict or a "
+            "dataclass, which need none",
         )
 
 
@@ -6798,13 +6845,7 @@ class JSONObject:
         cls = type(self)
         if self._json is not None:
             with _converting(cls, prop.field):
-                if self._json.get(prop.json_field) is None:
-                    held = "null" if prop.json_field in self._json else "no"
-                    raise ValueError(
-                        f"The JSON holds {held} key, so it names no "
-                        f"{cls.__name__}"
-                    )
-                given = self._json[prop.json_field]
+                given = _required_key(self._json, prop, cls, "The JSON")
         else:
             given = next(
                 (
@@ -7094,12 +7135,12 @@ class JSONObject:
                 raise
             return
         with _converting(type(self), field):
-            if arg.get(prop.json_field) is None:
-                raise ValueError(
-                    f"The embedded {ty.__name__} object has no key, so it "
-                    f"names no {ty.__name__}"
-                )
-            _build_key(ty, arg[prop.json_field])
+            _build_key(
+                ty,
+                _required_key(
+                    arg, prop, ty, f"The embedded {ty.__name__} object"
+                ),
+            )
 
     def _create_related(
         self,

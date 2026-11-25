@@ -236,7 +236,10 @@ def test_a_list_relation_refuses_an_embedded_object_without_a_key() -> None:
         post.owner  # noqa: B018
     with pytest.raises(
         FieldConversionError,
-        match=r"Post\.readers: \[1\]: The item has no User key",
+        match=(
+            r"Post\.readers: \[1\]: The item holds no key, "
+            r"so it names no User"
+        ),
     ):
         post.readers  # noqa: B018
     with pytest.raises(FieldConversionError, match=r"Feed\.readers: \[0\]"):

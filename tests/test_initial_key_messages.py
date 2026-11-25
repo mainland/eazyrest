@@ -20,7 +20,7 @@ def test_a_null_key_is_called_a_null_key() -> None:
     """The JSON holds the key, as ``null``."""
     with pytest.raises(FieldConversionError) as caught:
         User(json={"id": None, "name": "a"})
-    assert "holds null key" in str(caught.value.__cause__)
+    assert "holds null for its key" in str(caught.value.__cause__)
 
 
 def test_a_missing_key_is_called_no_key() -> None:
