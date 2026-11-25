@@ -30,6 +30,7 @@ from ._errors import (
     RedirectError,
     _api_error,
     _is_failure,
+    _is_unfollowed_redirect,
     _PageLimit,
     _request_budget,
     _response_json,
@@ -298,7 +299,7 @@ def _check_final_response(
         RedirectError: If the response has a 3xx status. The response is
             closed first.
     """
-    if 300 <= resp.status_code < 400:
+    if _is_unfollowed_redirect(resp.status_code):
         resp.close()
         raise RedirectError(
             f"{_response_name(resp)} returned status {resp.status_code}, so "
@@ -1650,7 +1651,7 @@ class API:
                 raise _unpreparable_redirect(rejected, name) from None
             _drop_response_hooks(resp)
             _record_asked_url(resp, asked, page)
-            if no_follow and 300 <= resp.status_code < 400:
+            if no_follow and _is_unfollowed_redirect(resp.status_code):
                 raise _redirected_write(resp, name, what)
             budget.check_time(resp)
             if not streamed or _is_failure(resp.status_code):

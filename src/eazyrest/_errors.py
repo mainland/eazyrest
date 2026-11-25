@@ -369,6 +369,22 @@ def _is_failure(status_code: int) -> bool:
     return 400 <= status_code < 600
 
 
+def _is_unfollowed_redirect(status_code: int) -> bool:
+    """Return whether a final status is a redirect that has no result.
+
+    A request that ends with a 3xx status that was not followed, as with
+    ``allow_redirects=False`` or for a write, has none of the effect or the
+    body that it asked for.
+
+    Args:
+        status_code: HTTP status code of the final response.
+
+    Returns:
+        Whether the status is a 3xx status.
+    """
+    return 300 <= status_code < 400
+
+
 _request_budget: contextvars.ContextVar[_Budget | None] = (
     contextvars.ContextVar("_request_budget", default=None)
 )
