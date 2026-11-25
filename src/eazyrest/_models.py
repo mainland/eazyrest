@@ -7619,11 +7619,33 @@ class JSONObject:
             LimitExceeded: If a request or its JSON exceeds the API's limits.
         """
         _refuse_keyless_request(type(self), "delete")
-        options = _merge_request_options(
+        options = self._write_request_options(request_options)
+        self._request_api().delete(_object_url(self), **options)
+
+    def _write_request_options(
+        self, request_options: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return the request options of one of this object's writes.
+
+        This is the one place that assembles them, for ``save()``,
+        ``delete()``, and an assignment that writes at once. They are the
+        options of the open ``write_options()`` blocks and the class's, with
+        the call's over them.
+
+        Args:
+            request_options: The ``request_options`` of the call, if it has
+                any.
+
+        Returns:
+            The merged options.
+
+        Raises:
+            TypeError: If ``request_options`` is not valid for a write.
+        """
+        return _merge_request_options(
             self._write_options,
             _checked_request_options(request_options, "write"),
         )
-        self._request_api().delete(_object_url(self), **options)
 
     def _request_api(self) -> API:
         """Return the API that this object's own requests go through.
@@ -7747,7 +7769,7 @@ class JSONObject:
             resp = self._request_api().patch(
                 _object_url(self),
                 json=self._to_wire(payload),
-                **self._write_options,
+                **self._write_request_options(),
             )
             self._apply_patch_response(resp, payload)
             return
@@ -8239,10 +8261,7 @@ class JSONObject:
         """
         _check_files(files)
         _refuse_keyless_request(type(self), "save")
-        options = _merge_request_options(
-            self._write_options,
-            _checked_request_options(request_options, "write"),
-        )
+        options = self._write_request_options(request_options)
         self._queue_in_place_changes()
         if full:
             payload = self._full_payload()
