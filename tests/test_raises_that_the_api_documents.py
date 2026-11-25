@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -10,7 +11,7 @@ import pytest
 import requests
 from requests.exceptions import InvalidURL, MissingSchema
 
-from eazyrest import API
+from eazyrest import API, JSONObject
 
 BASE = "https://documented-raises.example/"
 
@@ -71,3 +72,28 @@ def test_a_redirect_origin_that_is_no_url_raises_value_error_before_sending(
 def test_each_request_method_documents_value_error(name: str) -> None:
     """``Raises:`` names ``ValueError``."""
     assert "ValueError" in (inspect.getdoc(getattr(API, name)) or "")
+
+
+MODEL_METHODS = [
+    "__init__",
+    "create",
+    "get_or_create",
+    "save",
+    "bulk_get_by_pks",
+]
+
+
+@pytest.mark.parametrize("name", MODEL_METHODS)
+def test_each_method_that_checks_a_relation_documents_usage_error(
+    name: str,
+) -> None:
+    """``Raises:`` names ``UsageError`` for a relation across APIs."""
+    raises = (inspect.getdoc(getattr(JSONObject, name)) or "").partition(
+        "Raises:"
+    )[2]
+    clause = re.search(
+        r"    UsageError:(.*?)(?=\n    [A-Z]\w*:|\Z)", raises, re.DOTALL
+    )
+
+    assert clause is not None
+    assert "registered on another API" in " ".join(clause.group(1).split())

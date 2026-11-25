@@ -100,6 +100,16 @@ class Thing(JSONObject):
     names: list[str]
 
 
+@json_object(read_only={"owner"})
+class Audited(JSONObject):
+    """A model whose relation to an owner only the server writes."""
+
+    class_url = "/things/"
+    id: int
+    name: str
+    owner: Owner | None
+
+
 HOOK: dict[str, Any] = {}
 
 
@@ -148,6 +158,7 @@ def register(
         "org": Org,
         "team": Team,
         "special": Special,
+        "audited": Audited,
     }
     for name, model in models.items():
         monkeypatch.delitem(_api_registry, model, raising=False)
@@ -349,6 +360,41 @@ def test_a_relation_on_one_api_or_none_is_not_refused(
         refusal = str(err)
 
     assert "different APIs" not in refusal
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [7, Owner(id=7)],
+    ids=["a key", "an object"],
+)
+def test_a_query_on_a_relation_across_apis_is_sent_through_the_models_api(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch, owner: Any
+) -> None:
+    """A query names the related model by key, and needs no API for it.
+
+    Args:
+        owner: The value of the query's parameter.
+    """
+    register(monkeypatch, thing=A, owner=B)
+
+    assert [thing.pk for thing in Thing.filter(owner=owner)] == [1]
+
+    assert [r.hostname for r in mock.request_history] == ["a.test"]
+    assert "owner=7" in mock.request_history[0].url
+
+
+def test_a_full_save_leaves_a_read_only_relation_across_apis_unchecked(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A field that no write sends is no use of the relation."""
+    register(monkeypatch, audited=A, owner=B)
+    audited = Audited(json=dict(THING), api=None)
+
+    audited.save(full=True)
+
+    assert [r.method for r in mock.request_history] == ["PUT"]
+    assert mock.request_history[0].hostname == "a.test"
+    assert "owner" not in mock.request_history[0].json()
 
 
 def test_a_relation_across_apis_is_refused_at_a_read_after_registering_later(

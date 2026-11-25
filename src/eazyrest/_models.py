@@ -6989,7 +6989,8 @@ class JSONObject:
                 or holds ``null`` for it.
             UsageError: If field values are given for a model without a
                 primary-key field. Its objects are read-only values, built with
-                ``json=``.
+                ``json=``. Also if a field that is given is a relation to a
+                model that is registered on another API than this model.
         """
         if json is not None and not isinstance(json, _OwnedJSON):
             _check_names_mapping(json, "json")
@@ -8509,8 +8510,10 @@ class JSONObject:
             UsageError: If the model has no primary-key field, even when
                 nothing is pending, or a class had ``api`` assigned. Also, when
                 there is something to send, if the model declares no
-                ``class_url``, or no API is registered for it. Nothing is sent,
-                and the pending updates stay.
+                ``class_url``, or no API is registered for it. Also, if
+                ``full`` is true, if a field that the object sends is a
+                relation to a model that is registered on another API than this
+                model. Nothing is sent, and the pending updates stay.
 
             ValueError: If the object has no URL, because its primary key is
                 empty or a dot segment.
@@ -10083,7 +10086,9 @@ class JSONObject:
             UsageError: If the model has no primary-key field, so there is
                 nothing to create. Post with the API and build the object with
                 ``json=`` instead. Also if the model declares no ``class_url``,
-                or no API is registered for it and no ``api=`` is given.
+                or no API is registered for it and no ``api=`` is given. Also
+                if a field that is given is a relation to a model that is
+                registered on another API than this model.
 
             Exception: Whatever resolving a name in the key's type raises, such
                 as a ``NameError`` for a class that is not defined, before any
@@ -11457,7 +11462,9 @@ class JSONObject:
         Raises:
             UsageError: If the model has no primary-key field, so there is
                 nothing to create, or declares no ``class_url``, or no API is
-                registered for it and no ``api=`` is given. No request is sent.
+                registered for it and no ``api=`` is given. Also if a field
+                that the creation would send is a relation to a model that is
+                registered on another API than this model. No request is sent.
 
             MultipleObjectsReturned: If lookup matches multiple objects.
             ValueError: If a lookup parameter has a value that requests would
