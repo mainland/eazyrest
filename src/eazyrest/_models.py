@@ -410,15 +410,20 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
-def _holds_itself(analyzed: AnalyzedType) -> bool:
+def _holds_itself(
+    analyzed: AnalyzedType, table: Mapping[Any, Conversion]
+) -> bool:
     """Tell whether a type contains itself, so that a value of it can nest.
 
     The type of a value that is read has a bounded depth unless a
     ``TypedDict``, ``NamedTuple``, or dataclass refers to itself, directly or
     through other types. The search is iterative, so it runs on a full stack.
+    It does not enter a type that the table converts, whose members no read
+    visits and whose annotations may not resolve.
 
     Args:
         analyzed: Analyzed type of a field.
+        table: Conversion table of the model whose field it is.
 
     Returns:
         Whether a structure class lies inside its own members.
@@ -428,6 +433,8 @@ def _holds_itself(analyzed: AnalyzedType) -> bool:
     ]
     while pending:
         current, ancestors = pending.pop()
+        if _class_entry(current, table) is not None:
+            continue
         children: list[AnalyzedType] = []
         match current:
             case OptionalType(inner) | NewTypeType(_, inner):
@@ -485,7 +492,7 @@ def _reading(
             yield
         except RecursionError as err:
             if getattr(err, _CONVERSION_RECURSION, False) or not _holds_itself(
-                analyzed
+                analyzed, _table_of(model)
             ):
                 raise
             raise ValueError(
