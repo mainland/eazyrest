@@ -5,7 +5,9 @@ are registered on different ``API`` objects has no API to load through. The
 refusal is one check of the two classes, made whatever the field holds and
 whether or not the object has loaded: a read, an assignment, a constructor
 keyword, a creation, a full write, and a prefetch. It raises ``UsageError``
-before any request. A model that has no registered API agrees with any.
+before any request. A model that has no registered API agrees with any, but
+passes the registration of the graph that reached it on to the models that it
+relates to.
 """
 
 from __future__ import annotations
@@ -392,3 +394,108 @@ def test_a_set_given_to_a_sequence_of_relations_is_refused(
 
     assert mock.request_history == []
     assert [owner.pk for owner in thing.owners] == [5]
+
+
+# How the org, which no API is registered for, is reached from the root.
+ORGS: dict[str, Callable[[API | None], Any]] = {
+    "built with an embedded org": lambda api: (
+        read(
+            Thing(json=dict(THING, owner=owner_json(5)), api=api), "owner"
+        ).org
+    ),
+    "built with an org by key": lambda api: (
+        read(
+            Thing(json=dict(THING, owner=owner_json(5, 9)), api=api), "owner"
+        ).org
+    ),
+    "queried": lambda api: read(next(Thing.filter(api=api)), "owner").org,
+    "returned by a bulk hook": lambda api: (
+        next(Thing.filter(prefetch="org", api=api or A)).org
+    ),
+}
+
+
+@pytest.mark.parametrize("reached", ORGS)
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_model_with_no_api_passes_its_graphs_api_on(
+    mock: requests_mock.Mocker,
+    monkeypatch: pytest.MonkeyPatch,
+    reached: str,
+    given: bool,
+) -> None:
+    """A model between two registered ones cannot reach another API.
+
+    Thing and Owner are on A, Org on none, and Team on B.
+
+    Args:
+        reached: How the org is reached from the root.
+        given: Whether the root has ``api=``.
+    """
+    register(monkeypatch, thing=A, owner=A, team=B)
+    org = ORGS[reached](A if given else None)
+    sent = len(mock.request_history)
+
+    with pytest.raises(UsageError, match="reached through"):
+        _ = org.team
+
+    assert not any(r.hostname == "b.test" for r in mock.request_history[sent:])
+    assert not any("teams" in r.path for r in mock.request_history)
+
+
+@pytest.mark.parametrize("reached", ORGS)
+@pytest.mark.parametrize(
+    "registrations",
+    [
+        {"thing": A, "owner": A, "team": A},
+        {"thing": None, "owner": None, "team": B},
+        {"thing": None, "owner": None, "team": None},
+    ],
+    ids=["one API", "root on none", "none"],
+)
+def test_a_graph_with_agreeing_registrations_reads_through_a_model_with_none(
+    mock: requests_mock.Mocker,
+    monkeypatch: pytest.MonkeyPatch,
+    reached: str,
+    registrations: dict[str, API | None],
+) -> None:
+    """The same chain is read when its registrations agree.
+
+    Args:
+        reached: How the org is reached from the root.
+        registrations: The APIs that the models are registered on.
+    """
+    register(monkeypatch, **registrations)
+
+    assert ORGS[reached](A if registrations["thing"] else C).team is not None
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_hook_that_returns_a_subclass_on_another_api_is_refused(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch, given: bool
+) -> None:
+    """A subclass registered on another API is refused, built with the api.
+
+    Args:
+        given: Whether the query is given ``api=``.
+    """
+    register(monkeypatch, thing=A, owner=A, special=B)
+    HOOK["class"] = Special
+    api = A if given else None
+
+    with pytest.raises(UsageError, match=r"Owner\.bulk_get_by_pks\(\)"):
+        list(Thing.filter(prefetch="owner", api=api))
+
+    assert not any(r.hostname == "b.test" for r in mock.request_history)
+
+
+def test_a_hook_that_returns_a_subclass_on_its_own_api_is_taken(
+    mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subclass registered on the query's API is not refused."""
+    register(monkeypatch, thing=A, owner=A, special=A)
+    HOOK["class"] = Special
+
+    thing = next(Thing.filter(prefetch="owner"))
+
+    assert type(thing.owner) is Special
+    assert thing.owner.api is A

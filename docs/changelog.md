@@ -970,14 +970,17 @@ describe them further.
   bare key, `null`, or an empty collection included, where `v1.0.0a5` loaded
   the related object through the API registered for its own class. A read, an
   assignment, a constructor keyword, `create()`, `get_or_create()`, a prefetch,
-  and `save(full=True)` raise alike. A related object that is assigned, or
-  given to `create()` or `get_or_create()`, raises `ValueError` if it uses
-  another API than its parent, and a bulk hook that returns an object of
-  another API raises `UsageError`. A bulk hook's `api` is the query's client,
-  so passing it on to `filter()` sends no request to another API, and the
-  related objects keep none of the query's request options. A model with no
-  registered API still takes the `api=` of its parent. Read the key of a
-  relation to a model of another API and call that model's `get()`.
+  and `save(full=True)` raise alike. A model with no registered API passes on
+  the registration of the graph that reached it, so a model of another API
+  cannot be reached through it. A related object that is assigned, or given to
+  `create()` or `get_or_create()`, raises `ValueError` if it uses another API
+  than its parent, and a bulk hook that returns an object of another API, or of
+  a class registered on another, raises `UsageError`. A bulk hook's `api` is
+  the query's client, so passing it on to `filter()` sends no request to
+  another API, and the related objects keep none of the query's request
+  options. A model with no registered API still takes the `api=` of its parent.
+  Read the key of a relation to a model of another API and call that model's
+  `get()`.
 - `url` and `absolute_url` raise `UsageError`, as a request does, when a class
   of the model had `api` assigned, where `absolute_url` returned a URL of the
   assigned value.

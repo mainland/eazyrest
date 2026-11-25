@@ -2379,12 +2379,15 @@ holds, `null`, an empty collection, or a bare key included. Reading it,
 assigning it, giving it to the constructor, `create()`, or `get_or_create()`,
 prefetching it, and `save(full=True)` all raise. Read the key and call the
 other model's `get()` instead. A model with no registered API agrees with any,
-so `api=` serves a graph whose models are not registered. A related object that
-you assign, or give to `create()` or `get_or_create()`, must also use its
-parent's API, or it raises `ValueError`. A bulk hook must build its objects
-with the `api` that it receives, or with no `api=` when the query has none. A
-hook that returns an object, or an object that holds one, of another `API`
-raises `UsageError` naming the hook.
+so `api=` serves a graph whose models are not registered. A model with none
+passes on the API of the graph that reached it, so a model registered on
+another API cannot be reached through it either. A related object that you
+assign, or give to `create()` or `get_or_create()`, must also use its parent's
+API, or it raises `ValueError`. A bulk hook must build its objects with the
+`api` that it receives, or with no `api=` when the query has none. A hook that
+returns an object, or an object that holds one, of another `API`, or of a class
+registered on another API than the query's model, raises `UsageError` naming
+the hook.
 
 ## Errors
 

@@ -449,27 +449,60 @@ def _agrees_with_graph(graph: API | None, api: API | None) -> bool:
     return graph is None or api is None or graph is api
 
 
-def _check_related_apis(
-    parent: type[Any], related: type[Any], *, required: bool = False
-) -> None:
-    """Refuse a relation between models that are registered on different APIs.
+def _graph_api_of(obj: JSONObject) -> API | None:
+    """Return the API that the graph of an object is registered on.
 
-    Every object that is reached from a root uses the root's API, so a relation
-    to a model that is registered on another API has no API to load through. A
-    model with no registered API agrees with any.
+    A related object that no API is registered for, such as an embedded one,
+    belongs to the graph of the object that it was reached from, so a model
+    registered on another API cannot be reached through it.
 
     Args:
+        obj: A model object.
+
+    Returns:
+        The API registered for the object's class, or else the API that the
+        graph that it was reached through is registered on, or ``None`` if
+        neither has one.
+    """
+    registered = _registered_api_of(type(obj))
+    return obj._graph_api if registered is None else registered
+
+
+def _check_related_apis(
+    graph: API | None,
+    parent: type[Any],
+    related: type[Any],
+    *,
+    required: bool = False,
+) -> None:
+    """Refuse a relation to a model that is registered on another API.
+
+    Every object that is reached from a root uses the root's API, so a relation
+    to a model that is registered on another API than its graph has no API to
+    load through. A model with no registered API agrees with any.
+
+    Args:
+        graph: The API that the graph of the model that holds the relation is
+            registered on, or ``None`` if it is registered on none.
         parent: The model that holds the relation.
         related: The model that the relation names.
         required: Whether ``related`` must be registered, as for a bulk lookup
             that no ``api=`` gives a client for.
 
     Raises:
-        UsageError: If both models are registered and on different ``API``
-            objects, or ``required`` and ``related`` is not registered.
+        UsageError: If ``related`` is registered on another ``API`` object than
+            ``graph``, or ``required`` and ``related`` is not registered.
     """
     related_api = _registered_api_of(related)
-    if not _agrees_with_graph(_registered_api_of(parent), related_api):
+    if not _agrees_with_graph(graph, related_api):
+        if _registered_api_of(parent) is None:
+            raise UsageError(
+                f"{parent.__name__} is reached through models that are "
+                f"registered on another API than {related.__name__}, so a "
+                "relation between them has no API to load through. Register "
+                f"{related.__name__} on that API, or read the key and call "
+                f"{related.__name__}.get()"
+            )
         raise UsageError(
             f"{parent.__name__} and {related.__name__} are registered on "
             "different APIs, so a relation between them has no API to load "
@@ -536,6 +569,13 @@ class _Query:
     options: Mapping[str, Any]
     """Request options that the query's requests send."""
 
+    graph: API | None
+    """The API that the query's model is registered on, if it has one.
+
+    Every model of the graph that the query builds is registered on it or on
+    none, whatever ``api=`` the objects use.
+    """
+
     @classmethod
     def choose(
         cls,
@@ -569,7 +609,12 @@ class _Query:
         _check_api_attribute(model, UsageError)
         given = None if api is None else _as_client(api)
         base = model.api if given is None else given
-        return cls(given, base._scoped(options) if options else base, options)
+        return cls(
+            given,
+            base._scoped(options) if options else base,
+            options,
+            _registered_api_of(model),
+        )
 
 
 class _ModelPageSource(_PageSource[Any]):
@@ -2843,7 +2888,8 @@ def _adopt_hook_results(
 
     Raises:
         UsageError: If an object that the walk reaches uses another ``API``
-            than the query's.
+            than the query's, or its class is registered on another than the
+            one that the query's model is registered on.
     """
     graph = _as_api(query.client)
     seen: set[int] = set()
@@ -2854,14 +2900,19 @@ def _adopt_hook_results(
             if id(value) in seen:
                 continue
             seen.add(id(value))
-            if not _agrees_with_graph(graph, _object_api(value)):
+            if not _agrees_with_graph(
+                graph, _object_api(value)
+            ) or not _agrees_with_graph(
+                query.graph, _registered_api_of(type(value))
+            ):
                 raise UsageError(
                     f"{model.__name__}.{hook}() returned an object of "
                     f"{type(value).__name__} that uses another API than the "
                     "query. Build every object with the api that the hook "
-                    "was given"
+                    "was given, from a class registered on the query's API"
                 )
             value._api_override = query.api
+            value._graph_api = query.graph
             stack.extend(value._field_cache.values())
             stack.extend(value._prefetched_related.values())
         elif isinstance(value, Mapping):
@@ -6478,23 +6529,26 @@ class JSONProperty:
 
         Raises:
             UsageError: If the field is a relation to a model that is
-                registered on another API than ``obj``'s class.
+                registered on another API than the graph of ``obj``.
             NameError: As ``analyzed_type`` raises it.
             AttributeError: As ``analyzed_type`` raises it.
             TypeError: As ``analyzed_type`` raises it.
             FieldConversionError: As ``analyzed_type`` raises it.
         """
-        self._check_relation_graph(type(obj))
+        self._check_relation_graph(type(obj), _graph_api_of(obj))
 
-    def _check_relation_graph(self, model: type[JSONObject]) -> None:
-        """Refuse a relation to a model registered on another API than a model.
+    def _check_relation_graph(
+        self, model: type[JSONObject], graph: API | None
+    ) -> None:
+        """Refuse a relation to a model registered on another API than a graph.
 
         Args:
             model: The model that holds the field.
+            graph: The API that the graph of ``model`` is registered on.
 
         Raises:
             UsageError: If the field is a relation to a model that is
-                registered on another API than ``model``.
+                registered on another API than ``graph``.
             NameError: As ``analyzed_type`` raises it.
             AttributeError: As ``analyzed_type`` raises it.
             TypeError: As ``analyzed_type`` raises it.
@@ -6502,7 +6556,7 @@ class JSONProperty:
         """
         relation = _relation_of(self.analyzed_type)
         if relation is not None:
-            _check_related_apis(model, relation.related.model_type)
+            _check_related_apis(graph, model, relation.related.model_type)
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -6776,6 +6830,14 @@ class JSONObject:
 
     _api_override: _AnyAPI | None
     """Instance-scoped API override."""
+
+    _graph_api: API | None = None
+    """The API that the graph that reached this object is registered on.
+
+    It is set on an object that a relation, an embedded object, a prefetch, or
+    a bulk hook reached from a root, and lets a model with no registration pass
+    the root's registration on to the models that it relates to.
+    """
 
     _write_mode: WriteMode
     """Whether field assignment is saved eagerly or lazily."""
@@ -7056,7 +7118,7 @@ class JSONObject:
         memo[id(self)] = copied
         state = vars(copied)
         for name, value in self.__getstate__().items():
-            if name == "_api_override":
+            if name in ("_api_override", "_graph_api"):
                 state[name] = value
             elif name in _JSON_STATE:
                 state[name] = _copy_json(value, memo)
@@ -7322,6 +7384,11 @@ class JSONObject:
         """
         # Refuse an assigned ``api`` before the object is built.
         _check_api_attribute(ty, UsageError)
+        # The field that is read has checked that ``ty`` is not registered on
+        # another API than the graph's. The related object joins the graph, so
+        # it passes on the registration of the graph, which a model with no
+        # registration has not.
+        graph = _graph_api_of(self)
         # Pass on the instance override. Without one, the graph's API is the
         # one that both classes are registered on.
         api = self._api_override
@@ -7330,9 +7397,11 @@ class JSONObject:
             # An embedded object is read as the value of a field.
             assert field is not None
             self._check_embedded_key(arg, ty, field)
-            return ty(
+            embedded = ty(
                 json=_OwnedJSON(arg), api=api, write_mode=self.write_mode
             )
+            embedded._graph_api = graph
+            return embedded
 
         try:
             with _converting(ty, ty._pk.field):
@@ -7350,7 +7419,9 @@ class JSONObject:
             if prefetched is not None:
                 return cast(T, prefetched)
 
-        return ty(pk=key, api=api, write_mode=self.write_mode)
+        related = ty(pk=key, api=api, write_mode=self.write_mode)
+        related._graph_api = graph
+        return related
 
     def _read_at(
         self,
@@ -9070,7 +9141,9 @@ class JSONObject:
                         payload[key] = _build_key(cls, value)
                     else:
                         if not query:
-                            descriptor._check_relation_graph(cls)
+                            descriptor._check_relation_graph(
+                                cls, _registered_api_of(cls)
+                            )
                         conversion = descriptor.analyzed_type
                         payload[key] = cls._to_written_json(
                             value, conversion, _Parent(cls, api)
@@ -10767,7 +10840,9 @@ class JSONObject:
         # is registered on it or on none. Without an ``api=``, the query's API
         # is the one that the related model is registered on, which must exist
         # before the request for the parents is sent.
-        _check_related_apis(cls, model_type, required=api is None)
+        _check_related_apis(
+            _registered_api_of(cls), cls, model_type, required=api is None
+        )
 
         return descriptor, analyzed_type, collection_type
 
