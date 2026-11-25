@@ -2934,26 +2934,25 @@ def _lookup_operand_order(value: Any) -> tuple[int, Any]:
     return _json_order(str(value))
 
 
-def _query_value(value: Any) -> Any:
-    """Return an encoded field value as a query string should send it.
+def _query_operand_text(operand: Any) -> Any:
+    """Return an operand of a query as the text that the query sends.
 
     requests converts a query value with ``str()``, which writes Python's
-    ``True`` and ``False``. Send JSON's ``true`` and ``false`` instead, as the
-    field's value would be written in a request body.
+    ``True`` and ``False``, and which gives a subclass's own text. Send the
+    text that ``_scalar_text()`` gives instead, as the field's value would be
+    written in a request body.
 
     Args:
-        value: Field value, already encoded as JSON.
+        operand: Field value, already encoded as JSON, or a value of a name
+            that names no field, which is not converted.
 
     Returns:
-        ``"true"`` or ``"false"`` for a boolean, a list of converted items for
-        a list, and ``value`` unchanged otherwise.
+        The text of a scalar, and ``operand`` unchanged otherwise, for requests
+        to send.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, list):
-        return [_query_value(item) for item in value]
-
-    return value
+    if isinstance(operand, (str, int, float)):
+        return _scalar_text(operand)
+    return operand
 
 
 # The options of the query methods. Each method reserves those it does not
@@ -3302,10 +3301,8 @@ def _form_value(name: str, value: Any) -> Any:
             list that holds anything but scalars, which a form field cannot
             express.
     """
-    if isinstance(value, bool):
-        return "true" if value else "false"
     if isinstance(value, (str, int, float)):
-        return str(_plain_scalar(value))
+        return _scalar_text(value)
     if (
         isinstance(value, list)
         and value
@@ -4778,6 +4775,25 @@ def _plain_scalar(value: Any) -> Any:
     if isinstance(value, float):
         return float.__float__(value)
     return value
+
+
+def _scalar_text(value: Any) -> str:
+    """Return the text of a scalar that is sent outside a JSON body.
+
+    A query string and a multipart form send a field's scalar as text, where
+    ``True`` and ``False`` are written as JSON writes them.
+
+    Args:
+        value: A JSON scalar that is not ``None``, possibly of a subclass of
+            ``str``, ``int``, or ``float``.
+
+    Returns:
+        ``"true"`` or ``"false"`` for a boolean, and for any other scalar the
+        text of its plain value, which no ``__str__()`` of a subclass changes.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(_plain_scalar(value))
 
 
 def _reduced_json(value: Any) -> Any:
@@ -9595,7 +9611,7 @@ class JSONObject:
                         # A value that no key could be is left to the checks of
                         # what a query can send.
                         conversion = parameter.key
-                return _query_value(cls._to_json(item, conversion))
+                return cls._to_json(item, conversion)
             if unconverted and not _is_sent_as_given(item):
                 if isinstance(item, JSONObject):
                     model_type = cls._related_model(parameter)
@@ -9660,10 +9676,18 @@ class JSONObject:
             )
         if problem is not None:
             raise _unsendable_parameter(cls, name, f"its value {problem}")
+
+        def sent(operand: Any) -> Any:
+            # A value that the field's conversion wrote is sent as the text of
+            # its JSON. Any other is sent as it was given.
+            if parameter.conversion is None:
+                return operand
+            return _query_operand_text(operand)
+
         if several:
             if isinstance(value, AbstractSet):
                 operands.sort(key=_lookup_operand_order)
-            texts = [str(operand) for operand in operands]
+            texts = [str(sent(operand)) for operand in operands]
             if "" in texts:
                 raise _unsendable_parameter(
                     cls,
@@ -9681,7 +9705,7 @@ class JSONObject:
                         'to "repeat" if it reads repeated parameters',
                     )
                 return [",".join(texts)]
-        return operands
+        return [sent(operand) for operand in operands]
 
     @classmethod
     def _encode_query(

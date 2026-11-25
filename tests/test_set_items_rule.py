@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, urlsplit
 import pytest
 import requests_mock
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import API, JSONObject, encode_json, json_object
 
 BASE = "https://set-items.example/"
 api = API(BASE)
@@ -29,6 +29,18 @@ class Bag(JSONObject):
 
 
 Bag.register_api(api)
+
+
+@json_object
+class Mixed(JSONObject):
+    """A model with a set that mixes booleans and numbers."""
+
+    class_url = "/mixed/"
+    id: int
+    vals: set[int | bool]
+
+
+Mixed.register_api(api)
 
 # Items given, and the JSON that a set field writes for them.
 WRITTEN: list[tuple[list[Any], list[Any]]] = [
@@ -103,3 +115,25 @@ def test_a_query_sends_the_items_sorted_and_distinct(
         list(Bag.filter(items=items))
         query = parse_qsl(urlsplit(mocker.request_history[-1].url).query)
         assert query == [("items", text) for text in texts]
+
+
+def json_text(item: Any) -> str:
+    """Return the text that a query sends for a boolean or an integer."""
+    return {True: "true", False: "false"}.get(item, str(item))
+
+
+@pytest.mark.parametrize("items", [{5, True}, {5, True, 2}, {5, False, 2}])
+def test_a_query_sends_a_set_that_mixes_booleans_and_numbers_as_json_does(
+    items: set[Any],
+) -> None:
+    """A query sends the items in the order that the set's JSON writes them."""
+    written = encode_json(items, set[int | bool])
+    texts = [json_text(item) for item in written]
+    with requests_mock.Mocker() as mocker:
+        mocker.get(BASE + "mixed/", json=[])
+        list(Mixed.filter(vals=items))
+        by_field = parse_qsl(urlsplit(mocker.request_history[-1].url).query)
+        list(Mixed.filter(vals__in=items))
+        by_lookup = parse_qsl(urlsplit(mocker.request_history[-1].url).query)
+    assert by_field == [("vals", text) for text in texts]
+    assert by_lookup == [("vals__in", ",".join(texts))]
