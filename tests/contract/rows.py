@@ -61,6 +61,7 @@ from eazyrest import (
     encode_json,
     json_object,
 )
+from eazyrest._models import _copy_json
 
 U = uuid.UUID("abcdef12-1234-5678-1234-567812345abc")
 UP = str(U).upper()
@@ -444,15 +445,21 @@ def refuses_assignment(
     """
     json_before = copy.deepcopy(obj.json)
     value_before = getattr(obj, name)
-    # A related object cannot be copied, so a collection is copied one level.
-    snapshot = (
-        copy.copy(value_before)
-        if isinstance(value_before, (list, set))
-        else value_before
-    )
+
+    def encoding() -> Any:
+        """Return a copy of the JSON that the field's value encodes to."""
+        analyzed = getattr(getattr(type(obj), name), "analyzed_type", None)
+        if analyzed is None:
+            # A key is a scalar, which no change in place reaches.
+            return value_before
+        return _copy_json(obj._to_reduced_json(value_before, analyzed))
+
+    # A related object cannot be copied, so the snapshot is of the JSON that
+    # the value encodes to, which no later change of the value reaches.
+    snapshot = encoding()
     error = raises(world, exc, lambda: setattr(obj, name, value), *named)
     assert getattr(obj, name) is value_before
-    assert value_before == snapshot
+    assert encoding() == snapshot
     assert obj.json == json_before
     sent = world.count
     obj.save()
