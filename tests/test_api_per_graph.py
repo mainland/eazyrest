@@ -644,9 +644,7 @@ ASSIGNMENTS: dict[str, Callable[[Thing, Owner], None]] = {
     "a collection of them": lambda thing, owner: setattr(
         thing, "owners", [Owner(id=7, api=thing._api_override), owner]
     ),
-    "a set of them in a tuple": lambda thing, owner: setattr(
-        thing, "owners", (owner,)
-    ),
+    "a tuple of them": lambda thing, owner: setattr(thing, "owners", (owner,)),
     "a write-only related object": lambda thing, owner: setattr(
         thing, "boss", owner
     ),

@@ -2373,11 +2373,14 @@ Every object that a query reaches uses one API: the `api=` that the query or
 the constructor was given, or else the API registered for the class that it
 reads. That holds for the objects that a relation, an embedded object, a
 prefetch, or a bulk hook reaches from it. A relation between two models that
-are registered on different `API` objects raises `UsageError` when it is first
-used, before any request, whether or not `api=` is given. Read the key and call
-the other model's `get()` instead. A model with no registered API agrees with
-any, so `api=` serves a graph whose models are not registered. A related object
-that you assign, or give to `create()` or `get_or_create()`, must use its
+are registered on different `API` objects raises `UsageError` at every use,
+before any request, whether or not `api=` is given and whatever the field
+holds, `null`, an empty collection, or a bare key included. Reading it,
+assigning it, giving it to the constructor, `create()`, or `get_or_create()`,
+prefetching it, and `save(full=True)` all raise. Read the key and call the
+other model's `get()` instead. A model with no registered API agrees with any,
+so `api=` serves a graph whose models are not registered. A related object that
+you assign, or give to `create()` or `get_or_create()`, must also use its
 parent's API, or it raises `ValueError`. A bulk hook must build its objects
 with the `api` that it receives, or with no `api=` when the query has none. A
 hook that returns an object, or an object that holds one, of another `API`

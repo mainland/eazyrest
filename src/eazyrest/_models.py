@@ -6422,11 +6422,12 @@ class JSONProperty:
             # names, so reading it needs no load.
             return obj._key_value()
 
+        # A field that cannot be read, or a relation to a model of another API,
+        # is refused whatever the object holds, and before a load, so that it
+        # sends no request.
+        self._check_relation_apis(obj)
         raw = obj._working_value(self.json_field)
         if raw is _MISSING:
-            # A field that cannot be read, or a relation to a model of another
-            # API, is refused before the load, so that it sends no request.
-            self._check_relation_before_load(obj)
             raw = obj._json_having(self.json_field)
             if raw is _MISSING:
                 raise _missing_field_error(obj, self.field, self.json_field)
@@ -6463,17 +6464,17 @@ class JSONProperty:
 
         return value
 
-    def _check_relation_before_load(self, obj: JSONObject) -> None:
-        """Refuse a relation to another API's model before a load reads it.
+    def _check_relation_apis(self, obj: JSONObject) -> None:
+        """Refuse a relation to another API's model, whatever the field holds.
 
-        Reading a field of an object that is not loaded sends a request. A
-        relation that the read would refuse as it builds the related object
-        must be refused first. So the field's type is resolved before the load,
-        and a field whose type cannot be resolved yet raises, relation or not,
+        Every use of a relation field checks its two classes here, before any
+        request: a read, whether the object is loaded or not, an assignment, a
+        creation, and a full write. So the field's type is resolved first, and
+        a field whose type cannot be resolved yet raises, relation or not,
         without a request.
 
         Args:
-            obj: The object whose field is read.
+            obj: The object whose field is used.
 
         Raises:
             UsageError: If the field is a relation to a model that is
@@ -6483,11 +6484,25 @@ class JSONProperty:
             TypeError: As ``analyzed_type`` raises it.
             FieldConversionError: As ``analyzed_type`` raises it.
         """
-        if obj._json is not None and not obj._json_is_partial:
-            return
+        self._check_relation_graph(type(obj))
+
+    def _check_relation_graph(self, model: type[JSONObject]) -> None:
+        """Refuse a relation to a model registered on another API than a model.
+
+        Args:
+            model: The model that holds the field.
+
+        Raises:
+            UsageError: If the field is a relation to a model that is
+                registered on another API than ``model``.
+            NameError: As ``analyzed_type`` raises it.
+            AttributeError: As ``analyzed_type`` raises it.
+            TypeError: As ``analyzed_type`` raises it.
+            FieldConversionError: As ``analyzed_type`` raises it.
+        """
         relation = _relation_of(self.analyzed_type)
         if relation is not None:
-            _check_related_apis(type(obj), relation.related.model_type)
+            _check_related_apis(model, relation.related.model_type)
 
     def __set__(self, obj: JSONObject, value: Any) -> None:
         """Set a field value using the object's configured write mode.
@@ -6592,6 +6607,7 @@ class JSONProperty:
         """
         _refuse_keyless_assignment(type(obj))
         if self.write_only:
+            self._check_relation_apis(obj)
             with _converting(type(obj), self.field):
                 return obj._to_written_json(
                     value, self.analyzed_type, obj._as_parent()
@@ -6603,6 +6619,7 @@ class JSONProperty:
             raise AttributeError(
                 f"{type(obj).__name__}.{self.field} is read-only"
             )
+        self._check_relation_apis(obj)
         with _converting(type(obj), self.field):
             new_value = obj._to_written_json(
                 value, self.analyzed_type, obj._as_parent()
@@ -7299,17 +7316,12 @@ class JSONObject:
             Instance of ``ty``.
 
         Raises:
-            UsageError: If a class in the MRO of ``ty`` had ``api`` assigned,
-                or ``ty`` is registered on another API than this object's
-                class.
+            UsageError: If a class in the MRO of ``ty`` had ``api`` assigned.
             FieldConversionError: If a key is of another JSON type than the
                 related model's key. It names ``field`` when that is given.
         """
         # Refuse an assigned ``api`` before the object is built.
         _check_api_attribute(ty, UsageError)
-        # The related object uses the graph's API, so its class must not be
-        # registered on another.
-        _check_related_apis(type(self), ty)
         # Pass on the instance override. Without one, the graph's API is the
         # one that both classes are registered on.
         api = self._api_override
@@ -8495,8 +8507,21 @@ class JSONObject:
             assignment encodes it, and each pending write-only field.
 
         Raises:
+            UsageError: If a relation field names a model that is registered on
+                another API than this object's graph, which is refused before
+                the load.
             FieldConversionError: If a field's value cannot be converted.
         """
+        for field in sorted(getattr(self, "_json_fields", ())):
+            descriptor = getattr(type(self), field)
+            if descriptor.write_only or descriptor.read_only:
+                continue
+            # A field that the object lacks is skipped and needs no type, so
+            # one that cannot be resolved is left to the loop below.
+            with contextlib.suppress(
+                NameError, AttributeError, TypeError, FieldConversionError
+            ):
+                descriptor._check_relation_apis(self)
         if self._json_is_partial:
             self._load_json()
         json = self.json
@@ -9044,6 +9069,8 @@ class JSONObject:
                         # and kept under its JSON key for the response merge.
                         payload[key] = _build_key(cls, value)
                     else:
+                        if not query:
+                            descriptor._check_relation_graph(cls)
                         conversion = descriptor.analyzed_type
                         payload[key] = cls._to_written_json(
                             value, conversion, _Parent(cls, api)
