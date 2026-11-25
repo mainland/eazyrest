@@ -549,13 +549,11 @@ class _Budget:
 
         Returns:
             The request's method and URL, as for ``request``, or, for a budget
-            without one, those of ``resp``, shown as a server's URL.
+            without one, what ``_response_name()`` gives for ``resp``.
         """
         if self.request is not None:
             return self.request
-        return _request_name(
-            resp.request.method, _asked_text(resp.url, None, Source.SERVER)
-        )
+        return _response_name(resp)
 
     def check_time(self, resp: requests.Response | None = None) -> None:
         """Raise if the request has run out of time.
