@@ -1641,7 +1641,7 @@ def _check_json_scalars(name: str, values: Iterable[Any]) -> None:
     """
     for value in values:
         try:
-            _check_json_leaf(value, "")
+            _check_json_leaf(value, _own_place)
         except (TypeError, ValueError) as err:
             # The leaf check says which values JSON cannot carry. Only its
             # words differ, since this one refuses a declaration.
@@ -3556,7 +3556,7 @@ def _form_value(name: str, value: Any) -> Any:
             names the value as ``[key]``, since its name can be a secret.
     """
     if isinstance(value, (str, int, float)):
-        _check_json_leaf(value, "[key]")
+        _check_json_leaf(value, _own_place, "[key]")
         return _scalar_text(value)
     if (
         isinstance(value, list)
@@ -4945,12 +4945,29 @@ def _is_writable_int(value: int) -> bool:
     return True
 
 
-def _check_json_leaf(value: Any, path: str) -> bool:
+def _own_place(place: str) -> str:
+    """Return a place as the path of a value that nothing holds.
+
+    Args:
+        place: Where the value is, such as ``[key]``, or empty.
+
+    Returns:
+        ``place``, for ``_check_json_leaf()``.
+    """
+    return place
+
+
+def _check_json_leaf(
+    value: Any, locate: Callable[[str], str], place: str = ""
+) -> bool:
     """Check that a value that holds no other value is a JSON scalar.
 
     Args:
         value: Value to check.
-        path: Where ``value`` is, as ``_check_json()`` takes it.
+        locate: Takes the place of ``value`` in its container and returns where
+            ``value`` is, as ``_check_json()`` takes it. It is called only to
+            write a message, so that a check that passes builds no path.
+        place: The place that ``locate`` takes.
 
     Returns:
         Whether ``value`` is a string, an integer, or a float of a subclass,
@@ -4964,8 +4981,8 @@ def _check_json_leaf(value: Any, path: str) -> bool:
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(
-                f"The value{_at(path)} is a float that is not finite, which "
-                "JSON cannot write"
+                f"The value{_at(locate(place))} is a float that is not "
+                "finite, which JSON cannot write"
             )
         return type(value) is not float
     if isinstance(value, int) and not isinstance(value, bool):
@@ -4973,7 +4990,7 @@ def _check_json_leaf(value: Any, path: str) -> bool:
         # must not ask. It tests the integer that is written.
         if not _is_writable_int(_plain_scalar(value)):
             raise ValueError(
-                f"The value{_at(path)} is an integer of more than "
+                f"The value{_at(locate(place))} is an integer of more than "
                 f"{sys.get_int_max_str_digits()} digits, which Python cannot "
                 "write as JSON"
             )
@@ -4983,8 +5000,8 @@ def _check_json_leaf(value: Any, path: str) -> bool:
     if value is None or isinstance(value, bool):
         return False
     raise TypeError(
-        f"The value{_at(path)} has the type {type(value).__name__}, which "
-        "does not encode to JSON. Annotate it with a type that eazyrest "
+        f"The value{_at(locate(place))} has the type {type(value).__name__}, "
+        "which does not encode to JSON. Annotate it with a type that eazyrest "
         "converts."
     )
 
@@ -5088,13 +5105,14 @@ def _reduced_members(container: Any) -> Iterator[tuple[Any, Any]]:
 
 
 def _walk_json_members(
-    container: Any, path: str
+    container: Any, where: Callable[[], str]
 ) -> Iterator[tuple[str, Any, bool]]:
     """Yield the members of an array or an object, with where each is.
 
     Args:
         container: A list or a dict.
-        path: Where ``container`` is, as ``_check_json()`` takes it.
+        where: Returns where ``container`` is, as ``_check_json()`` takes it.
+            It is called only to write a message.
 
     Yields:
         Each member's place within the container, as ``[0]`` or ``[key]``, the
@@ -5110,7 +5128,7 @@ def _walk_json_members(
     for key, item in container.items():
         if not isinstance(key, str):
             raise TypeError(
-                f"The value{_at(path)} has a key that is not a string, "
+                f"The value{_at(where())} has a key that is not a string, "
                 "which JSON objects cannot have"
             )
         yield "[key]", item, type(key) is not str
@@ -5137,24 +5155,34 @@ def _walk_json(value: Any, path: str) -> bool:
         _DepthExceeded: If ``value`` holds itself.
     """
     if not isinstance(value, (list, dict)):
-        return _check_json_leaf(value, path)
+        return _check_json_leaf(value, lambda place: path + place)
+
+    def locate(place: str) -> str:
+        """Return where a member is, from the places of the open containers."""
+        return path + "".join(held[1] for held in stack) + place
+
+    def here() -> str:
+        """Return where the innermost open container is."""
+        return locate("")
+
     reducible = False
     open_containers = {id(value)}
-    stack = [(_walk_json_members(value, path), path, id(value))]
+    # Each open container holds its members, its place in its parent, and its
+    # identity. The path of a member is built from the places, and only for a
+    # message, so the stack's memory grows with the depth and not with its
+    # square.
+    stack = [(_walk_json_members(value, here), "", id(value))]
     while stack:
-        members, here, identity = stack[-1]
+        members, _, identity = stack[-1]
         for place, item, reduces_key in members:
-            there = here + place
             reducible = reducible or reduces_key
             if isinstance(item, (list, dict)):
                 if id(item) in open_containers:
                     raise _DepthExceeded
                 open_containers.add(id(item))
-                stack.append(
-                    (_walk_json_members(item, there), there, id(item))
-                )
+                stack.append((_walk_json_members(item, here), place, id(item)))
                 break
-            reducible = _check_json_leaf(item, there) or reducible
+            reducible = _check_json_leaf(item, locate, place) or reducible
         else:
             stack.pop()
             open_containers.discard(identity)
