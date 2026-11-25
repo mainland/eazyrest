@@ -257,7 +257,10 @@ describe them further.
   member, where `v1.0.0a5` read the JSON value. It reads any value that the
   enum maps to one of the `Literal`'s members, as an enum field does, so a
   member that the enum's `_missing_()` finds for `"OPEN"` is read as the
-  member.
+  member. It looks for the JSON value of any enum member first, then for a
+  plain member, and then asks each enum in the order that the `Literal` lists
+  them, so a plain member such as `"archived"` is read as itself, as `v1.0.0a5`
+  did, and not as the member that an enum's `_missing_()` maps it to.
 - `decimal.Decimal` and `datetime.time` fields read as `Decimal` and `time`,
   where `v1.0.0a5` left the strings. A decimal string with spaces, such as
   `" 1.0 "`, is refused, and `Decimal("1E+2")` writes `"100"`. `deque[T]` reads

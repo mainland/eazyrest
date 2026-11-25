@@ -5262,10 +5262,14 @@ def _literal_member(
 ) -> Any:
     """Read a JSON value as the member of a ``Literal`` that it encodes.
 
-    A member of an enum matches by the enum's whole rule, as for a field that
-    is declared as the enum: the JSON value of a member, and any other value
-    that the enum's conversion decodes to a member, such as one that the enum's
-    ``_missing_()`` maps.
+    The first of these that finds a member decides:
+
+    1. The JSON value of any member of an enum.
+    2. Any other member, by ``_names_member_value()``.
+    3. The rule of each enum, as for a field that is declared as the enum, in
+       the order that the ``Literal`` lists the enums: any other value that
+       the enum's conversion decodes to a member, such as one that the enum's
+       ``_missing_()`` maps.
 
     Args:
         ty: The ``Literal`` type.
@@ -5273,17 +5277,19 @@ def _literal_member(
         table: Conversion table of the model whose field it is.
 
     Returns:
-        The member of ``ty`` that an enum field would read ``value`` as, or
-        else a copy of ``value``, which a ``Literal`` does not check.
+        The member of ``ty`` that ``value`` names, or else a copy of ``value``,
+        which a ``Literal`` does not check.
     """
-    members = [
-        member
-        for member in typing.get_args(ty)
-        if isinstance(member, enum.Enum)
-    ]
+    options = typing.get_args(ty)
+    members = [option for option in options if isinstance(option, enum.Enum)]
     for member in members:
         if _names_member_value(_literal_json(member, table), value):
             return member
+    for option in options:
+        if not isinstance(option, enum.Enum) and _names_member_value(
+            option, value
+        ):
+            return _copy_json(value)
     for cls in dict.fromkeys(type(member) for member in members):
         found = _conversion_of(cls, table)
         if found is None:

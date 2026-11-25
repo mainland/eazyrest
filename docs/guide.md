@@ -768,6 +768,15 @@ as `Literal[TicketStatus.OPEN, TicketStatus.CLOSED]`, reads a value as the enum
 field does, so it returns the member that `_missing_()` maps a value to when
 that member is one of the `Literal`'s, and the value as it is when it is not.
 
+A `Literal` that holds enum members and plain values reads a value in three
+steps, and the first that finds a member decides. It looks for the JSON value
+of any enum member, then for any plain member, and then asks each enum, in the
+order that the `Literal` lists the enums, to read the value. In
+`Literal[TicketStatus.OPEN, TicketStatus.UNKNOWN, "archived"]`, the value
+`"archived"` is read as the plain member, not as `UNKNOWN`, which `_missing_()`
+would map it to. When two enums both map any value, the one that the `Literal`
+lists first reads the value that neither has as a member.
+
 Related-object writes send the key that the related model builds, as every key
 is built. An object whose class is neither the field's model nor a subclass of
 it raises `FieldConversionError`, naming the field, the expected model, and the
