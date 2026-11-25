@@ -74,7 +74,10 @@ from ._conversion import (
     _is_instance,
     _is_typed_dict,
     _names_member_value,
+    _plain,
+    _renamed_references,
     _schema_of_entry,
+    _schema_parts,
     _supertype,
     _table_of,
 )
@@ -5432,44 +5435,6 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
     own = dict(schema.pop("$defs", {}))
     renamed = {name: name for name in own}
 
-    def rewrite(value: Any) -> Any:
-        """Return ``value`` with its definition references renamed.
-
-        Args:
-            value: Part of a schema.
-
-        Returns:
-            The part, with each ``$ref`` to a renamed definition rewritten, and
-            each reference in a ``discriminator``'s ``mapping``. A bare schema
-            name in a mapping is left as it is.
-        """
-        if isinstance(value, dict):
-            result: dict[str, Any] = {}
-            for key, item in value.items():
-                if key in _SCHEMA_DATA:
-                    result[key] = item
-                elif key in _SCHEMA_MAPS and isinstance(item, dict):
-                    result[key] = {
-                        name: rewrite(schema) for name, schema in item.items()
-                    }
-                elif key == "$ref":
-                    result[key] = reference(item)
-                elif key == "discriminator" and isinstance(item, dict):
-                    result[key] = {
-                        name: (
-                            {tag: reference(ref) for tag, ref in part.items()}
-                            if name == "mapping" and isinstance(part, dict)
-                            else part
-                        )
-                        for name, part in item.items()
-                    }
-                else:
-                    result[key] = rewrite(item)
-            return result
-        if isinstance(value, (list, tuple)):
-            return [rewrite(item) for item in value]
-        return value
-
     def reference(item: Any) -> Any:
         """Return a reference into a definition, renamed.
 
@@ -5504,7 +5469,9 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
         """
         new = renamed[name]
         if new in defs:
-            return _json_equal(defs[new], rewrite(own[name]))
+            return _json_equal(
+                defs[new], _renamed_references(own[name], reference)
+            )
         return all(renamed[other] != new for other in own if other != name)
 
     # Renaming a definition changes the definitions that refer to it, which
@@ -5521,16 +5488,8 @@ def _hoist_defs(schema: dict[str, Any], defs: dict[str, Any]) -> Any:
                 changed = True
 
     for name, definition in own.items():
-        defs[renamed[name]] = rewrite(definition)
-    return rewrite(schema)
-
-
-# Keywords whose values map names to schemas, and keywords whose values are
-# JSON data rather than schemas.
-_SCHEMA_MAPS = frozenset(
-    {"properties", "patternProperties", "dependentSchemas", "$defs"}
-)
-_SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
+        defs[renamed[name]] = _renamed_references(definition, reference)
+    return _renamed_references(schema, reference)
 
 
 def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
@@ -5547,25 +5506,17 @@ def _hoist_nested_defs(value: Any, defs: dict[str, Any]) -> Any:
         defs: Definitions shared by the model's schema, updated in place.
 
     Returns:
-        ``value`` with no ``$defs`` below it, and its references rewritten.
+        A copy of ``value`` with no ``$defs`` below it, and its references
+        rewritten.
     """
-    if isinstance(value, (list, tuple)):
-        return [_hoist_nested_defs(item, defs) for item in value]
-    if not isinstance(value, dict):
-        return value
-    if "$defs" in value:
-        value = _hoist_defs(dict(value), defs)
-    result: dict[str, Any] = {}
-    for key, item in value.items():
-        if key in _SCHEMA_DATA:
-            result[key] = item
-        elif key in _SCHEMA_MAPS and isinstance(item, dict):
-            result[key] = {
-                name: _hoist_nested_defs(schema, defs)
-                for name, schema in item.items()
-            }
-        else:
-            result[key] = _hoist_nested_defs(item, defs)
+    result = _plain(value)
+    for part in _schema_parts(result):
+        if part.kind == "schema" and "$defs" in part.value:
+            # The walk reads the subschema's members after this, so it sees the
+            # subschema without its definitions.
+            hoisted = _hoist_defs(dict(part.value), defs)
+            part.value.clear()
+            part.value.update(hoisted)
     return result
 
 

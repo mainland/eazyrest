@@ -951,6 +951,14 @@ describe them further.
   `1` is the member whose value is `1.0`, where `v1.0.0a5` kept the number as
   it was. A boolean is still no number, so `true` is not the member whose value
   is `1`.
+- A value of the form `#/$defs/Name` in the `mapping` of a `discriminator` in a
+  conversion's schema must name a definition in the schema's own `$defs`, as a
+  `$ref` must, or the conversion raises `TypeError` when it is made, or when
+  `json_schema()` calls the function that returns the schema. `v1.0.0a5`
+  accepted a name that the schema lacked, and a model's schema then named a
+  definition of another conversion that had the same name. A value of another
+  form, such as a bare schema name, is left as it is. A tag in a `mapping` that
+  is named like a keyword, such as `"$id"`, is a tag and no longer raises.
 
 ### Migrating from 0.9.0
 

@@ -22,6 +22,7 @@ from collections.abc import (
     Callable,
     Collection,
     Iterable,
+    Iterator,
     Mapping,
     MutableMapping,
     MutableSequence,
@@ -114,10 +115,14 @@ class Conversion:
             _check_embeddable(_plain_schema(self.schema))
 
 
-# Keywords whose values are JSON data rather than schemas, and keywords that
-# a schema embedded in a model's cannot keep, since they name its root or
-# its resource.
+# Keywords whose values are JSON data rather than schemas, and keywords whose
+# values map names to schemas.
 _SCHEMA_DATA = frozenset({"const", "enum", "default", "examples"})
+_SCHEMA_MAPS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs"}
+)
+# Keywords that a schema embedded in a model's cannot keep, since they name its
+# root or its resource.
 _UNEMBEDDABLE = frozenset(
     {
         "$id",
@@ -189,77 +194,156 @@ def _definition_name(token: str) -> str:
     return unquote(token).replace("~1", "/").replace("~0", "~")
 
 
-def _check_embeddable(
-    schema: Any, *, root: bool = True, defs: Collection[str] = ()
-) -> None:
+class _SchemaPart(NamedTuple):
+    """A subschema of a schema, or a reference in it, with its place.
+
+    Attributes:
+        kind: ``"schema"`` for a subschema, ``"$ref"`` for the value of a
+            ``$ref``, and ``"mapping"`` for a value in the ``mapping`` of a
+            ``discriminator``.
+        holder: The dictionary or list that holds the part.
+        key: The part's key or index in ``holder``.
+        value: The part, which is ``holder[key]``.
+    """
+
+    kind: Literal["schema", "$ref", "mapping"]
+    holder: Any
+    key: Any
+    value: Any
+
+
+def _schema_parts(schema: Any) -> Iterator[_SchemaPart]:
+    """Yield each subschema of a schema and each reference in it.
+
+    This is the one place that decides which values of a schema are schemas,
+    which are JSON data, and which are references. The data keywords hold JSON,
+    so nothing in them is yielded. The keywords that map names to schemas yield
+    the schemas and not the names, so a property named ``"$id"`` is no keyword.
+    A ``discriminator`` yields the values of its ``mapping`` as references, and
+    nothing else of it.
+
+    The schema must hold dictionaries and lists only, as ``_plain()`` gives. A
+    consumer may change a subschema where it is yielded, since the walk reads
+    the subschema's members after it yields it. A subschema is yielded before
+    the subschemas in it.
+
+    Args:
+        schema: A schema.
+
+    Yields:
+        Each part, the schema itself first.
+    """
+    yield from _schema_parts_at([schema], 0)
+
+
+def _schema_parts_at(holder: Any, key: Any) -> Iterator[_SchemaPart]:
+    """Yield the subschemas and references of a part of a schema.
+
+    Args:
+        holder: The dictionary or list that holds the part.
+        key: The part's key or index in ``holder``.
+
+    Yields:
+        Each part, as ``_schema_parts()`` does.
+    """
+    value = holder[key]
+    if isinstance(value, list):
+        for index in range(len(value)):
+            yield from _schema_parts_at(value, index)
+        return
+    if not isinstance(value, dict):
+        return
+    yield _SchemaPart("schema", holder, key, value)
+    for name, item in list(value.items()):
+        if name in _SCHEMA_DATA:
+            continue
+        if name == "$ref":
+            yield _SchemaPart("$ref", value, name, item)
+        elif name == "discriminator" and isinstance(item, dict):
+            mapping = item.get("mapping")
+            if isinstance(mapping, dict):
+                for tag, target in list(mapping.items()):
+                    yield _SchemaPart("mapping", mapping, tag, target)
+        elif name in _SCHEMA_MAPS:
+            if isinstance(item, dict):
+                for member in list(item):
+                    yield from _schema_parts_at(item, member)
+        else:
+            yield from _schema_parts_at(value, name)
+
+
+def _renamed_references(schema: Any, rename: Callable[[Any], Any]) -> Any:
+    """Return a copy of a schema with each reference replaced.
+
+    Args:
+        schema: A schema.
+        rename: Function that takes the value of a ``$ref`` or of a
+            ``discriminator``'s ``mapping`` and returns its replacement.
+
+    Returns:
+        A copy of ``schema`` in dictionaries and lists, that shares no
+        container with it.
+    """
+    copy = _plain(schema)
+    for part in _schema_parts(copy):
+        if part.kind != "schema":
+            part.holder[part.key] = rename(part.value)
+    return copy
+
+
+def _check_embeddable(schema: Any) -> None:
     """Check that a conversion's schema can be embedded in a model's.
 
     Args:
-        schema: The schema, or part of it.
-        root: Whether ``schema`` is the whole schema.
-        defs: Names of the definitions in the root's ``$defs``, when ``schema``
-            is not the root.
+        schema: The schema, in dictionaries and lists, as ``_plain()`` gives.
 
     Raises:
         TypeError: If the schema has ``$id``, ``$schema``, an anchor, ``$defs``
-            below its root or at it that is no mapping, or a reference other
-            than to a definition that it has.
+            below its root or at it that is no mapping, or a reference, in
+            ``$ref`` or in the ``mapping`` of a ``discriminator``, other than
+            to a definition that it has. A value in a ``mapping`` that is no
+            reference into ``$defs``, such as a bare schema name, is not
+            checked.
     """
-    if root:
-        own = schema.get("$defs") if isinstance(schema, Mapping) else None
-        if (
-            isinstance(schema, Mapping)
-            and "$defs" in schema
-            and not isinstance(own, Mapping)
-        ):
-            raise TypeError(
-                "A conversion's schema may have $defs only as a mapping of "
-                f"definitions, not {type(own).__name__}"
-            )
-        defs = own if isinstance(own, Mapping) else ()
-    if isinstance(schema, (list, tuple)):
-        for item in schema:
-            _check_embeddable(item, root=False, defs=defs)
-        return
-    if not isinstance(schema, Mapping):
-        return
-    for key, value in schema.items():
-        if key in _SCHEMA_DATA:
+    own = schema.get("$defs") if isinstance(schema, Mapping) else None
+    if (
+        isinstance(schema, Mapping)
+        and "$defs" in schema
+        and not isinstance(own, Mapping)
+    ):
+        raise TypeError(
+            "A conversion's schema may have $defs only as a mapping of "
+            f"definitions, not {type(own).__name__}"
+        )
+    defs = own if isinstance(own, Mapping) else ()
+    for part in _schema_parts(schema):
+        if part.kind == "schema":
+            for key in part.value:
+                if key in _UNEMBEDDABLE:
+                    raise TypeError(
+                        f"A conversion's schema with {key} cannot be embedded "
+                        "in a model's schema"
+                    )
+                if key == "$defs" and part.value is not schema:
+                    raise TypeError(
+                        "A conversion's schema may have $defs only at its root"
+                    )
             continue
-        if key in _UNEMBEDDABLE:
-            raise TypeError(
-                f"A conversion's schema with {key} cannot be embedded in a "
-                "model's schema"
-            )
-        if key == "$defs" and not root:
-            raise TypeError(
-                "A conversion's schema may have $defs only at its root"
-            )
-        if key == "$ref" and not (
+        value = part.value
+        if part.kind == "$ref" and not (
             isinstance(value, str) and value.startswith("#/$defs/")
         ):
             raise TypeError(
                 f"A conversion's schema may refer only to its own $defs, as "
                 f"#/$defs/Name, not to {value!r}"
             )
-        if key == "$ref":
+        if isinstance(value, str) and value.startswith("#/$defs/"):
             token = value[8:].partition("/")[0]
             if _definition_name(token) not in defs:
                 raise TypeError(
                     f"A conversion's schema refers to {value!r}, which names "
                     "a definition that its $defs lacks"
                 )
-        if key in (
-            "properties",
-            "patternProperties",
-            "$defs",
-            "dependentSchemas",
-        ):
-            if isinstance(value, Mapping):
-                for item in value.values():
-                    _check_embeddable(item, root=False, defs=defs)
-            continue
-        _check_embeddable(value, root=False, defs=defs)
 
 
 _UUID_TEXT = re.compile(
