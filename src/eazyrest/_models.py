@@ -74,6 +74,7 @@ from ._conversion import (
     _Found,
     _is_instance,
     _is_typed_dict,
+    _keeps_members,
     _names_member_value,
     _plain,
     _renamed_references,
@@ -5271,6 +5272,10 @@ def _literal_member(
        the enum's conversion decodes to a member, such as one that the enum's
        ``_missing_()`` maps.
 
+    The rule of an enum that keeps a member for every integer, a ``Flag`` with
+    ``boundary=KEEP``, is not asked, since the lookup would add a member to the
+    enum for each value that a response sends.
+
     Args:
         ty: The ``Literal`` type.
         value: JSON value read.
@@ -5292,7 +5297,9 @@ def _literal_member(
             return _copy_json(value)
     for cls in dict.fromkeys(type(member) for member in members):
         found = _conversion_of(cls, table)
-        if found is None:
+        if found is None or (
+            _is_default_enum_entry(found) and _keeps_members(cls)
+        ):
             continue
         try:
             decoded = _decode_by(found, value)

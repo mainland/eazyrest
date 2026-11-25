@@ -777,6 +777,18 @@ order that the `Literal` lists the enums, to read the value. In
 would map it to. When two enums both map any value, the one that the `Literal`
 lists first reads the value that neither has as a member.
 
+A field declared as an `IntFlag`, or as a `Flag` with `boundary=KEEP`, reads
+any integer as a combination of members, and Python keeps a member in the enum
+for every distinct value that it reads, so a server that sends many distinct
+integers makes the enum grow without bound. A flag with `boundary=STRICT` or
+`boundary=CONFORM` does not: `STRICT` refuses an integer that is no
+combination, and `CONFORM` reads it as the combination that its known bits
+make, of which there are finitely many. A `Literal` of such a flag's members,
+with `Flag`'s own `_missing_()`, never asks the enum. It matches only the
+members' own values and reads any other integer, a negative one included, as it
+is, so a response cannot grow the enum. A flag with a `_missing_()` of its own
+is asked, since the enum's rule decides what that method maps.
+
 Related-object writes send the key that the related model builds, as every key
 is built. An object whose class is neither the field's model nor a subclass of
 it raises `FieldConversionError`, naming the field, the expected model, and the

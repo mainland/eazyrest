@@ -734,6 +734,30 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
     return member
 
 
+def _keeps_members(cls: type[enum.Enum]) -> bool:
+    """Tell whether an enum keeps a member for every integer it is given.
+
+    Args:
+        cls: An enum class.
+
+    Returns:
+        Whether ``cls`` is a ``Flag``, an ``IntFlag`` included, with
+        ``boundary=KEEP`` and ``Flag``'s own ``_missing_()``. Its lookup of an
+        integer that no member has makes a pseudo-member and keeps it in the
+        enum, so a lookup by a value that a response chose grows the enum
+        without bound.
+    """
+    if not issubclass(cls, enum.Flag):
+        return False
+    # The attributes are not in the type stubs.
+    flag: Any = cls
+    own: Any = enum.Flag
+    return (
+        flag._boundary_ is enum.KEEP
+        and getattr(flag._missing_, "__func__", None) is own._missing_.__func__
+    )
+
+
 def _decode_enum_value(value: Any, cls: type[Any]) -> enum.Enum:
     """Decode a JSON value as a member of the declared enum.
 

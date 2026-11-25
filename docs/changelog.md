@@ -261,6 +261,13 @@ describe them further.
   plain member, and then asks each enum in the order that the `Literal` lists
   them, so a plain member such as `"archived"` is read as itself, as `v1.0.0a5`
   did, and not as the member that an enum's `_missing_()` maps it to.
+- A `Literal` of the members of an `IntFlag`, or of a `Flag` with
+  `boundary=KEEP` and `Flag`'s own `_missing_()`, reads any integer that is not
+  a member's value, a negative one included, as the integer, as `v1.0.0a5` did.
+  It does not ask the enum about such an integer, since the enum would keep a
+  member for each one that a response sends. A field declared as such a flag
+  keeps one member per distinct value, as it did in `v1.0.0a5`, and the guide
+  says so.
 - `decimal.Decimal` and `datetime.time` fields read as `Decimal` and `time`,
   where `v1.0.0a5` left the strings. A decimal string with spaces, such as
   `" 1.0 "`, is refused, and `Decimal("1E+2")` writes `"100"`. `deque[T]` reads
