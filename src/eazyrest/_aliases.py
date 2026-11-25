@@ -118,8 +118,11 @@ def _expand_aliases(
     return origin[new_args]
 
 
-def _has_forward_refs(ty: Any) -> bool:
+def _names_by_string(ty: Any) -> bool:
     """Return whether a type names a type by a string, at any depth.
+
+    The values of a ``Literal`` and the metadata of an ``Annotated`` are
+    strings that name nothing, so they do not count.
 
     Args:
         ty: Type to examine.
@@ -130,9 +133,13 @@ def _has_forward_refs(ty: Any) -> bool:
     """
     if isinstance(ty, (str, typing.ForwardRef)):
         return True
-    if typing.get_origin(ty) is Literal:
+    origin = typing.get_origin(ty)
+    if origin is Literal:
         return False
-    return any(_has_forward_refs(arg) for arg in typing.get_args(ty))
+    args = typing.get_args(ty)
+    if origin is Annotated:
+        args = args[:1]
+    return any(_names_by_string(arg) for arg in args)
 
 
 def _resolve_alias_value(alias: Any) -> Any:
@@ -157,7 +164,7 @@ def _resolve_alias_value(alias: Any) -> Any:
             is not defined yet, whatever that raises.
     """
     value = alias.__value__
-    if not _has_forward_refs(value):
+    if not _names_by_string(value):
         return value
 
     try:

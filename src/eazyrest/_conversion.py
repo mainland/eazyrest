@@ -37,7 +37,7 @@ from urllib.parse import unquote
 
 import isodate
 
-from ._aliases import _expand_aliases
+from ._aliases import _expand_aliases, _names_by_string
 from .dateparse import parse_datetime, parse_duration
 
 _typing_extensions: types.ModuleType | None
@@ -1114,30 +1114,6 @@ def _annotated_supertype(ty: Any) -> Any:
     if supertype is None:
         return None
     return _expand_aliases(supertype)
-
-
-def _names_by_string(ty: Any) -> bool:
-    """Return whether a type names a type by a string, at any depth.
-
-    The values of a ``Literal`` and the metadata of an ``Annotated`` are
-    strings that name nothing, so they do not count.
-
-    Args:
-        ty: Type to examine.
-
-    Returns:
-        Whether ``ty``, or a type argument within it, is a string or a
-        ``ForwardRef``.
-    """
-    if isinstance(ty, (str, typing.ForwardRef)):
-        return True
-    origin = typing.get_origin(ty)
-    if origin is Literal:
-        return False
-    args = typing.get_args(ty)
-    if origin is Annotated:
-        args = args[:1]
-    return any(_names_by_string(arg) for arg in args)
 
 
 class _Found(NamedTuple):
