@@ -3016,31 +3016,21 @@ def _hook_result(
     raise TypeError(message)
 
 
-def _adopt_hook_results(
-    query: _Query, hook: str, model: type[Any], objects: Iterable[Any]
-) -> None:
-    """Give the objects that a bulk hook returned the API of the query's graph.
+def _adopt_hook_results(query: _Query, objects: Iterable[Any]) -> None:
+    """Give the objects that use the query's client the query's ``api=``.
 
-    Walks the objects, their relation caches, and the objects that they
-    prefetched, to any depth. Every object that the walk reaches then keeps the
-    query's ``api=``, or none if the query has none, and so does not keep the
-    request options that the hook's client carried. Every object is checked
-    before any is changed, so a refused result leaves all of them as they were.
+    Walks the objects that a bulk hook returned, their relation caches, and the
+    objects that they prefetched, to any depth. Each object that the walk
+    reaches and that uses the client that the query passed to the hook then
+    keeps the query's ``api=``, or none if the query has none, and so does not
+    keep the request options that the client carried. Any other object, such as
+    one that the hook built with another API, is left as it is.
 
     Args:
-        query: The query whose graph the objects join.
-        hook: Name of the hook that returned the objects, for the error.
-        model: The model whose hook it is, for the error.
+        query: The query that passed its client to the hook.
         objects: What the hook returned, which may hold any value.
-
-    Raises:
-        UsageError: If an object that the walk reaches uses another ``API``
-            than the query's, or its class is registered on another than the
-            one that the query's model is registered on.
     """
-    graph = _as_api(query.client)
     seen: set[int] = set()
-    reached: list[JSONObject] = []
     stack: list[Any] = list(objects)
     while stack:
         value = stack.pop()
@@ -3048,7 +3038,9 @@ def _adopt_hook_results(
             if id(value) in seen:
                 continue
             seen.add(id(value))
-            reached.append(value)
+            value._graph_api = query.graph
+            if value._api_override is query.client:
+                value._api_override = query.api
             stack.extend(value._field_cache.values())
             stack.extend(value._prefetched_related.values())
         elif isinstance(value, Mapping):
@@ -3057,21 +3049,6 @@ def _adopt_hook_results(
             value, (list, tuple, set, frozenset, collections.deque)
         ):
             stack.extend(value)
-    for value in reached:
-        if not _agrees_with_graph(
-            graph, _object_api(value)
-        ) or not _agrees_with_graph(
-            query.graph, _registered_api_of(type(value))
-        ):
-            raise UsageError(
-                f"{model.__name__}.{hook}() returned an object of "
-                f"{type(value).__name__} that uses another API than the "
-                "query. Build every object with the api that the hook "
-                "was given, from a class registered on the query's API"
-            )
-    for value in reached:
-        value._api_override = query.api
-        value._graph_api = query.graph
 
 
 def _object_url(obj: JSONObject) -> str:
@@ -11126,13 +11103,6 @@ class JSONObject:
                     api=query.client,
                 ),
             )
-            # A hook builds its objects with the client that it was given,
-            # which carries the query's request options, and a relation that it
-            # reads gives the same client to the related object. Every object
-            # of the graph keeps the query's API instead.
-            _adopt_hook_results(
-                query, "bulk_get_by_pks", model_type, related_objects.values()
-            )
             # A hook keys its result as it likes, by the key as the parents
             # spell it or as it decodes, so each object gives its own key.
             for obj in related_objects.values():
@@ -11146,6 +11116,12 @@ class JSONObject:
                         f"{cls.__name__}.{field}, which is not keyed as "
                         f"{model_type.__name__} is"
                     )
+            # A hook builds its objects with the client that it was given,
+            # which carries the query's request options, and a relation that it
+            # reads gives the same client to the related object. Each object
+            # that uses that client keeps the query's API instead. The checks
+            # above come first, so a refused result changes no object.
+            _adopt_hook_results(query, related_objects.values())
             prefetched_related[field] = {
                 obj._key: obj for obj in related_objects.values()
             }

@@ -56,15 +56,14 @@ def test_a_related_object_in_a_collection_leaves_the_hooks_client(
     make: Callable[[Iterable[Tag]], Any], given: bool
 ) -> None:
     """The tag keeps the query's ``api=``, and none of the hook's options."""
-    hook_client = api._scoped(OPTIONS)
     own = api if given else None
+    query = _Query.choose(Box, own, OPTIONS)
+    hook_client = query.client
     tag = Tag(json={"id": 1}, api=hook_client)
     box = Box(json={"id": 2, "tags": [1]}, api=hook_client)
     box._field_cache["tags"] = make([tag])
 
-    query = _Query.choose(Box, own, {})
-
-    _adopt_hook_results(query, "bulk_get_by_pks", Box, [box])
+    _adopt_hook_results(query, [box])
 
     assert box._api_override is own
     assert tag._api_override is own

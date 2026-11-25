@@ -2418,11 +2418,12 @@ so `api=` serves a graph whose models are not registered. A model with none
 passes on the API of the graph that reached it, so a model registered on
 another API cannot be reached through it either. A related object that you
 assign, or give to `create()` or `get_or_create()`, must also use its parent's
-API, or it raises `ValueError`. A bulk hook must build its objects with the
-`api` that it receives, or with no `api=` when the query has none. A hook that
-returns an object, or an object that holds one, of another `API`, or of a class
-registered on another API than the query's model, raises `UsageError` naming
-the hook, and none of the objects that it returned is changed.
+API, or it raises `ValueError`. A bulk hook should build its objects with the
+`api` that it receives. Each object of its result that uses that client, and
+each object that it reaches through relations and prefetches, then keeps the
+query's `api=`, or none if the query has none, so it keeps none of the query's
+request options. An object that uses another client is left as it is, and no
+result is refused for it.
 
 ## Errors
 

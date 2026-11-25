@@ -396,9 +396,10 @@ describe them further.
   `Client`, such as `api.session` or a helper of your subclass, reads the
   API's, and assigning one raises `AttributeError`. A helper of your subclass
   that sends requests through its own `self` does not send the query's options.
-  An object that a hook builds with this `api` keeps the view, and registering
-  the view with `register_api()` raises `TypeError`. A query without
-  `request_options=` still passes its API itself.
+  An object that a bulk hook builds with this `api` keeps the query's `api=`
+  and none of its options, and registering the view with `register_api()`
+  raises `TypeError`. A query without `request_options=` still passes its API
+  itself.
 - The view of the client that a query with `request_options=` passes to its
   hooks adds its options and nothing else. `v1.0.0a5` raised `RedirectError`
   from it for a 3xx that the request did not follow, so a hook that sent
@@ -1029,14 +1030,14 @@ describe them further.
   the registration of the graph that reached it, so a model of another API
   cannot be reached through it. A related object that is assigned, or given to
   `create()` or `get_or_create()`, raises `ValueError` if it uses another API
-  than its parent, and a bulk hook that returns an object of another API, or of
-  a class registered on another, raises `UsageError` before it changes any
-  object. A generator that reads a relation of an object of another API while a
-  value is written is no longer refused. A bulk hook's `api` is the query's
-  client, so passing it on to `filter()` sends no request to another API, and
-  the related objects keep none of the query's request options. A model with no
-  registered API still takes the `api=` of its parent. Read the key of a
-  relation to a model of another API and call that model's `get()`.
+  than its parent. A generator that reads a relation of an object of another
+  API while a value is written is no longer refused. A bulk hook's `api` is the
+  query's client, so passing it on to `filter()` sends no request to another
+  API, and each object that uses that client, and each object that it reaches,
+  keeps the query's `api=` and none of its request options. A hook's object
+  that uses another client is left as it is. A model with no registered API
+  still takes the `api=` of its parent. Read the key of a relation to a model
+  of another API and call that model's `get()`.
 - `url` and `absolute_url` raise `UsageError`, as a request does, when a class
   of the model had `api` assigned, where `absolute_url` returned a URL of the
   assigned value.

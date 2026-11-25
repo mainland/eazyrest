@@ -470,22 +470,21 @@ def test_a_graph_with_agreeing_registrations_reads_through_a_model_with_none(
 
 
 @pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_a_hook_that_returns_a_subclass_on_another_api_is_refused(
+def test_a_hook_that_returns_a_subclass_on_another_api_is_not_refused(
     mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch, given: bool
 ) -> None:
-    """A subclass registered on another API is refused, built with the api.
+    """A subclass registered on another API is taken, as the query gives it.
 
     Args:
         given: Whether the query is given ``api=``.
     """
     register(monkeypatch, thing=A, owner=A, special=B)
     HOOK["class"] = Special
-    api = A if given else None
 
-    with pytest.raises(UsageError, match=r"Owner\.bulk_get_by_pks\(\)"):
-        list(Thing.filter(prefetch="owner", api=api))
+    thing = next(Thing.filter(prefetch="owner", api=A if given else None))
 
-    assert not any(r.hostname == "b.test" for r in mock.request_history)
+    assert type(thing.owner) is Special
+    assert thing.owner.api is (A if given else B)
 
 
 def test_a_hook_that_returns_a_subclass_on_its_own_api_is_taken(
@@ -501,31 +500,29 @@ def test_a_hook_that_returns_a_subclass_on_its_own_api_is_taken(
     assert thing.owner.api is A
 
 
-def test_a_refused_hook_result_leaves_every_object_as_it_was(
+def test_a_hook_result_that_is_refused_leaves_every_object_as_it_was(
     mock: requests_mock.Mocker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No object that the hook returned changes if one is refused."""
-    register(monkeypatch, thing=A, owner=A, special=B)
-    returned: list[Owner] = []
+    register(monkeypatch, thing=A, owner=A, team=A)
+    returned: list[Any] = []
 
-    def hook(pks: set[Any], *, api: Any, **kwargs: Any) -> dict[Any, Owner]:
-        # The refused object comes first, and the walk visits the last first.
+    def hook(pks: set[Any], *, api: Any, **kwargs: Any) -> dict[Any, Any]:
+        # The refused object comes last, and the walk visits the last first.
         made = {
-            5: Special(json=owner_json(5), api=api),
-            6: Owner(json=owner_json(6), api=api),
+            5: Owner(json=owner_json(5), api=api),
+            6: Team(json={"id": 6, "name": "t"}, api=api),
         }
         returned.extend(made.values())
         return made
 
     monkeypatch.setattr(Owner, "bulk_get_by_pks", staticmethod(hook))
-    clients = []
 
-    with pytest.raises(UsageError, match=r"Owner\.bulk_get_by_pks\(\)"):
-        list(Thing.filter(prefetch="owner"))
+    with pytest.raises(TypeError, match=r"Owner\.bulk_get_by_pks\(\)"):
+        list(Thing.filter(prefetch="owner", request_options={"timeout": 5}))
 
-    clients = [obj._api_override for obj in returned]
-    assert all(client is A for client in clients)
-    assert [obj._graph_api for obj in returned] == [None, None]
+    assert all(obj._api_override is not None for obj in returned)
+    assert all(obj._api_override is not A for obj in returned)
 
 
 def test_a_generator_that_reads_another_apis_relation_is_taken(

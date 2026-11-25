@@ -875,10 +875,10 @@ class Task(JSONObject):
 
 
 @pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_a_hook_that_builds_an_object_with_another_api_is_refused(
+def test_a_hook_that_builds_an_object_with_another_api_is_not_refused(
     world: World, monkeypatch: pytest.MonkeyPatch, given: bool
 ) -> None:
-    """The error names the hook, and no object that it returned is used.
+    """An object that does not use the query's client keeps the API it has.
 
     Args:
         given: Whether the query is given ``api=``.
@@ -889,32 +889,32 @@ def test_a_hook_that_builds_an_object_with_another_api_is_refused(
     monkeypatch.setattr(Hooked, "built_with", world.apis["C"])
     kwargs: dict[str, Any] = {"api": world.apis["G"]} if given else {}
 
-    with pytest.raises(UsageError, match=r"Member\.bulk_get_by_pks\(\)"):
-        list(Task.filter(prefetch="member", **kwargs))
+    task = next(Task.filter(prefetch="member", **kwargs))
+
+    assert task.member.api is world.apis["C"]
 
 
 @pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
-def test_a_hook_that_builds_an_object_with_a_view_of_the_query_api_is_taken(
+def test_a_hook_that_builds_an_object_with_a_view_of_its_own_is_left_as_built(
     world: World, monkeypatch: pytest.MonkeyPatch, given: bool
 ) -> None:
-    """The object, and what it read, keep the query's API, not the view.
+    """A view that is not the query's client keeps its options.
 
     Args:
         given: Whether the query is given ``api=``.
     """
     own = world.apis["G"] if given else None
     served = own or world.apis["A"]
+    view = served._scoped(QUERY_HEADER)
     monkeypatch.setitem(_api_registry, Task, world.apis["A"])
     monkeypatch.setitem(_api_registry, Member, world.apis["A"])
     monkeypatch.setitem(_api_registry, Org, world.apis["A"])
-    monkeypatch.setattr(Hooked, "built_with", served._scoped(QUERY_HEADER))
+    monkeypatch.setattr(Hooked, "built_with", view)
 
     task = next(Task.filter(prefetch="member", api=own))
 
-    assert task.member._api_override is own
-    assert task.member.org._api_override is own
-    assert task.member.api is served
-    assert task.member.org.api is served
+    assert task.member._api_override is view
+    assert task.member.org._api_override is view
 
 
 QUERIES: dict[str, Callable[..., Any]] = {

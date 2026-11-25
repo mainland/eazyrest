@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import requests_mock
 
-from eazyrest import API, JSONObject, UsageError, json_object
+from eazyrest import API, JSONObject, json_object
 
 BASE = "https://nested-clients.example/"
 api = API(BASE)
@@ -170,9 +170,13 @@ class Job(Base):
     pinned: Pinned
 
 
-def test_an_object_that_the_hook_built_with_another_api_is_refused() -> None:
-    """The error names the hook, and the objects are not used."""
+def test_an_object_that_the_hook_built_with_another_api_is_kept() -> None:
+    """The hook's object, and the objects it reads, keep the hook's client."""
     with requests_mock.Mocker() as mocker:
         mocker.get(BASE + "jobs/", json=[{"id": 1, "pinned": 7}])
-        with pytest.raises(UsageError, match=r"Pinned\.bulk_get_by_pks\(\)"):
-            next(iter(Job.filter(prefetch="pinned", request_options=OPTIONS)))
+        job = next(
+            iter(Job.filter(prefetch="pinned", request_options=OPTIONS))
+        )
+
+    assert job.pinned.api is OTHER
+    assert job.pinned.group.api is OTHER
