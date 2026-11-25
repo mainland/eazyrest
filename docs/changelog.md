@@ -254,7 +254,10 @@ describe them further.
   when the supertype is a named alias or an `Annotated`, where `v1.0.0a5` read
   their JSON values unchanged.
 - A `Literal` field reads the JSON value of one of its enum members as the
-  member, where `v1.0.0a5` read the JSON value.
+  member, where `v1.0.0a5` read the JSON value. It reads any value that the
+  enum maps to one of the `Literal`'s members, as an enum field does, so a
+  member that the enum's `_missing_()` finds for `"OPEN"` is read as the
+  member.
 - `decimal.Decimal` and `datetime.time` fields read as `Decimal` and `time`,
   where `v1.0.0a5` left the strings. A decimal string with spaces, such as
   `" 1.0 "`, is refused, and `Decimal("1E+2")` writes `"100"`. `deque[T]` reads

@@ -757,7 +757,10 @@ class TicketStatus(str, enum.Enum):
 
 Reading the field does not change the object's JSON, so saving other fields
 leaves the server's value alone. Assigning `TicketStatus.UNKNOWN` to the field
-sends `"unknown"`.
+sends `"unknown"`. A field declared as a `Literal` of the enum's members, such
+as `Literal[TicketStatus.OPEN, TicketStatus.CLOSED]`, reads a value as the enum
+field does, so it returns the member that `_missing_()` maps a value to when
+that member is one of the `Literal`'s, and the value as it is when it is not.
 
 Related-object writes send the key that the related model builds, as every key
 is built. An object whose class is neither the field's model nor a subclass of
