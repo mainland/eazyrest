@@ -123,6 +123,23 @@ else:
     _typing_extensions = _typing_extensions_module
 
 
+def _in_field(owner: type, field: str, detail: object) -> str:
+    """Name a field in front of what is wrong with it.
+
+    This is the one place that writes how an error names a field, as
+    ``Model.field: detail``.
+
+    Args:
+        owner: Model, or the structure, that declares the field.
+        field: Name of the field, or of the member of a structure.
+        detail: What is wrong with it.
+
+    Returns:
+        The message.
+    """
+    return f"{owner.__name__}.{field}: {detail}"
+
+
 class FieldConversionError(EazyrestError, TypeError, ValueError):
     """Raised when a field's value cannot be converted to or from JSON.
 
@@ -146,9 +163,12 @@ class FieldConversionError(EazyrestError, TypeError, ValueError):
             field: Python attribute name of the field.
             error: Error that the conversion raised.
         """
-        super().__init__(f"{model.__name__}.{field}: {error}")
+        super().__init__(_in_field(model, field, error))
         self.model = model
         self.field = field
+        # What the message says after the field's name, kept so that a position
+        # can be put there without taking the name off again.
+        self._detail = str(error)
 
 
 _RAISED_AS_IS = "_eazyrest_raised_as_is"
@@ -1860,9 +1880,7 @@ def _structure_member(hint: Any, container: Any, name: str) -> AnalyzedType:
     try:
         analyzed = analyze_type(hint)
     except _PydanticMetadataError as err:
-        raise _PydanticMetadataError(
-            f"{container.__name__}.{name}: {err}"
-        ) from err
+        raise _PydanticMetadataError(_in_field(container, name, err)) from err
     _check_no_models(analyzed, container)
     return analyzed
 
@@ -1993,9 +2011,7 @@ def _typed_dict_keys(ty: type[Any]) -> dict[str, AnalyzedType]:
         try:
             analyzed = analyze_type(hint)
         except _PydanticMetadataError as err:
-            raise _PydanticMetadataError(
-                f"{ty.__name__}.{key}: {err}"
-            ) from err
+            raise _PydanticMetadataError(_in_field(ty, key, err)) from err
         _check_no_models(analyzed, ty)
         keys[key] = analyzed
     return keys
@@ -4252,7 +4268,7 @@ def _refuse_declared_type(
             err, _RAISED_AS_IS, False
         ):
             raise
-        refusal = TypeError(f"{cls.__name__}.{prop.field}: {err}")
+        refusal = TypeError(_in_field(cls, prop.field, err))
         setattr(refusal, _RAISED_AS_IS, True)
         raise refusal from err
 
@@ -5607,9 +5623,8 @@ def _at_position(err: FieldConversionError, index: int) -> Exception:
     cause = err.__cause__
     if not isinstance(cause, (TypeError, ValueError)):
         return err
-    detail = str(err).removeprefix(f"{err.model.__name__}.{err.field}: ")
     kind = TypeError if isinstance(cause, TypeError) else ValueError
-    indexed = kind(f"[{index}]: {detail}")
+    indexed = kind(f"[{index}]: {err._detail}")
     indexed.__cause__ = cause
     error = FieldConversionError(err.model, err.field, indexed)
     error.__cause__ = indexed
