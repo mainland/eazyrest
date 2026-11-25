@@ -968,7 +968,9 @@ describe them further.
 - A `TypedDict` or `NamedTuple` that is declared inside a function and names
   itself in a string annotation, as in `children: "list[Node]"`, is read, as a
   dataclass declared there already was. `v1.0.0a5` raised
-  `FieldConversionError` for it, saying that the name is not defined.
+  `FieldConversionError` for it, saying that the name is not defined. A field
+  named like a builtin that its annotation names, as in `list: list[int]` of a
+  `NamedTuple`, is read too.
 - Every object that a query reaches uses one API: the `api=` that the query was
   given, or else the API registered for the class that it reads. A relation
   between two models that are registered on different `API` objects raises
