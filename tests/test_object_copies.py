@@ -9,10 +9,12 @@ from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
+import requests_mock
 
 from eazyrest import API, Conversion, JSONObject, json_object
 
-api = API("https://copies.example/")
+BASE = "https://copies.example/"
+api = API(BASE)
 
 
 @json_object
@@ -22,6 +24,17 @@ class Keyed(JSONObject):
     class_url = "/keyed/"
     id: int
     name: str
+
+
+@json_object(write_only={"secret"})
+class Account(JSONObject):
+    """A model with a write-only field and a list that changes in place."""
+
+    class_url = "/accounts/"
+    id: int
+    name: str
+    tags: list[str]
+    secret: str
 
 
 @json_object
@@ -83,6 +96,7 @@ class Decoded(JSONObject):
 
 Keyed.register_api(api)
 Member.register_api(api)
+Account.register_api(api)
 Decoded.register_api(api)
 
 
@@ -226,3 +240,60 @@ def test_an_object_made_without_its_constructor_has_no_key() -> None:
         _ = bare.pk
     with pytest.raises(AttributeError):
         _ = hash(bare)
+
+
+HOLDERS: dict[str, Callable[[Any], Any]] = {
+    "list": lambda obj: [obj],
+    "dict": lambda obj: {"a": obj},
+    "tuple": lambda obj: (obj,),
+    "dataclass": lambda obj: Holder(obj),
+}
+
+
+@dataclasses.dataclass
+class Holder:
+    """A dataclass that holds an object."""
+
+    obj: Any
+
+
+@pytest.mark.parametrize("hold", HOLDERS.values(), ids=HOLDERS.keys())
+def test_a_shallow_copy_of_a_container_does_not_reach_the_object_it_holds(
+    hold: Callable[[Any], Any],
+) -> None:
+    """The container is copied, or shared, and the object is not copied."""
+    held = hold(keyed())
+    assert type(copy.copy(held)) is type(held)
+
+
+def test_json_of_an_object_drops_what_it_does_not_hold() -> None:
+    """A write-only value and a change in place are not in ``obj.json``."""
+    original = Account(json={"id": 1, "name": "a", "tags": ["x"]})
+    original.secret = "s3"
+    original.tags.append("y")
+    twin = Account(json=original.json)
+    assert twin.json == {"id": 1, "name": "a", "tags": ["x"]}
+    assert twin.tags == ["x"]
+    assert "secret" not in twin.json
+
+
+def test_json_of_a_partial_object_builds_an_object_that_is_not_partial() -> (
+    None
+):
+    """The new object does not load the fields that the first lacks."""
+    with requests_mock.Mocker() as mocker:
+        mocker.post(BASE + "accounts/", json={"id": 7})
+        mocker.get(
+            BASE + "accounts/7/",
+            json={"id": 7, "name": "srv", "tags": ["t"]},
+        )
+        made = Account.create(name="n")
+        twin = Account(json=made.json)
+        with pytest.raises(AttributeError, match="missing"):
+            _ = twin.tags
+        assert made.tags == ["t"]
+
+        # The replacement that keeps the loading of what is missing.
+        loading = Account(pk=made.pk)
+        loading.update_from_json(made.json)
+        assert loading.tags == ["t"]

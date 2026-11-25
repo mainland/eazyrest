@@ -465,14 +465,27 @@ payload with `copy.deepcopy()` before changing a value in it for another
 purpose.
 
 An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
-`pickle.dumps()` of an object, or of a container that holds one, raise
-`TypeError`, whose message names the model and the replacement. Build another
-object from the JSON of the first, given the same `api=` if it had one, as
-`User(json=user.json, api=api)`. The new object owns its payload and its
+`pickle.dumps()` of an object raise `TypeError`, whose message names the model
+and the replacement, as do `copy.deepcopy()` and `pickle.dumps()` of a
+container that holds one. `copy.copy()` of a container that holds an object
+does not raise, since it copies the container and shares the object. Build
+another object from the JSON of the first, given the same `api=` if it had one,
+as `User(json=user.json, api=api)`. The new object owns its payload and its
 related objects, and holds the pending changes of the first as loaded values,
-so its `save()` sends nothing for them. Read the object from the server again
-instead to start from the server's state. An error, an `API`, and the view that
-a query's hooks receive still pickle.
+so its `save()` sends nothing for them. It does not hold a write-only value
+that was assigned, since an object never keeps one, or a change that was made
+in place to a value that was read and not yet saved, since `json` does not hold
+it. The new object is not partial, even if the first was, such as an object
+that `create()` returned for a response that lacked fields. Reading a field
+that its JSON lacks raises `AttributeError` and does not load it. To keep that
+loading, build the object from its key, `User(pk=user.pk, api=api)`, and give
+it the JSON with `update_from_json(user.json)`. Read the object from the server
+again instead to start from the server's state. An error, an `API`, and the
+view that a query's hooks receive still pickle.
+
+A model object is no JSON value. `json=` and `update_from_json()` raise
+`TypeError` for a mapping that holds one, in a list, tuple, set, or frozenset
+too, with a message that says so. Give its key, or its `json`.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that

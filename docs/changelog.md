@@ -475,12 +475,16 @@ describe them further.
   for `create()`. Keep what is needed in the JSON that the hook returns, and
   read the key from the response.
 - An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
-  `pickle.dumps()` of an object, or of a container that holds one, raise
-  `TypeError` naming the model, where `v1.0.0a5` copied and pickled it, and its
-  pickles no longer load. Build another object with
-  `Model(json=obj.json, api=api)`, which holds the pending changes of the first
-  as loaded values, or read the object from the server again. Errors, `API`
-  objects, and the views of a query still pickle.
+  `pickle.dumps()` of an object raise `TypeError` naming the model, where
+  `v1.0.0a5` copied and pickled it, and its pickles no longer load. So do
+  `copy.deepcopy()` and `pickle.dumps()` of a container that holds one, and
+  `copy.copy()` of such a container does not, since it shares the object. Build
+  another object with `Model(json=obj.json, api=api)`, which holds the pending
+  changes of the first as loaded values. It does not hold a write-only value, a
+  change made in place, or the loading of a partial object's missing fields.
+  Build that object with `Model(pk=obj.pk, api=api)` and
+  `update_from_json(obj.json)` instead. Or read the object from the server
+  again. Errors, `API` objects, and the views of a query still pickle.
 - A model object inside the mapping that `json=` or `update_from_json()` is
   given raises `TypeError` with a message that says the object is no JSON
   value, where it raised the message of a refused copy. A model object inside a
@@ -880,12 +884,15 @@ describe them further.
   sorted order. Join no values yourself: the guide advised that for
   django-filter's lookups, and it is no longer needed.
 - An object cannot be copied or pickled. `copy.copy()`, `copy.deepcopy()`, and
-  `pickle.dumps()` of an object, or of a container that holds one, such as
-  `dataclasses.asdict()` of a dataclass that holds an object, raise `TypeError`
-  naming the model. 0.9.0 copied and pickled objects as Python does. Build
-  another object with `Model(json=obj.json, api=api)`, or read it from the
-  server again. A process pool or a cache that pickles its arguments needs the
-  JSON, or the key, in place of the object.
+  `pickle.dumps()` of an object, and `copy.deepcopy()` and `pickle.dumps()` of
+  a container that holds one, such as `dataclasses.asdict()` of a dataclass
+  that holds an object, raise `TypeError` naming the model. `copy.copy()` of a
+  container does not, since it shares the object. 0.9.0 copied and pickled
+  objects as Python does. Build another object with
+  `Model(json=obj.json, api=api)`, which drops a write-only value and a change
+  made in place, or read it from the server again. A process pool or a cache
+  that pickles its arguments needs the JSON, or the key, in place of the
+  object.
 - Prefetch builds each key that the parent payloads hold with the related
   model's key constructor before it calls `bulk_get_by_pks()`, each distinct
   value once. A value that model cannot build as a key, such as `"7"` or `true`
