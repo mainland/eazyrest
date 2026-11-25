@@ -1550,7 +1550,8 @@ for todo in todos:
 Explicit prefetch requires the related model to implement `bulk_get_by_pks()`.
 The method receives the primary keys found in the parent payloads, each once
 and as the related model writes it, and as `api` the client to request them
-with, which is the query's `api=` or else the related model's own API. The
+with, which is the query's own client: its `api=` or else the API registered
+for the parent's class, with the query's `request_options=` if it has any. The
 related model builds each key, as it does when a parent reads the field, so a
 payload that holds a value that the model cannot build as a key, such as `"7"`
 or `true` for an `int` key, or a list, raises `FieldConversionError` naming the
@@ -1985,14 +1986,13 @@ options, and none of the refused block's options remain.
 The query methods `filter()`, `all()`, `get()`, and `get_or_create()` take
 `request_options=` too, for every request that the query sends: the collection
 request, the requests for later pages that a collection hook sends with its
-`api`, and the bulk lookups of `prefetch=`. A bulk lookup gets the options only
-when its API has the origin of the query's own, so that a header such as
-`Authorization` does not reach another model's host. The options otherwise go
-where the session's own headers go: a collection hook that reads pages with
-`allow_other_origins=True` sends them to the pages' origin. A query sends no
-body and builds its own parameters, so its options cannot set `json`, `data`,
-`files`, or `params`, and it reads every response, so they cannot enable
-`stream=True`. The objects that a query returns do not keep its options:
+`api`, and the bulk lookups of `prefetch=`, which go through the query's own
+API. The options go where the session's own headers go: a collection hook that
+reads pages with `allow_other_origins=True` sends them to the pages' origin. A
+query sends no body and builds its own parameters, so its options cannot set
+`json`, `data`, `files`, or `params`, and it reads every response, so they
+cannot enable `stream=True`. The objects that a query returns do not keep its
+options:
 
 ```python
 todos = Todo.filter(
@@ -2365,14 +2365,23 @@ sends requests with different credentials, for example one `API` per user:
 todos = Todo.filter(api=user_api, completed=False)
 ```
 
-Prefetch passes a query's `api=` to `bulk_get_by_pks(api=...)`, or else the
-related model's own API, and the collection hooks receive the query's client as
-`api`, so a hook such as `follow_next_links(api, payload)` reads later pages
-with it.
+Prefetch passes the query's client to `bulk_get_by_pks(api=...)`, and the
+collection hooks receive it as `api`, so a hook such as
+`follow_next_links(api, payload)` reads later pages with it.
 
-A related object loads through the API registered for its own class, so models
-served by different APIs can refer to each other. If the parent object has an
-`api=` override, its related objects use that override too.
+Every object that a query reaches uses one API: the `api=` that the query or
+the constructor was given, or else the API registered for the class that it
+reads. That holds for the objects that a relation, an embedded object, a
+prefetch, or a bulk hook reaches from it. A relation between two models that
+are registered on different `API` objects raises `UsageError` when it is first
+used, before any request, whether or not `api=` is given. Read the key and call
+the other model's `get()` instead. A model with no registered API agrees with
+any, so `api=` serves a graph whose models are not registered. A related object
+that you assign, or give to `create()` or `get_or_create()`, must use its
+parent's API, or it raises `ValueError`. A bulk hook must build its objects
+with the `api` that it receives, or with no `api=` when the query has none. A
+hook that returns an object, or an object that holds one, of another `API`
+raises `UsageError` naming the hook.
 
 ## Errors
 

@@ -16,13 +16,11 @@ import requests_mock
 
 from eazyrest import (
     API,
-    JSONObject,
     PaginationError,
     RedirectError,
     follow_link_headers,
     follow_next_links,
 )
-from eazyrest._models import _Query
 from eazyrest._urls import (
     _base_origins,
     _origin,
@@ -246,33 +244,6 @@ def test_a_redirect_origin_of_another_scheme_is_refused() -> None:
     """An entry of the allowed origins needs an http or https scheme."""
     with pytest.raises(ValueError, match="scheme is not http or https"):
         _redirect_origin(0, "mock://cdn.test")
-
-
-@pytest.mark.parametrize("base", ["mock:/", "mock://api.test/"])
-def test_a_related_lookup_of_another_scheme_gets_no_request_options(
-    base: str,
-) -> None:
-    """The query's options go only to a client with the query's origin."""
-    client = API(base)
-    related = API(base)
-    query = _Query(
-        api=related, client=client, options={"headers": {"X-Trace": "1"}}
-    )
-
-    assert query.related_client(JSONObject) is related
-
-
-def test_a_related_lookup_of_the_same_origin_gets_the_request_options() -> (
-    None
-):
-    """The check still passes options to a client of the query's origin."""
-    client = API("https://api.test/")
-    related = API("https://api.test/other/")
-    query = _Query(
-        api=related, client=client, options={"headers": {"X-Trace": "1"}}
-    )
-
-    assert query.related_client(JSONObject) is not related
 
 
 @pytest.mark.parametrize(

@@ -3,17 +3,21 @@
 An object that a query builds, and each object that a relation, an embedded
 object, a prefetch, or a bulk hook reaches from it, sends its requests through
 one API: the ``api=`` that the query was given, or else the API registered for
-the class that the query reads.
+the class that the query reads. A relation between classes that are registered
+on different APIs is refused before any request, and so is a related object
+that is given with another API than its parent's.
 
 Each test runs the entry points of the rule over models that are registered on
-one API, with and without ``api=`` and ``request_options=``. Every API has its
-own origin, its own mounted adapter, and its own ``Authorization`` header, and
-the log records which adapter received each request.
+one API, on two, and on none, with and without ``api=`` and
+``request_options=``. Every API has its own origin, its own mounted adapter,
+and its own ``Authorization`` header, and the log records which adapter
+received each request.
 """
 
 from __future__ import annotations
 
 import copy
+import pickle
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,7 +26,7 @@ from urllib.parse import unquote
 import pytest
 import requests_mock
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import API, JSONObject, UsageError, json_object
 from eazyrest._models import _api_registry
 
 THING = {"id": 1, "name": "a", "owner": 5, "owners": [5, 6]}
@@ -165,7 +169,7 @@ class Owner(JSONObject):
         return {owner.pk: owner for owner in owners}
 
 
-@json_object
+@json_object(write_only={"boss"})
 class Thing(JSONObject):
     """The root of the graph."""
 
@@ -174,6 +178,7 @@ class Thing(JSONObject):
     name: str
     owner: Owner
     owners: list[Owner]
+    boss: Owner
 
 
 @pytest.fixture
@@ -240,11 +245,11 @@ ENTRY_POINTS: dict[str, tuple[bool, Callable[..., list[Thing]]]] = {
     "get()": (False, lambda **kw: [Thing.get(id=1, **kw)]),
     "get_page() and next_page()": (False, pages),
     "create()": (False, lambda **kw: [Thing.create(name="n", **kw)]),
-    "get_or_create() finding": (
+    "get_or_create() that finds": (
         False,
         lambda **kw: [Thing.get_or_create(name="a", **kw)[0]],
     ),
-    "get_or_create() creating": (
+    "get_or_create() that creates": (
         False,
         lambda **kw: [Thing.get_or_create(name="zzz", **kw)[0]],
     ),
@@ -337,3 +342,760 @@ def test_models_on_one_api_send_every_request_through_the_graph_api(
             assert request.query_header is None
         elif sends_options:
             assert request.query_header == "q"
+
+
+@pytest.mark.parametrize("hook", ["plain", "prefetch", "read"])
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_hook_that_passes_its_api_on_keeps_the_graphs_api(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    given: bool,
+    hook: str,
+) -> None:
+    """The objects of a hook keep the query's API, or none if it has none.
+
+    Args:
+        given: Whether the query is given ``api=``.
+        hook: What the bulk hook of ``Owner`` does besides reading owners.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    HOOK["mode"] = hook
+    own = world.apis["G"] if given else None
+
+    thing = next(
+        Thing.filter(prefetch="owner", request_options=QUERY_HEADER, api=own)
+    )
+
+    assert thing._api_override is own
+    assert thing.owner._api_override is own
+    assert thing.owner.org._api_override is own
+    assert thing.owner.org.api is (own or world.apis["A"])
+
+
+RELATION_READS: dict[str, Callable[[Any], Any]] = {
+    "a key": lambda thing: thing.owner,
+    "a collection of keys": lambda thing: thing.owners,
+}
+
+
+@pytest.mark.parametrize("read", RELATION_READS)
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_relation_across_apis_is_refused_when_it_is_read(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    read: str,
+    given: bool,
+) -> None:
+    """A relation to a class on another API raises before any request.
+
+    Args:
+        read: How the relation is read.
+        given: Whether the object is built with ``api=``.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    own = world.apis["G"] if given else None
+    thing = Thing(json=dict(THING), api=own)
+
+    with pytest.raises(UsageError, match="different APIs"):
+        RELATION_READS[read](thing)
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize("read", RELATION_READS)
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_relation_across_apis_is_refused_before_the_object_loads(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    read: str,
+    given: bool,
+) -> None:
+    """A relation read of an object not loaded yet sends no request.
+
+    Args:
+        read: How the relation is read.
+        given: Whether the object is built with ``api=``.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    own = world.apis["G"] if given else None
+    thing = Thing(id=1, api=own)
+
+    with pytest.raises(UsageError, match="different APIs"):
+        RELATION_READS[read](thing)
+
+    assert world.log == []
+
+
+def test_relation_across_apis_is_refused_before_a_partial_object_loads(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relation that a partial payload lacks is refused before it loads."""
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    thing = Thing(id=1)
+    thing.update_from_json({"id": 1, "name": "a"})
+
+    with pytest.raises(UsageError, match="different APIs"):
+        _ = thing.owner
+
+    assert world.log == []
+
+
+@json_object
+class Pending(JSONObject):
+    """A model with a relation to a class that is not defined."""
+
+    class_url = "/things/"
+    id: int
+    owner: NotDefinedYet  # type: ignore[name-defined]  # noqa: F821
+
+
+def test_a_relation_that_does_not_resolve_raises_before_the_load(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relation whose type is not defined yet sends no request."""
+    monkeypatch.setitem(_api_registry, Pending, world.apis["A"])
+    pending = Pending(id=1)
+
+    with pytest.raises(NameError):
+        _ = pending.owner
+
+    assert world.log == []
+
+
+@json_object
+class Plain(JSONObject):
+    """A model with a plain field whose class is not defined."""
+
+    class_url = "/things/"
+    id: int
+    name: NotDefinedYet  # type: ignore[name-defined]  # noqa: F821
+
+
+def test_a_field_that_does_not_resolve_raises_before_the_load(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A field whose type is not defined yet sends no request."""
+    monkeypatch.setitem(_api_registry, Plain, world.apis["A"])
+    plain = Plain(id=1)
+
+    with pytest.raises(NameError):
+        _ = plain.name
+
+    assert world.log == []
+
+
+def test_embedded_relation_across_apis_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An embedded related object is a relation too."""
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    thing = Thing(json=dict(THING, owner=owner_json(5)))
+
+    with pytest.raises(UsageError, match="different APIs"):
+        _ = thing.owner
+
+    assert world.log == []
+
+
+def test_relation_across_apis_is_refused_after_update_from_json(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A payload that names a related object reads it as any relation is."""
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    thing = Thing(id=1)
+    thing.update_from_json(dict(THING))
+
+    with pytest.raises(UsageError, match="different APIs"):
+        _ = thing.owner
+
+    assert world.log == []
+
+
+PREFETCHING_QUERIES: dict[str, Callable[..., Any]] = {
+    "filter()": lambda **kw: Thing.filter(prefetch="owner", **kw),
+    "all()": lambda **kw: Thing.all(prefetch="owner", **kw),
+    "get()": lambda **kw: Thing.get(id=1, prefetch="owner", **kw),
+    "get_page()": lambda **kw: Thing.get_page(prefetch="owner", **kw),
+    "a to-many relation": lambda **kw: Thing.filter(prefetch="owners", **kw),
+}
+
+
+@pytest.mark.parametrize("options", [None, QUERY_HEADER], ids=["bare", "opts"])
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+@pytest.mark.parametrize("query", PREFETCHING_QUERIES)
+def test_prefetch_across_apis_is_refused_before_any_request(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    given: bool,
+    options: dict[str, Any] | None,
+) -> None:
+    """A prefetch of a class on another API sends nothing.
+
+    Args:
+        query: The query method that prefetches.
+        given: Whether the query is given ``api=``.
+        options: The query's ``request_options``, or ``None`` for none.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["B"])
+    kwargs: dict[str, Any] = {"request_options": options}
+    if given:
+        kwargs["api"] = world.apis["G"]
+
+    with pytest.raises(UsageError, match="different APIs"):
+        PREFETCHING_QUERIES[query](**kwargs)
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize("hook", ["plain", "prefetch", "read"])
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_models_on_three_apis_are_refused_whatever_the_hook_does(
+    world: World, monkeypatch: pytest.MonkeyPatch, given: bool, hook: str
+) -> None:
+    """No hook is reached, so none can send a request to the wrong API.
+
+    Args:
+        given: Whether the query is given ``api=``.
+        hook: What the bulk hook of ``Owner`` would do.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["B"], world.apis["C"])
+    HOOK["mode"] = hook
+    kwargs: dict[str, Any] = {"api": world.apis["G"]} if given else {}
+
+    with pytest.raises(UsageError, match="different APIs"):
+        Thing.filter(prefetch="owner", **kwargs)
+
+    assert world.log == []
+
+
+def test_prefetch_inside_a_hook_across_apis_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The query that a bulk hook makes is checked as any other is."""
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["C"])
+
+    with pytest.raises(UsageError, match="different APIs"):
+        Owner.filter(prefetch="org")
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_models_on_no_api_use_the_given_one(
+    world: World, monkeypatch: pytest.MonkeyPatch, given: bool
+) -> None:
+    """A class with no registered API agrees with any, if ``api=`` is given.
+
+    Args:
+        given: Whether the query is given ``api=``. Without it, the root has no
+            API and the query is refused.
+    """
+    register(monkeypatch, None, None, None)
+    if not given:
+        with pytest.raises(UsageError, match="No API registered for Thing"):
+            Thing.filter()
+        with pytest.raises(UsageError, match="No API registered for Owner"):
+            Thing.filter(prefetch="owner")
+        assert world.log == []
+        return
+
+    for query in (
+        Thing.filter(prefetch=["owner", "owners"], api=world.apis["G"]),
+        Thing.all(api=world.apis["G"]),
+    ):
+        for thing in list(query):
+            use(world, thing)
+
+    assert world.reached() == {"G"}
+
+
+def test_related_models_without_an_api_are_refused_without_api_given(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prefetch has no client for a class that has no API of its own."""
+    register(monkeypatch, world.apis["A"], None, None)
+
+    with pytest.raises(UsageError, match="No API registered for Owner"):
+        Thing.filter(prefetch="owner")
+
+    assert world.log == []
+
+
+def test_related_models_without_an_api_use_the_registered_root_with_api_given(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The given API serves the related models that have none."""
+    register(monkeypatch, world.apis["A"], None, None)
+
+    thing = next(Thing.filter(prefetch="owner", api=world.apis["G"]))
+    use(world, thing)
+
+    assert world.reached() == {"G"}
+
+
+def other_api(world: World) -> API:
+    """Return an API that no model is registered on."""
+    return world.apis["C"]
+
+
+ASSIGNMENTS: dict[str, Callable[[Thing, Owner], None]] = {
+    "a related object": lambda thing, owner: setattr(thing, "owner", owner),
+    "a collection of them": lambda thing, owner: setattr(
+        thing, "owners", [Owner(id=7, api=thing._api_override), owner]
+    ),
+    "a set of them in a tuple": lambda thing, owner: setattr(
+        thing, "owners", (owner,)
+    ),
+    "a write-only related object": lambda thing, owner: setattr(
+        thing, "boss", owner
+    ),
+}
+
+
+@pytest.mark.parametrize("assignment", ASSIGNMENTS)
+@pytest.mark.parametrize(
+    ("parent_api", "owner_api", "refused"),
+    [
+        (None, None, False),
+        ("G", "G", False),
+        ("G", None, True),
+        (None, "G", True),
+        ("G", "C", True),
+        ("C", "G", True),
+    ],
+    ids=[
+        "both registered",
+        "both given",
+        "parent given, owner registered",
+        "owner given, parent registered",
+        "parent given, owner on another",
+        "parent on another, owner given",
+    ],
+)
+def test_an_assigned_related_object_must_use_its_parents_api(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    assignment: str,
+    parent_api: str | None,
+    owner_api: str | None,
+    refused: bool,
+) -> None:
+    """Assigning an object of another API raises before anything is sent.
+
+    Args:
+        assignment: What is assigned.
+        parent_api: The ``api=`` of the parent, or ``None`` for none.
+        owner_api: The ``api=`` of the related object, or ``None`` for none.
+        refused: Whether the assignment is refused.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    apis = world.apis
+    thing = Thing(
+        json=dict(THING), api=apis[parent_api] if parent_api else None
+    )
+    thing.set_write_mode("eager")
+    owner = Owner(id=6, api=apis[owner_api] if owner_api else None)
+
+    if not refused:
+        ASSIGNMENTS[assignment](thing, owner)
+        return
+    with pytest.raises(ValueError, match="another API"):
+        ASSIGNMENTS[assignment](thing, owner)
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize(
+    ("thing_api", "owner_api"), [(None, "G"), ("G", None), (None, None)]
+)
+def test_a_model_with_no_api_agrees_with_any_in_an_assignment(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    thing_api: str | None,
+    owner_api: str | None,
+) -> None:
+    """A parent or a related object that has no API is not refused.
+
+    Args:
+        thing_api: The ``api=`` of the parent, or ``None`` for none.
+        owner_api: The ``api=`` of the related object, or ``None`` for none.
+    """
+    register(monkeypatch, None, None, None)
+    apis = world.apis
+    thing = Thing(json=dict(THING), api=apis[thing_api] if thing_api else None)
+    owner = Owner(id=6, api=apis[owner_api] if owner_api else None)
+
+    thing.owner = owner
+
+    assert thing.owner is owner
+
+
+@pytest.mark.parametrize(
+    ("parent_api", "owner_api", "refused"),
+    [(None, None, False), ("G", "G", False), ("G", None, True)],
+    ids=["both registered", "both given", "parent given, owner registered"],
+)
+@pytest.mark.parametrize("field", ["owner", "boss"])
+def test_a_constructor_refuses_a_related_object_of_another_api(
+    world: World,
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+    parent_api: str | None,
+    owner_api: str | None,
+    refused: bool,
+) -> None:
+    """A field given to the constructor is checked as an assignment is.
+
+    Args:
+        parent_api: The ``api=`` of the parent, or ``None`` for none.
+        owner_api: The ``api=`` of the related object, or ``None`` for none.
+        refused: Whether the constructor refuses the related object.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    apis = world.apis
+    owner = Owner(id=6, api=apis[owner_api] if owner_api else None)
+    api = apis[parent_api] if parent_api else None
+    given: dict[str, Any] = {field: owner}
+
+    if not refused:
+        assert Thing(id=1, api=api, **given).pk == 1
+        return
+    # The name is assigned first, and would load the object.
+    with pytest.raises(ValueError, match="another API"):
+        Thing(id=1, api=api, name="x", **given)
+
+    assert world.log == []
+
+
+CREATIONS: dict[str, Callable[..., Any]] = {
+    "create()": lambda owner, **kw: Thing.create(name="n", owner=owner, **kw),
+    "create(), write-only": lambda owner, **kw: Thing.create(
+        name="n", boss=owner, **kw
+    ),
+    "create(fields=)": lambda owner, **kw: Thing.create(
+        fields={"name": "n", "owners": [owner]}, **kw
+    ),
+    "get_or_create() lookup": lambda owner, **kw: Thing.get_or_create(
+        owner=owner, **kw
+    ),
+    "get_or_create() defaults": lambda owner, **kw: Thing.get_or_create(
+        name="zzz", defaults={"owner": owner}, **kw
+    ),
+}
+
+
+@pytest.mark.parametrize("creation", CREATIONS)
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_related_object_of_another_api_is_refused_in_a_creation(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    creation: str,
+    given: bool,
+) -> None:
+    """A creation sends nothing for a related object of another API.
+
+    Args:
+        creation: The call that creates, and is given the related object.
+        given: Whether the call is given ``api=``. The related object is built
+            with the other choice.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    kwargs: dict[str, Any] = {"api": world.apis["G"]} if given else {}
+    owner = Owner(id=6, api=None if given else world.apis["G"])
+
+    with pytest.raises(ValueError, match="another API"):
+        CREATIONS[creation](owner, **kwargs)
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize("creation", CREATIONS)
+def test_a_related_object_of_the_same_api_is_taken_in_a_creation(
+    world: World, monkeypatch: pytest.MonkeyPatch, creation: str
+) -> None:
+    """The same API passes, given or registered.
+
+    Args:
+        creation: The call that creates, and is given the related object.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+
+    CREATIONS[creation](Owner(id=6))
+    CREATIONS[creation](Owner(id=6, api=world.apis["G"]), api=world.apis["G"])
+
+    assert world.reached() == {"A", "G"}
+
+
+def test_a_view_of_the_parents_api_is_the_same_api(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request-scoped view of an API is that API, for a related object."""
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    view = world.apis["G"]._scoped(QUERY_HEADER)
+    thing = Thing(json=dict(THING), api=world.apis["G"])
+
+    thing.owner = Owner(id=6, api=view)
+
+    assert thing.owner.pk == 6
+
+
+class Hooked:
+    """Bulk hooks that build objects as a caller may write them."""
+
+    built_with: Any = None
+
+
+@json_object
+class Member(JSONObject):
+    """A model whose bulk lookup builds its objects with a client it picks."""
+
+    class_url = "/owners/"
+    id: int
+    label: str
+    org: Org
+
+    @classmethod
+    def bulk_get_by_pks(
+        cls, pks: set[Any], *, api: Any, **kwargs: Any
+    ) -> dict[Any, Member]:
+        """Build each member with the client that ``Hooked`` names."""
+        chosen = api if Hooked.built_with is None else Hooked.built_with
+        found = {}
+        for pk in sorted(pks):
+            member = cls(json=owner_json(pk), api=chosen)
+            _ = member.org.pk
+            found[pk] = member
+        return found
+
+
+@json_object(field_map={"member": "owner"})
+class Task(JSONObject):
+    """A model that prefetches its member."""
+
+    class_url = "/things/"
+    id: int
+    member: Member
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_hook_that_builds_an_object_with_another_api_is_refused(
+    world: World, monkeypatch: pytest.MonkeyPatch, given: bool
+) -> None:
+    """The error names the hook, and no object that it returned is used.
+
+    Args:
+        given: Whether the query is given ``api=``.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    monkeypatch.setitem(_api_registry, Task, world.apis["A"])
+    monkeypatch.setitem(_api_registry, Member, world.apis["A"])
+    monkeypatch.setattr(Hooked, "built_with", world.apis["C"])
+    kwargs: dict[str, Any] = {"api": world.apis["G"]} if given else {}
+
+    with pytest.raises(UsageError, match=r"Member\.bulk_get_by_pks\(\)"):
+        list(Task.filter(prefetch="member", **kwargs))
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_a_hook_that_builds_an_object_with_a_view_of_the_query_api_is_taken(
+    world: World, monkeypatch: pytest.MonkeyPatch, given: bool
+) -> None:
+    """The object, and what it read, keep the query's API, not the view.
+
+    Args:
+        given: Whether the query is given ``api=``.
+    """
+    own = world.apis["G"] if given else None
+    served = own or world.apis["A"]
+    monkeypatch.setitem(_api_registry, Task, world.apis["A"])
+    monkeypatch.setitem(_api_registry, Member, world.apis["A"])
+    monkeypatch.setitem(_api_registry, Org, world.apis["A"])
+    monkeypatch.setattr(Hooked, "built_with", served._scoped(QUERY_HEADER))
+
+    task = next(Task.filter(prefetch="member", api=own))
+
+    assert task.member._api_override is own
+    assert task.member.org._api_override is own
+    assert task.member.api is served
+    assert task.member.org.api is served
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["registered", "given"])
+def test_objects_keep_the_graphs_api_through_copies_and_pickles(
+    world: World, monkeypatch: pytest.MonkeyPatch, given: bool
+) -> None:
+    """A copy, a deep copy, and a pickle send through the object's API.
+
+    Args:
+        given: Whether the object is built with ``api=``.
+    """
+    plain = API("https://plain.test/")
+    register(monkeypatch, plain, plain, plain)
+    own = API("https://given.test/") if given else None
+    thing = Thing(json=dict(THING), api=own)
+    owner = thing.owner
+
+    for duplicate in (
+        copy.copy(thing),
+        copy.deepcopy(thing),
+        pickle.loads(pickle.dumps(thing)),
+    ):
+        assert duplicate.api.base_url == (own or plain).base_url
+        assert duplicate.owner.api.base_url == duplicate.api.base_url
+    assert copy.copy(thing).api is thing.api
+    assert copy.copy(owner).api is owner.api
+    assert owner.api is thing.api
+
+
+QUERIES: dict[str, Callable[..., Any]] = {
+    "filter()": lambda **kw: Thing.filter(**kw),
+    "all()": lambda **kw: Thing.all(**kw),
+    "get()": lambda **kw: Thing.get(id=1, **kw),
+    "get_page()": lambda **kw: Thing.get_page(**kw),
+    "create()": lambda **kw: Thing.create(name="n", **kw),
+    "get_or_create()": lambda **kw: Thing.get_or_create(name="a", **kw),
+}
+
+
+@pytest.mark.parametrize("query", QUERIES)
+def test_a_query_refuses_a_client_that_is_no_api_before_any_request(
+    world: World, monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    """Only an API, or a view of one, can send a query's requests.
+
+    Args:
+        query: The query method that is given the client.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+
+    with pytest.raises(TypeError, match="only through an API"):
+        QUERIES[query](api=object())
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize("member", ["url", "absolute_url"])
+def test_a_url_is_refused_after_a_class_api_was_assigned(
+    world: World, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    """The value of an assigned ``api`` is not the object's API.
+
+    Args:
+        member: The property that is read.
+    """
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    thing = Thing(id=1, api=world.apis["G"])
+    monkeypatch.setattr(Thing, "api", other_api(world), raising=False)
+
+    with pytest.raises(UsageError, match=r"register_api"):
+        getattr(thing, member)
+
+
+def test_absolute_url_is_refused_when_a_subclass_overrides_url(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal does not depend on how ``url`` is computed."""
+
+    class Fixed(Thing):
+        """A model whose URL is not built from its API."""
+
+        @property
+        def url(self) -> str:
+            """Return a URL that reads no API."""
+            return "/fixed/1/"
+
+    register(monkeypatch, world.apis["A"], world.apis["A"], world.apis["A"])
+    fixed = Fixed(id=1)
+    monkeypatch.setattr(Fixed, "api", other_api(world), raising=False)
+
+    with pytest.raises(UsageError, match=r"register_api"):
+        _ = fixed.absolute_url
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: Thing.create(name=object()),
+        lambda: Thing.get_or_create(name=object()),
+    ],
+    ids=["create()", "get_or_create()"],
+)
+def test_a_missing_api_is_refused_before_a_refused_field_value(
+    world: World, monkeypatch: pytest.MonkeyPatch, call: Callable[[], Any]
+) -> None:
+    """The class's API is chosen before the fields are encoded.
+
+    Args:
+        call: A creating call whose field value is refused.
+    """
+    register(monkeypatch, None, None, None)
+
+    with pytest.raises(UsageError, match="No API registered for Thing"):
+        call()
+
+    assert world.log == []
+
+
+@pytest.mark.parametrize(
+    "base", ["https://api.test/", "mock://api.test/", "mock:/"]
+)
+def test_a_prefetch_lookup_sends_the_query_request_options(base: str) -> None:
+    """A bulk lookup goes to the query's API, with the query's options.
+
+    This holds whatever the scheme of the API's base URL, including a base that
+    has no origin, so the options reach the lookup and no other host.
+    """
+    api = API(base)
+    seen: list[tuple[str, str | None]] = []
+    adapter = requests_mock.Adapter()
+
+    def answer(request: Any, context: Any) -> Any:
+        seen.append((request.url, request.headers.get("X-Trace")))
+        if "owners" in request.url:
+            return [{"id": 5}]
+        return [{"id": 1, "owner": 5}]
+
+    adapter.register_uri(requests_mock.ANY, requests_mock.ANY, json=answer)
+    for prefix in ("https://", "mock:"):
+        api.session.mount(prefix, adapter)
+
+    @json_object
+    class Lookup(JSONObject):
+        class_url = "owners/"
+        id: int
+
+        @classmethod
+        def bulk_get_by_pks(
+            cls, pks: set[Any], *, api: Any, **kwargs: Any
+        ) -> dict[Any, Lookup]:
+            """Read the owners with one request."""
+            response = api.get(
+                "owners/", params={"id__in": ",".join(map(str, pks))}
+            )
+            return {
+                item["id"]: cls(json=item, api=api) for item in response.json()
+            }
+
+    @json_object
+    class Holder(JSONObject):
+        class_url = "things/"
+        # The annotations are objects, because a local class is not found by
+        # the name of a string annotation.
+        __annotations__ = {"id": int, "owner": Lookup}
+
+    Lookup.register_api(api)
+    Holder.register_api(api)
+
+    list(
+        Holder.filter(
+            prefetch=["owner"], request_options={"headers": {"X-Trace": "1"}}
+        )
+    )
+
+    assert [trace for _, trace in seen] == ["1", "1"]
+    assert len(seen) == 2
+    assert "things" in seen[0][0]
+    assert "owners" in seen[1][0]
+    prefix = base.rstrip("/")
+    assert all(url.startswith(prefix) for url, _ in seen)

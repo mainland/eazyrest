@@ -963,6 +963,22 @@ describe them further.
   itself in a string annotation, as in `children: "list[Node]"`, is read, as a
   dataclass declared there already was. `v1.0.0a5` raised
   `FieldConversionError` for it, saying that the name is not defined.
+- Every object that a query reaches uses one API: the `api=` that the query was
+  given, or else the API registered for the class that it reads. A relation
+  between two models that are registered on different `API` objects raises
+  `UsageError` when it is first read or prefetched, where `v1.0.0a5` loaded the
+  related object through the API registered for its own class. A related object
+  that is assigned, or given to `create()` or `get_or_create()`, raises
+  `ValueError` if it uses another API than its parent, and a bulk hook that
+  returns an object of another API raises `UsageError`. A bulk hook's `api` is
+  the query's client, so passing it on to `filter()` sends no request to
+  another API, and the related objects keep none of the query's request
+  options. A model with no registered API still takes the `api=` of its parent.
+  Read the key of a relation to a model of another API and call that model's
+  `get()`.
+- `url` and `absolute_url` raise `UsageError`, as a request does, when a class
+  of the model had `api` assigned, where `absolute_url` returned a URL of the
+  assigned value.
 
 ### Migrating from 0.9.0
 

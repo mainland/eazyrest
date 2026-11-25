@@ -2215,52 +2215,45 @@ def test_reading_shared_prefetched_relation_keeps_its_write_mode(
     assert patch.last_request.json() == {"name": "Hopper"}
 
 
-@pytest.mark.parametrize(
-    ("parent_mode", "related_mode"), [("lazy", "eager"), ("eager", "lazy")]
-)
+@pytest.mark.parametrize("parent_mode", ["lazy", "eager"])
 @pytest.mark.parametrize("prefetch", [False, True])
 def test_prefetch_preserves_related_write_mode(
     requests_mock: Any,
     monkeypatch: pytest.MonkeyPatch,
     parent_mode: WriteMode,
-    related_mode: WriteMode,
     prefetch: bool,
 ) -> None:
-    """Prefetch must preserve a relation's inherited persistence behavior.
+    """A related object takes its parent's write mode and API.
 
     Args:
-        parent_mode: Default write mode of the API that serves todos.
-        related_mode: Default write mode of the API that serves users.
+        parent_mode: Default write mode of the API that serves todos and users.
         prefetch: Whether the todos are listed with the ``user`` relation
             prefetched.
     """
-    parent_api = API(
+    served = API(
         "https://parents.example.com/", default_write_mode=parent_mode
     )
-    related_api = API(
-        "https://users.example.com/", default_write_mode=related_mode
-    )
-    monkeypatch.setitem(_api_registry, Todo, parent_api)
-    monkeypatch.setitem(_api_registry, User, related_api)
+    monkeypatch.setitem(_api_registry, Todo, served)
+    monkeypatch.setitem(_api_registry, User, served)
     requests_mock.get(
         "https://parents.example.com/todos/",
         json=[{"id": 1, "userId": 2, "title": "a", "completed": False}],
     )
     requests_mock.get(
-        "https://users.example.com/users/", json=[{"id": 2, "name": "Ada"}]
+        "https://parents.example.com/users/", json=[{"id": 2, "name": "Ada"}]
     )
     requests_mock.get(
-        "https://users.example.com/users/2/", json={"id": 2, "name": "Ada"}
+        "https://parents.example.com/users/2/", json={"id": 2, "name": "Ada"}
     )
     patch = requests_mock.patch(
-        "https://users.example.com/users/2/", status_code=204
+        "https://parents.example.com/users/2/", status_code=204
     )
 
     todo = next(Todo.filter(prefetch="user" if prefetch else None))
     todo.user.name = "Grace"
 
     assert todo.user.write_mode == parent_mode
-    assert todo.user.api is related_api
+    assert todo.user.api is served
     assert patch.call_count == (1 if parent_mode == "eager" else 0)
     todo.user.save()
     assert patch.call_count == 1
@@ -4674,19 +4667,16 @@ def test_embedded_related_object_does_not_share_parent_json() -> None:
     assert todo.json["userId"] == {"id": 2, "name": "Ada"}
 
 
-def test_related_object_uses_its_own_registered_api(
+def test_relation_to_a_model_of_another_api_is_refused(
     requests_mock: Any,
 ) -> None:
-    """A related model registered on another API loads from that API."""
-    requests_mock.get(
-        "https://accounts.example.com/accounts/5/",
-        json={"id": 5, "name": "Acme"},
-    )
-
+    """A related model registered on another API has no API to load through."""
     invoice = Invoice(json={"id": 1, "account": 5})
 
-    assert invoice.account.api is accounts_api
-    assert invoice.account.name == "Acme"
+    with pytest.raises(UsageError, match="different APIs"):
+        _ = invoice.account
+
+    assert requests_mock.call_count == 0
 
 
 @pytest.mark.parametrize("write_mode", ["lazy", "eager"])
@@ -5697,25 +5687,23 @@ def test_query_request_options_reach_the_query_and_bulk_lookup(
     assert "X-Trace" not in detail.last_request.headers
 
 
-def test_query_request_options_stay_on_the_query_origin(
-    requests_mock: Any, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("options", [None, {"timeout": 5}])
+def test_prefetch_across_apis_is_refused_before_any_request(
+    requests_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    options: dict[str, Any] | None,
 ) -> None:
-    """A bulk lookup on another origin does not receive the query's options."""
+    """A bulk lookup has no API to go to when the models use different ones.
+
+    Args:
+        options: The query's ``request_options``, or ``None`` for none.
+    """
     monkeypatch.setitem(_api_registry, User, API("https://users.example.net/"))
-    requests_mock.get("https://example.com/v1/todos/", json=[TENANT_TODO])
-    users = requests_mock.get(
-        "https://users.example.net/users/", json=[{"id": 2, "name": "Ada"}]
-    )
 
-    list(
-        Todo.filter(
-            prefetch="user",
-            request_options={"headers": {"Authorization": "Bearer t"}},
-        )
-    )
+    with pytest.raises(UsageError, match="different APIs"):
+        Todo.filter(prefetch="user", request_options=options)
 
-    assert users.called
-    assert "Authorization" not in users.last_request.headers
+    assert requests_mock.call_count == 0
 
 
 @pytest.mark.parametrize(

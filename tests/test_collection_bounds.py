@@ -58,7 +58,10 @@ class Owner(JSONObject):
         }
 
 
-Owner.register_api(API(BASE))
+# Every model registers on one API, because a relation between models on
+# different APIs has no API to load through.
+_REGISTERED = API(BASE)
+Owner.register_api(_REGISTERED)
 
 
 def _declare(
@@ -72,7 +75,7 @@ def _declare(
     if hook is not None:
         namespace[hook.__name__] = classmethod(hook)
     model: type[Any] = json_object(type(name, (JSONObject,), namespace))
-    model.register_api(API(BASE))
+    model.register_api(_REGISTERED)
     return model
 
 

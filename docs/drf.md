@@ -544,9 +544,12 @@ class User(DRFObject):
         return {user.pk: user for user in users}
 ```
 
-Pass `api` on to `filter()`. Prefetch passes the query's `api=` here, or else
-this class's registered API, so that the related objects load from the same
-server, such as the same tenant's. They keep the query's API.
+Pass `api` on to `filter()`. Prefetch passes the query's client here, which is
+the query's `api=` or else the API registered for the parent's class, so that
+the related objects load from the same server, such as the same tenant's. They
+keep the query's API. A related model that is registered on another API than
+the parent is refused before the request, so `api` is always the API of the
+whole graph.
 
 That works well when the DRF endpoint accepts requests like:
 
