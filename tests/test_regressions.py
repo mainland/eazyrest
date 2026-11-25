@@ -1126,7 +1126,7 @@ def test_a_deep_copy_of_a_list_copies_an_api_after_the_object() -> None:
 
 @pytest.mark.parametrize("method", ["filter", "all", "get", "get_page"])
 @pytest.mark.parametrize(
-    "make", [lambda: ["owner", "owner"], lambda: iter(["owner"] * 2)]
+    "make", [lambda: ["owner", "owner"], lambda: ("owner", "owner")]
 )
 def test_prefetch_refuses_a_field_named_twice(
     method: str, make: Any, requests_mock: Any

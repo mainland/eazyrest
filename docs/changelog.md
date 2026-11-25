@@ -858,6 +858,11 @@ describe them further.
   `If-Match` still sends it, and a hook that a block sets still runs. `None`
   means that the option is absent, so the options under it apply, as they do in
   requests. They were discarded.
+- `prefetch=` takes a field name or a sequence of field names, and anything
+  else raises `TypeError` naming `prefetch=` before any request. A mapping used
+  to prefetch its keys, bytes were read as integers, and an `int` raised the
+  bare `TypeError` of `tuple()`. Pass a list or a tuple, not a set or a
+  generator.
 - `get_or_create()` refuses an argument that `create()` could not send before
   it sends the lookup. A model under a name that is no field, as in
   `get_or_create(x=User(id=1))`, raises `TypeError`, and a single item for a

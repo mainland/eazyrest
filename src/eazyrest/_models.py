@@ -3612,12 +3612,15 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
     """Return prefetch field names as a tuple.
 
     Args:
-        prefetch: One field name, an iterable of field names, or ``None``.
+        prefetch: One field name, a sequence of field names, or ``None``.
 
     Returns:
         The field names, or an empty tuple if ``prefetch`` is ``None``.
 
     Raises:
+        TypeError: If ``prefetch`` is neither a ``str`` nor a sequence of
+            ``str``, so that a mapping does not prefetch its keys, and bytes
+            are not read as integers.
         ValueError: If a name is given more than once, since the field would be
             bulk-loaded once for each copy.
     """
@@ -3625,6 +3628,19 @@ def _normalize_prefetch(prefetch: PrefetchFields) -> tuple[str, ...]:
         return ()
     if isinstance(prefetch, str):
         return (prefetch,)
+
+    # The caller's value may be of any type, whatever the annotation says.
+    given: object = prefetch
+    # Bytes-like values are sequences of integers, whatever their length.
+    if (
+        isinstance(given, bytes | bytearray | memoryview)
+        or not isinstance(given, Sequence)
+        or not all(isinstance(name, str) for name in given)
+    ):
+        raise TypeError(
+            "prefetch= must be a field name or a sequence of field names, "
+            f"got {type(prefetch).__name__}"
+        )
 
     names = tuple(prefetch)
     for position, name in enumerate(names):
@@ -11248,7 +11264,8 @@ class JSONObject:
                 collection raises nothing. Also raised if a parameter is given
                 both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, including
-                ``headers`` or ``hooks`` that cannot be merged, or
+                ``headers`` or ``hooks`` that cannot be merged, ``prefetch`` is
+                neither a ``str`` nor a sequence of ``str``, or
                 ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
                 ``prefetch`` is given.
             UsageError: If the model has a key field and declares no
@@ -11328,8 +11345,9 @@ class JSONObject:
                 object, or holds no key, or a key that is not of the key's
                 type. The message names the item's position, and the error is
                 raised when iteration reaches the item.
-            TypeError: If ``request_options`` is not valid for a query, as for
-                ``filter()``, or the model's key type is refused.
+            TypeError: If ``request_options`` or ``prefetch`` is not valid for
+                a query, as for ``filter()``, or the model's key type is
+                refused.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has no collection to read, or no API is
                 registered for it and no ``api=`` is given, or a ``prefetch``
@@ -11403,7 +11421,8 @@ class JSONObject:
             TypeError: If ``url`` is given with query parameters, a parameter
                 is given both as a keyword argument and in ``params``,
                 ``request_options`` is not valid for a query, including
-                ``headers`` or ``hooks`` that cannot be merged, or
+                ``headers`` or ``hooks`` that cannot be merged, ``prefetch`` is
+                neither a ``str`` nor a sequence of ``str``, or
                 ``collection_page()`` does not return a ``Page``. Also if the
                 model's key type is refused, as for ``filter()``, or
                 ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
@@ -11479,10 +11498,11 @@ class JSONObject:
                 type. The message names the item's position.
             TypeError: If a parameter is given both as a keyword argument and
                 in ``params``, or ``request_options`` is not valid for a query,
-                including ``headers`` or ``hooks`` that cannot be merged. Also
-                if the model's key type is refused, as for ``filter()``, or
-                ``prefetch_batch_size`` is neither an ``int`` nor ``None`` and
-                ``prefetch`` is given.
+                including ``headers`` or ``hooks`` that cannot be merged, or
+                ``prefetch`` is neither a ``str`` nor a sequence of ``str``.
+                Also if the model's key type is refused, as for ``filter()``,
+                or ``prefetch_batch_size`` is neither an ``int`` nor ``None``
+                and ``prefetch`` is given.
             UsageError: If the model has a key field and declares no
                 ``class_url``, so it has no collection to read, or no API is
                 registered for it and no ``api=`` is given, or a ``prefetch``
