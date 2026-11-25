@@ -710,7 +710,8 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
         ``_member_reading()`` and ``_names_member_value()`` read it.
 
     Raises:
-        ValueError: If ``cls`` has no such member. The message does not quote
+        ValueError: If ``cls`` has no such member, or its lookup gives an
+            object that is no instance of ``cls``. The message does not quote
             ``value``. A JSON boolean is not a member whose value is a
             number, nor a number one whose value is a boolean, although
             Python finds them equal.
@@ -724,7 +725,11 @@ def _decode_enum(cls: type[enum.Enum], value: Any) -> enum.Enum:
             raise ValueError(f"Value is not a valid {cls.__name__}") from err
 
         raise
-    if member.value == value and not _names_member_value(member.value, value):
+    # An IntFlag with boundary=EJECT gives a plain int for a value that
+    # combines no members.
+    if not isinstance(member, cls) or (
+        member.value == value and not _names_member_value(member.value, value)
+    ):
         raise ValueError(f"Value is not a valid {cls.__name__}")
     return member
 
