@@ -718,8 +718,11 @@ fragment. The error's `request` and `response` keep the real URL.
   `requests.exceptions.MissingSchema`, `InvalidURL`, or `InvalidSchema`, before
   anything is sent, with a message that quotes none of the URL and no
   `__cause__` or `__context__`. Code that catches them, or `ValueError`, keeps
-  working. A URL of another scheme, such as `mock:/a`, is sent if you mounted
-  an adapter for its scheme on `api.session`. It has no origin, so under a base
+  working. `get_page(url=...)` checks the origin of its URL first, so a `url=`
+  that it cannot read, such as one whose port is out of range, raises
+  `PaginationError` instead, which is a `ValueError`, also before anything is
+  sent. A URL of another scheme, such as `mock:/a`, is sent if you mounted an
+  adapter for its scheme on `api.session`. It has no origin, so under a base
   URL of that scheme, and for a redirect of a request to such a URL, a
   next-page link or a redirect is refused, one to the URL's own host included.
   `allow_other_origins=True` lets a next-page link go, and the redirects of

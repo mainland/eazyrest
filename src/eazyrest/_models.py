@@ -11434,7 +11434,9 @@ class JSONObject:
                 or a class had ``api`` assigned. No request is sent.
             PrefetchNotSupported: If the related model of a ``prefetch`` field
                 does not implement its bulk lookup.
-            PaginationError: If ``url`` has another origin.
+            PaginationError: If ``url`` has another origin, or is a URL that
+                cannot be read, such as one whose port is out of range. The
+                message quotes none of it.
             RedirectError: If the response is a redirect that was not
                 followed, such as a 304.
             APIError: If the server returns an HTTP error status, as
