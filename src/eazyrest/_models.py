@@ -367,6 +367,90 @@ def _converting(model: type, field: str) -> Generator[None, None, None]:
         raise FieldConversionError(model, field, err) from err
 
 
+def _holds_itself(analyzed: AnalyzedType) -> bool:
+    """Tell whether a type contains itself, so that a value of it can nest.
+
+    The type of a value that is read has a bounded depth unless a
+    ``TypedDict``, ``NamedTuple``, or dataclass refers to itself, directly or
+    through other types. The search is iterative, so it runs on a full stack.
+
+    Args:
+        analyzed: Analyzed type of a field.
+
+    Returns:
+        Whether a structure class lies inside its own members.
+    """
+    pending: list[tuple[AnalyzedType, tuple[type[Any], ...]]] = [
+        (analyzed, ())
+    ]
+    while pending:
+        current, ancestors = pending.pop()
+        children: list[AnalyzedType] = []
+        match current:
+            case OptionalType(inner) | NewTypeType(_, inner):
+                children.append(inner)
+            case CollectionType(_, item_type):
+                children.append(item_type)
+            case MappingType(value_type):
+                children.append(value_type)
+            case FixedTupleType(item_types):
+                children.extend(item_types)
+            case TypedDictType(typed_dict):
+                if typed_dict in ancestors:
+                    return True
+                ancestors = (*ancestors, typed_dict)
+                children.extend(current.keys.values())
+            case NamedTupleType(named_tuple):
+                if named_tuple in ancestors:
+                    return True
+                ancestors = (*ancestors, named_tuple)
+                children.extend(item for _, item in current.fields)
+            case DataclassType(dataclass_type):
+                if dataclass_type in ancestors:
+                    return True
+                ancestors = (*ancestors, dataclass_type)
+                children.extend(item for _, item, _ in current.fields)
+        pending.extend((child, ancestors) for child in children)
+    return False
+
+
+@contextlib.contextmanager
+def _reading(
+    model: type, field: str, analyzed: AnalyzedType
+) -> Generator[None, None, None]:
+    """Convert a value that was read, as ``_converting()`` does.
+
+    A read has no limit on depth, so a value that nests more deeply than the
+    stack takes is the type's fault only if the type contains itself. For any
+    other type the stack is the program's, and its ``RecursionError`` is raised
+    as it is, as is one that a conversion's own code raises.
+
+    Args:
+        model: Model class that owns the field.
+        field: Name of the field being read.
+        analyzed: Analyzed type of the field.
+
+    Yields:
+        ``None``, while the read runs.
+
+    Raises:
+        FieldConversionError: As for ``_converting()``, and if the read runs
+            out of stack and ``analyzed`` contains itself.
+    """
+    with _converting(model, field):
+        try:
+            yield
+        except RecursionError as err:
+            if getattr(err, _CONVERSION_RECURSION, False) or not _holds_itself(
+                analyzed
+            ):
+                raise
+            raise ValueError(
+                "The value nests more deeply than the stack takes, since "
+                "its type contains itself"
+            ) from None
+
+
 def _describe_lookup(model: type, params: Mapping[str, Any]) -> str:
     """Describe a lookup for an error message, as in ``Todo matching title``.
 
@@ -6481,7 +6565,7 @@ class JSONProperty:
         if self.field in obj._field_cache:
             return obj._field_cache[self.field]
 
-        with _converting(type(obj), self.field):
+        with _reading(type(obj), self.field, self.analyzed_type):
             value = obj._from_json(
                 raw,
                 self.analyzed_type,
@@ -6498,7 +6582,7 @@ class JSONProperty:
             # so that save() can detect the change. Encoding the value rather
             # than copying the JSON keeps a different spelling of the same
             # value, such as "Z" for "+00:00", from counting as a change.
-            with _converting(type(obj), self.field):
+            with _reading(type(obj), self.field, self.analyzed_type):
                 encoded = obj._to_json(value, self.analyzed_type, reading=True)
 
         # Cache the value only once its encoding is known, so that a field
@@ -8621,7 +8705,7 @@ class JSONObject:
                 payload[descriptor.json_field] = self._key
                 continue
             conversion = descriptor.analyzed_type
-            with _converting(type(self), field):
+            with _reading(type(self), field, conversion):
                 payload[descriptor.json_field] = self._to_json(
                     self._from_json(
                         json[descriptor.json_field], conversion, field=field

@@ -297,9 +297,11 @@ describe them further.
   echoes the body. Nothing is sent. `v1.0.0a5` accepted such a value up to
   about 500 levels, and raised a bare `RecursionError` for a deeper one, from
   an assignment too and from `create()` after its `POST`. A read is bounded
-  only by `API.max_json_depth`: a field that nests more than 127 levels reads
-  from a response whose limit was raised or removed, from `json=`, and from
-  `update_from_json()`.
+  only by `API.max_json_depth`, and by the stack for a field whose type
+  contains itself: a field that nests more than 127 levels reads from a
+  response whose limit was raised or removed, from `json=`, and from
+  `update_from_json()`, and raises `FieldConversionError` naming the field when
+  the stack gives out first.
 - A conversion's own `RecursionError`, and one from a dataclass's
   `__post_init__`, propagates unchanged, as any other error of a conversion
   that is no `TypeError` or `ValueError` does. Only the walk of a value reports

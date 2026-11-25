@@ -483,8 +483,11 @@ levels is the default `max_json_depth`, so what is written can be read back
 from a server that echoes it. Only a write counts the depth. Reading a field
 and comparing JSON take any depth that `max_json_depth` let through, or that
 `json=` and `update_from_json()` were given, and `save()` sends a field that
-was read and not changed in place as it was. A write that the server refuses is
-different. In lazy mode its updates stay pending, so a later `save()` sends
+was read and not changed in place as it was. If the stack gives out first,
+reading a field whose type is a `TypedDict`, a `NamedTuple`, or a dataclass
+that contains itself raises `FieldConversionError` naming the field. Any other
+field raises the stack's own `RecursionError`. A write that the server refuses
+is different. In lazy mode its updates stay pending, so a later `save()` sends
 them again. In eager mode the refused assignment is not pending, and the field
 keeps its old value.
 
