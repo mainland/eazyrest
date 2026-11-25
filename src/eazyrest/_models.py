@@ -832,21 +832,14 @@ class DataclassType:
         """
         cls = self.dataclass_type
 
-        def hint(name: str) -> Any:
-            try:
-                return _dataclass_field_annotation(cls, name)
-            except RecursionError:
-                raise
-            except Exception as err:
-                raise TypeError(
-                    f"The annotations of {cls.__name__} cannot be resolved: "
-                    f"{err}"
-                ) from err
+        names = {field.name for field in dataclasses.fields(cls)}
 
         return tuple(
             (
                 field.name,
-                _structure_member(hint(field.name), cls, field.name),
+                _structure_member(
+                    _member_hint(cls, field.name, names), cls, field.name
+                ),
                 field.default is dataclasses.MISSING
                 and field.default_factory is dataclasses.MISSING,
             )
@@ -1759,7 +1752,7 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
     """Resolve the annotations of a class whose fields eazyrest converts.
 
     Args:
-        cls: ``TypedDict``, ``NamedTuple``, or dataclass.
+        cls: ``TypedDict`` or ``NamedTuple``.
 
     Returns:
         Each annotation, resolved, with its ``Annotated`` metadata.
@@ -1767,13 +1760,34 @@ def _hints_of(cls: type[Any]) -> dict[str, Any]:
     Raises:
         TypeError: If an annotation cannot be resolved.
     """
-    get_type_hints = (
-        typing.get_type_hints
-        if _typing_extensions is None
-        else _typing_extensions.get_type_hints
-    )
+    # A subclass of a NamedTuple annotates no field, and inherits them.
+    names = tuple(getattr(cls, "_fields", None) or _annotations(cls))
+    return {name: _member_hint(cls, name, names) for name in names}
+
+
+def _member_hint(
+    cls: type[Any], name: str, hidden: Container[str] = ()
+) -> Any:
+    """Resolve the annotation of one member of a structure.
+
+    Every member of a ``TypedDict``, ``NamedTuple``, or dataclass resolves
+    here, by ``_resolve_annotation()``, so that a structure declared inside a
+    function can name itself, whatever its form.
+
+    Args:
+        cls: ``TypedDict``, ``NamedTuple``, or dataclass.
+        name: Name of one of its members.
+        hidden: Names of the class's attributes that must not resolve, as for
+            ``_resolve_annotation()``.
+
+    Returns:
+        The annotation, resolved, with its ``Annotated`` metadata.
+
+    Raises:
+        TypeError: If the annotation cannot be resolved.
+    """
     try:
-        return dict(get_type_hints(cls, include_extras=True))
+        return _resolve_annotation(_annotation_owner(cls, name), name, hidden)
     except RecursionError:
         # A stack that gives out is no fault of the annotations, and a caller
         # that holds a value too deep for it reports that instead.
@@ -1811,9 +1825,9 @@ def _resolve_annotation(
     resolves in the owner's module, and only then in the owner's namespace
     without ``hidden``, which lets a class defined inside a function name
     others from that function. This is the order of ``get_type_hints()`` on a
-    class and of the ``TypedDict`` and ``NamedTuple`` path, so an attribute of
-    the class that is not a field, such as a method named ``date``, does not
-    shadow the module's ``date`` in a string annotation.
+    class, so an attribute of the class that is not a field, such as a method
+    named ``date``, does not shadow the module's ``date`` in a string
+    annotation.
 
     Args:
         owner: Class that declares the annotation.
@@ -1840,29 +1854,6 @@ def _resolve_annotation(
     return _resolve_in_module(
         _annotations(owner)[name], owner.__module__, owner.__name__, localns
     )
-
-
-def _dataclass_field_annotation(cls: type[Any], name: str) -> Any:
-    """Resolve the annotation of one field of a dataclass.
-
-    Only this annotation is evaluated, so that a class variable whose
-    annotation names a type that exists only for type checkers does not matter.
-    The class's field attributes, such as defaults, do not hide the types that
-    annotations name.
-
-    Args:
-        cls: Dataclass.
-        name: Name of one of its fields.
-
-    Returns:
-        The field's annotation, resolved, with its ``Annotated`` metadata.
-
-    Raises:
-        Exception: If the annotation names something undefined, whatever
-            resolving it raises.
-    """
-    names = {field.name for field in dataclasses.fields(cls)}
-    return _resolve_annotation(_annotation_owner(cls, name), name, names)
 
 
 def _structure_member(hint: Any, container: Any, name: str) -> AnalyzedType:

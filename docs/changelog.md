@@ -959,6 +959,10 @@ describe them further.
   definition of another conversion that had the same name. A value of another
   form, such as a bare schema name, is left as it is. A tag in a `mapping` that
   is named like a keyword, such as `"$id"`, is a tag and no longer raises.
+- A `TypedDict` or `NamedTuple` that is declared inside a function and names
+  itself in a string annotation, as in `children: "list[Node]"`, is read, as a
+  dataclass declared there already was. `v1.0.0a5` raised
+  `FieldConversionError` for it, saying that the name is not defined.
 
 ### Migrating from 0.9.0
 
