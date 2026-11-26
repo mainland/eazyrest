@@ -488,8 +488,10 @@ describe them further.
 - A model object inside the mapping that `json=` or `update_from_json()` is
   given raises `TypeError` with a message that says the object is no JSON
   value, where `v1.0.0a5` accepted it and kept a copy of the object in the
-  JSON. A model object inside a tuple, a set, or a frozenset in that mapping
-  does too.
+  JSON. So does a model object at any depth, in a container or an object that
+  `copy.deepcopy()` copies, such as a tuple, a set, a frozenset, a
+  `defaultdict`, a `deque`, a subclass of `dict` or `list`, or an object whose
+  attributes hold it.
 - An item that `collection_items()`, `collection_items_from_response()`, or
   `collection_page()` gives, with a name that is no string, raises
   `ResponseShapeError` when the item is read, where `v1.0.0a5` built the object

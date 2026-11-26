@@ -484,8 +484,11 @@ again instead to start from the server's state. An error, an `API`, and the
 view that a query's hooks receive still pickle.
 
 A model object is no JSON value. `json=` and `update_from_json()` raise
-`TypeError` for a mapping that holds one, in a list, tuple, set, or frozenset
-too, with a message that says so. Give its key, or its `json`.
+`TypeError` for a mapping that holds one at any depth, in a container or an
+object that `copy.deepcopy()` copies, such as a list, tuple, set, frozenset,
+`defaultdict`, `deque`, or a subclass of `dict` or `list`, or an object whose
+attributes hold it. The message says that it is no JSON value, and the object
+is left as it was. Give its key, or its `json`.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
