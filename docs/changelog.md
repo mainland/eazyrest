@@ -908,9 +908,15 @@ describe them further.
   ones under it, as a non-empty one is. A write with
   `request_options={"headers": {}}` inside a `write_options()` block that sets
   `If-Match` still sends it, and a hook that a block sets still runs. `None`
-  for any request option, `auth`, `cookies`, and `timeout` included, means that
-  the option is absent, so the options under it apply, as they do in requests.
-  They were discarded. A `headers` or `hooks` that is no mapping, such as
+  for any request option, `auth`, `cookies`, `allow_redirects`, and `timeout`
+  included, means that the option is absent, whether or not anything under it
+  sets the option. The options under it apply, as they do in requests: those of
+  a view or a `write_options()` block, then the API's own `timeout`, `verify`,
+  and `proxies`, then the defaults of requests. This holds for a query, a
+  write, a view, and a request of `API` itself. So `allow_redirects=None`
+  follows a redirect as omitting it does, and `timeout=None` gets the API's
+  `timeout`. A header whose value is `None` inside a `headers` mapping still
+  removes that header. A `headers` or `hooks` that is no mapping, such as
   `hooks=[]` or a list of header pairs, raises `TypeError` naming the option
   from every request that lays options over others and from a client's own
   request. `v1.0.0a5` sent `hooks=[]` with its request, and through a view with

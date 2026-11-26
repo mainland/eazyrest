@@ -2280,10 +2280,12 @@ waits more than 10 seconds. That bounds each wait, not the whole request, so a
 server that sends a byte every few seconds could keep a request open
 indefinitely. Set the `timeout` attribute to change the default, or pass
 `timeout=` to a single request, as requests takes it: a number, a pair of
-connect and read timeouts, or a `urllib3.Timeout`. While `total_timeout` is
-set, each of these is cut to the time that remains, and a part that has no
-limit waits for that time. Extra keyword arguments to `API()` configure a
-`requests.adapters.HTTPAdapter` for the base URL's scheme, such as
+connect and read timeouts, or a `urllib3.Timeout`. `timeout=None` means the
+request's own setting is absent, so the `timeout` attribute applies. To wait
+without a limit on each read, pass a `urllib3.Timeout` with no limits. While
+`total_timeout` is set, each of these is cut to the time that remains, and a
+part that has no limit waits for that time. Extra keyword arguments to `API()`
+configure a `requests.adapters.HTTPAdapter` for the base URL's scheme, such as
 `max_retries=` for retries:
 
 ```python

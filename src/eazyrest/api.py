@@ -338,16 +338,20 @@ def _merge_request_options(
     ``override`` holds a mapping, an empty one included. A value of ``None``
     means the option is absent, whichever option it is, so ``override``'s
     ``None`` keeps ``base``'s value, as requests does with the options of a
-    session. For any other option, ``override``'s value wins. A header whose
-    value is ``None`` is kept, so requests still removes that header from the
-    session's.
+    session. For any other option, ``override``'s value wins. An option whose
+    merged value is ``None`` is left out, whether or not ``base`` holds a value
+    for it, so a ``None`` never reaches requests, which would read
+    ``allow_redirects=None`` as false and ``timeout=None`` as no limit. A
+    header whose value is ``None`` is kept, so requests still removes that
+    header from the session's.
 
     Args:
         base: Options that apply unless ``override`` sets them.
         override: Options that take precedence.
 
     Returns:
-        The merged options, as a new dict.
+        The merged options, as a new dict that holds no option whose value is
+        ``None``.
 
     Raises:
         TypeError: If either holds ``headers`` or ``hooks`` that is neither a
@@ -356,10 +360,14 @@ def _merge_request_options(
     """
     _check_mergeable_options(base)
     _check_mergeable_options(override)
-    merged = {**base, **override}
-    for name, value in override.items():
-        if value is None and base.get(name) is not None:
-            merged[name] = base[name]
+    present = {
+        name: value for name, value in override.items() if value is not None
+    }
+    merged = {
+        name: value
+        for name, value in {**base, **present}.items()
+        if value is not None
+    }
     if base.get("headers") is not None and override.get("headers") is not None:
         headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
             base["headers"]
@@ -1670,7 +1678,9 @@ class API:
             send: Session method that sends the request with that method.
             uri: Relative or absolute request URI.
             args: Positional arguments forwarded to ``send``.
-            kwargs: Keyword arguments forwarded to ``send``.
+            kwargs: Keyword arguments forwarded to ``send``. An option that is
+                ``None`` is absent, so the API's own ``timeout``, ``verify``,
+                and ``proxies`` apply, then requests' defaults.
             limit: The limit of a page request on the origins of its redirects,
                 or ``None`` for the rule of any other request.
             source: Where the URL came from. A request for a link that a server
@@ -1694,8 +1704,18 @@ class API:
             ValueError: If requests raises it, unless the final response is a
                 redirect that requests does not follow.
         """
-        _check_mergeable_options(kwargs)
-        kwargs.setdefault("timeout", self.timeout)
+        # The API's own settings stand where a session's would, so a request
+        # that passes None for one leaves it in force. The session's verify and
+        # proxies go with the request because requests lets the environment
+        # (REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, and proxy variables) override a
+        # session's setting but not a request's. requests adds environment
+        # proxies to the dict it receives, so pass a copy.
+        defaults: dict[str, Any] = {"timeout": self.timeout}
+        if self.session.verify is not True:
+            defaults["verify"] = self.session.verify
+        if self.session.proxies:
+            defaults["proxies"] = dict(self.session.proxies)
+        kwargs = _merge_request_options(defaults, kwargs)
         # A request that streams reads its own body, but not the bodies of
         # redirects, which requests reads, or of a failure, which the error
         # reads, so those are bounded too.
@@ -1713,18 +1733,7 @@ class API:
             self.max_response_bytes, self.total_timeout, streamed, name
         )
         kwargs["stream"] = True
-        kwargs["timeout"] = budget.timeout(kwargs["timeout"])
-        if self.session.verify is not True:
-            # With trust_env, requests replaces a verify setting of True with
-            # the CA bundle that REQUESTS_CA_BUNDLE or CURL_CA_BUNDLE names,
-            # and then prefers it over the session's setting. Only a setting
-            # passed with the request is kept.
-            kwargs.setdefault("verify", self.session.verify)
-        if self.session.proxies:
-            # requests lets proxy environment variables override session
-            # proxies, but not proxies passed with the request. requests adds
-            # environment proxies to the dict it receives, so pass a copy.
-            kwargs.setdefault("proxies", dict(self.session.proxies))
+        kwargs["timeout"] = budget.timeout(kwargs.get("timeout"))
 
         write = method.upper() not in _FOLLOWING_METHODS
         # requests resends a body only for a 307 or 308, and drops it for a

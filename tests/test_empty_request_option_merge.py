@@ -294,3 +294,352 @@ def test_a_request_without_a_view_refuses_a_value_that_cannot_merge(
     with pytest.raises(TypeError, match=rf"The {name} request option"):
         getattr(api, method)(URL, **{name: value})
     assert not requests_mock.called
+
+
+# `None` for an option is absent at every entry point, whether or not anything
+# lies under it. The API below has its own timeout and a session header, so
+# that the settings under a request can be seen.
+SBASE = "https://absent-option.example/v1/"
+SERVER = API(SBASE)
+SERVER.timeout = 1.25
+SERVER.total_timeout = None
+SERVER.session.headers["X-Session"] = "s"
+RAN: list[str] = []
+
+
+@json_object
+class Item(JSONObject):
+    """Model whose queries and writes the tests send."""
+
+    class_url = "/items/"
+
+    id: int
+    text: str
+
+
+Item.register_api(SERVER)
+
+
+def _ran(resp: Any, **kwargs: Any) -> None:
+    """Response hook that records that it ran."""
+    RAN.append("ran")
+
+
+@pytest.fixture
+def server(requests_mock: Any) -> Any:
+    """Serve the model's collection, object, and writes without a redirect."""
+    RAN.clear()
+    item = {"id": 1, "text": "a"}
+    requests_mock.get(
+        SBASE + "items/",
+        json={"results": [item], "next": SBASE + "items/?page=2"},
+    )
+    requests_mock.get(
+        SBASE + "items/?page=2", json={"results": [], "next": None}
+    )
+    requests_mock.post(SBASE + "items/", json=item)
+    for method in ("get", "put", "patch", "post"):
+        requests_mock.register_uri(method, SBASE + "items/1/", json=item)
+    requests_mock.delete(SBASE + "items/1/", status_code=204)
+    return requests_mock
+
+
+def _lazy_item() -> Item:
+    """Return an object with a pending change to its text."""
+    item = Item(json={"id": 1, "text": "a"}, write_mode="lazy")
+    item.text = "b"
+    return item
+
+
+def _view(lower: dict[str, Any]) -> Any:
+    """Return the API with ``lower`` as the options of a view over it."""
+    return SERVER._scoped(lower)
+
+
+def _save(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    item = _lazy_item()
+    with item.write_options(**lower):
+        item.save(request_options=top)
+    return mock.last_request
+
+
+def _assign(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    item = Item(json={"id": 1, "text": "a"}, write_mode="eager")
+    with item.write_options(**lower), item.write_options(**top):
+        item.text = "b"
+    return mock.last_request
+
+
+def _delete(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    item = Item(json={"id": 1, "text": "a"})
+    with item.write_options(**lower):
+        item.delete(request_options=top)
+    return mock.last_request
+
+
+def _create(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    Item.create(text="x", api=_view(lower), request_options=top)
+    return mock.last_request
+
+
+def _get_or_create(
+    mock: Any, lower: dict[str, Any], top: dict[str, Any]
+) -> Any:
+    Item.get_or_create(id=1, api=_view(lower), request_options=top)
+    return mock.last_request
+
+
+def _filter(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    list(Item.filter(api=_view(lower), request_options=top))
+    return mock.last_request
+
+
+def _all(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    list(Item.all(api=_view(lower), request_options=top))
+    return mock.last_request
+
+
+def _get(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    Item.get(id=1, api=_view(lower), request_options=top)
+    return mock.last_request
+
+
+def _get_page(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    Item.get_page(
+        url=SBASE + "items/?page=2", api=_view(lower), request_options=top
+    )
+    return mock.last_request
+
+
+def _next_page(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+    Item.get_page(api=_view(lower), request_options=top).next_page()
+    return mock.last_request
+
+
+def _view_method(method: str) -> Merge:
+    def send(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+        getattr(_view(lower), method)(SBASE + "items/1/", **top)
+        return mock.last_request
+
+    return send
+
+
+def _view_of_view(
+    mock: Any, lower: dict[str, Any], top: dict[str, Any]
+) -> Any:
+    _view(lower)._scoped(top).get(SBASE + "items/")
+    return mock.last_request
+
+
+def _direct_method(method: str) -> Merge:
+    def send(mock: Any, lower: dict[str, Any], top: dict[str, Any]) -> Any:
+        assert not lower
+        getattr(SERVER, method)(SBASE + "items/1/", **top)
+        return mock.last_request
+
+    return send
+
+
+# Entry points that send options laid over options under them.
+LAYERED: dict[str, Merge] = {
+    "save()": _save,
+    "an assignment that writes": _assign,
+    "delete()": _delete,
+    "create()": _create,
+    "get_or_create()": _get_or_create,
+    "filter()": _filter,
+    "all()": _all,
+    "get()": _get,
+    "get_page(url=)": _get_page,
+    "next_page()": _next_page,
+    "a view's get()": _view_method("get"),
+    "a view's post()": _view_method("post"),
+    "a view's put()": _view_method("put"),
+    "a view's patch()": _view_method("patch"),
+    "a view's delete()": _view_method("delete"),
+    "a view of a view": _view_of_view,
+}
+
+# Entry points with only the API's own settings under the request.
+DIRECT: dict[str, Merge] = {
+    f"the API's {method}()": _direct_method(method)
+    for method in ("get", "post", "put", "patch", "delete")
+}
+
+ENTRY_POINTS = {**LAYERED, **DIRECT}
+
+# An option, a value for it under a request, and what the request shows of it.
+LOWER_OPTIONS: dict[str, dict[str, Any]] = {
+    "headers": {"headers": {"X-Base": "b"}},
+    "hooks": {"hooks": {"response": [_ran]}},
+    "auth": {"auth": ("user", "dummy")},
+    "cookies": {"cookies": {"base": "b"}},
+    "timeout": {"timeout": 5},
+}
+
+
+def _outcome(
+    mock: Any,
+    run: Merge,
+    lower: dict[str, Any],
+    top: dict[str, Any],
+) -> dict[str, Any]:
+    """Return what a request shows of the options that it was sent with."""
+    RAN.clear()
+    request = run(mock, lower, top)
+    return {
+        "timeout": request.timeout,
+        "authorization": request.headers.get("Authorization") is not None,
+        "cookie": request.headers.get("Cookie"),
+        "x-base": request.headers.get("X-Base"),
+        "hook": bool(RAN),
+    }
+
+
+OMITTED = {
+    "timeout": 1.25,
+    "authorization": False,
+    "cookie": None,
+    "x-base": None,
+    "hook": False,
+}
+
+
+@pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
+@pytest.mark.parametrize("option", LOWER_OPTIONS)
+def test_none_with_nothing_under_it_is_the_option_omitted(
+    server: Any, run: Merge, option: str
+) -> None:
+    """The API's own timeout applies, and no option is sent as ``None``."""
+    assert _outcome(server, run, {}, {option: None}) == OMITTED
+
+
+@pytest.mark.parametrize("run", LAYERED.values(), ids=LAYERED)
+@pytest.mark.parametrize("option", LOWER_OPTIONS)
+@pytest.mark.parametrize("both", [False, True], ids=["lower", "both"])
+def test_none_under_an_option_is_the_option_omitted(
+    server: Any, run: Merge, option: str, both: bool
+) -> None:
+    """A lower ``None`` is absent too, so the API's own timeout applies."""
+    top = {option: None} if both else {}
+    assert _outcome(server, run, {option: None}, top) == OMITTED
+
+
+@pytest.mark.parametrize("run", LAYERED.values(), ids=LAYERED)
+@pytest.mark.parametrize("option", LOWER_OPTIONS)
+def test_none_over_a_value_keeps_the_value(
+    server: Any, run: Merge, option: str
+) -> None:
+    """The request that carries ``None`` carries the value under it."""
+    lower = LOWER_OPTIONS[option]
+    seen = _outcome(server, run, lower, {option: None})
+
+    assert seen == _outcome(server, run, lower, {})
+    assert seen != OMITTED
+
+
+@pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
+def test_a_header_set_to_none_removes_the_sessions_header(
+    server: Any, run: Merge
+) -> None:
+    """Only an option's own ``None`` is absent. A header's ``None`` stays."""
+    run(server, {}, {})
+    assert server.last_request.headers["X-Session"] == "s"
+
+    run(server, {}, {"headers": {"X-Session": None}})
+    assert "X-Session" not in server.last_request.headers
+
+
+# The reads that follow a redirect. Each takes a client and the request's
+# options, and returns the ids that it read.
+READS: dict[str, Callable[[Any, dict[str, Any]], list[int]]] = {
+    "filter()": lambda api, top: [
+        i.id for i in Item.filter(api=api, request_options=top)
+    ],
+    "all()": lambda api, top: [
+        i.id for i in Item.all(api=api, request_options=top)
+    ],
+    "get()": lambda api, top: [
+        Item.get(id=1, api=api, request_options=top).id
+    ],
+    "get_page()": lambda api, top: [
+        i.id for i in Item.get_page(api=api, request_options=top)
+    ],
+    "a request of the API or a view": lambda api, top: [
+        o["id"] for o in api.get(SBASE + "items/", **top).json()["results"]
+    ],
+}
+
+
+@pytest.mark.parametrize("read", READS.values(), ids=READS)
+@pytest.mark.parametrize("under", [False, True], ids=["alone", "under"])
+def test_none_for_allow_redirects_follows_a_redirect_as_omission_does(
+    requests_mock: Any,
+    read: Callable[[Any, dict[str, Any]], list[int]],
+    under: bool,
+) -> None:
+    """The redirect is followed, as when the option is omitted."""
+    requests_mock.get(
+        SBASE + "items/", status_code=302, headers={"Location": "/v1/final/"}
+    )
+    requests_mock.get(
+        SBASE + "final/", json={"results": [{"id": 1, "text": "a"}]}
+    )
+    none = {"allow_redirects": None}
+
+    if under:
+        assert read(_view(none), {}) == [1]
+    else:
+        assert read(SERVER, none) == [1]
+
+
+def test_a_merge_leaves_out_every_option_that_is_none() -> None:
+    """``None`` is absent in either argument, and the result holds none."""
+    assert _merge_request_options({"timeout": None}, {}) == {}
+    assert _merge_request_options({}, {"allow_redirects": None}) == {}
+    assert _merge_request_options(
+        {"timeout": None, "auth": "a"}, {"timeout": None, "cert": None}
+    ) == {"auth": "a"}
+
+
+@pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
+def test_none_for_verify_leaves_the_sessions_setting_in_force(
+    server: Any, monkeypatch: pytest.MonkeyPatch, run: Merge
+) -> None:
+    """A CA bundle in the environment does not replace the session's."""
+    monkeypatch.setattr(SERVER.session, "verify", False)
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", "/environment/bundle.pem")
+
+    run(server, {}, {"verify": None})
+
+    assert server.last_request.verify is False
+
+
+@pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
+def test_none_for_proxies_leaves_the_sessions_proxies_in_force(
+    server: Any, monkeypatch: pytest.MonkeyPatch, run: Merge
+) -> None:
+    """A proxy in the environment does not replace the session's."""
+    monkeypatch.setitem(SERVER.session.proxies, "https", "http://session:1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://environment:2")
+
+    run(server, {}, {"proxies": None})
+
+    assert server.last_request.proxies["https"] == "http://session:1"
+
+
+@pytest.mark.parametrize("run", LAYERED.values(), ids=LAYERED)
+def test_a_header_set_to_none_removes_a_header_that_a_lower_option_set(
+    server: Any, run: Merge
+) -> None:
+    """The header is dropped from the request, not sent as ``None``."""
+    run(server, {"headers": {"X-Base": "b", "X-Keep": "k"}}, {})
+    assert server.last_request.headers["X-Base"] == "b"
+
+    run(
+        server,
+        {"headers": {"X-Base": "b", "X-Keep": "k"}},
+        {"headers": {"X-Base": None}},
+    )
+    assert "X-Base" not in server.last_request.headers
+    assert server.last_request.headers["X-Keep"] == "k"

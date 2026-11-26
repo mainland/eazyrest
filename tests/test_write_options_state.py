@@ -276,11 +276,11 @@ def test_a_block_that_enables_streaming_leaves_the_object_as_it_was() -> None:
     assert state(obj) == (None, None)
 
 
-def test_headers_and_hooks_of_none_are_taken() -> None:
-    """None is what ``requests`` takes for no headers and no hooks."""
+def test_headers_and_hooks_of_none_are_absent() -> None:
+    """None for an option is no option, so a block of them holds none."""
     obj = item()
     with obj.write_options(headers=None, hooks=None):
-        assert vars(obj)["_write_options"] == {"headers": None, "hooks": None}
+        assert vars(obj)["_write_options"] == {}
     assert state(obj) == (None, None)
 
 
