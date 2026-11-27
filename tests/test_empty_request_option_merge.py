@@ -602,6 +602,21 @@ def test_a_merge_leaves_out_every_option_that_is_none() -> None:
     ) == {"auth": "a"}
 
 
+@pytest.mark.parametrize("view", [False, True], ids=["direct", "view"])
+def test_an_unknown_option_set_to_none_refuses_a_write_before_sending(
+    requests_mock: Any, view: bool
+) -> None:
+    """An invalid keyword still reaches requests for its refusal."""
+    url = SBASE + "items/"
+    requests_mock.post(url, status_code=201)
+    client = _view({}) if view else SERVER
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        client.post(url, json={"id": 1}, not_a_request_option=None)
+
+    assert not requests_mock.called
+
+
 @pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
 def test_none_for_verify_leaves_the_sessions_setting_in_force(
     server: Any, monkeypatch: pytest.MonkeyPatch, run: Merge

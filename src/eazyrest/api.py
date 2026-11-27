@@ -77,6 +77,10 @@ _SESSION_SETTINGS = (
     "max_redirects",
 )
 
+_REQUEST_OPTION_NAMES = frozenset(
+    inspect.signature(requests.Session.request).parameters
+) - {"self", "method", "url"}
+
 
 def _takes_kwargs(method: Any) -> bool:
     """Return whether a method has a ``**kwargs`` parameter.
@@ -340,18 +344,19 @@ def _merge_request_options(
     ``None`` keeps ``base``'s value, as requests does with the options of a
     session. For any other option, ``override``'s value wins. An option whose
     merged value is ``None`` is left out, whether or not ``base`` holds a value
-    for it, so a ``None`` never reaches requests, which would read
-    ``allow_redirects=None`` as false and ``timeout=None`` as no limit. A
-    header whose value is ``None`` is kept, so requests still removes that
-    header from the session's.
+    for it. An unknown keyword is kept for requests to accept or reject, even
+    when its value is ``None``. Thus ``None`` for a request option never
+    reaches requests, which would read ``allow_redirects=None`` as false and
+    ``timeout=None`` as no limit. A header whose value is ``None`` is kept, so
+    requests still removes that header from the session's.
 
     Args:
         base: Options that apply unless ``override`` sets them.
         override: Options that take precedence.
 
     Returns:
-        The merged options, as a new dict that holds no option whose value is
-        ``None``.
+        The merged options, as a new dict that holds no request option whose
+        value is ``None``.
 
     Raises:
         TypeError: If either holds ``headers`` or ``hooks`` that is neither a
@@ -361,12 +366,14 @@ def _merge_request_options(
     _check_mergeable_options(base)
     _check_mergeable_options(override)
     present = {
-        name: value for name, value in override.items() if value is not None
+        name: value
+        for name, value in override.items()
+        if value is not None or name not in _REQUEST_OPTION_NAMES
     }
     merged = {
         name: value
         for name, value in {**base, **present}.items()
-        if value is not None
+        if value is not None or name not in _REQUEST_OPTION_NAMES
     }
     if base.get("headers") is not None and override.get("headers") is not None:
         headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
