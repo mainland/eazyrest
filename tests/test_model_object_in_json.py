@@ -14,6 +14,7 @@ import functools
 import pickle
 import weakref
 from collections.abc import Callable, Iterator
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -127,6 +128,35 @@ class SlottedShallowHolder:
         return type(self)(self.value)
 
 
+class ModuleHolder(ModuleType):
+    """A module subclass that can copy an ordinary declared slot."""
+
+    __slots__ = ("stored", "unset")
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ModuleHolder:
+        """Copy the namespace and retain the slot unless asked to omit it."""
+        result = type(self)(self.__name__)
+        vars(result).update(vars(self))
+        if not vars(self).get("omit_slot"):
+            slot = vars(ModuleHolder)["stored"]
+            slot.__set__(result, slot.__get__(self))
+        return result
+
+
+class ShadowedModuleHolder(ModuleHolder):
+    """A module subclass whose class attribute shadows an inherited slot."""
+
+    __slots__ = ()
+    stored = "shadow"
+
+
+def _module_with_slot(holder: type[ModuleHolder], value: Any) -> ModuleHolder:
+    """Set the stored slot even when ordinary lookup is shadowed."""
+    module = holder("example")
+    vars(ModuleHolder)["stored"].__set__(module, value)
+    return module
+
+
 EXTERNAL_OWNER = Owner(pk=7)
 
 
@@ -145,6 +175,14 @@ class ReturnsExternalObject:
     def __deepcopy__(self, memo: dict[int, Any]) -> Owner:
         """Return the external model without copying it."""
         return EXTERNAL_OWNER
+
+
+class ReturnsModuleWithModel:
+    """A copy hook that puts an external model into a module's slot."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ModuleHolder:
+        """Put the model in a slot that is hidden by a class attribute."""
+        return _module_with_slot(ShadowedModuleHolder, EXTERNAL_OWNER)
 
 
 SHALLOW_HOLDERS: dict[str, Callable[[Any], Any]] = {
@@ -313,6 +351,57 @@ def test_a_deep_plain_branch_can_be_copied_alongside_a_hook(
         child = child[0]["child"]
         source = source[0]["child"]
     assert child == "bottom"
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("holder", [ModuleHolder, ShadowedModuleHolder])
+def test_a_model_in_a_module_subclass_slot_is_no_json_value(
+    entry: str, holder: type[ModuleHolder]
+) -> None:
+    """An original slot is checked even when the copy hook would omit it."""
+    module = _module_with_slot(holder, EXTERNAL_OWNER)
+    vars(module)["omit_slot"] = True
+
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, module)
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_copy_hook_cannot_add_a_model_in_a_module_slot(entry: str) -> None:
+    """The completed copy's shadowed slot is subject to the same check."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, ReturnsModuleWithModel())
+
+
+def test_refusing_a_module_slot_preserves_pending_changes() -> None:
+    """A refused update leaves the stored payload and pending field intact."""
+    thing = Thing(json={"id": 2, "name": "before", "tags": ["original"]})
+    thing.name = "pending"
+    before = thing.json
+
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        thing.update_from_json(
+            {"name": "incoming", "tags": ReturnsModuleWithModel()}
+        )
+
+    assert thing.json == before
+    assert thing.name == "pending"
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_copying_a_module_slot_leaves_the_module_namespace_alone(
+    entry: str,
+) -> None:
+    """A module's regular slot copies even when its namespace holds a model."""
+    module = _module_with_slot(ShadowedModuleHolder, "plain")
+    vars(module)["in_module_namespace"] = EXTERNAL_OWNER
+
+    result = _given(entry, module).json["tags"]
+
+    assert result is not module
+    assert vars(ModuleHolder)["stored"].__get__(result) == "plain"
+    assert result.in_module_namespace is EXTERNAL_OWNER
+    assert not hasattr(result, "unset")
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS)

@@ -499,8 +499,10 @@ pickled. Either failure leaves the update unapplied.
 
 Functions and classes shared by Python's copy protocol are kept by identity.
 The check leaves function closures and class state alone. It follows a weak
-reference's strongly held callback and leaves the weak target alone. Other
-state hidden inside extension types is subject to normal Python copy behavior.
+reference's strongly held callback and leaves the weak target alone. A Python
+slot declared by a module subclass is checked separately from the module's
+namespace, which stays outside the payload. Other state hidden inside extension
+types is subject to normal Python copy behavior.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that

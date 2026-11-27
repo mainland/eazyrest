@@ -3450,6 +3450,7 @@ def _form_value(name: str, value: Any, place: str = "[key]") -> Any:
 
 
 _NONE_TYPE = type(None)
+_TYPE_NAMESPACE = vars(type)["__dict__"]
 _TYPE_MRO = vars(type)["__mro__"]
 _TYPE_NAME = vars(type)["__name__"]
 
@@ -3526,6 +3527,47 @@ def _no_json_value(kind: type) -> TypeError:
     )
 
 
+def _collect_json_members(stack: list[Any], value: Any, base: type) -> None:
+    """Queue the native container members defined by a base type.
+
+    Args:
+        stack: Values the ownership check has yet to visit.
+        value: The current container.
+        base: The type whose stored members to read.
+    """
+    for read in _JSON_MEMBER_READERS.get(id(base), ()):
+        stack.extend(read(value))
+
+
+def _module_slot_values(value: Any, bases: Sequence[type]) -> Iterator[Any]:
+    """Read declared member slots above the module's native type.
+
+    Read each slot through its own descriptor. A derived class can shadow an
+    inherited slot, and the module's execution namespace is outside the
+    payload.
+
+    Args:
+        value: A module object.
+        bases: The concrete type's method resolution order.
+
+    Yields:
+        The initialized declared slots of the module's subclass.
+    """
+    for owner in bases:
+        if owner is types.ModuleType:
+            return
+        for field in _TYPE_NAMESPACE.__get__(owner).values():
+            if (
+                type(field) is types.MemberDescriptorType
+                and field.__objclass__ is owner
+            ):
+                try:
+                    member = field.__get__(value)
+                except AttributeError:
+                    continue
+                yield member
+
+
 def _refuse_models_in_json(value: Any, *, caller_json: bool) -> None:
     """Refuse a model reached through the stored members of a JSON value.
 
@@ -3554,12 +3596,8 @@ def _refuse_models_in_json(value: Any, *, caller_json: bool) -> None:
         if key in seen:
             continue
         seen.add(key)
-        if kind is dict:
-            stack.extend(item.keys())
-            stack.extend(item.values())
-            continue
-        if kind is list:
-            stack.extend(item)
+        if kind is dict or kind is list:
+            _collect_json_members(stack, item, kind)
             continue
 
         bases = _TYPE_MRO.__get__(kind)
@@ -3567,10 +3605,11 @@ def _refuse_models_in_json(value: Any, *, caller_json: bool) -> None:
             raise _no_json_value(kind)
         if caller_json:
             for base in bases:
-                for read in _JSON_MEMBER_READERS.get(id(base), ()):
-                    stack.extend(read(item))
+                _collect_json_members(stack, item, base)
                 for field in _JSON_FIELD_READERS.get(id(base), ()):
                     stack.append(field.__get__(item))
+                if base is types.ModuleType:
+                    stack.extend(_module_slot_values(item, bases))
         # Follow stored instance state as well as the known native members.
         # Executable state is outside the payload.
         if not any(id(base) in _JSON_LEAF_TYPE_IDS for base in bases):
