@@ -206,6 +206,115 @@ def _given(entry: str, held: Any) -> Thing:
 ENTRY_POINTS = ["json=", "update_from_json()"]
 
 
+class ContainerContents:
+    """A copy hook that reads a shared container through the copy memo."""
+
+    def __init__(self, values: list[Any]) -> None:
+        """Keep the source list, which can also be a sibling or ancestor."""
+        self.values = values
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> tuple[Any, ...]:
+        """Record the contents visible during the copy."""
+        return tuple(copy.deepcopy(self.values, memo))
+
+
+class ContainerLengthKey:
+    """A dictionary key whose hash depends on its copied list."""
+
+    def __init__(self, values: list[Any]) -> None:
+        """Hold the list that defines the key's hash."""
+        self.values = values
+
+    def __hash__(self) -> int:
+        """Return the length of the list."""
+        return len(self.values)
+
+
+class RecordsCopy:
+    """A copy hook that records when the copier reaches it."""
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        """Keep the label and the shared event list."""
+        self.name = name
+        self.events = events
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> str:
+        """Record the event and return the label."""
+        self.events.append(self.name)
+        return self.name
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_dictionary_value_is_copied_before_its_key(entry: str) -> None:
+    """The two hooks run in the same order as Python's dictionary copy."""
+    events: list[str] = []
+    source = {RecordsCopy("key", events): RecordsCopy("value", events)}
+
+    result = _given(entry, source).json["tags"]
+
+    assert events == ["value", "key"]
+    assert result == {"key": "value"}
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("source_first", [True, False], ids=["source", "hook"])
+def test_a_copy_hook_reads_a_complete_sibling(
+    entry: str, source_first: bool
+) -> None:
+    """A copy hook reads the complete shared list in either sibling order."""
+    shared = [1, 2]
+    fields: list[tuple[str, Any]] = [
+        ("source", shared),
+        ("snapshot", ContainerContents(shared)),
+    ]
+    payload = dict(fields if source_first else reversed(fields))
+    payload["lookup"] = {ContainerLengthKey(shared): "stored"}
+
+    expected = copy.deepcopy(payload)
+    result = _given(entry, payload).json["tags"]
+
+    assert result["snapshot"] == expected["snapshot"] == (1, 2)
+    key = next(iter(result["lookup"]))
+    assert key.values is result["source"]
+    assert result["lookup"][key] == "stored"
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_copy_hook_can_read_the_active_prefix_of_an_ancestor(
+    entry: str,
+) -> None:
+    """A true cycle sees the same copied prefix as Python's copy."""
+    source: list[Any] = ["first"]
+    source.extend([ContainerContents(source), "last", source])
+
+    result = _given(entry, source).json["tags"]
+
+    assert result[:3] == copy.deepcopy(source)[:3]
+    assert result[3] is result
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_deep_plain_branch_can_be_copied_alongside_a_hook(
+    entry: str,
+) -> None:
+    """A deep plain branch remains iterative when a sibling has a hook."""
+    source: Any = "bottom"
+    for _ in range(1500):
+        source = [{"child": source}]
+
+    result = _given(
+        entry, {"deep": source, "hook": ContainerContents([1, 2])}
+    ).json["tags"]
+
+    assert result["hook"] == (1, 2)
+    child = result["deep"]
+    for _ in range(1500):
+        assert child is not source
+        child = child[0]["child"]
+        source = source[0]["child"]
+    assert child == "bottom"
+
+
 @pytest.mark.parametrize("entry", ENTRY_POINTS)
 @pytest.mark.parametrize("depth", DEPTHS.values(), ids=DEPTHS.keys())
 @pytest.mark.parametrize("hold", HOLDERS.values(), ids=HOLDERS.keys())

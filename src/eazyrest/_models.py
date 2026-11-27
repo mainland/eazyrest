@@ -3577,18 +3577,26 @@ def _refuse_models_in_json(value: Any, *, caller_json: bool) -> None:
             stack.extend(gc.get_referents(item))
 
 
+@dataclass(slots=True)
+class _JSONCopyFrame:
+    """An active container whose children are copied before it returns."""
+
+    target: dict[Any, Any] | list[Any]
+    members: Iterator[Any]
+    key: Any = None
+
+
 def _copy_json(value: Any, *, caller_json: bool = False) -> Any:
     """Copy the JSON in a dict or list.
 
-    The copy is iterative, so that it takes any depth that a read let through,
-    where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts and
-    lists. A container that the value holds more than once, or that holds
-    itself, is copied once, as ``copy.deepcopy()`` does. Nested values beyond
-    JSON scalars and plain dicts and lists follow ``copy.deepcopy()``. The
-    original value is checked first, so a custom copy hook cannot hide a model
-    and a model copied as an unrelated side effect keeps its refused-copy
-    message. The result is checked too, since a hook can insert a model into
-    its copy.
+    Plain dicts and lists are copied depth-first with an explicit stack, so a
+    hook sees completed earlier siblings and the copied prefix of an active
+    ancestor. The stack handles nesting beyond Python's recursion limit. A
+    container that the value holds more than once is copied once. Other nested
+    values follow ``copy.deepcopy()`` with the same memo. The original value is
+    checked first, so a custom copy hook cannot hide a model and a model copied
+    as an unrelated side effect keeps its refused-copy message. The result is
+    checked too, since a hook can insert a model into its copy.
 
     For caller JSON, the check includes supported native holders' fields, such
     as a datetime's timezone. Validation visits stored members and leaves
@@ -3608,36 +3616,64 @@ def _copy_json(value: Any, *, caller_json: bool = False) -> Any:
     if not isinstance(value, (dict, list)):
         return value
 
-    # The copies made so far, keyed by the identity of the original.
     memo: dict[int, Any] = {}
-    unfilled: list[tuple[Any, Any]] = []
+    originals: list[Any] = []
+    stack: list[_JSONCopyFrame] = []
+    pending = object()
 
-    def shell(item: Any) -> Any:
-        """Return the copy of an item, queueing a container to be filled."""
+    def copy_item(item: Any) -> Any:
+        """Copy an item or descend into a new plain container."""
         kind = type(item)
         if _is_json_scalar(kind):
             return item
-        if id(item) in memo:
-            return memo[id(item)]
+        identity = id(item)
+        copied = memo.get(identity, pending)
+        if copied is not pending:
+            return copied
         if kind is dict:
-            made: Any = {}
+            frame = _JSONCopyFrame({}, iter(item.items()))
         elif kind is list:
-            made = []
+            frame = _JSONCopyFrame([], iter(item))
         else:
             return copy.deepcopy(item, memo)
-        memo[id(item)] = made
-        unfilled.append((item, made))
-        return made
+        # A hook can edit its input graph. Keep the memo's identities alive
+        # until the copy is complete, as deepcopy does for delegated items.
+        originals.append(item)
+        memo[identity] = frame.target
+        stack.append(frame)
+        return pending
 
     _refuse_models_in_json(value, caller_json=caller_json)
-    result = shell(value)
-    while unfilled:
-        source, made = unfilled.pop()
-        if type(source) is dict:
-            for key, item in source.items():
-                made[shell(key)] = shell(item)
+    result = copy_item(value)
+    while stack:
+        frame = stack[-1]
+        target = frame.target
+        if isinstance(target, list):
+            if result is not pending:
+                target.append(result)
+            for item in frame.members:
+                result = copy_item(item)
+                if result is pending:
+                    break
+                target.append(result)
+            else:
+                result = target
         else:
-            made.extend([shell(item) for item in source])
+            # Python copies the value before the key. A key cannot be an exact
+            # dict or list, so copying it cannot suspend this frame.
+            if result is not pending:
+                target[copy_item(frame.key)] = result
+            for key, item in frame.members:
+                result = copy_item(item)
+                if result is pending:
+                    frame.key = key
+                    break
+                target[copy_item(key)] = result
+            else:
+                result = target
+
+        if result is not pending:
+            stack.pop()
     _refuse_models_in_json(result, caller_json=caller_json)
     return result
 
