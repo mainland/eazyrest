@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from eazyrest import API, JSONObject, json_object
+from eazyrest import API, JSONObject, UsageError, json_object
 from eazyrest.api import _merge_request_options
 
 BASE = "https://option-merge.example/v1/"
@@ -761,3 +761,69 @@ def test_text_and_bytes_names_match_against_session_headers(
         for request in server.request_history
     )
     assert session_headers[session_name] == "old"
+
+
+def test_a_view_reuses_hooks_from_an_iterator(server: Any) -> None:
+    """An iterator gives the view a hook for each of its requests."""
+    view = _view({"hooks": {"response": iter([_ran])}})
+
+    view.get(SBASE + "items/1/")
+    view.get(SBASE + "items/1/")
+
+    assert server.call_count == len(RAN) == 2
+
+
+def test_a_query_reuses_hooks_from_an_iterator_on_later_pages(
+    server: Any,
+) -> None:
+    """The separate next-page sender runs the query's hook too."""
+    list(Item.all(request_options={"hooks": {"response": iter([_ran])}}))
+
+    assert server.call_count == len(RAN) == 2
+
+
+def test_get_or_create_reuses_hooks_between_the_lookup_and_creation(
+    server: Any,
+) -> None:
+    """The POST uses the hooks from the same options as the lookup."""
+    server.get(SBASE + "items/", json={"results": [], "next": None})
+
+    _, created = Item.get_or_create(
+        id=1, request_options={"hooks": {"response": iter([_ran])}}
+    )
+
+    assert created
+    assert [request.method for request in server.request_history] == [
+        "GET",
+        "POST",
+    ]
+    assert len(RAN) == 2
+
+
+def test_a_write_block_reuses_hooks_from_an_iterator(server: Any) -> None:
+    """Both writes run the hook supplied to the block."""
+    item = _lazy_item()
+    with item.write_options(hooks={"response": iter([_ran])}):
+        item.save()
+        item.delete()
+
+    assert server.call_count == len(RAN) == 2
+
+
+def test_a_surviving_write_block_keeps_its_hooks(server: Any) -> None:
+    """Rebuilding the block stack keeps the surviving block's hooks."""
+    item = _lazy_item()
+
+    def outer_hook(response: Any, **kwargs: Any) -> None:
+        RAN.append("outer")
+
+    outer = item.write_options(hooks={"response": outer_hook})
+    outer.__enter__()
+    with item.write_options(hooks={"response": iter([_ran])}):
+        item.save()
+        with pytest.raises(UsageError, match="block that began later"):
+            outer.__exit__(None, None, None)
+        item.delete()
+
+    assert server.call_count == 2
+    assert RAN == ["outer", "ran", "ran"]

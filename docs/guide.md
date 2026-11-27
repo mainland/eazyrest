@@ -2082,6 +2082,9 @@ todos = Todo.filter(
 unfollowed final 3xx raises `RedirectError`, as for writes, and so does a
 collection request answered with one, such as a `304 Not Modified`.
 
+A response-hook iterator is read once for a query, `get_or_create()`, or a
+`write_options()` block. Each request covered by those options runs its hooks.
+
 ### Write responses
 
 After a successful write, the object's JSON holds the fields that were sent,

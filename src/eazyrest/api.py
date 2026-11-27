@@ -302,6 +302,33 @@ def _response_hooks(hooks: Any) -> list[Callable[..., Any]]:
     return list(hooks)
 
 
+def _capture_response_hooks(options: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep hooks that a single-pass iterable supplies for multiple requests.
+
+    Args:
+        options: Checked options that more than one request may use.
+
+    Returns:
+        A copy of the options with reusable response hooks.
+    """
+    captured = dict(options)
+    hooks = captured.get("hooks")
+    if hooks is not None:
+        response = hooks.get("response")
+        kind = type(response)
+        if (
+            response is not None
+            and kind is not list
+            and kind is not tuple
+            and not callable(response)
+        ):
+            captured["hooks"] = {
+                **hooks,
+                "response": _response_hooks(response),
+            }
+    return captured
+
+
 # Request options that are merged by name or by event, so that a value of
 # another type cannot be merged over the options of an open block.
 _MERGED_OPTION_NAMES = ("headers", "hooks")
@@ -1533,7 +1560,7 @@ class API:
                 be merged.
         """
         _check_mergeable_options(options)
-        return _ScopedAPI(self, dict(options))
+        return _ScopedAPI(self, options)
 
     def _send(
         self,
@@ -2157,7 +2184,11 @@ class _ScopedAPI:
             options: Request options that every request sends.
         """
         object.__setattr__(self, "_api", api)
-        object.__setattr__(self, "_request_options", MappingProxyType(options))
+        object.__setattr__(
+            self,
+            "_request_options",
+            MappingProxyType(_capture_response_hooks(options)),
+        )
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Refuse to assign an attribute, which the ``API`` would not see.

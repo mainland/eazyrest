@@ -101,6 +101,7 @@ from .api import (
     API,
     _AnyAPI,
     _as_client,
+    _capture_response_hooks,
     _check_final_response,
     _check_mergeable_options,
     _merge_request_options,
@@ -8086,7 +8087,9 @@ class JSONObject:
                 options are gone from the object by then, and the other block's
                 own keep applying until it ends, and then no options remain.
         """
-        checked = _checked_request_options(options, "write")
+        checked = _capture_response_hooks(
+            _checked_request_options(options, "write")
+        )
         # Each block keeps its own options, and the object's are the merge of
         # the open blocks' in the order that they began. A block that ends out
         # of order then takes only its own options with it. An object that has
@@ -11722,6 +11725,8 @@ class JSONObject:
                 with _converting(cls, key_property.field):
                     value = _build_key(cls, value)
             lookup[name] = value
+        if request_options is not None:
+            request_options = _capture_response_hooks(request_options)
         results = cls.filter(
             api=api, request_options=request_options, params=lookup
         )

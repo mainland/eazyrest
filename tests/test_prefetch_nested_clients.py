@@ -140,6 +140,25 @@ def test_the_query_itself_still_sends_its_options() -> None:
             assert request.headers["X-Query"] == "token-of-the-query"
 
 
+def test_a_hook_from_an_iterator_runs_on_the_prefetch_request() -> None:
+    """The prefetch sender reuses the query's response hook."""
+    paths: list[str] = []
+
+    def record(response: Any, **kwargs: Any) -> None:
+        paths.append(response.request.path_url)
+
+    with requests_mock.Mocker() as mocker:
+        serve(mocker)
+        list(
+            Task.filter(
+                prefetch="member",
+                request_options={"hooks": {"response": iter([record])}},
+            )
+        )
+
+    assert paths == ["/tasks/", "/members/"]
+
+
 OTHER = API(BASE)
 
 
