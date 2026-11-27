@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import collections
 import copy
+import functools
 import pickle
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -94,6 +95,69 @@ class Holder:
         self.value = value
 
 
+class ShallowDict(JSONDict):
+    """A copied mapping whose hook does not visit its values."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ShallowDict:
+        """Copy the mapping without asking for a copy of its members."""
+        return type(self)(self)
+
+
+class ShallowList(JSONList):
+    """A copied list whose hook does not visit its values."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ShallowList:
+        """Copy the list without asking for a copy of its members."""
+        return type(self)(self)
+
+
+class SlottedShallowHolder:
+    """An object whose shallow copy does not visit a slotted value."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        """Hold the value that a deep copy would otherwise visit."""
+        self.value = value
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> SlottedShallowHolder:
+        """Return another holder without copying its value."""
+        return type(self)(self.value)
+
+
+EXTERNAL_OWNER = Owner(pk=7)
+
+
+class CopiesExternalObject:
+    """A copy hook that tries to copy a model outside its own value."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> CopiesExternalObject:
+        """Try an unrelated copy without returning a model in this value."""
+        copy.deepcopy(EXTERNAL_OWNER)
+        return self
+
+
+class ReturnsExternalObject:
+    """A copy hook that returns a model absent from the original value."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> Owner:
+        """Return the external model without copying it."""
+        return EXTERNAL_OWNER
+
+
+SHALLOW_HOLDERS: dict[str, Callable[[Any], Any]] = {
+    "dict": lambda obj: ShallowDict(k=obj),
+    "list": lambda obj: ShallowList([obj]),
+    "slotted object": SlottedShallowHolder,
+}
+
+
+METHOD_HOLDERS: dict[str, Callable[[Owner], Any]] = {
+    "bound method": lambda obj: obj.save,
+    "partial of a bound method": lambda obj: functools.partial(obj.save),
+}
+
+
 def _defaultdict(obj: Any) -> Any:
     found: collections.defaultdict[str, Any] = collections.defaultdict(list)
     found["k"] = obj
@@ -150,6 +214,92 @@ def test_a_model_object_anywhere_in_caller_json_is_no_json_value(
     with pytest.raises(TypeError, match="Owner object is no JSON value") as e:
         _given(entry, depth(hold(Owner(pk=3))))
     assert "copied" not in str(e.value)
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("hold", SHALLOW_HOLDERS.values(), ids=SHALLOW_HOLDERS)
+def test_a_shallow_container_copy_cannot_keep_a_model_in_caller_json(
+    entry: str, hold: Callable[[Any], Any]
+) -> None:
+    """A custom copy hook cannot hide a model that the input holds."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, hold(Owner(pk=3)))
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("hold", METHOD_HOLDERS.values(), ids=METHOD_HOLDERS)
+def test_a_callable_that_copies_a_model_is_no_json_value(
+    entry: str, hold: Callable[[Owner], Any]
+) -> None:
+    """A callable that holds the model must give the caller JSON error."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, hold(Owner(pk=3)))
+
+
+@pytest.mark.parametrize("hold", METHOD_HOLDERS.values(), ids=METHOD_HOLDERS)
+def test_copying_a_callable_with_a_model_keeps_the_copy_error(
+    hold: Callable[[Owner], Any],
+) -> None:
+    """Outside caller JSON, a model still refuses the callable's copy."""
+    with pytest.raises(TypeError, match="cannot be copied or pickled"):
+        copy.deepcopy(hold(Owner(pk=3)))
+
+
+def test_a_function_closure_is_shared_by_deepcopy() -> None:
+    """A function's captured model is not copied as part of caller JSON."""
+    owner = Owner(pk=3)
+
+    def saved_owner() -> Owner:
+        return owner
+
+    assert copy.deepcopy(saved_owner) is saved_owner
+    thing = Thing(json={"id": 2, "tags": [saved_owner]})
+    assert thing.json["tags"][0] is saved_owner
+
+
+def test_a_generator_is_not_traversed_before_its_copy_fails() -> None:
+    """Checking caller JSON neither consumes nor enters a generator."""
+    owner = Owner(pk=3)
+
+    def values() -> Iterator[Owner]:
+        yield owner
+
+    generator = values()
+    with pytest.raises(TypeError) as error:
+        Thing(json={"id": 2, "tags": [generator]})
+    assert "no JSON value" not in str(error.value)
+    assert next(generator) is owner
+
+
+def test_a_refused_shallow_copy_leaves_the_object_unchanged() -> None:
+    """The update does not apply a field before refusing the model value."""
+    thing = Thing(json={"id": 2, "name": "a", "tags": ["x"]})
+    before = copy.deepcopy(thing.json)
+
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        thing.update_from_json(
+            {"name": "b", "tags": ShallowDict(k=Owner(pk=3))}
+        )
+
+    assert thing.json == before
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_copying_a_model_external_to_caller_json_keeps_its_copy_error(
+    entry: str,
+) -> None:
+    """A copy hook's unrelated model is outside the caller's value."""
+    with pytest.raises(TypeError, match="cannot be copied or pickled"):
+        _given(entry, CopiesExternalObject())
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_copy_hook_cannot_insert_a_model_into_caller_json(
+    entry: str,
+) -> None:
+    """The copied result must not contain a newly returned model."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, ReturnsExternalObject())
 
 
 @pytest.mark.parametrize(

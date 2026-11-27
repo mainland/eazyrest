@@ -11,6 +11,7 @@ import datetime
 import decimal
 import enum
 import functools
+import gc
 import inspect
 import itertools
 import json
@@ -3486,11 +3487,44 @@ def _no_json_value(obj: JSONObject) -> TypeError:
     )
 
 
-_COPYING_JSON: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "eazyrest_copying_json", default=False
-)
-"""Whether ``_copy_json()`` is copying, so that a model object met by the copy
-is no JSON value rather than a refused copy."""
+def _refuse_models_in_json(value: Any) -> None:
+    """Refuse a model object held anywhere in a value copied as JSON.
+
+    A custom ``__deepcopy__()`` may copy an object without entering the model
+    it holds. Walk references in the original value before calling that hook,
+    without invoking user code or consuming an iterable. A model copied as a
+    side effect of the hook is not part of the original value.
+
+    Args:
+        value: The value to check before copying it.
+
+    Raises:
+        TypeError: If a copied value holds a model.
+    """
+    seen: set[int] = set()
+    stack: list[Any] = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, JSONObject):
+            raise _no_json_value(item)
+        if type(item) in _ATOMIC_JSON or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(
+            item,
+            (
+                type,
+                types.FunctionType,
+                types.BuiltinFunctionType,
+                types.ModuleType,
+                types.CodeType,
+                types.GeneratorType,
+                types.CoroutineType,
+                types.AsyncGeneratorType,
+            ),
+        ):
+            continue
+        stack.extend(gc.get_referents(item))
 
 
 def _copy_json(value: Any) -> Any:
@@ -3500,11 +3534,11 @@ def _copy_json(value: Any) -> Any:
     where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts and
     lists. A container that the value holds more than once, or that holds
     itself, is copied once, as ``copy.deepcopy()`` does. Anything else than
-    these and a JSON scalar is copied by ``copy.deepcopy()``, which enters
-    every container and object that it copies. While it copies, a model object
-    that it meets raises ``_no_json_value()``, wherever it is, in place of the
-    refused copy that ``copy.deepcopy()`` of it raises outside this function.
-    Nothing else is iterated, so a generator is not consumed.
+    these and a JSON scalar is copied by ``copy.deepcopy()``. The original
+    value is checked first, so a custom copy hook cannot hide a model and a
+    model copied as an unrelated side effect keeps its refused-copy message.
+    The result is checked too, since a hook can insert a model into its copy.
+    Arbitrary iterables, such as generators, are not consumed.
 
     Args:
         value: JSON value to copy.
@@ -3540,18 +3574,16 @@ def _copy_json(value: Any) -> Any:
         unfilled.append((item, made))
         return made
 
-    token = _COPYING_JSON.set(True)
-    try:
-        result = shell(value)
-        while unfilled:
-            source, made = unfilled.pop()
-            if type(source) is dict:
-                for key, item in source.items():
-                    made[shell(key)] = shell(item)
-            else:
-                made.extend([shell(item) for item in source])
-    finally:
-        _COPYING_JSON.reset(token)
+    _refuse_models_in_json(value)
+    result = shell(value)
+    while unfilled:
+        source, made = unfilled.pop()
+        if type(source) is dict:
+            for key, item in source.items():
+                made[shell(key)] = shell(item)
+        else:
+            made.extend([shell(item) for item in source])
+    _refuse_models_in_json(result)
     return result
 
 
@@ -7173,11 +7205,7 @@ class JSONObject:
         Raises:
             TypeError: Always. A container that holds an object cannot be
                 deep-copied either. Copy ``obj.json``, which is plain JSON.
-                While JSON that a caller gave is copied, the error says that
-                the object is no JSON value.
         """
-        if _COPYING_JSON.get():
-            raise _no_json_value(self)
         self._refuse_copy()
 
     def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
