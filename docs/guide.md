@@ -2023,10 +2023,13 @@ that are not a mapping raise `TypeError`, as they do for a query, and so do
 `headers` and `hooks` that are not mappings, a header whose name is neither
 `str` nor `bytes`, and a hook event whose entry is neither a callable nor an
 iterable. `None` for any option means that it is absent, so the options under
-it, those of a `write_options()` block or a view, apply. A 3xx response raises
-`RedirectError`, whatever `allow_redirects` says, and pending updates remain
-pending. A server that supports optimistic concurrency, for example, refuses a
-write whose `If-Match` header no longer names the object's current version:
+it, those of a `write_options()` block or a view, apply. Header names match
+without regard to case across ASCII text and bytes. A `None` value inside
+`headers` removes that header, including a header set on the session. A 3xx
+response raises `RedirectError`, whatever `allow_redirects` says, and pending
+updates remain pending. A server that supports optimistic concurrency, for
+example, refuses a write whose `If-Match` header no longer names the object's
+current version:
 
 ```python
 todo.title = "new"

@@ -704,3 +704,60 @@ def test_a_header_set_to_none_removes_a_header_that_a_lower_option_set(
     )
     assert "X-Base" not in server.last_request.headers
     assert server.last_request.headers["X-Keep"] == "k"
+
+
+@pytest.mark.parametrize("run", LAYERED.values(), ids=LAYERED)
+@pytest.mark.parametrize(
+    ("lower_name", "top_name"),
+    [("X-Layer", b"x-layer"), (b"X-Layer", "x-layer")],
+    ids=["text-below", "bytes-below"],
+)
+@pytest.mark.parametrize("value", [None, "new"], ids=["remove", "replace"])
+def test_text_and_bytes_names_match_in_layered_headers(
+    server: Any,
+    run: Merge,
+    lower_name: str | bytes,
+    top_name: str | bytes,
+    value: str | None,
+) -> None:
+    """The higher layer wins when both names identify the same header."""
+    run(
+        server,
+        {"headers": {lower_name: "old"}},
+        {"headers": {top_name: value}},
+    )
+
+    assert server.called
+    assert all(
+        request.headers.get("X-Layer") == value
+        for request in server.request_history
+    )
+
+
+@pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)
+@pytest.mark.parametrize(
+    ("session_name", "option_name"),
+    [("X-Default", b"x-default"), (b"X-Default", "x-default")],
+    ids=["text-in-session", "bytes-in-session"],
+)
+@pytest.mark.parametrize("value", [None, "new"], ids=["remove", "replace"])
+def test_text_and_bytes_names_match_against_session_headers(
+    server: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    run: Merge,
+    session_name: str | bytes,
+    option_name: str | bytes,
+    value: str | None,
+) -> None:
+    """A request overrides its session header without modifying the session."""
+    session_headers: Any = SERVER.session.headers
+    monkeypatch.setitem(session_headers, session_name, "old")
+
+    run(server, {}, {"headers": {option_name: value}})
+
+    assert server.called
+    assert all(
+        request.headers.get("X-Default") == value
+        for request in server.request_history
+    )
+    assert session_headers[session_name] == "old"

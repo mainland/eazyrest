@@ -5,7 +5,13 @@ from __future__ import annotations
 import contextlib
 import inspect
 import time
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Mapping,
+    MutableMapping,
+)
 from http.cookiejar import CookieJar
 from types import MappingProxyType
 from typing import Any, Literal, Self, TypeAlias
@@ -348,23 +354,66 @@ def _check_mergeable_options(options: Mapping[str, Any]) -> None:
                     )
 
 
+def _header_name_key(name: str | bytes) -> str | bytes:
+    """Return the case-insensitive key for a text or byte header name.
+
+    Requests converts byte names to text when preparing headers. Compare
+    earlier layers the same way. Leave undecodable names for Requests to
+    validate if they reach the prepared request.
+
+    Args:
+        name: Header name from an option or the session.
+
+    Returns:
+        A common key for case variants of an ASCII name.
+    """
+    if isinstance(name, bytes) and name.isascii():
+        name = name.decode("ascii")
+    return name.lower()
+
+
+def _remove_session_header_aliases(
+    headers: MutableMapping[str | bytes, Any],
+    session_headers: Mapping[Any, Any],
+) -> None:
+    """Remove an overridden session spelling that Requests keeps separate.
+
+    Requests drops ``None`` entries before converting byte names to text. Mark
+    the session's spelling for removal if the request uses the other type,
+    while preserving the caller's chosen spelling and value.
+
+    Args:
+        headers: The merged request headers that this request owns.
+        session_headers: The lower header settings, which stay in the session.
+    """
+    request_names = {_header_name_key(name): name.lower() for name in headers}
+    for name in session_headers:
+        if isinstance(name, str | bytes):
+            session_name = name.lower()
+            if (
+                request_names.get(_header_name_key(name), session_name)
+                != session_name
+            ):
+                headers[name] = None
+
+
 def _merge_request_options(
     base: Mapping[str, Any], override: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Return request options with ``override`` applied over ``base``.
 
-    Headers are merged, matching names without regard to case, and hooks are
-    combined per event, with ``base``'s first. Both are merged whenever
-    ``override`` holds a mapping, an empty one included. A value of ``None``
-    means the option is absent, whichever option it is, so ``override``'s
-    ``None`` keeps ``base``'s value, as requests does with the options of a
-    session. For any other option, ``override``'s value wins. An option whose
-    merged value is ``None`` is left out, whether or not ``base`` holds a value
-    for it. An unknown keyword is kept for requests to accept or reject, even
-    when its value is ``None``. Thus ``None`` for a request option never
-    reaches requests, which would read ``allow_redirects=None`` as false and
-    ``timeout=None`` as no limit. A header whose value is ``None`` is kept, so
-    requests still removes that header from the session's.
+    Headers are merged, matching text and byte names without regard to case.
+    Hooks are combined per event, with ``base``'s first. Both are merged
+    whenever ``override`` holds a mapping, an empty one included. A value of
+    ``None`` means the option is absent, whichever option it is, so
+    ``override``'s ``None`` keeps ``base``'s value, as requests does with the
+    options of a session. For any other option, ``override``'s value wins. An
+    option whose merged value is ``None`` is left out, whether or not ``base``
+    holds a value for it. An unknown keyword is kept for requests to accept or
+    reject, even when its value is ``None``. Thus ``None`` for a request option
+    never reaches requests, which would read ``allow_redirects=None`` as false
+    and ``timeout=None`` as no limit. A header whose value is ``None`` is kept,
+    so requests still removes that header from the session's.
 
     Args:
         base: Options that apply unless ``override`` sets them.
@@ -387,12 +436,18 @@ def _merge_request_options(
         for name, value in layer.items()
         if value is not None or name not in _REQUEST_OPTION_NAMES
     }
-    if base.get("headers") is not None and override.get("headers") is not None:
-        headers: CaseInsensitiveDict[Any] = CaseInsensitiveDict(
-            base["headers"]
-        )
-        headers.update(override["headers"])
-        merged["headers"] = headers
+    header_layers = [
+        layer["headers"]
+        for layer in (base, override)
+        if layer.get("headers") is not None
+    ]
+    if header_layers:
+        entries = {
+            _header_name_key(name): (name, value)
+            for headers in header_layers
+            for name, value in headers.items()
+        }
+        merged["headers"] = CaseInsensitiveDict(entries.values())
     if base.get("hooks") is not None and override.get("hooks") is not None:
         merged["hooks"] = {
             event: [
@@ -1735,6 +1790,9 @@ class API:
         if self.session.proxies:
             defaults["proxies"] = dict(self.session.proxies)
         kwargs = _merge_request_options(defaults, kwargs)
+        headers = kwargs.get("headers")
+        if headers and isinstance(self.session.headers, Mapping):
+            _remove_session_header_aliases(headers, self.session.headers)
         # A request that streams reads its own body, but not the bodies of
         # redirects, which requests reads, or of a failure, which the error
         # reads, so those are bounded too.
