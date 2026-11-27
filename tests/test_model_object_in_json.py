@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import collections
 import copy
+import datetime
 import functools
 import pickle
+import weakref
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -245,7 +247,8 @@ def test_copying_a_callable_with_a_model_keeps_the_copy_error(
         copy.deepcopy(hold(Owner(pk=3)))
 
 
-def test_a_function_closure_is_shared_by_deepcopy() -> None:
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_function_closure_is_shared_by_deepcopy(entry: str) -> None:
     """A function's captured model is not copied as part of caller JSON."""
     owner = Owner(pk=3)
 
@@ -253,8 +256,223 @@ def test_a_function_closure_is_shared_by_deepcopy() -> None:
         return owner
 
     assert copy.deepcopy(saved_owner) is saved_owner
-    thing = Thing(json={"id": 2, "tags": [saved_owner]})
-    assert thing.json["tags"][0] is saved_owner
+    assert _given(entry, saved_owner).json["tags"] is saved_owner
+
+
+class LocalZone(datetime.tzinfo):
+    """A timezone that can hold a model in an ordinary attribute."""
+
+    def __init__(self, owner: Owner | None = None) -> None:
+        """Store the owner, if given."""
+        self.owner = owner
+
+    def utcoffset(self, dt: datetime.datetime | None) -> datetime.timedelta:
+        """Return a fixed offset."""
+        return datetime.timedelta(hours=2)
+
+    def dst(self, dt: datetime.datetime | None) -> datetime.timedelta:
+        """Return zero daylight saving time."""
+        return datetime.timedelta()
+
+    def tzname(self, dt: datetime.datetime | None) -> str:
+        """Return the timezone's name."""
+        return "UTC+02:00"
+
+
+class ShallowZone(LocalZone):
+    """A timezone whose copy shares the state in its attributes."""
+
+    copies = 0
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> ShallowZone:
+        """Return a new timezone that holds the original owner."""
+        self.copies += 1
+        return copy.copy(self)
+
+
+class ShadowedTime(datetime.time):
+    """A time with a property that shadows its stored timezone."""
+
+    @property
+    def tzinfo(self) -> datetime.tzinfo | None:
+        """Raise if accessed through an instance attribute lookup."""
+        raise AssertionError("timezone looked up on the instance")
+
+
+TimeValue = datetime.datetime | datetime.time
+TimeMaker = Callable[[datetime.tzinfo | None], TimeValue]
+TIME_VALUES: dict[str, TimeMaker] = {
+    "datetime": lambda zone: datetime.datetime(2026, 1, 1, tzinfo=zone),
+    "time": lambda zone: datetime.time(10, tzinfo=zone),
+}
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize(
+    "make",
+    [*TIME_VALUES.values(), lambda zone: ShadowedTime(10, tzinfo=zone)],
+    ids=[*TIME_VALUES, "shadowed timezone"],
+)
+@pytest.mark.parametrize("zone_type", [LocalZone, ShallowZone])
+def test_a_model_in_a_timezone_is_refused_before_copying(
+    entry: str, make: TimeMaker, zone_type: type[LocalZone]
+) -> None:
+    """Both timezone descriptors belong to the input's stored state."""
+    zone = zone_type(Owner(pk=3))
+
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, make(zone))
+
+    if isinstance(zone, ShallowZone):
+        assert zone.copies == 0
+
+
+class ReturnsTimeWithModel:
+    """A hook whose result adds a timezone holding a model."""
+
+    def __init__(self, make: TimeMaker) -> None:
+        """Store the function that builds the result."""
+        self.make = make
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> TimeValue:
+        """Return a new value with a timezone that holds the external owner."""
+        return self.make(ShallowZone(EXTERNAL_OWNER))
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("make", TIME_VALUES.values(), ids=TIME_VALUES)
+def test_a_copy_hook_cannot_add_a_timezone_that_holds_a_model(
+    entry: str, make: TimeMaker
+) -> None:
+    """The completed copy is subject to the same check as the input."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, ReturnsTimeWithModel(make))
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("make", TIME_VALUES.values(), ids=TIME_VALUES)
+@pytest.mark.parametrize("zone", [None, datetime.UTC, LocalZone()])
+def test_a_time_with_no_model_is_copied(
+    entry: str, make: TimeMaker, zone: datetime.tzinfo | None
+) -> None:
+    """Naive values and timezones with model-free state can be copied."""
+    value = make(zone)
+    stored = _given(entry, value).json["tags"]
+
+    assert stored == value
+    assert stored is not value
+    if isinstance(zone, LocalZone):
+        assert stored.tzinfo is not zone
+
+
+def test_refusing_a_copied_timezone_preserves_pending_changes() -> None:
+    """The update leaves pending and stored values intact after refusal."""
+    thing = Thing(
+        json={"id": 2, "name": "a", "tags": ["x"]}, write_mode="lazy"
+    )
+    thing.name = "pending"
+    before = thing.json
+
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        thing.update_from_json(
+            {
+                "name": "incoming",
+                "tags": ReturnsTimeWithModel(TIME_VALUES["time"]),
+            }
+        )
+
+    assert thing.json == before
+    assert thing.name == "pending"
+
+
+CALLBACK_VALUES: dict[str, Callable[[Owner], Any]] = {
+    "property getter": lambda owner: property(owner.__eq__),
+    "property setter": lambda owner: property(fset=owner.__setattr__),
+    "property deleter": lambda owner: property(fdel=owner.__delattr__),
+    "weak-reference callback": lambda owner: weakref.ref(
+        EXTERNAL_OWNER, functools.partial(owner.__eq__)
+    ),
+    "method wrapper": lambda owner: owner.__str__,
+}
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("hold", CALLBACK_VALUES.values(), ids=CALLBACK_VALUES)
+def test_a_model_in_a_strongly_held_callback_is_refused(
+    entry: str, hold: Callable[[Owner], Any]
+) -> None:
+    """The receiver of a bound callback belongs to the callback's state."""
+    with pytest.raises(TypeError, match="Owner object is no JSON value"):
+        _given(entry, hold(Owner(pk=3)))
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_a_weak_target_and_model_free_callbacks_can_be_shared(
+    entry: str,
+) -> None:
+    """A weak target is outside the payload and ordinary callbacks can pass."""
+    owner = Owner(pk=3)
+    prop = property(str.upper)
+    reference = weakref.ref(owner, lambda ref: None)
+
+    stored = _given(entry, [prop, reference]).json["tags"]
+
+    assert stored[0] is prop
+    assert stored[1] is reference
+    assert stored[1]() is owner
+
+
+class CopyingString(str):
+    """A string subclass whose copy is a plain string."""
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> str:
+        """Return the plain string."""
+        return str(self)
+
+
+class CheckedString(CopyingString):
+    """A string that detects instance class lookup."""
+
+    def __getattribute__(self, name: str) -> Any:
+        """Raise if inspected through the instance attribute protocol."""
+        if name == "__class__":
+            raise AssertionError("class looked up on the instance")
+        return super().__getattribute__(name)
+
+
+class CheckedMeta(type):
+    """A metaclass that detects attribute lookup and equality."""
+
+    __hash__ = type.__hash__
+
+    def __getattribute__(self, name: str) -> Any:
+        """Raise if the MRO is looked up through the metaclass."""
+        if name == "__mro__":
+            raise AssertionError("MRO looked up on the metaclass")
+        return super().__getattribute__(name)
+
+    def __eq__(self, other: object) -> bool:
+        """Raise if classification compares classes by equality."""
+        raise AssertionError("metaclass equality")
+
+
+class ComparedString(CopyingString, metaclass=CheckedMeta):
+    """A string whose class checks for metaclass dispatch."""
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+@pytest.mark.parametrize("kind", [CheckedString, ComparedString])
+def test_copying_uses_the_actual_type_without_calling_class_hooks(
+    entry: str, kind: type[CopyingString]
+) -> None:
+    """Validation can classify the string without interceptable lookups."""
+    value = kind("label")
+    assert type(copy.deepcopy(value)) is str
+
+    stored = _given(entry, value).json["tags"]
+
+    assert type(stored) is str
+    assert stored == "label"
 
 
 def test_a_generator_is_not_traversed_before_its_copy_fails() -> None:

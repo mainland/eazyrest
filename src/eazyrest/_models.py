@@ -3448,89 +3448,161 @@ def _form_value(name: str, value: Any, place: str = "[key]") -> Any:
     )
 
 
-_ATOMIC_JSON = (str, int, float, bool, type(None))
-"""The types of the JSON scalars that a copy shares."""
+_NONE_TYPE = type(None)
+_TYPE_MRO = vars(type)["__mro__"]
+_TYPE_NAME = vars(type)["__name__"]
+
+# Base methods and descriptors read stored members even when a subclass
+# overrides iteration or attribute lookup. Index readers by type identity to
+# avoid invoking a metaclass's equality and hash methods.
+_JSON_MEMBER_READERS: dict[int, tuple[Callable[[Any], Iterable[Any]], ...]] = {
+    id(dict): (dict.keys, dict.values),
+    id(list): (list.__iter__,),
+    id(tuple): (tuple.__iter__,),
+    id(set): (set.__iter__,),
+    id(frozenset): (frozenset.__iter__,),
+    id(collections.deque): (collections.deque.__iter__,),
+}
+_JSON_FIELD_READERS = {
+    id(collections.defaultdict): (
+        vars(collections.defaultdict)["default_factory"],
+    ),
+    id(datetime.datetime): (vars(datetime.datetime)["tzinfo"],),
+    id(datetime.time): (vars(datetime.time)["tzinfo"],),
+    id(functools.partial): tuple(
+        vars(functools.partial)[name] for name in ("func", "args", "keywords")
+    ),
+    id(property): tuple(
+        vars(property)[name] for name in ("fget", "fset", "fdel")
+    ),
+    id(types.BuiltinMethodType): (vars(types.BuiltinMethodType)["__self__"],),
+    id(types.MethodType): (vars(types.MethodType)["__self__"],),
+    id(types.MethodWrapperType): (vars(types.MethodWrapperType)["__self__"],),
+    id(weakref.ReferenceType): (vars(weakref.ReferenceType)["__callback__"],),
+}
+_JSON_LEAF_TYPE_IDS = frozenset(
+    map(
+        id,
+        (
+            type,
+            types.FunctionType,
+            types.BuiltinFunctionType,
+            types.ModuleType,
+            types.CodeType,
+            types.GeneratorType,
+            types.CoroutineType,
+            types.AsyncGeneratorType,
+        ),
+    )
+)
 
 
-def _no_json_value(obj: JSONObject) -> TypeError:
+def _is_json_scalar(kind: type) -> bool:
+    """Return whether an exact scalar type is shared by the JSON copier."""
+    return (
+        kind is str
+        or kind is int
+        or kind is float
+        or kind is bool
+        or kind is _NONE_TYPE
+    )
+
+
+def _no_json_value(kind: type) -> TypeError:
     """Return the error for a model object that is part of caller JSON.
 
     Args:
-        obj: The model object.
+        kind: The concrete type of the model object.
 
     Returns:
         A ``TypeError`` that says that the object is no JSON value.
     """
+    name = _TYPE_NAME.__get__(kind)
     return TypeError(
-        f"A {type(obj).__name__} object is no JSON value, so it cannot be "
+        f"A {name} object is no JSON value, so it cannot be "
         "part of JSON that an object is given. Give its key, or its JSON "
         "from obj.json."
     )
 
 
-def _refuse_models_in_json(value: Any) -> None:
-    """Refuse a model object held anywhere in a value copied as JSON.
+def _refuse_models_in_json(value: Any, *, caller_json: bool) -> None:
+    """Refuse a model reached through the stored members of a JSON value.
 
-    A custom ``__deepcopy__()`` may copy an object without entering the model
-    it holds. Walk references in the original value before calling that hook,
-    without invoking user code or consuming an iterable. A model copied as a
-    side effect of the hook is not part of the original value.
+    A copy hook can skip a model its input holds, or introduce one into its
+    result. Inspect stored members without going through instance attribute
+    lookup. Some native types, such as datetime, hold references that the
+    garbage collector does not visit. Read the supported fields directly when
+    inspecting caller JSON.
 
     Args:
-        value: The value to check before copying it.
+        value: Input to the copier or its completed result.
+        caller_json: Whether to include the supported native members of a
+            payload from a caller.
 
     Raises:
-        TypeError: If a copied value holds a model.
+        TypeError: If a visited value is a model.
     """
     seen: set[int] = set()
     stack: list[Any] = [value]
     while stack:
         item = stack.pop()
-        if isinstance(item, JSONObject):
-            raise _no_json_value(item)
-        if type(item) in _ATOMIC_JSON or id(item) in seen:
+        kind = type(item)
+        if _is_json_scalar(kind):
             continue
-        seen.add(id(item))
-        if isinstance(
-            item,
-            (
-                type,
-                types.FunctionType,
-                types.BuiltinFunctionType,
-                types.ModuleType,
-                types.CodeType,
-                types.GeneratorType,
-                types.CoroutineType,
-                types.AsyncGeneratorType,
-            ),
-        ):
+        key = id(item)
+        if key in seen:
             continue
-        stack.extend(gc.get_referents(item))
+        seen.add(key)
+        if kind is dict:
+            stack.extend(item.keys())
+            stack.extend(item.values())
+            continue
+        if kind is list:
+            stack.extend(item)
+            continue
+
+        bases = _TYPE_MRO.__get__(kind)
+        if any(base is JSONObject for base in bases):
+            raise _no_json_value(kind)
+        if caller_json:
+            for base in bases:
+                for read in _JSON_MEMBER_READERS.get(id(base), ()):
+                    stack.extend(read(item))
+                for field in _JSON_FIELD_READERS.get(id(base), ()):
+                    stack.append(field.__get__(item))
+        # Follow stored instance state as well as the known native members.
+        # Executable state is outside the payload.
+        if not any(id(base) in _JSON_LEAF_TYPE_IDS for base in bases):
+            stack.extend(gc.get_referents(item))
 
 
-def _copy_json(value: Any) -> Any:
-    """Return a copy of a JSON value that shares no mutable containers.
+def _copy_json(value: Any, *, caller_json: bool = False) -> Any:
+    """Copy the JSON in a dict or list.
 
     The copy is iterative, so that it takes any depth that a read let through,
     where ``copy.deepcopy()`` raises ``RecursionError``. It walks dicts and
     lists. A container that the value holds more than once, or that holds
-    itself, is copied once, as ``copy.deepcopy()`` does. Anything else than
-    these and a JSON scalar is copied by ``copy.deepcopy()``. The original
-    value is checked first, so a custom copy hook cannot hide a model and a
-    model copied as an unrelated side effect keeps its refused-copy message.
-    The result is checked too, since a hook can insert a model into its copy.
-    Arbitrary iterables, such as generators, are not consumed.
+    itself, is copied once, as ``copy.deepcopy()`` does. Nested values beyond
+    JSON scalars and plain dicts and lists follow ``copy.deepcopy()``. The
+    original value is checked first, so a custom copy hook cannot hide a model
+    and a model copied as an unrelated side effect keeps its refused-copy
+    message. The result is checked too, since a hook can insert a model into
+    its copy.
+
+    For caller JSON, the check includes supported native holders' fields, such
+    as a datetime's timezone. Validation visits stored members and leaves
+    arbitrary iterables, such as generators, untouched.
 
     Args:
         value: JSON value to copy.
+        caller_json: Whether the input is a caller-supplied payload.
 
     Returns:
         A deep copy of a dict or list, and ``value`` itself otherwise.
 
     Raises:
-        TypeError: If ``value`` holds a model object, which is no JSON value,
-            at any depth, in a container or in an object that
-            ``copy.deepcopy()`` copies.
+        TypeError: If a model object occurs among the visited references of a
+            copied value.
     """
     if not isinstance(value, (dict, list)):
         return value
@@ -3541,13 +3613,14 @@ def _copy_json(value: Any) -> Any:
 
     def shell(item: Any) -> Any:
         """Return the copy of an item, queueing a container to be filled."""
-        if type(item) in _ATOMIC_JSON:
+        kind = type(item)
+        if _is_json_scalar(kind):
             return item
         if id(item) in memo:
             return memo[id(item)]
-        if type(item) is dict:
+        if kind is dict:
             made: Any = {}
-        elif type(item) is list:
+        elif kind is list:
             made = []
         else:
             return copy.deepcopy(item, memo)
@@ -3555,7 +3628,7 @@ def _copy_json(value: Any) -> Any:
         unfilled.append((item, made))
         return made
 
-    _refuse_models_in_json(value)
+    _refuse_models_in_json(value, caller_json=caller_json)
     result = shell(value)
     while unfilled:
         source, made = unfilled.pop()
@@ -3564,7 +3637,7 @@ def _copy_json(value: Any) -> Any:
                 made[shell(key)] = shell(item)
         else:
             made.extend([shell(item) for item in source])
-    _refuse_models_in_json(result)
+    _refuse_models_in_json(result, caller_json=caller_json)
     return result
 
 
@@ -6998,9 +7071,8 @@ class JSONObject:
 
         Args:
             json: Optional JSON payload for eager initialization. The object
-                keeps a deep copy, so changing the mapping or its nested values
-                later does not change the object, and the object's changes do
-                not reach the mapping.
+                keeps a deep copy of the mapping's entries. Other Python values
+                inside the payload follow their own copy protocol.
             api: Optional API instance overriding the class-level API. Related
                 objects created from this object use the same override.
             write_mode: Optional write mode override. When omitted, the
@@ -7054,7 +7126,7 @@ class JSONObject:
             self._json = dict(json)
         elif json is not None:
             # The caller may change its mapping or the values nested in it.
-            self._json = _copy_json(dict(json))
+            self._json = _copy_json(dict(json), caller_json=True)
         else:
             self._json = None
         if self._json is not None:
@@ -8659,8 +8731,8 @@ class JSONObject:
 
         Args:
             json: Full or partial JSON object for this instance. The object
-                keeps a deep copy, so changing the mapping or its nested values
-                later does not change the object.
+                keeps a deep copy of the mapping's entries. Other Python values
+                inside the payload follow their own copy protocol.
 
         Raises:
             ResponseShapeError: If the payload has the key field and names
@@ -8678,7 +8750,7 @@ class JSONObject:
                 "fields to merge a payload into. Decorate it with "
                 "@json_object"
             )
-        payload = _copy_json(dict(json))
+        payload = _copy_json(dict(json), caller_json=True)
         if _pk_property_of(type(self)) is None:
             # An object without a key has no key to compare.
             self._merge_json(payload)

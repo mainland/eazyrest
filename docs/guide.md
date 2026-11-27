@@ -422,9 +422,10 @@ or a `UUID` for a `UUID` key, whichever spelling it was given in. The
 constructor raises `FieldConversionError`, a `ValueError`, for a string that is
 not one of the four forms of a UUID. A model object given for the key raises
 `FieldConversionError`, as does a mapping. An object constructed from `json=`
-starts with that payload already loaded. It keeps a deep copy of the payload,
-as `update_from_json()` does, so changing the payload or its nested values
-afterward does not change the object.
+starts with that payload already loaded. Like `update_from_json()`, it keeps a
+deep copy of the mapping's entries. It copies plain dicts and lists
+recursively. Other Python values follow their own `copy.deepcopy()` behavior,
+which can share values.
 
 Objects compare by key and hash by key, with the rules and the cases that
 [Equality by key](#equality-by-key) describes.
@@ -483,12 +484,23 @@ it the JSON with `update_from_json(user.json)`. Read the object from the server
 again instead to start from the server's state. An error, an `API`, and the
 view that a query's hooks receive still pickle.
 
-A model object is no JSON value. `json=` and `update_from_json()` raise
-`TypeError` for a mapping that holds one at any depth, in a container or an
-object that `copy.deepcopy()` copies, such as a list, tuple, set, frozenset,
-`defaultdict`, `deque`, or a subclass of `dict` or `list`, or an object whose
-attributes hold it. The message says that it is no JSON value, and the object
-is left as it was. Give its key, or its `json`.
+A model object is no JSON value. `json=` and `update_from_json()` check the
+mapping's entries before copying and check the completed copy before using it.
+They follow container keys and values, sequence and set elements, ordinary
+instance attributes and slots, and a `datetime` or `time` value's timezone.
+They also follow a `defaultdict` factory, a partial's callable and arguments,
+and the receiver of a bound method, including a method held by a property
+accessor or by a weak reference's callback.
+
+A model reached through one of those references raises a `TypeError` that says
+it is no JSON value. Give its key or its `json`. A copy hook that tries to copy
+an unrelated model gets the ordinary error that the model cannot be copied or
+pickled. Either failure leaves the update unapplied.
+
+Functions and classes shared by Python's copy protocol are kept by identity.
+The check leaves function closures and class state alone. It follows a weak
+reference's strongly held callback and leaves the weak target alone. Other
+state hidden inside extension types is subject to normal Python copy behavior.
 
 An assignment converts the value for its field but does not otherwise check its
 type. A value that cannot be written as JSON, such as an object of a type that
