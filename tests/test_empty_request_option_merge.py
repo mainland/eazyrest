@@ -827,3 +827,27 @@ def test_a_surviving_write_block_keeps_its_hooks(server: Any) -> None:
 
     assert server.call_count == 2
     assert RAN == ["outer", "ran", "ran"]
+
+
+@pytest.mark.parametrize("scoped", [False, True], ids=["direct", "scoped"])
+def test_private_parameter_names_reach_a_custom_sender(
+    server: Any, monkeypatch: pytest.MonkeyPatch, scoped: bool
+) -> None:
+    """Transport helper arguments do not capture sender keywords."""
+    client = _view({"timeout": 4}) if scoped else SERVER
+    stock_post = SERVER.session.post
+    options: list[tuple[Any, Any]] = []
+
+    def post(uri: str, *, send: Any, method: Any, **kwargs: Any) -> Any:
+        options.append((send, method))
+        return stock_post(uri, **kwargs)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'send'"):
+        client.post(SBASE + "items/", send=None)
+    assert not server.called
+
+    monkeypatch.setattr(SERVER.session, "post", post)
+    client.post(SBASE + "items/", send=None, method="extension")
+
+    assert server.call_count == 1
+    assert options == [(None, "extension")]

@@ -1567,6 +1567,7 @@ class API:
         method: str,
         send: Callable[..., requests.Response],
         uri: str,
+        /,
         *args: Any,
         **kwargs: Any,
     ) -> requests.Response:
