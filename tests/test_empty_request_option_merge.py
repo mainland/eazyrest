@@ -10,7 +10,10 @@ the view's options, and a view of a view.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Callable
+from textwrap import dedent
 from typing import Any
 
 import pytest
@@ -615,6 +618,49 @@ def test_an_unknown_option_set_to_none_refuses_a_write_before_sending(
         client.post(url, json={"id": 1}, not_a_request_option=None)
 
     assert not requests_mock.called
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["stock", "wrapped"])
+def test_request_options_are_independent_of_the_method_at_import(
+    wrapped: bool,
+) -> None:
+    """A wrapper at import cannot drop the timeout or an invalid keyword."""
+    script = dedent("""\
+        import sys
+        from contextlib import nullcontext
+        from unittest.mock import patch
+
+        import pytest
+        import requests
+        from requests_mock import Mocker
+
+        stock = requests.Session.request
+
+        def forward(self, *args, **kwargs):
+            return stock(self, *args, **kwargs)
+
+        wrapped = sys.argv[1] == "True"
+        method = patch.object(requests.Session, "request", forward)
+        with method if wrapped else nullcontext():
+            from eazyrest import API
+
+        url = "https://request-option.example/items/"
+        api = API(url)
+        api.timeout = 3.5
+        api.total_timeout = None
+        with Mocker() as mock:
+            mock.get(url, json=[])
+            mock.post(url, status_code=201)
+            api.get(url, timeout=None)
+            assert mock.last_request.timeout == 3.5
+
+            with pytest.raises(TypeError, match="unexpected keyword argument"):
+                api.post(url, json={"id": 1}, kwargs=None)
+            assert mock.call_count == 1
+        """)
+    subprocess.run(
+        [sys.executable, "-c", script, str(wrapped)], check=True, timeout=30
+    )
 
 
 @pytest.mark.parametrize("run", ENTRY_POINTS.values(), ids=ENTRY_POINTS)

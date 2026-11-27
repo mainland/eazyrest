@@ -97,6 +97,7 @@ from ._errors import (
 from ._protocols import Client, Response
 from ._results import Results, _count_of, _valid_count
 from .api import (
+    _REQUEST_OPTION_NAMES,
     API,
     _AnyAPI,
     _as_client,
@@ -3316,23 +3317,6 @@ def _query_params(
     return {**params, **kwargs}
 
 
-# Request arguments that a query may set. A query sends no body, builds its
-# parameters itself, and reads every response.
-_QUERY_OPTION_NAMES = frozenset(
-    {
-        "allow_redirects",
-        "auth",
-        "cert",
-        "cookies",
-        "headers",
-        "hooks",
-        "proxies",
-        "timeout",
-        "verify",
-    }
-)
-
-
 def _check_options_mapping(options: Mapping[str, Any]) -> None:
     """Refuse request options that are not a mapping.
 
@@ -3411,10 +3395,7 @@ def _checked_request_options(
         )
     if options.get("stream"):
         raise TypeError(_STREAM_REFUSALS[kind])
-    known = _QUERY_OPTION_NAMES | {"stream"}
-    if kind == "write":
-        known |= {"params"}
-    unknown = sorted(set(options) - known)
+    unknown = sorted(set(options) - _REQUEST_OPTION_NAMES)
     if unknown:
         raise TypeError(
             f"request_options cannot set {', '.join(unknown)}, which are not "

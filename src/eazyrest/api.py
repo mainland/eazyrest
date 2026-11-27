@@ -77,9 +77,25 @@ _SESSION_SETTINGS = (
     "max_redirects",
 )
 
+# Instrumentation can replace Session.request with a forwarding wrapper.
 _REQUEST_OPTION_NAMES = frozenset(
-    inspect.signature(requests.Session.request).parameters
-) - {"self", "method", "url"}
+    {
+        "allow_redirects",
+        "auth",
+        "cert",
+        "cookies",
+        "data",
+        "files",
+        "headers",
+        "hooks",
+        "json",
+        "params",
+        "proxies",
+        "stream",
+        "timeout",
+        "verify",
+    }
+)
 
 
 def _takes_kwargs(method: Any) -> bool:
@@ -365,14 +381,10 @@ def _merge_request_options(
     """
     _check_mergeable_options(base)
     _check_mergeable_options(override)
-    present = {
-        name: value
-        for name, value in override.items()
-        if value is not None or name not in _REQUEST_OPTION_NAMES
-    }
     merged = {
         name: value
-        for name, value in {**base, **present}.items()
+        for layer in (base, override)
+        for name, value in layer.items()
         if value is not None or name not in _REQUEST_OPTION_NAMES
     }
     if base.get("headers") is not None and override.get("headers") is not None:
